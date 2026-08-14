@@ -21,6 +21,13 @@ class CourseConflictError(Exception):
     pass
 
 
+def _slug_is_taken(session: Session, slug: str, *, excluding_course_id: str | None = None) -> bool:
+    statement = select(Course.id).where(Course.owner_id == DEV_OWNER_ID, Course.slug == slug)
+    if excluding_course_id is not None:
+        statement = statement.where(Course.id != excluding_course_id)
+    return session.scalar(statement) is not None
+
+
 def _ensure_dev_owner(session: Session) -> None:
     if session.get(User, DEV_OWNER_ID) is None:
         session.add(User(id=DEV_OWNER_ID, display_name="Development Owner", role="teacher"))
@@ -35,7 +42,9 @@ def create_course(session: Session, *, name: str, slug: str, description: str | 
         session.commit()
     except IntegrityError as exc:
         session.rollback()
-        raise CourseConflictError from exc
+        if _slug_is_taken(session, slug):
+            raise CourseConflictError from exc
+        raise
     session.refresh(course)
     return course
 
@@ -53,12 +62,15 @@ def get_course(session: Session, course_id: str) -> Course:
 
 def update_course(session: Session, course_id: str, **changes: object) -> Course:
     course = get_course(session, course_id)
+    requested_slug = changes.get("slug", course.slug)
     for field, value in changes.items():
         setattr(course, field, value)
     try:
         session.commit()
     except IntegrityError as exc:
         session.rollback()
-        raise CourseConflictError from exc
+        if _slug_is_taken(session, requested_slug, excluding_course_id=course_id):
+            raise CourseConflictError from exc
+        raise
     session.refresh(course)
     return course

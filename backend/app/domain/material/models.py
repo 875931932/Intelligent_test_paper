@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import datetime
 
 from pydantic import BaseModel, Field, field_validator
@@ -39,8 +40,8 @@ class UploadSessionCreate(BaseModel):
     @field_validator("filename")
     @classmethod
     def valid_filename(cls, value: str) -> str:
-        value = value.strip()
-        if not value or "/" in value or "\\" in value or any(ord(char) < 32 for char in value):
+        value = unicodedata.normalize("NFC", value).strip()
+        if not value or "/" in value or "\\" in value or any(unicodedata.category(char) in {"Cc", "Cf"} for char in value):
             raise ValueError("filename is unsafe")
         if "." not in value or value.rsplit(".", 1)[1].lower() not in MIME_BY_EXTENSION:
             raise ValueError("file extension is not allowed")
@@ -85,7 +86,6 @@ class MaterialVersionResponse(BaseModel):
     material_id: str
     status: str
     version_no: int
-    object_key: str
     sha256: str
     mime_type: str
     size_bytes: int

@@ -1,7 +1,8 @@
 import os
+from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import create_engine, event, inspect
+from sqlalchemy import CheckConstraint, create_engine, event, inspect
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.schema import CreateIndex, CreateTable
@@ -113,7 +114,7 @@ def test_course_scoped_foreign_key_rejects_cross_course_parent_reference(tmp_pat
                 {"id": "course-b", "owner_id": "owner", "slug": "b", "name": "B"},
             ])
             connection.execute(Base.metadata.tables["materials"].insert(), {
-                "id": "material-a", "course_id": "course-a", "logical_name": "a.pdf", "material_type": "teaching", "status": "staged",
+                "id": "material-a", "course_id": "course-a", "logical_name": "a.pdf", "material_type": "teaching_material", "status": "staged",
             })
         with pytest.raises(IntegrityError):
             with engine.begin() as connection:
@@ -195,3 +196,64 @@ def test_postgresql_ddl_compiles_with_identifier_safe_constraint_and_index_names
             assert len(index.name) <= 63, index.name
             str(CreateIndex(index).compile(dialect=dialect))
         str(CreateTable(table).compile(dialect=dialect))
+
+
+def test_material_upload_tables_declare_lifecycle_constraints_defaults_and_expiry_index():
+    required_checks = {
+        "materials": {"ck_materials_material_type", "ck_materials_status"},
+        "material_versions": {
+            "ck_material_versions_status",
+            "ck_material_versions_version_no",
+            "ck_material_versions_size_bytes",
+            "ck_material_versions_sha256_length",
+        },
+        "upload_sessions": {
+            "ck_upload_sessions_material_type",
+            "ck_upload_sessions_status",
+            "ck_upload_sessions_size_bytes",
+            "ck_upload_sessions_sha256_length",
+        },
+    }
+    for table_name, names in required_checks.items():
+        table = Base.metadata.tables[table_name]
+        assert names <= {constraint.name for constraint in table.constraints if isinstance(constraint, CheckConstraint)}
+        assert table.c.created_at.server_default is not None
+        assert table.c.status.server_default is not None
+    upload_table = Base.metadata.tables["upload_sessions"]
+    assert "completed_at" in upload_table.c
+    assert any(tuple(index.columns.keys()) == ("course_id", "status", "expires_at") for index in upload_table.indexes)
+
+
+def test_material_upload_check_constraints_reject_invalid_rows(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'upload-checks.db'}")
+    event.listen(engine, "connect", lambda connection, _: connection.execute("PRAGMA foreign_keys=ON"))
+    Base.metadata.create_all(engine)
+    try:
+        with engine.begin() as connection:
+            connection.execute(Base.metadata.tables["users"].insert(), {"id": "owner", "display_name": "Owner", "role": "teacher"})
+            connection.execute(Base.metadata.tables["courses"].insert(), {"id": "course", "owner_id": "owner", "slug": "course", "name": "Course"})
+        with pytest.raises(IntegrityError):
+            with engine.begin() as connection:
+                connection.execute(
+                    Base.metadata.tables["upload_sessions"].insert(),
+                    {
+                        "id": "invalid-size",
+                        "course_id": "course",
+                        "session_key": "invalid-size",
+                        "filename": "file.pdf",
+                        "material_type": "teaching_syllabus",
+                        "size_bytes": 0,
+                        "sha256": "a" * 64,
+                        "mime_type": "application/pdf",
+                        "object_key": "temp/file.pdf",
+                        "expires_at": datetime.now(UTC) + timedelta(minutes=1),
+                    },
+                )
+        with pytest.raises(IntegrityError):
+            with engine.begin() as connection:
+                connection.execute(
+                    Base.metadata.tables["materials"].insert(),
+                    {"id": "invalid-type", "course_id": "course", "logical_name": "file.pdf", "material_type": "html", "status": "staged"},
+                )
+    finally:
+        engine.dispose()

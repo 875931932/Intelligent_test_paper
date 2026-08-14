@@ -1,5 +1,7 @@
 import hashlib
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
 from threading import Barrier
 
 import pytest
@@ -11,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app.db.schema import Base
 from app.db.session import get_session
 from app.main import app
+from app.api.v1 import materials as materials_api
 
 
 @pytest.fixture
@@ -70,20 +73,46 @@ def test_course_patch_can_change_name_slug_and_clear_description(client):
     assert response.json() == {**course, "name": "New", "slug": "new", "description": None}
 
 
+def test_duplicate_course_slug_returns_conflict(client):
+    assert client.post("/api/v1/courses", json={"name": "First", "slug": "same"}).status_code == 201
+
+    response = client.post("/api/v1/courses", json={"name": "Second", "slug": "same"})
+
+    assert response.status_code == 409
+
+
 class FakeStorage:
     def __init__(self):
         self.objects = {}
         self.presign_calls = []
+        self.head_calls = []
+        self.stream_calls = []
+        self.finalize_calls = []
+        self.presign_error = None
 
     def presign_put(self, *, object_key, content_type, sha256, expires_in):
+        if self.presign_error is not None:
+            raise self.presign_error
         self.presign_calls.append((object_key, content_type, sha256, expires_in))
         return f"https://storage.invalid/{object_key}?signature=fake"
 
     def head_object(self, object_key):
-        return self.objects.get(object_key)
+        self.head_calls.append(object_key)
+        value = self.objects.get(object_key)
+        if value is None:
+            return None
+        return {**value, "etag": value.get("etag", '"etag-1"')}
 
     def stream_object(self, object_key):
+        self.stream_calls.append(object_key)
         yield self.objects[object_key]["body"]
+
+    def finalize_object(self, source_key, destination_key, source_etag):
+        self.finalize_calls.append((source_key, destination_key, source_etag))
+        source = self.objects[source_key]
+        if source.get("etag", '"etag-1"') != source_etag:
+            raise RuntimeError("copy source precondition failed")
+        self.objects[destination_key] = {**source, "etag": '"final-etag"'}
 
 
 def _course(client, slug="course-a"):
@@ -257,6 +286,287 @@ def test_complete_hashes_stream_when_object_metadata_is_absent(client):
 
     assert response.status_code == 200
     assert response.json()["sha256"] == request["sha256"]
+
+
+def test_complete_rejects_false_sha_metadata_when_object_body_does_not_match(client):
+    storage = FakeStorage()
+    client.app.state.storage = storage
+    course = _course(client)
+    declared = hashlib.sha256(b"expected").hexdigest()
+    upload = client.post(
+        f"/api/v1/courses/{course['id']}/upload-sessions",
+        json=_upload_request(size_bytes=5, sha256=declared),
+    ).json()
+    storage.objects[upload["object_key"]] = {
+        "size": 5,
+        "content_type": "application/pdf",
+        "metadata": {"sha256": declared},
+        "body": b"wrong",
+    }
+
+    response = client.post(f"/api/v1/courses/{course['id']}/upload-sessions/{upload['session_id']}/complete")
+
+    assert response.status_code == 409
+    assert storage.stream_calls == [upload["object_key"]]
+    assert storage.finalize_calls == []
+    with client.app.state.test_engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM materials")).scalar_one() == 0
+        assert connection.execute(text("SELECT COUNT(*) FROM material_versions")).scalar_one() == 0
+
+
+def test_complete_finalizes_to_unpresigned_immutable_key_and_hides_storage_layout(client):
+    storage = FakeStorage()
+    client.app.state.storage = storage
+    course = _course(client)
+    body = b"pdf"
+    request = _upload_request(size_bytes=3, sha256=hashlib.sha256(body).hexdigest())
+    upload = client.post(f"/api/v1/courses/{course['id']}/upload-sessions", json=request).json()
+    storage.objects[upload["object_key"]] = {
+        "size": 3, "content_type": "application/pdf", "metadata": {"sha256": request["sha256"]}, "body": body,
+    }
+
+    completed = client.post(f"/api/v1/courses/{course['id']}/upload-sessions/{upload['session_id']}/complete")
+
+    assert completed.status_code == 200
+    assert "object_key" not in completed.json()
+    source_key, final_key, etag = storage.finalize_calls[0]
+    assert source_key == upload["object_key"]
+    assert final_key != source_key
+    assert "/materials/" in final_key and "/versions/" in final_key
+    assert final_key not in completed.text
+    storage.objects[source_key]["body"] = b"overwritten"
+    assert storage.objects[final_key]["body"] == body
+    material = client.get(f"/api/v1/courses/{course['id']}/materials/{completed.json()['material_id']}")
+    assert "object_key" not in material.text
+
+
+def test_complete_rejects_when_temp_object_etag_changes_before_finalize(client):
+    class ChangingStorage(FakeStorage):
+        def stream_object(self, object_key):
+            yield from super().stream_object(object_key)
+            self.objects[object_key]["etag"] = '"etag-2"'
+
+    storage = ChangingStorage()
+    client.app.state.storage = storage
+    course = _course(client)
+    body = b"pdf"
+    request = _upload_request(size_bytes=3, sha256=hashlib.sha256(body).hexdigest())
+    upload = client.post(f"/api/v1/courses/{course['id']}/upload-sessions", json=request).json()
+    storage.objects[upload["object_key"]] = {
+        "size": 3, "content_type": "application/pdf", "metadata": {}, "body": body, "etag": '"etag-1"',
+    }
+
+    response = client.post(f"/api/v1/courses/{course['id']}/upload-sessions/{upload['session_id']}/complete")
+
+    assert response.status_code in {409, 503}
+    with client.app.state.test_engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM materials")).scalar_one() == 0
+        assert connection.execute(text("SELECT COUNT(*) FROM material_versions")).scalar_one() == 0
+        assert connection.execute(
+            text("SELECT status FROM upload_sessions WHERE id=:id"), {"id": upload["session_id"]}
+        ).scalar_one() == "pending"
+
+
+def test_expired_pending_session_rejects_before_any_storage_io(client):
+    storage = FakeStorage()
+    client.app.state.storage = storage
+    course = _course(client)
+    upload = client.post(f"/api/v1/courses/{course['id']}/upload-sessions", json=_upload_request()).json()
+    with client.app.state.test_engine.begin() as connection:
+        connection.execute(
+            text("UPDATE upload_sessions SET expires_at=:expired WHERE id=:id"),
+            {"expired": datetime.now(UTC) - timedelta(minutes=1), "id": upload["session_id"]},
+        )
+
+    response = client.post(f"/api/v1/courses/{course['id']}/upload-sessions/{upload['session_id']}/complete")
+
+    assert response.status_code == 410
+    assert storage.head_calls == []
+    assert storage.stream_calls == []
+    assert storage.finalize_calls == []
+    with client.app.state.test_engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM materials")).scalar_one() == 0
+
+
+def test_completed_session_remains_idempotent_after_expiry_without_storage_io(client):
+    storage = FakeStorage()
+    client.app.state.storage = storage
+    course = _course(client)
+    body = b"pdf"
+    request = _upload_request(size_bytes=3, sha256=hashlib.sha256(body).hexdigest())
+    upload = client.post(f"/api/v1/courses/{course['id']}/upload-sessions", json=request).json()
+    storage.objects[upload["object_key"]] = {
+        "size": 3, "content_type": "application/pdf", "metadata": {}, "body": body,
+    }
+    first = client.post(f"/api/v1/courses/{course['id']}/upload-sessions/{upload['session_id']}/complete").json()
+    with client.app.state.test_engine.begin() as connection:
+        connection.execute(
+            text("UPDATE upload_sessions SET expires_at=:expired WHERE id=:id"),
+            {"expired": datetime.now(UTC) - timedelta(minutes=1), "id": upload["session_id"]},
+        )
+        assert connection.execute(
+            text("SELECT completed_at IS NOT NULL FROM upload_sessions WHERE id=:id"), {"id": upload["session_id"]}
+        ).scalar_one() == 1
+    storage.head_calls.clear()
+    storage.stream_calls.clear()
+    storage.finalize_calls.clear()
+
+    repeated = client.post(f"/api/v1/courses/{course['id']}/upload-sessions/{upload['session_id']}/complete")
+
+    assert repeated.status_code == 200
+    assert repeated.json()["id"] == first["id"]
+    assert storage.head_calls == []
+    assert storage.stream_calls == []
+    assert storage.finalize_calls == []
+
+
+def test_presign_failure_is_sanitized_and_does_not_persist_upload_session(client):
+    storage = FakeStorage()
+    storage.presign_error = RuntimeError("secret-key=do-not-leak")
+    client.app.state.storage = storage
+    course = _course(client)
+
+    with TestClient(app, raise_server_exceptions=False) as request_client:
+        response = request_client.post(f"/api/v1/courses/{course['id']}/upload-sessions", json=_upload_request())
+
+    assert response.status_code == 503
+    assert "do-not-leak" not in response.text
+    with client.app.state.test_engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM upload_sessions")).scalar_one() == 0
+
+
+def test_storage_initialization_failure_is_sanitized_as_service_unavailable(client, monkeypatch):
+    if hasattr(app.state, "storage"):
+        del app.state.storage
+    course = _course(client)
+
+    def fail_storage(**_kwargs):
+        raise RuntimeError("secret-key=do-not-leak")
+
+    monkeypatch.setattr(materials_api, "MinioStorage", fail_storage)
+    with TestClient(app, raise_server_exceptions=False) as request_client:
+        response = request_client.post(f"/api/v1/courses/{course['id']}/upload-sessions", json=_upload_request())
+
+    assert response.status_code == 503
+    assert "do-not-leak" not in response.text
+
+
+def test_active_same_name_requires_explicit_version_target(client):
+    storage = FakeStorage()
+    client.app.state.storage = storage
+    course = _course(client)
+    body = b"pdf"
+    request = _upload_request(size_bytes=3, sha256=hashlib.sha256(body).hexdigest())
+    first_upload = client.post(f"/api/v1/courses/{course['id']}/upload-sessions", json=request).json()
+    storage.objects[first_upload["object_key"]] = {
+        "size": 3, "content_type": "application/pdf", "metadata": {}, "body": body,
+    }
+    assert client.post(f"/api/v1/courses/{course['id']}/upload-sessions/{first_upload['session_id']}/complete").status_code == 200
+
+    conflict = client.post(f"/api/v1/courses/{course['id']}/upload-sessions", json=request)
+
+    assert conflict.status_code == 409
+    assert len(storage.presign_calls) == 1
+
+
+def test_deleted_same_name_is_restored_as_next_version(client):
+    storage = FakeStorage()
+    client.app.state.storage = storage
+    course = _course(client)
+    body = b"pdf"
+    request = _upload_request(size_bytes=3, sha256=hashlib.sha256(body).hexdigest())
+    first_upload = client.post(f"/api/v1/courses/{course['id']}/upload-sessions", json=request).json()
+    storage.objects[first_upload["object_key"]] = {
+        "size": 3, "content_type": "application/pdf", "metadata": {}, "body": body,
+    }
+    first = client.post(f"/api/v1/courses/{course['id']}/upload-sessions/{first_upload['session_id']}/complete").json()
+    assert client.delete(f"/api/v1/courses/{course['id']}/materials/{first['material_id']}").status_code == 204
+
+    second_upload = client.post(f"/api/v1/courses/{course['id']}/upload-sessions", json=request).json()
+    storage.objects[second_upload["object_key"]] = {
+        "size": 3, "content_type": "application/pdf", "metadata": {}, "body": body,
+    }
+    second = client.post(f"/api/v1/courses/{course['id']}/upload-sessions/{second_upload['session_id']}/complete")
+
+    assert second.status_code == 200
+    assert second.json()["material_id"] == first["material_id"]
+    assert second.json()["version_no"] == 2
+    material = client.get(f"/api/v1/courses/{course['id']}/materials/{first['material_id']}").json()
+    assert material["status"] == "staged"
+
+
+def test_existing_material_id_creates_next_version_in_same_course(client):
+    storage = FakeStorage()
+    client.app.state.storage = storage
+    course = _course(client)
+    body = b"pdf"
+    request = _upload_request(size_bytes=3, sha256=hashlib.sha256(body).hexdigest())
+    first_upload = client.post(f"/api/v1/courses/{course['id']}/upload-sessions", json=request).json()
+    storage.objects[first_upload["object_key"]] = {
+        "size": 3, "content_type": "application/pdf", "metadata": {}, "body": body,
+    }
+    first = client.post(f"/api/v1/courses/{course['id']}/upload-sessions/{first_upload['session_id']}/complete").json()
+    request["existing_material_id"] = first["material_id"]
+
+    second_upload = client.post(f"/api/v1/courses/{course['id']}/upload-sessions", json=request).json()
+    storage.objects[second_upload["object_key"]] = {
+        "size": 3, "content_type": "application/pdf", "metadata": {}, "body": body,
+    }
+    second = client.post(f"/api/v1/courses/{course['id']}/upload-sessions/{second_upload['session_id']}/complete")
+
+    assert second.status_code == 200
+    assert second.json()["material_id"] == first["material_id"]
+    assert second.json()["version_no"] == 2
+
+
+def test_existing_material_id_from_another_course_is_hidden_before_presign(client):
+    storage = FakeStorage()
+    client.app.state.storage = storage
+    course_a = _course(client, "course-a")
+    course_b = _course(client, "course-b")
+    body = b"pdf"
+    request = _upload_request(size_bytes=3, sha256=hashlib.sha256(body).hexdigest())
+    upload = client.post(f"/api/v1/courses/{course_a['id']}/upload-sessions", json=request).json()
+    storage.objects[upload["object_key"]] = {
+        "size": 3, "content_type": "application/pdf", "metadata": {}, "body": body,
+    }
+    material_id = client.post(f"/api/v1/courses/{course_a['id']}/upload-sessions/{upload['session_id']}/complete").json()["material_id"]
+    presign_count = len(storage.presign_calls)
+    request["existing_material_id"] = material_id
+
+    response = client.post(f"/api/v1/courses/{course_b['id']}/upload-sessions", json=request)
+
+    assert response.status_code == 404
+    assert len(storage.presign_calls) == presign_count
+
+
+@pytest.mark.parametrize("payload", [{"name": None}, {"slug": None}])
+def test_course_patch_rejects_null_required_fields(client, payload):
+    course = _course(client)
+
+    response = client.patch(f"/api/v1/courses/{course['id']}", json=payload)
+
+    assert response.status_code == 422
+
+
+def test_filename_is_normalized_to_nfc_and_rejects_format_characters(client):
+    storage = FakeStorage()
+    client.app.state.storage = storage
+    course = _course(client)
+    decomposed = unicodedata.normalize("NFD", "课件.pdf")
+
+    accepted = client.post(
+        f"/api/v1/courses/{course['id']}/upload-sessions",
+        json=_upload_request(filename=decomposed),
+    )
+    rejected = client.post(
+        f"/api/v1/courses/{course['id']}/upload-sessions",
+        json=_upload_request(filename="safe\u202efile.pdf"),
+    )
+
+    assert accepted.status_code == 201
+    assert unicodedata.normalize("NFC", decomposed) in accepted.json()["object_key"]
+    assert rejected.status_code == 422
 
 
 def test_material_reads_and_completion_are_course_scoped_and_delete_is_retained(client):

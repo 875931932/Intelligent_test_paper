@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from hashlib import sha1
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, JSON, String, Table, Text, UniqueConstraint, false, func
+from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, JSON, String, Table, Text, UniqueConstraint, false, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -67,8 +67,16 @@ materials = _course_table(
     "materials",
     Column("logical_name", String(255), nullable=False),
     Column("material_type", String(40), nullable=False),
-    Column("status", String(40), nullable=False, default="staged"),
-    constraints=(UniqueConstraint("course_id", "logical_name", name="uq_materials_course_name"),),
+    Column("status", String(40), nullable=False, default="staged", server_default="staged"),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    constraints=(
+        UniqueConstraint("course_id", "logical_name", name="uq_materials_course_name"),
+        CheckConstraint(
+            "material_type IN ('teaching_syllabus', 'assessment_syllabus', 'teaching_material', 'exercise')",
+            name="ck_materials_material_type",
+        ),
+        CheckConstraint("status IN ('staged', 'deleted')", name="ck_materials_status"),
+    ),
 )
 Index("ix_materials_course_status", materials.c.course_id, materials.c.status)
 
@@ -79,9 +87,16 @@ material_versions = _course_table(
     Column("sha256", String(64), nullable=False),
     Column("mime_type", String(200), nullable=False),
     Column("size_bytes", Integer, nullable=False),
-    Column("status", String(40), nullable=False, default="staged"),
+    Column("status", String(40), nullable=False, default="staged", server_default="staged"),
     Column("object_key", String(500), nullable=False),
-    constraints=(UniqueConstraint("material_id", "version_no", name="uq_material_versions_number"),),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    constraints=(
+        UniqueConstraint("material_id", "version_no", name="uq_material_versions_number"),
+        CheckConstraint("version_no > 0", name="ck_material_versions_version_no"),
+        CheckConstraint("size_bytes > 0", name="ck_material_versions_size_bytes"),
+        CheckConstraint("length(sha256) = 64", name="ck_material_versions_sha256_length"),
+        CheckConstraint("status IN ('staged', 'deleted')", name="ck_material_versions_status"),
+    ),
 )
 Index("ix_material_versions_course_material_status", material_versions.c.course_id, material_versions.c.material_id, material_versions.c.status)
 
@@ -97,9 +112,21 @@ upload_sessions = _course_table(
     Column("mime_type", String(200), nullable=False),
     Column("object_key", String(500), nullable=False),
     Column("expires_at", DateTime(timezone=True), nullable=False),
-    Column("status", String(40), nullable=False, default="pending"),
-    constraints=(UniqueConstraint("session_key", name="uq_upload_sessions_session_key"),),
+    Column("completed_at", DateTime(timezone=True)),
+    Column("status", String(40), nullable=False, default="pending", server_default="pending"),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    constraints=(
+        UniqueConstraint("session_key", name="uq_upload_sessions_session_key"),
+        CheckConstraint(
+            "material_type IN ('teaching_syllabus', 'assessment_syllabus', 'teaching_material', 'exercise')",
+            name="ck_upload_sessions_material_type",
+        ),
+        CheckConstraint("size_bytes > 0", name="ck_upload_sessions_size_bytes"),
+        CheckConstraint("length(sha256) = 64", name="ck_upload_sessions_sha256_length"),
+        CheckConstraint("status IN ('pending', 'completing', 'completed')", name="ck_upload_sessions_status"),
+    ),
 )
+Index("ix_upload_sessions_course_status_expires", upload_sessions.c.course_id, upload_sessions.c.status, upload_sessions.c.expires_at)
 
 # Document parsing
 parser_profiles = _course_table(
