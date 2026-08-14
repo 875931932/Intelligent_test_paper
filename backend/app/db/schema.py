@@ -66,7 +66,7 @@ def _course_table(name: str, *columns: Column, constraints: tuple = ()) -> Table
 materials = _course_table(
     "materials",
     Column("logical_name", String(255), nullable=False),
-    Column("material_type", String(40), nullable=False, default="teaching"),
+    Column("material_type", String(40), nullable=False),
     Column("status", String(40), nullable=False, default="staged"),
     constraints=(UniqueConstraint("course_id", "logical_name", name="uq_materials_course_name"),),
 )
@@ -76,17 +76,27 @@ material_versions = _course_table(
     "material_versions",
     Column("material_id", String(64), ForeignKey("materials.id"), nullable=False),
     Column("version_no", Integer, nullable=False),
-    Column("sha256", String(64)),
+    Column("sha256", String(64), nullable=False),
+    Column("mime_type", String(200), nullable=False),
+    Column("size_bytes", Integer, nullable=False),
     Column("status", String(40), nullable=False, default="staged"),
-    Column("object_key", String(500)),
+    Column("object_key", String(500), nullable=False),
     constraints=(UniqueConstraint("material_id", "version_no", name="uq_material_versions_number"),),
 )
 Index("ix_material_versions_course_material_status", material_versions.c.course_id, material_versions.c.material_id, material_versions.c.status)
 
 upload_sessions = _course_table(
     "upload_sessions",
-    Column("material_id", String(64), ForeignKey("materials.id"), nullable=False),
+    Column("material_id", String(64), ForeignKey("materials.id")),
+    Column("material_version_id", String(64), ForeignKey("material_versions.id")),
     Column("session_key", String(128), nullable=False),
+    Column("filename", String(255), nullable=False),
+    Column("material_type", String(40), nullable=False),
+    Column("size_bytes", Integer, nullable=False),
+    Column("sha256", String(64), nullable=False),
+    Column("mime_type", String(200), nullable=False),
+    Column("object_key", String(500), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
     Column("status", String(40), nullable=False, default="pending"),
     constraints=(UniqueConstraint("session_key", name="uq_upload_sessions_session_key"),),
 )
@@ -396,6 +406,7 @@ def _same_course_fk(child_name: str, parent_column: str, parent_name: str) -> No
 for _child, _column, _parent in (
     ("material_versions", "material_id", "materials"),
     ("upload_sessions", "material_id", "materials"),
+    ("upload_sessions", "material_version_id", "material_versions"),
     ("document_parse_runs", "material_version_id", "material_versions"),
     ("document_parse_runs", "parser_profile_id", "parser_profiles"),
     ("document_artifacts", "document_parse_run_id", "document_parse_runs"),

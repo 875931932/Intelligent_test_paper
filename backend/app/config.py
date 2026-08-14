@@ -15,6 +15,12 @@ class Settings(BaseSettings):
     mineru_api_token: str = ""
     deepseek_api_key: str = ""
     seed_dev_data: bool = False
+    upload_max_bytes: int = 209715200
+    s3_endpoint: str = "http://localhost:9000"
+    s3_access_key: str = "minio-dev"
+    s3_secret_key: str = "minio-dev-password"
+    s3_bucket: str = "exam-materials"
+    s3_region: str = "us-east-1"
 
 
 settings = Settings()

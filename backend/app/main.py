@@ -7,6 +7,8 @@ from sqlalchemy import create_engine, text
 from fastapi import FastAPI
 
 from app.config import settings
+from app.api.v1.courses import router as courses_router
+from app.api.v1.materials import router as materials_router
 
 
 def _configured(value: str) -> bool:
@@ -54,6 +56,8 @@ def health_payload() -> dict:
 
 
 app = FastAPI(title="AI Exam System")
+app.include_router(courses_router)
+app.include_router(materials_router)
 
 
 @app.get("/api/v1/health")
