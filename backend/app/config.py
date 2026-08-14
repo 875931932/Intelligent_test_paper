@@ -2,24 +2,19 @@
 
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-def _bool_env(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+class Settings(BaseSettings):
+    """Settings read directly from the environment on every instantiation."""
 
+    model_config = SettingsConfigDict(extra="ignore")
 
-@dataclass(frozen=True)
-class Settings:
-    database_url: str = os.getenv("DATABASE_URL", "postgresql+psycopg://exam:exam@localhost:5432/exam")
-    redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    mineru_api_token: str = os.getenv("MINERU_API_TOKEN", "")
-    deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", "")
-    seed_dev_data: bool = _bool_env("SEED_DEV_DATA", False)
+    database_url: str = "postgresql+psycopg://exam:exam@localhost:5432/exam"
+    redis_url: str = "redis://localhost:6379/0"
+    mineru_api_token: str = ""
+    deepseek_api_key: str = ""
+    seed_dev_data: bool = False
 
 
 settings = Settings()

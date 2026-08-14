@@ -6,7 +6,9 @@ import argparse
 import os
 
 from sqlalchemy import create_engine, inspect, text
-from sqlalchemy.engine import Engine
+from sqlalchemy.dialects.postgresql import insert as postgresql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
 
 from app.db.schema import Base, Course, User
@@ -16,15 +18,22 @@ def _engine(database_url: str) -> Engine:
     return create_engine(database_url, future=True)
 
 
-def _seed_dev_data(engine: Engine) -> None:
-    with Session(engine) as session:
-        owner = session.get(User, "owner-dev")
-        if owner is None:
-            owner = User(id="owner-dev", display_name="Development Owner", role="teacher")
-            session.add(owner)
-            session.flush()
-        if session.query(Course).filter_by(owner_id=owner.id, slug="sample-course").first() is None:
-            session.add(Course(id="course-dev", owner_id=owner.id, slug="sample-course", name="示例课程", description="开发种子课程"))
+def _seed_dev_data(bind: Engine | Connection) -> None:
+    """Insert development records atomically, without a read-before-write race."""
+
+    dialect_name = bind.dialect.name
+    insert = postgresql_insert if dialect_name == "postgresql" else sqlite_insert
+    with Session(bind=bind) as session:
+        session.execute(
+            insert(User)
+            .values(id="owner-dev", display_name="Development Owner", role="teacher")
+            .on_conflict_do_nothing(index_elements=["id"])
+        )
+        session.execute(
+            insert(Course)
+            .values(id="course-dev", owner_id="owner-dev", slug="sample-course", name="示例课程", description="开发种子课程")
+            .on_conflict_do_nothing(index_elements=["id"])
+        )
         session.commit()
 
 
@@ -37,13 +46,18 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
     seed = bool(seed) if seed is not None else os.getenv("SEED_DEV_DATA", "false").lower() in {"1", "true", "yes", "on"}
     engine = _engine(database_url)
     try:
-        # pgvector is only available on PostgreSQL; SQLite is supported for unit tests.
+        # A transaction-scoped advisory lock serializes fresh PostgreSQL initialization.
         if engine.dialect.name == "postgresql":
             with engine.begin() as conn:
+                conn.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": 824036462})
                 conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
-        Base.metadata.create_all(engine)
-        if seed:
-            _seed_dev_data(engine)
+                Base.metadata.create_all(conn)
+                if seed:
+                    _seed_dev_data(conn)
+        else:
+            Base.metadata.create_all(engine)
+            if seed:
+                _seed_dev_data(engine)
     finally:
         engine.dispose()
 

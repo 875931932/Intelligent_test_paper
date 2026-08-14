@@ -6,7 +6,7 @@ defines only the durable data skeleton needed by subsequent tasks.
 
 from __future__ import annotations
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, JSON, String, Table, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, JSON, String, Table, Text, UniqueConstraint, false, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -47,7 +47,15 @@ class Course(Base):
 def _course_table(name: str, *columns: Column, constraints: tuple = ()) -> Table:
     """Create a course-owned table and its mandatory tenant lookup index."""
 
-    table = Table(name, Base.metadata, _id_column(), _course_id_column(), *columns, *constraints)
+    table = Table(
+        name,
+        Base.metadata,
+        _id_column(),
+        _course_id_column(),
+        *columns,
+        UniqueConstraint("id", "course_id", name=f"uq_{name}_id_course"),
+        *constraints,
+    )
     Index(f"ix_{name}_course_id", table.c.course_id)
     return table
 
@@ -220,7 +228,7 @@ knowledge_evidence_links = _course_table(
     Column("evidence_chunk_id", String(64), ForeignKey("evidence_chunks.id"), nullable=False),
     Column("evidence_role", String(60), nullable=False),
     Column("confidence", Integer),
-    Column("teacher_confirmed", String(10), nullable=False, default="false"),
+    Column("teacher_confirmed", Boolean, nullable=False, server_default=false()),
     Column("lifecycle_status", String(40), nullable=False, default="active"),
     constraints=(UniqueConstraint("knowledge_card_id", "evidence_chunk_id", "evidence_role", name="uq_knowledge_evidence_link"),),
 )
@@ -290,7 +298,7 @@ generation_runs = _course_table(
     Column("prompt_template_version", String(80), nullable=False),
     Column("run_type", String(60), nullable=False),
     Column("status", String(40), nullable=False, default="queued"),
-    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
 )
 Index("ix_generation_runs_course_status_created", generation_runs.c.course_id, generation_runs.c.status, generation_runs.c.created_at)
 
@@ -366,6 +374,71 @@ outbox_events = _course_table(
     Column("payload", JSON, nullable=False, default=dict),
 )
 Index("ix_outbox_events_course_status_type", outbox_events.c.course_id, outbox_events.c.status, outbox_events.c.event_type)
+
+
+def _same_course_fk(child_name: str, parent_column: str, parent_name: str) -> None:
+    """Prevent a child in one course from pointing at another course's parent."""
+
+    child = Base.metadata.tables[child_name]
+    child.append_constraint(
+        ForeignKeyConstraint(
+            [parent_column, "course_id"],
+            [f"{parent_name}.id", f"{parent_name}.course_id"],
+            name=f"fk_{child_name}_{parent_column}_{parent_name}_course",
+        )
+    )
+
+
+for _child, _column, _parent in (
+    ("material_versions", "material_id", "materials"),
+    ("upload_sessions", "material_id", "materials"),
+    ("document_parse_runs", "material_version_id", "material_versions"),
+    ("document_parse_runs", "parser_profile_id", "parser_profiles"),
+    ("document_artifacts", "document_parse_run_id", "document_parse_runs"),
+    ("content_blocks", "document_parse_run_id", "document_parse_runs"),
+    ("content_blocks", "material_version_id", "material_versions"),
+    ("framework_versions", "framework_build_run_id", "framework_build_runs"),
+    ("framework_anchors", "framework_version_id", "framework_versions"),
+    ("framework_conflicts", "framework_version_id", "framework_versions"),
+    ("organization_runs", "framework_version_id", "framework_versions"),
+    ("evidence_chunks", "organization_run_id", "organization_runs"),
+    ("evidence_chunks", "material_version_id", "material_versions"),
+    ("knowledge_catalog_versions", "framework_version_id", "framework_versions"),
+    ("content_domains", "catalog_version_id", "knowledge_catalog_versions"),
+    ("assessment_units", "catalog_version_id", "knowledge_catalog_versions"),
+    ("assessment_units", "content_domain_id", "content_domains"),
+    ("knowledge_cards", "catalog_version_id", "knowledge_catalog_versions"),
+    ("knowledge_cards", "assessment_unit_id", "assessment_units"),
+    ("knowledge_evidence_links", "knowledge_card_id", "knowledge_cards"),
+    ("knowledge_evidence_links", "evidence_chunk_id", "evidence_chunks"),
+    ("index_versions", "catalog_version_id", "knowledge_catalog_versions"),
+    ("index_memberships", "index_version_id", "index_versions"),
+    ("index_memberships", "knowledge_card_id", "knowledge_cards"),
+    ("blueprint_versions", "exam_project_id", "exam_projects"),
+    ("blueprint_versions", "framework_version_id", "framework_versions"),
+    ("blueprint_versions", "catalog_version_id", "knowledge_catalog_versions"),
+    ("blueprint_sections", "blueprint_version_id", "blueprint_versions"),
+    ("blueprint_sections", "content_domain_id", "content_domains"),
+    ("plan_items", "blueprint_version_id", "blueprint_versions"),
+    ("plan_items", "blueprint_section_id", "blueprint_sections"),
+    ("plan_items", "assessment_unit_id", "assessment_units"),
+    ("generation_runs", "framework_version_id", "framework_versions"),
+    ("generation_runs", "catalog_version_id", "knowledge_catalog_versions"),
+    ("generation_runs", "index_version_id", "index_versions"),
+    ("generation_runs", "blueprint_version_id", "blueprint_versions"),
+    ("generation_attempts", "generation_run_id", "generation_runs"),
+    ("generated_questions", "generation_run_id", "generation_runs"),
+    ("generated_questions", "plan_item_id", "plan_items"),
+    ("generated_questions", "knowledge_card_id", "knowledge_cards"),
+    ("quality_checks", "generated_question_id", "generated_questions"),
+    ("paper_versions", "exam_project_id", "exam_projects"),
+    ("paper_versions", "generation_run_id", "generation_runs"),
+    ("paper_items", "paper_version_id", "paper_versions"),
+    ("paper_items", "generated_question_id", "generated_questions"),
+    ("model_calls", "generation_attempt_id", "generation_attempts"),
+    ("outbox_events", "task_run_id", "task_runs"),
+):
+    _same_course_fk(_child, _column, _parent)
 
 
 CORE_TABLE_NAMES = set(Base.metadata.tables)

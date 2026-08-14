@@ -1,7 +1,8 @@
 import os
 
 import pytest
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import create_engine, event, inspect
+from sqlalchemy.exc import IntegrityError
 
 from app.db.init_db import bootstrap_database, extension_exists, table_exists
 from app.db.schema import Base, CORE_TABLE_NAMES
@@ -96,3 +97,86 @@ def test_main_uses_seed_environment_when_seed_flag_is_omitted(monkeypatch, tmp_p
             assert connection.exec_driver_sql("SELECT COUNT(*) FROM users WHERE id='owner-dev'").scalar_one() == 1
     finally:
         engine.dispose()
+
+
+def test_course_scoped_foreign_key_rejects_cross_course_parent_reference(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'course-isolation.db'}")
+    event.listen(engine, "connect", lambda connection, _: connection.execute("PRAGMA foreign_keys=ON"))
+    Base.metadata.create_all(engine)
+    try:
+        with engine.begin() as connection:
+            connection.execute(Base.metadata.tables["users"].insert(), {"id": "owner", "display_name": "Owner", "role": "teacher"})
+            connection.execute(Base.metadata.tables["courses"].insert(), [
+                {"id": "course-a", "owner_id": "owner", "slug": "a", "name": "A"},
+                {"id": "course-b", "owner_id": "owner", "slug": "b", "name": "B"},
+            ])
+            connection.execute(Base.metadata.tables["materials"].insert(), {
+                "id": "material-a", "course_id": "course-a", "logical_name": "a.pdf", "material_type": "teaching", "status": "staged",
+            })
+        with pytest.raises(IntegrityError):
+            with engine.begin() as connection:
+                connection.execute(Base.metadata.tables["material_versions"].insert(), {
+                    "id": "version-wrong-course", "course_id": "course-b", "material_id": "material-a", "version_no": 1, "status": "staged",
+                })
+    finally:
+        engine.dispose()
+
+
+def test_course_scoped_parent_relationships_use_composite_foreign_keys():
+    required_parent_links = {
+        "material_versions": "materials",
+        "document_parse_runs": "material_versions",
+        "document_artifacts": "document_parse_runs",
+        "framework_versions": "framework_build_runs",
+        "knowledge_catalog_versions": "framework_versions",
+        "knowledge_evidence_links": "knowledge_cards",
+        "index_memberships": "index_versions",
+        "blueprint_versions": "exam_projects",
+        "plan_items": "blueprint_versions",
+        "generation_runs": "blueprint_versions",
+        "generation_attempts": "generation_runs",
+        "generated_questions": "generation_runs",
+        "quality_checks": "generated_questions",
+        "paper_items": "paper_versions",
+        "outbox_events": "task_runs",
+    }
+    for child_name, parent_name in required_parent_links.items():
+        constraints = Base.metadata.tables[child_name].foreign_key_constraints
+        assert any(
+            set(constraint.column_keys) >= {"course_id"}
+            and {element.target_fullname for element in constraint.elements} >= {f"{parent_name}.id", f"{parent_name}.course_id"}
+            for constraint in constraints
+        ), child_name
+
+
+def test_postgresql_bootstrap_uses_transactional_advisory_lock(monkeypatch):
+    from app.db import init_db
+
+    executed_sql = []
+
+    class Connection:
+        def execute(self, statement, *_args, **_kwargs):
+            executed_sql.append(str(statement))
+
+    class Transaction:
+        def __enter__(self):
+            return Connection()
+
+        def __exit__(self, *_args):
+            return False
+
+    class Engine:
+        dialect = type("Dialect", (), {"name": "postgresql"})()
+
+        def begin(self):
+            return Transaction()
+
+        def dispose(self):
+            pass
+
+    monkeypatch.setattr(init_db, "_engine", lambda _: Engine())
+    monkeypatch.setattr(Base.metadata, "create_all", lambda *_: None)
+
+    init_db.bootstrap_database("postgresql+psycopg://example/exam", seed=False)
+
+    assert any("pg_advisory_xact_lock" in statement for statement in executed_sql)

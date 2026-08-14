@@ -14,25 +14,33 @@ def _configured(value: str) -> bool:
 
 
 def _database_status() -> str:
+    engine = None
     try:
-        engine = create_engine(settings.database_url, pool_pre_ping=True)
+        engine = create_engine(settings.database_url, pool_pre_ping=True, connect_args={"connect_timeout": 2})
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
-        engine.dispose()
         return "ok"
     except Exception:
         return "unavailable"
+    finally:
+        if engine is not None:
+            engine.dispose()
 
 
 def _redis_status() -> str:
     if not _configured(settings.redis_url):
         return "not_configured"
+    client = None
     try:
         import redis
 
-        return "ok" if redis.Redis.from_url(settings.redis_url, socket_connect_timeout=0.2).ping() else "unavailable"
+        client = redis.Redis.from_url(settings.redis_url, socket_connect_timeout=0.2, socket_timeout=0.2)
+        return "ok" if client.ping() else "unavailable"
     except Exception:
         return "unavailable"
+    finally:
+        if client is not None:
+            client.close()
 
 
 def health_payload() -> dict:
