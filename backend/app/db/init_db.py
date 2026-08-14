@@ -69,7 +69,12 @@ def extension_exists(database_url: str, extension_name: str) -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--seed", action="store_true", help="insert idempotent development owner and sample course")
+    parser.add_argument(
+        "--seed",
+        action="store_true",
+        default=None,
+        help="insert idempotent development owner and sample course; omitted uses SEED_DEV_DATA",
+    )
     args = parser.parse_args(argv)
     bootstrap_database(seed=args.seed)
     return 0

@@ -4,12 +4,9 @@ from __future__ import annotations
 
 from sqlalchemy import create_engine, text
 
-from app.config import settings
+from fastapi import FastAPI
 
-try:  # FastAPI is installed in the runtime image; keep import errors explicit otherwise.
-    from fastapi import FastAPI
-except ImportError:  # pragma: no cover - allows py_compile in a minimal environment
-    FastAPI = None  # type: ignore[assignment,misc]
+from app.config import settings
 
 
 def _configured(value: str) -> bool:
@@ -41,18 +38,16 @@ def _redis_status() -> str:
 def health_payload() -> dict:
     return {
         "api": "ok",
-        "database": _database_status(),
+        "postgresql": _database_status(),
         "redis": _redis_status(),
         "mineru": "configured" if _configured(settings.mineru_api_token) else "not_configured",
         "deepseek": "configured" if _configured(settings.deepseek_api_key) else "not_configured",
     }
 
 
-if FastAPI is not None:
-    app = FastAPI(title="AI Exam System")
+app = FastAPI(title="AI Exam System")
 
-    @app.get("/api/v1/health")
-    def health() -> dict:
-        return health_payload()
-else:  # pragma: no cover
-    app = None
+
+@app.get("/api/v1/health")
+def health() -> dict:
+    return health_payload()

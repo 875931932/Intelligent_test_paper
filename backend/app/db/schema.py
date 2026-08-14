@@ -1,15 +1,12 @@
-"""SQLAlchemy core schema for a fresh, empty exam-system database.
+"""SQLAlchemy metadata for the fresh, course-isolated core database.
 
-The schema deliberately contains no migration or prototype compatibility code.
-All course-owned business records carry ``course_id`` so later services can
-enforce tenant isolation consistently.
+This is an initial schema, not a legacy migration layer.  It intentionally
+defines only the durable data skeleton needed by subsequent tasks.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
-
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, JSON, String, Table, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -17,14 +14,18 @@ class Base(DeclarativeBase):
     pass
 
 
-def _id() -> Mapped[str]:
-    return mapped_column(String(64), primary_key=True)
+def _id_column() -> Column[str]:
+    return Column("id", String(64), primary_key=True)
+
+
+def _course_id_column() -> Column[str]:
+    return Column("course_id", String(64), ForeignKey("courses.id"), nullable=False)
 
 
 class User(Base):
     __tablename__ = "users"
 
-    id: Mapped[str] = _id()
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
     role: Mapped[str] = mapped_column(String(50), nullable=False, default="teacher")
 
@@ -36,140 +37,335 @@ class Course(Base):
         Index("ix_courses_owner_id", "owner_id"),
     )
 
-    id: Mapped[str] = _id()
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
     owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"), nullable=False)
     slug: Mapped[str] = mapped_column(String(120), nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
 
 
-class Material(Base):
-    __tablename__ = "materials"
-    __table_args__ = (
-        Index("ix_materials_course_id", "course_id"),
-        UniqueConstraint("course_id", "logical_name", name="uq_materials_course_name"),
-    )
+def _course_table(name: str, *columns: Column, constraints: tuple = ()) -> Table:
+    """Create a course-owned table and its mandatory tenant lookup index."""
 
-    id: Mapped[str] = _id()
-    course_id: Mapped[str] = mapped_column(ForeignKey("courses.id"), nullable=False)
-    logical_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    material_type: Mapped[str] = mapped_column(String(40), nullable=False, default="teaching")
-    status: Mapped[str] = mapped_column(String(40), nullable=False, default="staged")
+    table = Table(name, Base.metadata, _id_column(), _course_id_column(), *columns, *constraints)
+    Index(f"ix_{name}_course_id", table.c.course_id)
+    return table
 
 
-class MaterialVersion(Base):
-    __tablename__ = "material_versions"
-    __table_args__ = (
-        UniqueConstraint("material_id", "version_no", name="uq_material_versions_number"),
-        Index("ix_material_versions_course_id", "course_id"),
-    )
-
-    id: Mapped[str] = _id()
-    course_id: Mapped[str] = mapped_column(ForeignKey("courses.id"), nullable=False)
-    material_id: Mapped[str] = mapped_column(ForeignKey("materials.id"), nullable=False)
-    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    sha256: Mapped[str | None] = mapped_column(String(64))
-    status: Mapped[str] = mapped_column(String(40), nullable=False, default="staged")
-    object_key: Mapped[str | None] = mapped_column(String(500))
-
-
-class FrameworkVersion(Base):
-    __tablename__ = "framework_versions"
-    __table_args__ = (
-        Index("ix_framework_versions_course_id", "course_id"),
-        UniqueConstraint("course_id", "version_no", name="uq_framework_versions_number"),
-    )
-
-    id: Mapped[str] = _id()
-    course_id: Mapped[str] = mapped_column(ForeignKey("courses.id"), nullable=False)
-    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    status: Mapped[str] = mapped_column(String(40), nullable=False, default="draft")
-    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-
-
-class KnowledgeCatalogVersion(Base):
-    __tablename__ = "knowledge_catalog_versions"
-    __table_args__ = (
-        Index("ix_knowledge_catalog_versions_course_id", "course_id"),
-        UniqueConstraint("course_id", "version_no", name="uq_knowledge_catalog_versions_number"),
-    )
-
-    id: Mapped[str] = _id()
-    course_id: Mapped[str] = mapped_column(ForeignKey("courses.id"), nullable=False)
-    version_no: Mapped[int] = mapped_column(Integer, nullable=False)
-    status: Mapped[str] = mapped_column(String(40), nullable=False, default="draft")
-    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
-
-
-class ContentDomain(Base):
-    __tablename__ = "content_domains"
-    __table_args__ = (
-        Index("ix_content_domains_course_id", "course_id"),
-        UniqueConstraint("course_id", "code", name="uq_content_domains_course_code"),
-    )
-
-    id: Mapped[str] = _id()
-    course_id: Mapped[str] = mapped_column(ForeignKey("courses.id"), nullable=False)
-    code: Mapped[str] = mapped_column(String(100), nullable=False)
-    name: Mapped[str] = mapped_column(String(200), nullable=False)
-
-
-class AssessmentUnit(Base):
-    __tablename__ = "assessment_units"
-    __table_args__ = (
-        Index("ix_assessment_units_course_id", "course_id"),
-        UniqueConstraint("course_id", "code", name="uq_assessment_units_course_code"),
-    )
-
-    id: Mapped[str] = _id()
-    course_id: Mapped[str] = mapped_column(ForeignKey("courses.id"), nullable=False)
-    code: Mapped[str] = mapped_column(String(100), nullable=False)
-    title: Mapped[str] = mapped_column(String(255), nullable=False)
-    weight: Mapped[int | None] = mapped_column(Integer)
-
-
-class KnowledgeCard(Base):
-    __tablename__ = "knowledge_cards"
-    __table_args__ = (
-        Index("ix_knowledge_cards_course_id", "course_id"),
-        Index("ix_knowledge_cards_assessment_unit_id", "assessment_unit_id"),
-    )
-
-    id: Mapped[str] = _id()
-    course_id: Mapped[str] = mapped_column(ForeignKey("courses.id"), nullable=False)
-    assessment_unit_id: Mapped[str | None] = mapped_column(ForeignKey("assessment_units.id"))
-    title: Mapped[str] = mapped_column(String(255), nullable=False)
-    level: Mapped[str] = mapped_column(String(10), nullable=False, default="L4")
-    content: Mapped[str] = mapped_column(Text, nullable=False, default="")
-    source_refs: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
-
-
-class GenerationRun(Base):
-    __tablename__ = "generation_runs"
-    __table_args__ = (
-        Index("ix_generation_runs_course_id", "course_id"),
-        Index("ix_generation_runs_status", "status"),
-    )
-
-    id: Mapped[str] = _id()
-    course_id: Mapped[str] = mapped_column(ForeignKey("courses.id"), nullable=False)
-    run_type: Mapped[str] = mapped_column(String(60), nullable=False)
-    status: Mapped[str] = mapped_column(String(40), nullable=False, default="queued")
-    input_version_id: Mapped[str | None] = mapped_column(String(64))
-    result: Mapped[dict | None] = mapped_column(JSON)
-    error_code: Mapped[str | None] = mapped_column(String(80))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
-
-
-CORE_TABLE_NAMES = {
-    "users",
-    "courses",
+# Files and uploads
+materials = _course_table(
     "materials",
+    Column("logical_name", String(255), nullable=False),
+    Column("material_type", String(40), nullable=False, default="teaching"),
+    Column("status", String(40), nullable=False, default="staged"),
+    constraints=(UniqueConstraint("course_id", "logical_name", name="uq_materials_course_name"),),
+)
+Index("ix_materials_course_status", materials.c.course_id, materials.c.status)
+
+material_versions = _course_table(
     "material_versions",
+    Column("material_id", String(64), ForeignKey("materials.id"), nullable=False),
+    Column("version_no", Integer, nullable=False),
+    Column("sha256", String(64)),
+    Column("status", String(40), nullable=False, default="staged"),
+    Column("object_key", String(500)),
+    constraints=(UniqueConstraint("material_id", "version_no", name="uq_material_versions_number"),),
+)
+Index("ix_material_versions_course_material_status", material_versions.c.course_id, material_versions.c.material_id, material_versions.c.status)
+
+upload_sessions = _course_table(
+    "upload_sessions",
+    Column("material_id", String(64), ForeignKey("materials.id"), nullable=False),
+    Column("session_key", String(128), nullable=False),
+    Column("status", String(40), nullable=False, default="pending"),
+    constraints=(UniqueConstraint("session_key", name="uq_upload_sessions_session_key"),),
+)
+
+# Document parsing
+parser_profiles = _course_table(
+    "parser_profiles",
+    Column("name", String(120), nullable=False),
+    Column("version", String(80), nullable=False),
+    Column("provider", String(80), nullable=False),
+    constraints=(UniqueConstraint("course_id", "name", "version", name="uq_parser_profiles_course_name_version"),),
+)
+
+document_parse_runs = _course_table(
+    "document_parse_runs",
+    Column("material_version_id", String(64), ForeignKey("material_versions.id"), nullable=False),
+    Column("parser_profile_id", String(64), ForeignKey("parser_profiles.id"), nullable=False),
+    Column("status", String(40), nullable=False, default="queued"),
+    Column("provider_run_id", String(160)),
+)
+Index("ix_document_parse_runs_course_status", document_parse_runs.c.course_id, document_parse_runs.c.status)
+
+document_artifacts = _course_table(
+    "document_artifacts",
+    Column("document_parse_run_id", String(64), ForeignKey("document_parse_runs.id"), nullable=False),
+    Column("artifact_type", String(60), nullable=False),
+    Column("storage_key", String(500), nullable=False),
+    constraints=(UniqueConstraint("document_parse_run_id", "artifact_type", name="uq_document_artifacts_run_type"),),
+)
+
+content_blocks = _course_table(
+    "content_blocks",
+    Column("document_parse_run_id", String(64), ForeignKey("document_parse_runs.id"), nullable=False),
+    Column("material_version_id", String(64), ForeignKey("material_versions.id"), nullable=False),
+    Column("block_index", Integer, nullable=False),
+    Column("block_type", String(60), nullable=False),
+    Column("content", Text, nullable=False),
+    constraints=(UniqueConstraint("document_parse_run_id", "block_index", name="uq_content_blocks_run_index"),),
+)
+Index("ix_content_blocks_course_material_block", content_blocks.c.course_id, content_blocks.c.material_version_id, content_blocks.c.block_index)
+
+# Framework construction
+framework_build_runs = _course_table(
+    "framework_build_runs",
+    Column("status", String(40), nullable=False, default="queued"),
+    Column("input_snapshot", JSON, nullable=False, default=dict),
+)
+
+framework_versions = _course_table(
     "framework_versions",
+    Column("framework_build_run_id", String(64), ForeignKey("framework_build_runs.id")),
+    Column("version_no", Integer, nullable=False),
+    Column("status", String(40), nullable=False, default="draft"),
+    Column("payload", JSON, nullable=False, default=dict),
+    constraints=(UniqueConstraint("course_id", "version_no", name="uq_framework_versions_number"),),
+)
+
+framework_anchors = _course_table(
+    "framework_anchors",
+    Column("framework_version_id", String(64), ForeignKey("framework_versions.id"), nullable=False),
+    Column("anchor_type", String(60), nullable=False),
+    Column("anchor_key", String(160), nullable=False),
+    Column("payload", JSON, nullable=False, default=dict),
+    constraints=(UniqueConstraint("framework_version_id", "anchor_type", "anchor_key", name="uq_framework_anchors_version_key"),),
+)
+
+framework_conflicts = _course_table(
+    "framework_conflicts",
+    Column("framework_version_id", String(64), ForeignKey("framework_versions.id"), nullable=False),
+    Column("status", String(40), nullable=False, default="open"),
+    Column("details", JSON, nullable=False, default=dict),
+)
+
+# Organization and evidence
+organization_runs = _course_table(
+    "organization_runs",
+    Column("framework_version_id", String(64), ForeignKey("framework_versions.id")),
+    Column("status", String(40), nullable=False, default="queued"),
+    Column("input_snapshot", JSON, nullable=False, default=dict),
+)
+
+evidence_chunks = _course_table(
+    "evidence_chunks",
+    Column("organization_run_id", String(64), ForeignKey("organization_runs.id"), nullable=False),
+    Column("material_version_id", String(64), ForeignKey("material_versions.id"), nullable=False),
+    Column("chunk_index", Integer, nullable=False),
+    Column("content", Text, nullable=False),
+    Column("content_hash", String(64), nullable=False),
+    constraints=(UniqueConstraint("organization_run_id", "chunk_index", name="uq_evidence_chunks_run_index"),),
+)
+Index("ix_evidence_chunks_course_material_hash", evidence_chunks.c.course_id, evidence_chunks.c.material_version_id, evidence_chunks.c.content_hash)
+
+# Knowledge catalogue and the source-free KnowledgeCard boundary
+knowledge_catalog_versions = _course_table(
     "knowledge_catalog_versions",
+    Column("framework_version_id", String(64), ForeignKey("framework_versions.id"), nullable=False),
+    Column("version_no", Integer, nullable=False),
+    Column("status", String(40), nullable=False, default="draft"),
+    constraints=(UniqueConstraint("course_id", "version_no", name="uq_knowledge_catalog_versions_number"),),
+)
+
+content_domains = _course_table(
     "content_domains",
+    Column("catalog_version_id", String(64), ForeignKey("knowledge_catalog_versions.id"), nullable=False),
+    Column("code", String(100), nullable=False),
+    Column("name", String(200), nullable=False),
+    constraints=(UniqueConstraint("catalog_version_id", "code", name="uq_content_domains_catalog_code"),),
+)
+
+assessment_units = _course_table(
     "assessment_units",
+    Column("catalog_version_id", String(64), ForeignKey("knowledge_catalog_versions.id"), nullable=False),
+    Column("content_domain_id", String(64), ForeignKey("content_domains.id")),
+    Column("code", String(100), nullable=False),
+    Column("title", String(255), nullable=False),
+    Column("weight", Integer),
+    constraints=(UniqueConstraint("catalog_version_id", "code", name="uq_assessment_units_catalog_code"),),
+)
+
+knowledge_cards = _course_table(
     "knowledge_cards",
+    Column("catalog_version_id", String(64), ForeignKey("knowledge_catalog_versions.id"), nullable=False),
+    Column("assessment_unit_id", String(64), ForeignKey("assessment_units.id"), nullable=False),
+    Column("name", String(255), nullable=False),
+    Column("performance_statement", Text, nullable=False),
+    Column("assessable_content", JSON, nullable=False, default=list),
+    Column("scope_boundary", JSON, nullable=False, default=dict),
+    Column("cognitive_targets", JSON, nullable=False, default=list),
+    Column("allowed_question_types", JSON, nullable=False, default=list),
+    Column("importance", Integer, nullable=False, default=1),
+    Column("content_hash", String(64), nullable=False),
+    Column("status", String(40), nullable=False, default="draft"),
+    Column("version", Integer, nullable=False, default=1),
+    constraints=(UniqueConstraint("catalog_version_id", "content_hash", "version", name="uq_knowledge_cards_catalog_hash_version"),),
+)
+Index("ix_knowledge_cards_course_catalog_status", knowledge_cards.c.course_id, knowledge_cards.c.catalog_version_id, knowledge_cards.c.status)
+
+knowledge_evidence_links = _course_table(
+    "knowledge_evidence_links",
+    Column("knowledge_card_id", String(64), ForeignKey("knowledge_cards.id"), nullable=False),
+    Column("evidence_chunk_id", String(64), ForeignKey("evidence_chunks.id"), nullable=False),
+    Column("evidence_role", String(60), nullable=False),
+    Column("confidence", Integer),
+    Column("teacher_confirmed", String(10), nullable=False, default="false"),
+    Column("lifecycle_status", String(40), nullable=False, default="active"),
+    constraints=(UniqueConstraint("knowledge_card_id", "evidence_chunk_id", "evidence_role", name="uq_knowledge_evidence_link"),),
+)
+
+# Published retrieval index
+index_versions = _course_table(
+    "index_versions",
+    Column("catalog_version_id", String(64), ForeignKey("knowledge_catalog_versions.id"), nullable=False),
+    Column("version_no", Integer, nullable=False),
+    Column("status", String(40), nullable=False, default="draft"),
+    constraints=(UniqueConstraint("course_id", "version_no", name="uq_index_versions_number"),),
+)
+
+index_memberships = _course_table(
+    "index_memberships",
+    Column("index_version_id", String(64), ForeignKey("index_versions.id"), nullable=False),
+    Column("knowledge_card_id", String(64), ForeignKey("knowledge_cards.id"), nullable=False),
+    constraints=(UniqueConstraint("index_version_id", "knowledge_card_id", name="uq_index_memberships_version_card"),),
+)
+
+# Blueprint and project planning
+exam_projects = _course_table(
+    "exam_projects",
+    Column("name", String(255), nullable=False),
+    Column("status", String(40), nullable=False, default="draft"),
+    constraints=(UniqueConstraint("course_id", "name", name="uq_exam_projects_course_name"),),
+)
+
+blueprint_versions = _course_table(
+    "blueprint_versions",
+    Column("exam_project_id", String(64), ForeignKey("exam_projects.id"), nullable=False),
+    Column("framework_version_id", String(64), ForeignKey("framework_versions.id"), nullable=False),
+    Column("catalog_version_id", String(64), ForeignKey("knowledge_catalog_versions.id"), nullable=False),
+    Column("version_no", Integer, nullable=False),
+    Column("status", String(40), nullable=False, default="draft"),
+    constraints=(UniqueConstraint("exam_project_id", "version_no", name="uq_blueprint_versions_project_number"),),
+)
+
+blueprint_sections = _course_table(
+    "blueprint_sections",
+    Column("blueprint_version_id", String(64), ForeignKey("blueprint_versions.id"), nullable=False),
+    Column("content_domain_id", String(64), ForeignKey("content_domains.id")),
+    Column("section_index", Integer, nullable=False),
+    Column("score", Integer),
+    constraints=(UniqueConstraint("blueprint_version_id", "section_index", name="uq_blueprint_sections_version_index"),),
+)
+
+plan_items = _course_table(
+    "plan_items",
+    Column("blueprint_version_id", String(64), ForeignKey("blueprint_versions.id"), nullable=False),
+    Column("blueprint_section_id", String(64), ForeignKey("blueprint_sections.id")),
+    Column("assessment_unit_id", String(64), ForeignKey("assessment_units.id"), nullable=False),
+    Column("question_type", String(60), nullable=False),
+    Column("item_index", Integer, nullable=False),
+    Column("score", Integer, nullable=False),
+    constraints=(UniqueConstraint("blueprint_version_id", "item_index", name="uq_plan_items_version_index"),),
+)
+Index("ix_plan_items_course_blueprint_question_type", plan_items.c.course_id, plan_items.c.blueprint_version_id, plan_items.c.question_type)
+
+# Generation, audit, review and paper versions
+generation_runs = _course_table(
     "generation_runs",
-}
+    Column("framework_version_id", String(64), ForeignKey("framework_versions.id"), nullable=False),
+    Column("catalog_version_id", String(64), ForeignKey("knowledge_catalog_versions.id"), nullable=False),
+    Column("index_version_id", String(64), ForeignKey("index_versions.id"), nullable=False),
+    Column("blueprint_version_id", String(64), ForeignKey("blueprint_versions.id"), nullable=False),
+    Column("prompt_template_version", String(80), nullable=False),
+    Column("run_type", String(60), nullable=False),
+    Column("status", String(40), nullable=False, default="queued"),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+)
+Index("ix_generation_runs_course_status_created", generation_runs.c.course_id, generation_runs.c.status, generation_runs.c.created_at)
+
+generation_attempts = _course_table(
+    "generation_attempts",
+    Column("generation_run_id", String(64), ForeignKey("generation_runs.id"), nullable=False),
+    Column("attempt_no", Integer, nullable=False),
+    Column("status", String(40), nullable=False, default="queued"),
+    constraints=(UniqueConstraint("generation_run_id", "attempt_no", name="uq_generation_attempts_run_number"),),
+)
+
+generated_questions = _course_table(
+    "generated_questions",
+    Column("generation_run_id", String(64), ForeignKey("generation_runs.id"), nullable=False),
+    Column("plan_item_id", String(64), ForeignKey("plan_items.id"), nullable=False),
+    Column("knowledge_card_id", String(64), ForeignKey("knowledge_cards.id")),
+    Column("revision_no", Integer, nullable=False, default=1),
+    Column("status", String(40), nullable=False, default="candidate"),
+    Column("payload", JSON, nullable=False, default=dict),
+    constraints=(UniqueConstraint("generation_run_id", "plan_item_id", "revision_no", name="uq_generated_questions_run_item_revision"),),
+)
+
+quality_checks = _course_table(
+    "quality_checks",
+    Column("generated_question_id", String(64), ForeignKey("generated_questions.id"), nullable=False),
+    Column("check_type", String(80), nullable=False),
+    Column("status", String(40), nullable=False),
+    Column("details", JSON, nullable=False, default=dict),
+)
+
+paper_versions = _course_table(
+    "paper_versions",
+    Column("exam_project_id", String(64), ForeignKey("exam_projects.id"), nullable=False),
+    Column("generation_run_id", String(64), ForeignKey("generation_runs.id")),
+    Column("version_no", Integer, nullable=False),
+    Column("status", String(40), nullable=False, default="draft"),
+    constraints=(UniqueConstraint("exam_project_id", "version_no", name="uq_paper_versions_project_number"),),
+)
+
+paper_items = _course_table(
+    "paper_items",
+    Column("paper_version_id", String(64), ForeignKey("paper_versions.id"), nullable=False),
+    Column("generated_question_id", String(64), ForeignKey("generated_questions.id"), nullable=False),
+    Column("display_order", Integer, nullable=False),
+    constraints=(UniqueConstraint("paper_version_id", "display_order", name="uq_paper_items_version_order"),),
+)
+
+# Model observability and durable task dispatch
+model_calls = _course_table(
+    "model_calls",
+    Column("generation_attempt_id", String(64), ForeignKey("generation_attempts.id")),
+    Column("provider", String(80), nullable=False),
+    Column("model", String(120), nullable=False),
+    Column("status", String(40), nullable=False),
+    Column("request_id", String(160)),
+)
+
+task_runs = _course_table(
+    "task_runs",
+    Column("task_type", String(80), nullable=False),
+    Column("idempotency_key", String(160), nullable=False),
+    Column("status", String(40), nullable=False, default="queued"),
+    Column("payload", JSON, nullable=False, default=dict),
+    constraints=(UniqueConstraint("course_id", "idempotency_key", name="uq_task_runs_course_idempotency"),),
+)
+Index("ix_task_runs_course_status_type", task_runs.c.course_id, task_runs.c.status, task_runs.c.task_type)
+
+outbox_events = _course_table(
+    "outbox_events",
+    Column("task_run_id", String(64), ForeignKey("task_runs.id")),
+    Column("event_type", String(80), nullable=False),
+    Column("status", String(40), nullable=False, default="pending"),
+    Column("payload", JSON, nullable=False, default=dict),
+)
+Index("ix_outbox_events_course_status_type", outbox_events.c.course_id, outbox_events.c.status, outbox_events.c.event_type)
+
+
+CORE_TABLE_NAMES = set(Base.metadata.tables)
