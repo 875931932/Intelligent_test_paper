@@ -29,7 +29,9 @@
 | Task 4 MinerU 文档解析 | 已完成 | 状态映射、安全 ZIP、ContentBlock 归一化和持久化 |
 | Task 5 FrameworkGraph | 已完成 | 双大纲独立并行抽取、冲突、interrupt/确认、候选幂等和版本发布 |
 | Task 6 知识树和 OrganizationGraph | 已完成 | L1-L4、逐文件候选、噪声准入、教师操作、目录/索引原子发布 |
-| Task 7—11 | 待执行 | 按下述顺序继续 |
+| Task 7 蓝图和逐题 PlanItem | 已完成 | 题型配额、0.5 分粒度、章节权重和知识卡绑定 |
+| Task 8 GenerationGraph 和 DeepSeek | 已完成 | 来源隔离载荷、题型模板、质量检查、局部重试和 DeepSeek 网关 |
+| Task 9—11 | 待执行 | 候选卷审核、前端和端到端验收 |
 
 Task 5 的实现补充约束：同一 `framework_build_run_id` 最多产生一个候选版本；考核大纲和教学大纲从同一解析完成节点分叉，分别调用抽取器后再汇合；API 直接确认与 LangGraph 恢复发布必须执行相同的开放冲突完整性检查，未知冲突决定也不得写入。
 

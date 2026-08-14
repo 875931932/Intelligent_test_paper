@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     mineru_poll_interval_seconds: int = 10
     mineru_max_poll_seconds: int = 1800
     deepseek_api_key: str = ""
+    deepseek_base_url: str = "https://api.deepseek.com/v1"
+    deepseek_model: str = "deepseek-v4-flash"
     seed_dev_data: bool = False
     upload_max_bytes: int = 209715200
     s3_endpoint: str = "http://localhost:9000"

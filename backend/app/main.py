@@ -9,6 +9,8 @@ from fastapi import FastAPI
 from app.config import settings
 from app.api.v1.courses import router as courses_router
 from app.api.v1.framework import router as framework_router
+from app.api.v1.blueprints import router as blueprints_router
+from app.api.v1.generation import router as generation_router
 from app.api.v1.knowledge import router as knowledge_router
 from app.api.v1.materials import router as materials_router
 
@@ -62,6 +64,8 @@ app.include_router(courses_router)
 app.include_router(materials_router)
 app.include_router(framework_router)
 app.include_router(knowledge_router)
+app.include_router(blueprints_router)
+app.include_router(generation_router)
 
 
 @app.get("/api/v1/health")

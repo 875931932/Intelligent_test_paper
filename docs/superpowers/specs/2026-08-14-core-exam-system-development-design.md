@@ -604,6 +604,8 @@ flowchart TD
 
 Task 6 实现补充约束：L1 由已发布框架锚点完整建立，资料只能补充 L2/L3/L4；每个文件单独调用资料整理模型；未匹配范围、封面、文件名、提交要求和无证据候选进入待审或 `unmatched`，不得写入可发布树；知识目录、知识卡、证据关系和检索索引必须在一次发布事务中完成。
 
+Task 7—8 实现补充约束：蓝图先按题型数量和分值确定题位，再按考纲章节权重分配到 L3/知识卡，禁止按知识点数量轮询出题；生成模型只接收 `QuestionGenerationPayload`，题型结构不合格或出现来源话术的题目进入局部重试，最多两次，仍失败则保留 blocker 状态。
+
 ### 9.2 OrganizationGraph
 
 ```mermaid
@@ -1059,3 +1061,4 @@ frontend   Vite 开发服务器
 | 2026-08-14 | 0.1 | 固化核心一期范围、模块化单体架构、领域数据、MinerU 文档解析、知识树建立与确认、核心 API、后台任务、FrameworkGraph、OrganizationGraph、KnowledgeCatalogBuildSubgraph 和 GenerationGraph。 |
 | 2026-08-14 | 0.2 | 补充正式工程目录、前端页面与教师流程、配置和密钥管理、本地 Docker Compose 开发环境、测试分层、历史问题回归夹具和人工验收标准。 |
 | 2026-08-14 | 0.3 | 同步 FrameworkGraph 实现约束：双大纲并行分支、候选幂等、冲突决定完整性、确认路径一致校验和单一当前发布版本。 |
+| 2026-08-14 | 0.4 | 补充蓝图分配、逐题 PlanItem、来源隔离生成载荷、DeepSeek 网关和候选题质量阻断规则。 |
