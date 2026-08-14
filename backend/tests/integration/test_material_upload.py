@@ -1,3 +1,7 @@
+import hashlib
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, text
@@ -154,6 +158,63 @@ def test_complete_stages_one_material_version_without_background_records_and_is_
         assert connection.execute(text("SELECT COUNT(*) FROM document_parse_runs")).scalar_one() == 0
         assert connection.execute(text("SELECT COUNT(*) FROM task_runs")).scalar_one() == 0
         assert connection.execute(text("SELECT COUNT(*) FROM outbox_events")).scalar_one() == 0
+
+
+def test_concurrent_complete_requests_create_one_staged_version_and_return_the_same_result(tmp_path):
+    """Independent API requests race only after both validated the same object."""
+
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'concurrent-complete.db'}",
+        connect_args={"check_same_thread": False, "timeout": 5},
+    )
+    event.listen(engine, "connect", lambda connection, _: connection.execute("PRAGMA foreign_keys=ON"))
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    def override_session():
+        with factory() as session:
+            yield session
+
+    class BarrierStorage(FakeStorage):
+        def __init__(self):
+            super().__init__()
+            self.validated = Barrier(2)
+
+        def head_object(self, object_key):
+            self.validated.wait(timeout=5)
+            return super().head_object(object_key)
+
+    storage = BarrierStorage()
+    app.dependency_overrides[get_session] = override_session
+    app.state.storage = storage
+    try:
+        with TestClient(app) as setup_client:
+            course = _course(setup_client)
+            body = b"pdf"
+            request = _upload_request(size_bytes=len(body), sha256=hashlib.sha256(body).hexdigest())
+            upload = setup_client.post(f"/api/v1/courses/{course['id']}/upload-sessions", json=request).json()
+        storage.objects[upload["object_key"]] = {
+            "size": len(body), "content_type": "application/pdf", "metadata": {"sha256": request["sha256"]}, "body": body,
+        }
+
+        def complete_from_independent_client():
+            with TestClient(app, raise_server_exceptions=False) as request_client:
+                response = request_client.post(f"/api/v1/courses/{course['id']}/upload-sessions/{upload['session_id']}/complete")
+                return response.status_code, response.json() if response.status_code == 200 else response.text
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(lambda _: complete_from_independent_client(), range(2)))
+
+        assert [status_code for status_code, _ in results] == [200, 200]
+        assert results[0][1]["id"] == results[1][1]["id"]
+        with engine.connect() as connection:
+            assert connection.execute(text("SELECT COUNT(*) FROM materials")).scalar_one() == 1
+            assert connection.execute(text("SELECT COUNT(*) FROM material_versions")).scalar_one() == 1
+    finally:
+        app.dependency_overrides.clear()
+        del app.state.storage
+        Base.metadata.drop_all(engine)
+        engine.dispose()
 
 
 @pytest.mark.parametrize(

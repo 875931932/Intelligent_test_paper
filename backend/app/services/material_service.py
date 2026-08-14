@@ -6,7 +6,7 @@ import hashlib
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import and_, select, update
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.adapters.storage.minio_storage import ObjectInfo, StoragePort
@@ -28,6 +28,10 @@ class UploadValidationError(Exception):
 
 
 class StorageMismatchError(Exception):
+    pass
+
+
+class UploadCompletionConflictError(Exception):
     pass
 
 
@@ -89,33 +93,68 @@ def complete_upload_session(session: Session, storage: StoragePort, *, course_id
             select(material_versions).where(material_versions.c.id == row["material_version_id"], material_versions.c.course_id == course_id)
         ).mappings().one()
         return dict(version)
-    info = storage.head_object(row["object_key"])
-    if info is None:
-        raise StorageMismatchError("uploaded object is missing")
-    if _info_value(info, "size") != row["size_bytes"]:
-        raise StorageMismatchError("uploaded object size does not match")
-    if _info_value(info, "content_type") != row["mime_type"]:
-        raise StorageMismatchError("uploaded object MIME type does not match")
-    metadata = {str(key).lower(): str(value).lower() for key, value in _info_value(info, "metadata").items()}
-    digest = metadata.get("sha256") or metadata.get("x-amz-meta-sha256")
-    if digest is None:
-        digest = _digest_stream(storage, row["object_key"])
-    if digest != row["sha256"]:
-        raise StorageMismatchError("uploaded object SHA-256 does not match")
+    try:
+        info = storage.head_object(row["object_key"])
+        if info is None:
+            raise StorageMismatchError("uploaded object is missing")
+        if _info_value(info, "size") != row["size_bytes"]:
+            raise StorageMismatchError("uploaded object size does not match")
+        if _info_value(info, "content_type") != row["mime_type"]:
+            raise StorageMismatchError("uploaded object MIME type does not match")
+        metadata = {str(key).lower(): str(value).lower() for key, value in _info_value(info, "metadata").items()}
+        digest = metadata.get("sha256") or metadata.get("x-amz-meta-sha256")
+        if digest is None:
+            digest = _digest_stream(storage, row["object_key"])
+        if digest != row["sha256"]:
+            raise StorageMismatchError("uploaded object SHA-256 does not match")
+    except Exception:
+        session.rollback()
+        raise
+
+    # Object I/O is deliberately outside the write transaction.  Exactly one
+    # contender then claims the pending session; all durable writes commit together.
+    session.rollback()
     material_id = str(uuid4())
     version_id = str(uuid4())
-    session.execute(materials.insert().values(
-        id=material_id, course_id=course_id, logical_name=row["filename"], material_type=row["material_type"], status="staged"
-    ))
-    session.execute(material_versions.insert().values(
-        id=version_id, course_id=course_id, material_id=material_id, version_no=1, sha256=row["sha256"],
-        mime_type=row["mime_type"], size_bytes=row["size_bytes"], object_key=row["object_key"], status="staged"
-    ))
-    session.execute(update(upload_sessions).where(upload_sessions.c.id == session_id, upload_sessions.c.course_id == course_id).values(
-        status="completed", material_id=material_id, material_version_id=version_id
-    ))
-    session.commit()
-    return dict(session.execute(select(material_versions).where(material_versions.c.id == version_id, material_versions.c.course_id == course_id)).mappings().one())
+    completed_version: dict | None = None
+    with session.begin():
+        claimed = session.execute(
+            update(upload_sessions)
+            .where(upload_sessions.c.id == session_id, upload_sessions.c.course_id == course_id, upload_sessions.c.status == "pending")
+            .values(status="completing")
+        ).rowcount == 1
+        if claimed:
+            session.execute(materials.insert().values(
+                id=material_id, course_id=course_id, logical_name=row["filename"], material_type=row["material_type"], status="staged"
+            ))
+            session.execute(material_versions.insert().values(
+                id=version_id, course_id=course_id, material_id=material_id, version_no=1, sha256=row["sha256"],
+                mime_type=row["mime_type"], size_bytes=row["size_bytes"], object_key=row["object_key"], status="staged"
+            ))
+            session.execute(
+                update(upload_sessions)
+                .where(upload_sessions.c.id == session_id, upload_sessions.c.course_id == course_id, upload_sessions.c.status == "completing")
+                .values(status="completed", material_id=material_id, material_version_id=version_id)
+            )
+            completed_version = dict(
+                session.execute(
+                    select(material_versions).where(material_versions.c.id == version_id, material_versions.c.course_id == course_id)
+                ).mappings().one()
+            )
+    if claimed:
+        return completed_version
+
+    completed = session.execute(
+        select(upload_sessions).where(upload_sessions.c.id == session_id, upload_sessions.c.course_id == course_id)
+    ).mappings().one_or_none()
+    if completed is not None and completed["status"] == "completed":
+        version = session.execute(
+            select(material_versions).where(
+                material_versions.c.id == completed["material_version_id"], material_versions.c.course_id == course_id
+            )
+        ).mappings().one()
+        return dict(version)
+    raise UploadCompletionConflictError("upload session completion did not finish")
 
 
 def _version_response(session: Session, *, course_id: str, material_id: str) -> dict | None:

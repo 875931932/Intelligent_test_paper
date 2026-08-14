@@ -52,6 +52,8 @@ def complete_upload_session(
         raise _not_found()
     except material_service.StorageMismatchError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+    except material_service.UploadCompletionConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
 
 @router.get("/materials", response_model=list[MaterialResponse])
