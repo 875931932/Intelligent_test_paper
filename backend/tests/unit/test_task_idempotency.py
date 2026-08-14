@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.db.schema import Base, Course, User, outbox_events, task_runs
 from app.infrastructure.tasks.models import cancel_task, claim_task, complete_task, create_task_run, fail_task, refresh_lease
 from app.infrastructure.tasks.outbox import FakePublisher, dispatch_pending_events
+from app.infrastructure.tasks.worker import execute_task, register_task_handler
 
 
 @pytest.fixture
@@ -97,3 +98,35 @@ def test_two_sessions_reuse_committed_course_idempotency_key(session):
         second_session.commit()
         assert second == first
     assert session.execute(select(task_runs.c.id).where(task_runs.c.course_id == "course-a", task_runs.c.idempotency_key == "two-sessions")).scalars().all() == [first]
+
+
+def test_worker_entrypoint_claims_and_completes_registered_task(session, monkeypatch):
+    task_id = create_task_run(session, course_id="course-a", task_type="unit.test", idempotency_key="worker", input_version="v1", payload={"answer": 42})
+    session.commit()
+    monkeypatch.setattr("app.infrastructure.tasks.worker.get_session_factory", lambda: lambda: session)
+    register_task_handler("unit.test", lambda context: {"received": context.payload["answer"]})
+
+    assert execute_task(task_id, worker_id="worker")
+    row = session.execute(select(task_runs).where(task_runs.c.id == task_id)).one()._mapping
+    assert row["status"] == "succeeded"
+    assert row["result"] == {"received": 42}
+
+
+def test_worker_context_can_pause_long_external_task(session, monkeypatch):
+    task_id = create_task_run(session, course_id="course-a", task_type="unit.poll", idempotency_key="poll-worker", input_version="v1", payload={})
+    session.commit()
+    monkeypatch.setattr("app.infrastructure.tasks.worker.get_session_factory", lambda: lambda: session)
+
+    def pause_handler(context):
+        assert context.report_progress(stage="submitted", progress=20)
+        assert context.heartbeat(lease_seconds=120)
+        assert context.pause_until(datetime.now(UTC) + timedelta(seconds=30))
+        return {}
+
+    register_task_handler("unit.poll", pause_handler)
+
+    assert execute_task(task_id, worker_id="worker")
+    row = session.execute(select(task_runs).where(task_runs.c.id == task_id)).one()._mapping
+    assert row["status"] == "waiting_external"
+    assert row["stage"] == "waiting_external"
+    assert row["progress"] == 20

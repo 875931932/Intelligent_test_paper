@@ -6,6 +6,8 @@ import os
 
 from celery import Celery
 
+from app.infrastructure.tasks.models import DISPATCH_EVENT_TYPE
+
 
 celery_app = Celery("exam_system", broker=os.getenv("REDIS_URL", "redis://localhost:6379/0"))
 celery_app.conf.update(
@@ -25,3 +27,12 @@ class CeleryPublisher:
 
     def publish(self, event_type: str, payload: dict) -> None:
         self._app.send_task(event_type, args=[payload])
+
+
+@celery_app.task(name=DISPATCH_EVENT_TYPE, bind=True, ignore_result=True)
+def dispatch_task(self, payload: dict) -> None:
+    """Celery entrypoint for an outbox event."""
+
+    from app.infrastructure.tasks.worker import execute_task
+
+    execute_task(payload["task_id"], worker_id=f"celery:{self.request.id or 'unknown'}")
