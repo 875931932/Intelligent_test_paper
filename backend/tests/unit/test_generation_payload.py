@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from app.domain.blueprint.models import PlanItem
+from app.domain.generation.coverage import build_coverage_directives
 from app.schemas.generation import compile_question_generation_payload
 
 
@@ -33,3 +34,23 @@ def test_generation_payload_contains_template_and_pure_content():
     assert payload.question_type == "short_answer"
     assert payload.question_template
     assert payload.assessable_content == ["检索和生成"]
+
+
+def test_generation_payload_contains_unique_atom_common_terms_and_expression_policy():
+    item = PlanItem(item_index=1, question_type="fill_blank", score=2, anchor_key="rag", unit_id="u1", card_id="c1", cognitive_level="apply")
+    card = {"performance_statement": "能够说明训练数据的作用", "assessable_content": ["训练数据为模型提供学习样本"], "preferred_terms": ["训练数据"], "scope_boundary": {}}
+    directive = build_coverage_directives(
+        [item],
+        {"c1": card},
+        {"directives": [{"item_index": 1, "coverage_atom": "训练数据的基本作用", "answer_boundary": "为模型提供学习样本", "preferred_terms": ["训练数据"], "cognitive_level": "understand", "novelty_contract": "只考查基本作用"}]},
+    )[0]
+
+    payload = compile_question_generation_payload(directive)
+
+    assert payload.coverage_atom == "训练数据的基本作用"
+    assert payload.answer_boundary == "为模型提供学习样本"
+    assert payload.preferred_terms == ["训练数据"]
+    assert payload.generation_policy["mode"] == "theory_recall"
+    assert payload.expression_policy["max_parenthetical_pairs"] == 1
+    assert "理论填空题" in payload.question_template
+    assert "不设计实际场景" in payload.question_template
