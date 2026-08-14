@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 
@@ -11,9 +13,10 @@ class UnitCoverage(BaseModel):
 
 class BlueprintRequest(BaseModel):
     total_score: float = Field(gt=0)
-    type_rules: dict[str, dict[str, float | int]]
+    type_rules: dict[str, dict[str, Any]]
     chapter_weights: dict[str, float]
     units: list[UnitCoverage] = Field(min_length=1)
+    card_question_types: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class PlanItem(BaseModel):
@@ -31,4 +34,5 @@ class BlueprintPlan(BaseModel):
     total_score: float
     items: list[PlanItem]
     type_counts: dict[str, int]
+    difficulty_counts: dict[str, dict[str, int]]
     anchor_counts: dict[str, int]
