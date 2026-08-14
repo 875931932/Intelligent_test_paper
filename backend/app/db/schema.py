@@ -398,21 +398,65 @@ model_calls = _course_table(
 task_runs = _course_table(
     "task_runs",
     Column("task_type", String(80), nullable=False),
+    Column("input_version", String(160), nullable=False),
     Column("idempotency_key", String(160), nullable=False),
-    Column("status", String(40), nullable=False, default="queued"),
+    Column("status", String(40), nullable=False, default="queued", server_default="queued"),
+    Column("stage", String(80), nullable=False, default="queued", server_default="queued"),
+    Column("progress", Integer, nullable=False, default=0, server_default="0"),
+    Column("lease_owner", String(160)),
+    Column("lease_expires_at", DateTime(timezone=True)),
+    Column("attempt", Integer, nullable=False, default=0, server_default="0"),
+    Column("max_attempts", Integer, nullable=False, default=3, server_default="3"),
+    Column("next_poll_at", DateTime(timezone=True)),
+    Column("error_code", String(120)),
+    Column("error_message", Text),
     Column("payload", JSON, nullable=False, default=dict),
-    constraints=(UniqueConstraint("course_id", "idempotency_key", name="uq_task_runs_course_idempotency"),),
+    Column("result", JSON),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("completed_at", DateTime(timezone=True)),
+    constraints=(
+        UniqueConstraint("course_id", "idempotency_key", name="uq_task_runs_course_idempotency"),
+        CheckConstraint("status IN ('queued', 'running', 'waiting_external', 'succeeded', 'failed', 'cancelled')", name="ck_task_runs_status"),
+        CheckConstraint("progress >= 0 AND progress <= 100", name="ck_task_runs_progress"),
+        CheckConstraint("attempt >= 0", name="ck_task_runs_attempt"),
+        CheckConstraint("max_attempts > 0", name="ck_task_runs_max_attempts"),
+    ),
 )
 Index("ix_task_runs_course_status_type", task_runs.c.course_id, task_runs.c.status, task_runs.c.task_type)
+Index("ix_task_runs_course_lease", task_runs.c.course_id, task_runs.c.status, task_runs.c.lease_expires_at)
+Index("ix_task_runs_course_poll", task_runs.c.course_id, task_runs.c.status, task_runs.c.next_poll_at)
 
 outbox_events = _course_table(
     "outbox_events",
-    Column("task_run_id", String(64), ForeignKey("task_runs.id")),
+    Column("task_run_id", String(64), ForeignKey("task_runs.id"), nullable=False),
     Column("event_type", String(80), nullable=False),
-    Column("status", String(40), nullable=False, default="pending"),
+    Column("status", String(40), nullable=False, default="pending", server_default="pending"),
     Column("payload", JSON, nullable=False, default=dict),
+    Column("attempts", Integer, nullable=False, default=0, server_default="0"),
+    Column("available_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("claim_owner", String(160)),
+    Column("claim_expires_at", DateTime(timezone=True)),
+    Column("published_at", DateTime(timezone=True)),
+    Column("error", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    constraints=(
+        CheckConstraint("status IN ('pending', 'claimed', 'published')", name="ck_outbox_events_status"),
+        CheckConstraint("attempts >= 0", name="ck_outbox_events_attempts"),
+    ),
 )
 Index("ix_outbox_events_course_status_type", outbox_events.c.course_id, outbox_events.c.status, outbox_events.c.event_type)
+Index("ix_outbox_events_course_available", outbox_events.c.course_id, outbox_events.c.status, outbox_events.c.available_at)
+Index(
+    "uq_outbox_active_task_event",
+    outbox_events.c.course_id,
+    outbox_events.c.task_run_id,
+    outbox_events.c.event_type,
+    unique=True,
+    sqlite_where=outbox_events.c.status.in_(("pending", "claimed")),
+    postgresql_where=outbox_events.c.status.in_(("pending", "claimed")),
+)
 
 
 def _same_course_fk(child_name: str, parent_column: str, parent_name: str) -> None:
