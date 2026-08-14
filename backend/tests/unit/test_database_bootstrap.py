@@ -290,3 +290,17 @@ def test_framework_status_constraints_reject_invalid_rows(tmp_path):
                 )
     finally:
         engine.dispose()
+
+
+def test_knowledge_schema_can_represent_l1_l2_l3_l4_tree():
+    domains = Base.metadata.tables["content_domains"]
+    units = Base.metadata.tables["assessment_units"]
+    catalogs = Base.metadata.tables["knowledge_catalog_versions"]
+
+    assert {"parent_domain_id", "level", "framework_anchor_key", "status"} <= set(domains.c.keys())
+    assert {"performance_statement", "scope_boundary", "status"} <= set(units.c.keys())
+    assert {"payload", "created_at", "published_at"} <= set(catalogs.c.keys())
+    assert any(
+        {element.target_fullname for element in constraint.elements} >= {"content_domains.id", "content_domains.course_id"}
+        for constraint in domains.foreign_key_constraints
+    )

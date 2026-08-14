@@ -250,8 +250,16 @@ framework_conflicts = _course_table(
 organization_runs = _course_table(
     "organization_runs",
     Column("framework_version_id", String(64), ForeignKey("framework_versions.id")),
-    Column("status", String(40), nullable=False, default="queued"),
+    Column("status", String(40), nullable=False, default="queued", server_default="queued"),
     Column("input_snapshot", JSON, nullable=False, default=dict),
+    Column("error_code", String(80)),
+    Column("error_message", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("completed_at", DateTime(timezone=True)),
+    constraints=(
+        CheckConstraint("status IN ('queued', 'running', 'awaiting_teacher_confirmation', 'published', 'rejected', 'failed')", name="ck_organization_runs_status"),
+    ),
 )
 
 evidence_chunks = _course_table(
@@ -268,18 +276,35 @@ Index("ix_evidence_chunks_course_material_hash", evidence_chunks.c.course_id, ev
 # Knowledge catalogue and the source-free KnowledgeCard boundary
 knowledge_catalog_versions = _course_table(
     "knowledge_catalog_versions",
+    Column("organization_run_id", String(64), ForeignKey("organization_runs.id")),
     Column("framework_version_id", String(64), ForeignKey("framework_versions.id"), nullable=False),
     Column("version_no", Integer, nullable=False),
-    Column("status", String(40), nullable=False, default="draft"),
-    constraints=(UniqueConstraint("course_id", "version_no", name="uq_knowledge_catalog_versions_number"),),
+    Column("status", String(40), nullable=False, default="candidate", server_default="candidate"),
+    Column("payload", JSON, nullable=False, default=dict),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("published_at", DateTime(timezone=True)),
+    constraints=(
+        UniqueConstraint("course_id", "version_no", name="uq_knowledge_catalog_versions_number"),
+        UniqueConstraint("course_id", "organization_run_id", name="uq_knowledge_catalog_versions_organization_run"),
+        CheckConstraint("version_no >= 1", name="ck_knowledge_catalog_versions_version_no"),
+        CheckConstraint("status IN ('candidate', 'published', 'superseded', 'rejected')", name="ck_knowledge_catalog_versions_status"),
+    ),
 )
 
 content_domains = _course_table(
     "content_domains",
     Column("catalog_version_id", String(64), ForeignKey("knowledge_catalog_versions.id"), nullable=False),
+    Column("parent_domain_id", String(64), ForeignKey("content_domains.id")),
+    Column("level", Integer, nullable=False),
+    Column("framework_anchor_key", String(160), nullable=False),
     Column("code", String(100), nullable=False),
     Column("name", String(200), nullable=False),
-    constraints=(UniqueConstraint("catalog_version_id", "code", name="uq_content_domains_catalog_code"),),
+    Column("status", String(40), nullable=False, default="active", server_default="active"),
+    constraints=(
+        UniqueConstraint("catalog_version_id", "code", name="uq_content_domains_catalog_code"),
+        CheckConstraint("level IN (1, 2)", name="ck_content_domains_level"),
+        CheckConstraint("status IN ('active', 'excluded', 'needs_teacher_review')", name="ck_content_domains_status"),
+    ),
 )
 
 assessment_units = _course_table(
@@ -288,7 +313,10 @@ assessment_units = _course_table(
     Column("content_domain_id", String(64), ForeignKey("content_domains.id")),
     Column("code", String(100), nullable=False),
     Column("title", String(255), nullable=False),
+    Column("performance_statement", Text, nullable=False),
+    Column("scope_boundary", JSON, nullable=False, default=dict),
     Column("weight", Integer),
+    Column("status", String(40), nullable=False, default="active", server_default="active"),
     constraints=(UniqueConstraint("catalog_version_id", "code", name="uq_assessment_units_catalog_code"),),
 )
 
@@ -537,10 +565,12 @@ for _child, _column, _parent in (
     ("framework_anchors", "framework_version_id", "framework_versions"),
     ("framework_conflicts", "framework_version_id", "framework_versions"),
     ("organization_runs", "framework_version_id", "framework_versions"),
+    ("knowledge_catalog_versions", "organization_run_id", "organization_runs"),
     ("evidence_chunks", "organization_run_id", "organization_runs"),
     ("evidence_chunks", "material_version_id", "material_versions"),
     ("knowledge_catalog_versions", "framework_version_id", "framework_versions"),
     ("content_domains", "catalog_version_id", "knowledge_catalog_versions"),
+    ("content_domains", "parent_domain_id", "content_domains"),
     ("assessment_units", "catalog_version_id", "knowledge_catalog_versions"),
     ("assessment_units", "content_domain_id", "content_domains"),
     ("knowledge_cards", "catalog_version_id", "knowledge_catalog_versions"),
