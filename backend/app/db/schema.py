@@ -6,6 +6,8 @@ defines only the durable data skeleton needed by subsequent tasks.
 
 from __future__ import annotations
 
+from hashlib import sha1
+
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, JSON, String, Table, Text, UniqueConstraint, false, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -380,11 +382,13 @@ def _same_course_fk(child_name: str, parent_column: str, parent_name: str) -> No
     """Prevent a child in one course from pointing at another course's parent."""
 
     child = Base.metadata.tables[child_name]
+    relationship_key = f"{child_name}:{parent_column}:{parent_name}"
+    suffix = sha1(relationship_key.encode("utf-8")).hexdigest()[:10]
     child.append_constraint(
         ForeignKeyConstraint(
             [parent_column, "course_id"],
             [f"{parent_name}.id", f"{parent_name}.course_id"],
-            name=f"fk_{child_name}_{parent_column}_{parent_name}_course",
+            name=f"fk_{child_name[:16]}_{parent_column[:12]}_{suffix}",
         )
     )
 

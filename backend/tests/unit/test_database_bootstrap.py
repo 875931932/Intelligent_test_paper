@@ -2,7 +2,9 @@ import os
 
 import pytest
 from sqlalchemy import create_engine, event, inspect
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.schema import CreateIndex, CreateTable
 
 from app.db.init_db import bootstrap_database, extension_exists, table_exists
 from app.db.schema import Base, CORE_TABLE_NAMES
@@ -180,3 +182,16 @@ def test_postgresql_bootstrap_uses_transactional_advisory_lock(monkeypatch):
     init_db.bootstrap_database("postgresql+psycopg://example/exam", seed=False)
 
     assert any("pg_advisory_xact_lock" in statement for statement in executed_sql)
+
+
+def test_postgresql_ddl_compiles_with_identifier_safe_constraint_and_index_names():
+    dialect = postgresql.dialect()
+
+    for table in Base.metadata.sorted_tables:
+        for constraint in table.constraints:
+            if constraint.name is not None:
+                assert len(constraint.name) <= 63, constraint.name
+        for index in table.indexes:
+            assert len(index.name) <= 63, index.name
+            str(CreateIndex(index).compile(dialect=dialect))
+        str(CreateTable(table).compile(dialect=dialect))
