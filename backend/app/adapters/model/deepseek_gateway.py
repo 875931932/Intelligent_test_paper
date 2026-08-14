@@ -79,3 +79,16 @@ class DeepSeekGateway:
                 "表达直接清楚；除符号、缩写或必要消歧外不要使用括号解释。若有修订指令，必须针对该问题局部改写。"
             ),
         )
+
+    def audit_paper(self, payload) -> dict:
+        return self._request_json(
+            payload,
+            temperature=0.0,
+            system_prompt=(
+                "你是高校期末考试的全卷语义审查员。输入只包含纯净题目摘要，不包含资料来源。"
+                "检查不同题型是否换一种说法重复考查同一知识、某题是否泄漏另一题答案、答案核心是否高度重叠。"
+                "不要评价排版，不要重写题目。必须返回 JSON 对象，格式为 "
+                '{"conflicts":[{"item_indexes":[1,2],"repair_item_index":2,"code":"semantic_overlap","message":"原因"}]}。'
+                "没有冲突时返回空数组。"
+            ),
+        )

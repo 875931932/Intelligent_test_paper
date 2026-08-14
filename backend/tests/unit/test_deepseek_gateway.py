@@ -53,3 +53,20 @@ def test_generation_prompt_prefers_common_terms_and_direct_expression(monkeypatc
     system_prompt = requests[0]["messages"][0]["content"]
     assert "常用术语" in system_prompt
     assert "括号" in system_prompt
+
+
+def test_gateway_has_compact_whole_paper_semantic_audit_prompt(monkeypatch):
+    requests = []
+
+    def fake_post(*args, **kwargs):
+        requests.append(kwargs["json"])
+        return FakeResponse({"conflicts": []})
+
+    monkeypatch.setattr("app.adapters.model.deepseek_gateway.httpx.post", fake_post)
+    gateway = DeepSeekGateway(api_key="test", max_attempts=1)
+
+    result = gateway.audit_paper({"questions": [{"item_index": 1, "stem": "题干", "answer_boundary": "答案核心"}]})
+
+    assert result == {"conflicts": []}
+    assert "全卷语义审查" in requests[0]["messages"][0]["content"]
+    assert "来源" in requests[0]["messages"][0]["content"]

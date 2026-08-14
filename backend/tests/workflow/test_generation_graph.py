@@ -6,11 +6,13 @@ from app.workflows.generation_graph import build_generation_graph
 
 
 class CoordinatingGateway:
-    def __init__(self, *, leak_once: bool = False):
+    def __init__(self, *, leak_once: bool = False, semantic_conflict_once: bool = False):
         self.planning_payloads = []
         self.generation_payloads = []
         self.calls_by_atom = Counter()
         self.leak_once = leak_once
+        self.semantic_conflict_once = semantic_conflict_once
+        self.audit_calls = 0
 
     def plan_coverage(self, payload):
         self.planning_payloads.append(payload)
@@ -43,6 +45,12 @@ class CoordinatingGateway:
         if self.leak_once and self.calls_by_atom[payload.coverage_atom] == 1:
             return {"stem": "向量化能够把文本转为向量表示。", "answer": True}
         return {"stem": "训练数据用于为模型提供学习样本。", "answer": True}
+
+    def audit_paper(self, payload):
+        self.audit_calls += 1
+        if self.semantic_conflict_once and self.audit_calls == 1:
+            return {"conflicts": [{"item_indexes": [1, 2], "repair_item_index": 2, "code": "semantic_overlap", "message": "两题换一种说法后仍考查相同知识"}]}
+        return {"conflicts": []}
 
 
 def _state():
@@ -91,3 +99,14 @@ def test_generation_graph_repairs_only_the_question_that_leaks_another_answer():
     assert "答案泄漏" in repaired_payload.teacher_revision_instruction
     assert result["conflicts"] == []
     assert all(question["quality"]["status"] == "pass" for question in result["questions"])
+
+
+def test_generation_graph_uses_one_compact_semantic_audit_and_repairs_only_flagged_item():
+    gateway = CoordinatingGateway(semantic_conflict_once=True)
+
+    result = build_generation_graph(gateway, max_repair_attempts=2).invoke(_state())
+
+    assert gateway.audit_calls == 2
+    assert gateway.calls_by_atom["向量化的基本定义"] == 1
+    assert gateway.calls_by_atom["训练数据的基本作用"] == 2
+    assert result["conflicts"] == []

@@ -24,6 +24,8 @@ class QuestionGateway(Protocol):
 
     def generate(self, payload): ...
 
+    def audit_paper(self, payload): ...
+
 
 class GenerationState(TypedDict, total=False):
     plan_items: list[dict]
@@ -101,7 +103,58 @@ def build_generation_graph(gateway: QuestionGateway, *, max_repair_attempts: int
         for question_type in QUESTION_TYPES:
             questions.extend(state.get(f"{question_type}_questions", []))
         questions.sort(key=lambda row: row["item_index"])
-        return {"questions": questions, "conflicts": audit_question_set(questions)}
+        return {"questions": questions, "conflicts": audit_whole_paper(questions)}
+
+    def semantic_audit(questions: list[dict]) -> list[dict]:
+        if len(questions) < 2:
+            return []
+        payload = {
+            "questions": [
+                {
+                    "item_index": question["item_index"],
+                    "question_type": question["question_type"],
+                    "stem": question.get("stem", ""),
+                    "options": question.get("options", []),
+                    "answer": question.get("answer"),
+                    "coverage_atom": question.get("coverage_atom", ""),
+                    "answer_boundary": question.get("answer_boundary", ""),
+                }
+                for question in questions
+            ],
+            "policy": {
+                "same_card_reuse_requires_distinct_atoms": True,
+                "cross_question_answer_leakage": "block",
+                "repair_only_later_or_more_redundant_item": True,
+            },
+        }
+        raw = gateway.audit_paper(payload)
+        rows = raw.get("conflicts", []) if isinstance(raw, dict) else []
+        if isinstance(rows, dict):
+            rows = rows.get("items", [])
+        if not isinstance(rows, list):
+            return []
+        valid_indexes = {question["item_index"] for question in questions}
+        conflicts = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            indexes = [int(value) for value in row.get("item_indexes", []) if int(value) in valid_indexes]
+            repair_index = int(row.get("repair_item_index", indexes[-1] if indexes else -1))
+            if len(indexes) < 2 or repair_index not in valid_indexes:
+                continue
+            conflicts.append(
+                {
+                    "code": str(row.get("code") or "semantic_overlap"),
+                    "item_indexes": indexes,
+                    "repair_item_index": repair_index,
+                    "message": str(row.get("message") or "全卷语义审查发现题目重复或答案泄漏"),
+                }
+            )
+        return conflicts
+
+    def audit_whole_paper(questions: list[dict]) -> list[dict]:
+        deterministic = audit_question_set(questions)
+        return deterministic if deterministic else semantic_audit(questions)
 
     def repair_conflicts(state):
         repair_indexes = sorted({int(conflict["repair_item_index"]) for conflict in state["conflicts"]})
@@ -122,7 +175,7 @@ def build_generation_graph(gateway: QuestionGateway, *, max_repair_attempts: int
         return {"questions": questions, "repair_attempts": state.get("repair_attempts", 0) + 1}
 
     def audit_after_repair(state):
-        return {"conflicts": audit_question_set(state["questions"])}
+        return {"conflicts": audit_whole_paper(state["questions"])}
 
     def route_after_audit(state):
         if state.get("conflicts") and state.get("repair_attempts", 0) < max_repair_attempts:
