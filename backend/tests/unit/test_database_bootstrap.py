@@ -257,3 +257,36 @@ def test_material_upload_check_constraints_reject_invalid_rows(tmp_path):
                 )
     finally:
         engine.dispose()
+
+
+def test_framework_tables_declare_lifecycle_columns_constraints_and_current_index():
+    build_runs = Base.metadata.tables["framework_build_runs"]
+    versions = Base.metadata.tables["framework_versions"]
+
+    assert {"created_at", "updated_at", "completed_at", "error_code", "error_message"} <= set(build_runs.c.keys())
+    assert {"created_at", "published_at"} <= set(versions.c.keys())
+    assert {"ck_framework_build_runs_status"} <= {
+        constraint.name for constraint in build_runs.constraints if isinstance(constraint, CheckConstraint)
+    }
+    assert {"ck_framework_versions_status", "ck_framework_versions_version_no"} <= {
+        constraint.name for constraint in versions.constraints if isinstance(constraint, CheckConstraint)
+    }
+    assert any(index.unique and index.dialect_options["postgresql"].get("where") is not None for index in versions.indexes)
+
+
+def test_framework_status_constraints_reject_invalid_rows(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'framework-checks.db'}")
+    event.listen(engine, "connect", lambda connection, _: connection.execute("PRAGMA foreign_keys=ON"))
+    Base.metadata.create_all(engine)
+    try:
+        with engine.begin() as connection:
+            connection.execute(Base.metadata.tables["users"].insert(), {"id": "owner", "display_name": "Owner", "role": "teacher"})
+            connection.execute(Base.metadata.tables["courses"].insert(), {"id": "course", "owner_id": "owner", "slug": "course", "name": "Course"})
+        with pytest.raises(IntegrityError):
+            with engine.begin() as connection:
+                connection.execute(
+                    Base.metadata.tables["framework_build_runs"].insert(),
+                    {"id": "run", "course_id": "course", "status": "made-up", "input_snapshot": {}},
+                )
+    finally:
+        engine.dispose()

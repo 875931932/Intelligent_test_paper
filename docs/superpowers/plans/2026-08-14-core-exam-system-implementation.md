@@ -19,6 +19,19 @@
 - 真实验收使用 MinerU 和 DeepSeek，自动化测试使用 Fake Provider。
 - 每个 Task 通过对应测试后才能进入下一个 Task。
 
+### 0.1 当前执行进度（2026-08-14）
+
+| Task | 状态 | 已验证结果 |
+|---|---|---|
+| Task 1 空库和工程 | 已完成 | 空库 Schema、课程复合外键、开发种子和健康检查 |
+| Task 2 课程、文件暂存和 MinIO | 已完成 | 预签名上传、暂存、软删除和课程隔离 |
+| Task 3 数据库任务、Outbox 和 Worker | 已完成 | 幂等、租约、恢复扫描和 Celery 入口 |
+| Task 4 MinerU 文档解析 | 已完成 | 状态映射、安全 ZIP、ContentBlock 归一化和持久化 |
+| Task 5 FrameworkGraph | 已完成 | 双大纲独立并行抽取、冲突、interrupt/确认、候选幂等和版本发布 |
+| Task 6—11 | 待执行 | 按下述顺序继续 |
+
+Task 5 的实现补充约束：同一 `framework_build_run_id` 最多产生一个候选版本；考核大纲和教学大纲从同一解析完成节点分叉，分别调用抽取器后再汇合；API 直接确认与 LangGraph 恢复发布必须执行相同的开放冲突完整性检查，未知冲突决定也不得写入。
+
 ## 1. Task 1：创建工程和空数据库
 
 **Files:**

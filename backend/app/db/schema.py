@@ -189,17 +189,45 @@ Index("ix_content_blocks_course_material_block", content_blocks.c.course_id, con
 # Framework construction
 framework_build_runs = _course_table(
     "framework_build_runs",
-    Column("status", String(40), nullable=False, default="queued"),
+    Column("status", String(40), nullable=False, default="queued", server_default="queued"),
     Column("input_snapshot", JSON, nullable=False, default=dict),
+    Column("error_code", String(80)),
+    Column("error_message", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("completed_at", DateTime(timezone=True)),
+    constraints=(
+        CheckConstraint(
+            "status IN ('queued', 'running', 'awaiting_teacher_confirmation', 'published', 'rejected', 'failed', 'cancelled')",
+            name="ck_framework_build_runs_status",
+        ),
+    ),
 )
 
 framework_versions = _course_table(
     "framework_versions",
     Column("framework_build_run_id", String(64), ForeignKey("framework_build_runs.id")),
     Column("version_no", Integer, nullable=False),
-    Column("status", String(40), nullable=False, default="draft"),
+    Column("status", String(40), nullable=False, default="candidate", server_default="candidate"),
     Column("payload", JSON, nullable=False, default=dict),
-    constraints=(UniqueConstraint("course_id", "version_no", name="uq_framework_versions_number"),),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("published_at", DateTime(timezone=True)),
+    constraints=(
+        UniqueConstraint("course_id", "version_no", name="uq_framework_versions_number"),
+        UniqueConstraint("course_id", "framework_build_run_id", name="uq_framework_versions_build_run"),
+        CheckConstraint("version_no >= 1", name="ck_framework_versions_version_no"),
+        CheckConstraint(
+            "status IN ('candidate', 'published', 'superseded', 'rejected')",
+            name="ck_framework_versions_status",
+        ),
+    ),
+)
+Index(
+    "uq_framework_versions_current_published",
+    framework_versions.c.course_id,
+    unique=True,
+    postgresql_where=framework_versions.c.status == "published",
+    sqlite_where=framework_versions.c.status == "published",
 )
 
 framework_anchors = _course_table(
