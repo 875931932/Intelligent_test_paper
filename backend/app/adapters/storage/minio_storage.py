@@ -32,6 +32,8 @@ class StoragePort(Protocol):
 
     def finalize_object(self, source_key: str, destination_key: str, source_etag: str) -> None: ...
 
+    def put_bytes(self, object_key: str, content: bytes, content_type: str) -> None: ...
+
 
 class MinioStorage:
     """A narrow boto3 adapter that also works with MinIO's S3 endpoint."""
@@ -115,4 +117,10 @@ class MinioStorage:
             error_code = getattr(exc, "response", {}).get("Error", {}).get("Code")
             if error_code in {"PreconditionFailed", "412"}:
                 raise StoragePreconditionError from exc
+            raise StorageUnavailableError from exc
+
+    def put_bytes(self, object_key: str, content: bytes, content_type: str) -> None:
+        try:
+            self.client.put_object(Bucket=self.bucket, Key=object_key, Body=content, ContentType=content_type)
+        except Exception as exc:
             raise StorageUnavailableError from exc

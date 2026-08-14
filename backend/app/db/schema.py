@@ -134,6 +134,7 @@ parser_profiles = _course_table(
     Column("name", String(120), nullable=False),
     Column("version", String(80), nullable=False),
     Column("provider", String(80), nullable=False),
+    Column("configuration", JSON, nullable=False, default=dict),
     constraints=(UniqueConstraint("course_id", "name", "version", name="uq_parser_profiles_course_name_version"),),
 )
 
@@ -141,8 +142,18 @@ document_parse_runs = _course_table(
     "document_parse_runs",
     Column("material_version_id", String(64), ForeignKey("material_versions.id"), nullable=False),
     Column("parser_profile_id", String(64), ForeignKey("parser_profiles.id"), nullable=False),
-    Column("status", String(40), nullable=False, default="queued"),
+    Column("reused_from_run_id", String(64), ForeignKey("document_parse_runs.id")),
+    Column("status", String(40), nullable=False, default="queued", server_default="queued"),
     Column("provider_run_id", String(160)),
+    Column("trace_id", String(160)),
+    Column("error_code", String(120)),
+    Column("error_summary", Text),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("completed_at", DateTime(timezone=True)),
+    constraints=(
+        CheckConstraint("status IN ('queued', 'submitted', 'waiting_file', 'pending', 'running', 'converting', 'ready', 'failed')", name="ck_document_parse_runs_status"),
+    ),
 )
 Index("ix_document_parse_runs_course_status", document_parse_runs.c.course_id, document_parse_runs.c.status)
 
@@ -151,6 +162,8 @@ document_artifacts = _course_table(
     Column("document_parse_run_id", String(64), ForeignKey("document_parse_runs.id"), nullable=False),
     Column("artifact_type", String(60), nullable=False),
     Column("storage_key", String(500), nullable=False),
+    Column("content_hash", String(64), nullable=False),
+    Column("size_bytes", Integer, nullable=False),
     constraints=(UniqueConstraint("document_parse_run_id", "artifact_type", name="uq_document_artifacts_run_type"),),
 )
 
@@ -160,7 +173,15 @@ content_blocks = _course_table(
     Column("material_version_id", String(64), ForeignKey("material_versions.id"), nullable=False),
     Column("block_index", Integer, nullable=False),
     Column("block_type", String(60), nullable=False),
-    Column("content", Text, nullable=False),
+    Column("text", Text, nullable=False, default=""),
+    Column("markdown", Text),
+    Column("latex", Text),
+    Column("page_index", Integer),
+    Column("bbox", JSON),
+    Column("heading_path", JSON, nullable=False, default=list),
+    Column("asset_reference", String(500)),
+    Column("reading_order", Integer, nullable=False),
+    Column("content_hash", String(64), nullable=False),
     constraints=(UniqueConstraint("document_parse_run_id", "block_index", name="uq_content_blocks_run_index"),),
 )
 Index("ix_content_blocks_course_material_block", content_blocks.c.course_id, content_blocks.c.material_version_id, content_blocks.c.block_index)
@@ -480,6 +501,7 @@ for _child, _column, _parent in (
     ("upload_sessions", "material_version_id", "material_versions"),
     ("document_parse_runs", "material_version_id", "material_versions"),
     ("document_parse_runs", "parser_profile_id", "parser_profiles"),
+    ("document_parse_runs", "reused_from_run_id", "document_parse_runs"),
     ("document_artifacts", "document_parse_run_id", "document_parse_runs"),
     ("content_blocks", "document_parse_run_id", "document_parse_runs"),
     ("content_blocks", "material_version_id", "material_versions"),

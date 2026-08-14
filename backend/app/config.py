@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://exam:exam@localhost:5432/exam"
     redis_url: str = "redis://localhost:6379/0"
     mineru_api_token: str = ""
+    mineru_base_url: str = "https://mineru.net"
+    mineru_model_version: str = "vlm"
+    mineru_poll_interval_seconds: int = 10
+    mineru_max_poll_seconds: int = 1800
     deepseek_api_key: str = ""
     seed_dev_data: bool = False
     upload_max_bytes: int = 209715200
