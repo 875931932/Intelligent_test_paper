@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
-from app.domain.blueprint.models import BlueprintRequest, UnitCoverage
-from app.services.blueprint_service import BlueprintValidationError, allocate_plan_items
+from app.domain.blueprint.models import BlueprintRequest, PlanItem, UnitCoverage
+from app.services.blueprint_service import (
+    BlueprintValidationError,
+    _largest_remainder,
+    allocate_plan_items,
+)
 
 
 def _request():
@@ -207,7 +212,7 @@ def test_blueprint_orders_each_question_type_by_difficulty_then_assessment_mode(
             "single_choice": {
                 "count": 2,
                 "score": 2,
-                "difficulty_distribution": {"low": 50, "medium": 50, "high": 0},
+                "difficulty_distribution": {"low": 100, "medium": 0, "high": 0},
                 "assessment_mode_distribution": {
                     "theory_recall": 50,
                     "conceptual": 50,
@@ -231,5 +236,176 @@ def test_blueprint_orders_each_question_type_by_difficulty_then_assessment_mode(
 
     assert [(item.difficulty, item.assessment_mode) for item in plan.items] == [
         ("low", "theory_recall"),
-        ("medium", "conceptual"),
+        ("low", "conceptual"),
     ]
+
+
+@pytest.mark.parametrize(
+    "chapter_weights",
+    [
+        {"concept-only": 50, "recall-only": 50},
+        {"recall-only": 50, "concept-only": 50},
+    ],
+)
+def test_blueprint_jointly_matches_chapter_quota_and_mode_eligibility(chapter_weights):
+    request = BlueprintRequest(
+        total_score=4,
+        type_rules={
+            "single_choice": {
+                "count": 2,
+                "score": 2,
+                "assessment_mode_distribution": {
+                    "theory_recall": 50,
+                    "conceptual": 50,
+                    "application": 0,
+                    "problem_solving": 0,
+                    "practical_operation": 0,
+                },
+            }
+        },
+        chapter_weights=chapter_weights,
+        units=[
+            UnitCoverage(
+                unit_id="concept-unit",
+                anchor_key="concept-only",
+                card_ids=["concept-card"],
+                allowed_assessment_modes=["conceptual"],
+            ),
+            UnitCoverage(
+                unit_id="recall-unit",
+                anchor_key="recall-only",
+                card_ids=["recall-card"],
+                allowed_assessment_modes=["theory_recall"],
+            ),
+        ],
+    )
+
+    plan = allocate_plan_items(request)
+
+    assert {(item.anchor_key, item.assessment_mode) for item in plan.items} == {
+        ("recall-only", "theory_recall"),
+        ("concept-only", "conceptual"),
+    }
+
+
+def test_largest_remainder_normalizes_tolerated_weight_drift_to_exact_total():
+    counts = _largest_remainder(
+        20_000,
+        {
+            "theory_recall": 100.009,
+            "conceptual": 0,
+            "application": 0,
+            "problem_solving": 0,
+            "practical_operation": 0,
+        },
+    )
+
+    assert sum(counts.values()) == 20_000
+    assert counts["theory_recall"] == 20_000
+
+
+def test_blueprint_rejects_non_finite_distribution_values():
+    request = _request()
+    request.type_rules["single_choice"]["assessment_mode_distribution"] = {
+        "theory_recall": float("nan"),
+        "conceptual": 100,
+    }
+
+    with pytest.raises(BlueprintValidationError, match="finite"):
+        allocate_plan_items(request)
+
+
+def test_blueprint_models_reject_unknown_modes_and_operational_policy():
+    with pytest.raises(ValidationError):
+        UnitCoverage(
+            unit_id="unit",
+            anchor_key="chapter",
+            card_ids=["card"],
+            allowed_assessment_modes=["typo"],
+        )
+    with pytest.raises(ValidationError):
+        UnitCoverage(
+            unit_id="unit",
+            anchor_key="chapter",
+            card_ids=["card"],
+            operational_detail_policy="anything",
+        )
+    with pytest.raises(ValidationError):
+        PlanItem(
+            item_index=1,
+            question_type="single_choice",
+            score=2,
+            anchor_key="chapter",
+            unit_id="unit",
+            card_id="card",
+            assessment_mode="typo",
+        )
+
+
+@pytest.mark.parametrize("reverse_units", [False, True])
+def test_blueprint_rotates_exam_points_before_cards(reverse_units):
+    units = [
+        UnitCoverage(
+            unit_id="small",
+            exam_point_id="ep-small",
+            anchor_key="chapter",
+            card_ids=["small-card"],
+        ),
+        UnitCoverage(
+            unit_id="large",
+            exam_point_id="ep-large",
+            anchor_key="chapter",
+            card_ids=[f"large-{index}" for index in range(20)],
+        ),
+    ]
+    if reverse_units:
+        units.reverse()
+    request = BlueprintRequest(
+        total_score=20,
+        type_rules={"single_choice": {"count": 10, "score": 2}},
+        chapter_weights={"chapter": 100},
+        units=units,
+    )
+
+    plan = allocate_plan_items(request)
+    counts = {
+        point: sum(item.exam_point_id == point for item in plan.items)
+        for point in ("ep-small", "ep-large")
+    }
+
+    assert counts == {"ep-small": 5, "ep-large": 5}
+
+
+def test_blueprint_allocates_practical_mode_only_to_directly_assessable_unit():
+    request = BlueprintRequest(
+        total_score=2,
+        type_rules={
+            "short_answer": {
+                "count": 1,
+                "score": 2,
+                "assessment_mode_distribution": {
+                    "theory_recall": 0,
+                    "conceptual": 0,
+                    "application": 0,
+                    "problem_solving": 0,
+                    "practical_operation": 100,
+                },
+            }
+        },
+        chapter_weights={"chapter": 100},
+        units=[
+            UnitCoverage(
+                unit_id="practical",
+                exam_point_id="ep-practical",
+                anchor_key="chapter",
+                card_ids=["practical-card"],
+                allowed_assessment_modes=["practical_operation"],
+                operational_detail_policy="directly_assessable",
+            )
+        ],
+    )
+
+    plan = allocate_plan_items(request)
+
+    assert plan.items[0].assessment_mode == "practical_operation"
+    assert plan.items[0].exam_point_id == "ep-practical"

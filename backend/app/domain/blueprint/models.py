@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field
 
@@ -13,13 +13,26 @@ ASSESSMENT_MODES = (
     "practical_operation",
 )
 
+AssessmentMode: TypeAlias = Literal[
+    "theory_recall",
+    "conceptual",
+    "application",
+    "problem_solving",
+    "practical_operation",
+]
+OperationalDetailPolicy: TypeAlias = Literal[
+    "forbidden",
+    "supporting_only",
+    "directly_assessable",
+]
+
 
 class UnitCoverage(BaseModel):
     unit_id: str
     exam_point_id: str = ""
     anchor_key: str
     card_ids: list[str] = Field(min_length=1)
-    allowed_assessment_modes: list[str] = Field(
+    allowed_assessment_modes: list[AssessmentMode] = Field(
         default_factory=lambda: [
             "theory_recall",
             "conceptual",
@@ -27,7 +40,7 @@ class UnitCoverage(BaseModel):
             "problem_solving",
         ]
     )
-    operational_detail_policy: str = "supporting_only"
+    operational_detail_policy: OperationalDetailPolicy = "supporting_only"
 
 
 class BlueprintRequest(BaseModel):
@@ -48,7 +61,7 @@ class PlanItem(BaseModel):
     card_id: str
     difficulty: str = "medium"
     cognitive_level: str = "understand"
-    assessment_mode: str = "conceptual"
+    assessment_mode: AssessmentMode = "conceptual"
 
 
 class BlueprintPlan(BaseModel):
