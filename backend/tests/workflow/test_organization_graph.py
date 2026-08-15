@@ -305,8 +305,8 @@ def test_each_exam_point_material_pair_gets_its_own_top_k_budget(monkeypatch):
 
 
 class AdapterOutputError(RuntimeError):
-    def __init__(self, error_code):
-        super().__init__("api_key=secret-value malformed output")
+    def __init__(self, error_code, message="api_key=secret-value malformed output"):
+        super().__init__(message)
         self.error_code = error_code
 
 
@@ -333,6 +333,111 @@ def test_classifier_failure_preserves_safe_adapter_error_code(error_code):
     failure = repository.persisted_state["failed_pairs"][0]
     assert failure["error_code"] == error_code
     assert "secret-value" not in failure["error_message"]
+
+
+@pytest.mark.parametrize(
+    ("message", "secrets"),
+    [
+        (
+            "request failed Authorization: Bearer auth-secret-123",
+            ["auth-secret-123"],
+        ),
+        ('model returned {"api_key":"json-secret-456"}', ["json-secret-456"]),
+        ("password='single-secret-789'", ["single-secret-789"]),
+        (
+            "token=token-secret secret=raw-secret client_secret='client-secret'",
+            ["token-secret", "raw-secret", "client-secret"],
+        ),
+        (
+            'model returned {"password":"secret with space"}',
+            ["secret with space"],
+        ),
+        (
+            'model returned {"password":"secret,with;punctuation"}',
+            ["secret,with;punctuation"],
+        ),
+        (
+            r'model returned {"password":"abc\"def"}',
+            ["abc", "def"],
+        ),
+        (
+            "authorization=Basic basic-secret-123",
+            ["basic-secret-123"],
+        ),
+        (
+            '{"authorization":"Basic basic-secret-456"}',
+            ["basic-secret-456"],
+        ),
+        (
+            'Authorization: Digest username="user", response="digest-secret"',
+            ["digest-secret"],
+        ),
+        (
+            "Authorization: AWS4-HMAC-SHA256 Credential=access-key, "
+            "Signature=aws-secret",
+            ["access-key", "aws-secret"],
+        ),
+        (
+            "authorization=Custom first-secret second-secret",
+            ["first-secret", "second-secret"],
+        ),
+        (
+            '{"api_key":"unterminated-secret',
+            ["unterminated-secret"],
+        ),
+        (
+            "password='unterminated-secret",
+            ["unterminated-secret"],
+        ),
+        (
+            '{"api_key":"dangling-secret\\',
+            ["dangling-secret"],
+        ),
+        (
+            "password='dangling-secret\\",
+            ["dangling-secret"],
+        ),
+        (
+            "password=secret with space",
+            ["secret", "with space"],
+        ),
+        (
+            "api-token=api-token-secret access_token=access-secret "
+            "passwd=passwd-secret",
+            ["api-token-secret", "access-secret", "passwd-secret"],
+        ),
+        (
+            "x" * 480 + ' "api_key":"late-secret-value" ' + "z" * 100,
+            ["late-secret-value"],
+        ),
+    ],
+)
+def test_failed_pair_message_redacts_credentials_before_truncation(message, secrets):
+    class FailingClassifier(RecordingClassifier):
+        def classify(self, *, exam_point, material_version_id, chunks, call_context=None):
+            if (exam_point.code, material_version_id) == ("EP-1", "material-1"):
+                raise AdapterOutputError("model_output_invalid", message)
+            return super().classify(
+                exam_point=exam_point,
+                material_version_id=material_version_id,
+                chunks=chunks,
+                call_context=call_context,
+            )
+
+    graph, _, _, _, repository = _graph(classifier=FailingClassifier())
+
+    graph.invoke(
+        _state(),
+        config={
+            "configurable": {
+                "thread_id": f"redact-{len(message)}-{sum(map(len, secrets))}"
+            }
+        },
+    )
+
+    redacted = repository.persisted_state["failed_pairs"][0]["error_message"]
+    assert len(redacted) <= 500
+    assert all(secret not in redacted for secret in secrets)
 
 
 @pytest.mark.parametrize("bad_output", ["cross_point", "duplicate"])
@@ -393,6 +498,34 @@ def test_unsupported_consolidated_fact_isolated_to_one_exam_point():
     )
     coverage = {item.exam_point_code: item.status for item in repository.candidate.coverage}
     assert coverage == {"EP-1": "insufficient", "EP-2": "sufficient"}
+
+
+def test_empty_consolidation_with_direct_evidence_isolated_to_one_exam_point():
+    class EmptyConsolidator(RecordingConsolidator):
+        def consolidate(self, *, exam_point, admitted_decisions, call_context=None):
+            if exam_point.code == "EP-1":
+                return []
+            return super().consolidate(
+                exam_point=exam_point,
+                admitted_decisions=admitted_decisions,
+                call_context=call_context,
+            )
+
+    graph, _, _, _, repository = _graph(consolidator=EmptyConsolidator())
+
+    graph.invoke(_state(), config={"configurable": {"thread_id": "empty-consolidation"}})
+
+    failures = repository.persisted_state["failed_pairs"]
+    assert len(failures) == 1
+    assert failures[0]["exam_point_code"] == "EP-1"
+    assert failures[0]["error_code"] == "consolidation_failed"
+    coverage = {item.exam_point_code: item.status for item in repository.candidate.coverage}
+    assert coverage == {"EP-1": "insufficient", "EP-2": "sufficient"}
+    assert any(
+        unit.exam_point_code == "EP-2"
+        for topic in repository.candidate.topics
+        for unit in topic.units
+    )
 
 
 def test_organization_graph_resumes_only_after_exam_points_are_reviewed():

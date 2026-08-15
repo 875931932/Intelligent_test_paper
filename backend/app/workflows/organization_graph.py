@@ -56,16 +56,64 @@ class OrganizationState(TypedDict, total=False):
     index_version_id: str
 
 
-_SECRET_PATTERN = re.compile(
-    r"(?i)(bearer\s+|(?:api[_ -]?key|password|secret|token|authorization)\s*[=:]\s*)[^\s,;]+"
+_CREDENTIAL_KEY_PATTERN = (
+    r"(?:api[ _-]?(?:key|token)|access[ _-]?token|client[ _-]?secret|"
+    r"password|passwd|token|secret)"
+)
+_SECRET_KEY_PATTERN = rf"(?:{_CREDENTIAL_KEY_PATTERN}|authorization)"
+_DOUBLE_QUOTED_SECRET_PATTERN = re.compile(
+    rf'(?i)(?P<prefix>[\"\']?{_SECRET_KEY_PATTERN}[\"\']?\s*[:=]\s*)'
+    r'"(?:\\.|[^"\\])*"'
+)
+_SINGLE_QUOTED_SECRET_PATTERN = re.compile(
+    rf"(?i)(?P<prefix>[\"']?{_SECRET_KEY_PATTERN}[\"']?\s*[:=]\s*)"
+    r"'(?:\\.|[^'\\])*'"
+)
+_UNTERMINATED_DOUBLE_QUOTED_SECRET_PATTERN = re.compile(
+    rf'(?im)(?P<prefix>[\"\']?{_SECRET_KEY_PATTERN}[\"\']?\s*[:=]\s*)'
+    r'"(?:\\.|[^"\\\r\n])*\\?$'
+)
+_UNTERMINATED_SINGLE_QUOTED_SECRET_PATTERN = re.compile(
+    rf"(?im)(?P<prefix>[\"']?{_SECRET_KEY_PATTERN}[\"']?\s*[:=]\s*)"
+    r"'(?:\\.|[^'\\\r\n])*\\?$"
+)
+_BEARER_SECRET_PATTERN = re.compile(r"(?i)(\bbearer\s+)[^\s,;}\]\"']+")
+_UNQUOTED_SECRET_PATTERN = re.compile(
+    rf"(?i)(?P<prefix>[\"']?{_SECRET_KEY_PATTERN}[\"']?\s*[:=]\s*)"
+    r"(?![\"'])[^\r\n]*"
 )
 
 
 def _redacted_error_message(exc: Exception) -> str:
-    message = " ".join(str(exc).split())[:500]
+    raw_message = str(exc)
+    redacted = _DOUBLE_QUOTED_SECRET_PATTERN.sub(
+        lambda match: f'{match.group("prefix")}"[REDACTED]"',
+        raw_message,
+    )
+    redacted = _SINGLE_QUOTED_SECRET_PATTERN.sub(
+        lambda match: f"{match.group('prefix')}'[REDACTED]'",
+        redacted,
+    )
+    redacted = _UNTERMINATED_DOUBLE_QUOTED_SECRET_PATTERN.sub(
+        lambda match: f'{match.group("prefix")}"[REDACTED]',
+        redacted,
+    )
+    redacted = _UNTERMINATED_SINGLE_QUOTED_SECRET_PATTERN.sub(
+        lambda match: f"{match.group('prefix')}'[REDACTED]",
+        redacted,
+    )
+    redacted = _BEARER_SECRET_PATTERN.sub(
+        lambda match: f"{match.group(1)}[REDACTED]",
+        redacted,
+    )
+    redacted = _UNQUOTED_SECRET_PATTERN.sub(
+        lambda match: f"{match.group('prefix')}[REDACTED]",
+        redacted,
+    )
+    message = " ".join(redacted.split())[:500]
     if not message:
         return exc.__class__.__name__
-    return _SECRET_PATTERN.sub(lambda match: f"{match.group(1)}[REDACTED]", message)
+    return message
 
 
 def _failure(*, stage: str, point_code: str, material_version_id: str | None, exc: Exception) -> dict:
@@ -297,6 +345,10 @@ def build_organization_graph(
             direct = [
                 item for item in admitted if item.relevance_class is RelevanceClass.DIRECT
             ]
+            if direct and not validated_units:
+                raise ValueError(
+                    "consolidator returned no assessment units for admitted direct evidence"
+                )
             validate_consolidated_units(point, validated_units, direct)
             return point.code, validated_units
 

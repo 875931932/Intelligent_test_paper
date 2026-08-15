@@ -533,3 +533,53 @@ def test_publish_rejects_when_deleted_source_removes_only_answer_or_rubric_basis
     finally:
         session.close()
         engine.dispose()
+
+
+def test_publish_rejects_sufficient_exam_point_without_active_card_chain(tmp_path):
+    engine, session = _session(tmp_path)
+    try:
+        session.execute(
+            exam_points.insert().values(
+                id="exam-point-2",
+                course_id="course",
+                framework_version_id="framework-v1",
+                anchor_key="rag",
+                code="EP-2",
+                title="RAG应用",
+                assessment_requirement="应用RAG",
+                weight_value=0,
+                weight_source="assessment_syllabus",
+                weight_group_id="rag",
+                cognitive_targets=["apply"],
+                assessment_orientations=["application"],
+                allowed_question_types=["short_answer"],
+                operational_detail_policy="supporting_only",
+                scope_boundary={},
+                required_evidence_roles=["answer_or_rubric_basis"],
+                retrieval_intent="检索RAG应用依据",
+                teaching_anchor_keys=[],
+                status="confirmed",
+            )
+        )
+        session.commit()
+        tree = _tree()
+        tree.coverage.append(
+            tree.coverage[0].model_copy(
+                update={"exam_point_code": "EP-2", "direct_count": 1}
+            )
+        )
+        state = _organization_state(tree)
+        repository = DatabaseKnowledgeRepository(session)
+        candidate_id = repository.persist_candidate(state, tree)
+        confirmation = _confirmation()
+        confirmation.reviewed_exam_point_codes.append("EP-2")
+
+        with pytest.raises(KnowledgePublishError, match="active.*chain"):
+            repository.publish(
+                {**state, "candidate_id": candidate_id},
+                tree,
+                confirmation,
+            )
+    finally:
+        session.close()
+        engine.dispose()

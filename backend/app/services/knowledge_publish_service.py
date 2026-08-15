@@ -325,6 +325,47 @@ class DatabaseKnowledgeRepository:
                     raise KnowledgePublishError(
                         "every sufficient exam point requires teacher review"
                     )
+                active_chain_codes = {
+                    unit.exam_point_code
+                    for topic in tree.topics
+                    if topic.status == "active"
+                    for unit in topic.units
+                    if unit.status == "active"
+                    and any(card.status == "active" for card in unit.cards)
+                }
+                excluded_topic_codes = {
+                    operation.target_code
+                    for operation in confirmation.operations
+                    if operation.operation == "exclude_topic"
+                }
+                excluded_unit_codes = {
+                    operation.target_code
+                    for operation in confirmation.operations
+                    if operation.operation == "exclude_unit"
+                }
+                units_by_point: dict[str, list[tuple[str, str]]] = {}
+                for topic in tree.topics:
+                    for unit in topic.units:
+                        units_by_point.setdefault(unit.exam_point_code, []).append(
+                            (topic.code, unit.code)
+                        )
+                explicitly_excluded_chain_codes = {
+                    point_code
+                    for point_code, paths in units_by_point.items()
+                    if paths
+                    and all(
+                        topic_code in excluded_topic_codes
+                        or unit_code in excluded_unit_codes
+                        for topic_code, unit_code in paths
+                    )
+                }
+                required_chain_codes = (
+                    publishable_exam_point_codes - explicitly_excluded_chain_codes
+                )
+                if required_chain_codes - active_chain_codes:
+                    raise KnowledgePublishError(
+                        "every sufficient exam point requires an active topic-unit-card chain"
+                    )
                 tree = self._filter_live_direct_evidence(
                     course_id=course_id,
                     run_id=state["run_id"],
