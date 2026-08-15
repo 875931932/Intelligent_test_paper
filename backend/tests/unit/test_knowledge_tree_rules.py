@@ -148,8 +148,8 @@ def test_publishable_tree_requires_direct_evidence_relation_in_strict_exam_point
         )
 
 
-def test_publishable_tree_accepts_card_with_valid_direct_evidence_relation():
-    tree = KnowledgeTreeCandidate(
+def _strict_tree_with_direct_role(evidence_role: str) -> KnowledgeTreeCandidate:
+    return KnowledgeTreeCandidate(
         framework_version_id="framework-v1",
         topics=_file_candidate(exam_point_code="EP-1").topics,
         evidence_decisions=[
@@ -158,7 +158,7 @@ def test_publishable_tree_accepts_card_with_valid_direct_evidence_relation():
                 "evidence_chunk_id": "e1",
                 "relevance_class": "direct",
                 "support_claim": "该证据支撑知识卡中的可评分事实",
-                "evidence_role": "fact_or_constraint",
+                "evidence_role": evidence_role,
                 "content_kind": "conceptual_fact",
                 "candidate_assessment_unit": {"code": "rag-flow"},
                 "candidate_card_content": {"name": "检索增强生成的基本流程"},
@@ -167,11 +167,48 @@ def test_publishable_tree_accepts_card_with_valid_direct_evidence_relation():
         ],
     )
 
+
+def test_publishable_tree_accepts_card_with_valid_direct_evidence_relation():
+    tree = _strict_tree_with_direct_role("answer_or_rubric_basis")
+
     validate_publishable_tree(
         tree,
         allowed_anchor_keys={"rag"},
         allowed_exam_point_codes={"EP-1"},
     )
+
+
+def test_publishable_tree_rejects_context_only_raw_direct_relation():
+    tree = _strict_tree_with_direct_role("context_only")
+
+    with pytest.raises(KnowledgeTreeValidationError, match="direct evidence"):
+        validate_publishable_tree(
+            tree,
+            allowed_anchor_keys={"rag"},
+            allowed_exam_point_codes={"EP-1"},
+        )
+
+
+def test_legacy_publish_validation_does_not_require_exam_point_relevance_metadata():
+    tree = KnowledgeTreeCandidate(
+        framework_version_id="framework-v1",
+        topics=_file_candidate().topics,
+        evidence_decisions=[
+            {
+                "exam_point_code": "legacy-unmapped",
+                "evidence_chunk_id": "e1",
+                "relevance_class": "direct",
+                "support_claim": "旧候选尚未进行考点相关性归并",
+                "evidence_role": "context_only",
+                "content_kind": "conceptual_fact",
+                "candidate_assessment_unit": {"code": "rag-flow"},
+                "candidate_card_content": {"name": "检索增强生成的基本流程"},
+                "confidence": 90,
+            }
+        ],
+    )
+
+    validate_publishable_tree(tree, allowed_anchor_keys={"rag"})
 
 
 def test_teacher_cannot_move_topic_outside_confirmed_framework_scope():

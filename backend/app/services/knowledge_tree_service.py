@@ -13,8 +13,8 @@ from app.domain.knowledge.models import (
     UnmatchedCandidate,
 )
 from app.domain.knowledge.relevance import (
-    MINIMUM_ADMISSION_CONFIDENCE,
     RelevanceClass,
+    validate_direct_evidence_decision,
 )
 
 
@@ -123,16 +123,18 @@ def validate_publishable_tree(
                         "non-direct evidence cannot produce a publishable unit or card"
                     )
                 continue
-            if (
-                decision.exam_point_code in allowed_exam_point_codes
-                and decision.evidence_role
-                and decision.confidence >= MINIMUM_ADMISSION_CONFIDENCE
-                and decision.candidate_assessment_unit is not None
-                and decision.candidate_card_content is not None
-            ):
-                valid_direct_relations.add(
-                    (decision.exam_point_code, decision.evidence_chunk_id)
+            if decision.exam_point_code not in allowed_exam_point_codes:
+                continue
+            try:
+                validate_direct_evidence_decision(
+                    decision,
+                    exam_point_code=decision.exam_point_code,
                 )
+            except ValueError:
+                continue
+            valid_direct_relations.add(
+                (decision.exam_point_code, decision.evidence_chunk_id)
+            )
 
     for topic in tree.topics:
         if topic.framework_anchor_key not in allowed_anchor_keys:

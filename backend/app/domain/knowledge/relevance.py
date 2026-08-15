@@ -100,37 +100,57 @@ _OPERATIONAL_CONTENT_KINDS = frozenset(
     }
 )
 
-_DIRECT_EVIDENCE_ROLE_MARKERS = (
-    "fact",
-    "definition",
-    "constraint",
-    "principle",
-    "answer",
-    "rubric",
-    "scoring",
-    "worked_example",
-    "事实",
-    "定义",
-    "约束",
-    "原理",
-    "答案",
-    "评分",
+DIRECT_EVIDENCE_ROLES = frozenset(
+    {
+        "fact",
+        "definition",
+        "fact_or_definition",
+        "principle",
+        "relationship",
+        "causal_relationship",
+        "constraint",
+        "fact_or_constraint",
+        "comparison_basis",
+        "formula",
+        "derivation",
+        "formula_or_derivation",
+        "diagnostic_basis",
+        "worked_example",
+        "answer",
+        "answer_basis",
+        "rubric",
+        "rubric_basis",
+        "answer_or_rubric_basis",
+        "scoring",
+        "scoring_basis",
+    }
 )
 
 
-def _is_direct_evidence_role(
-    role: str | None,
+def validate_direct_evidence_decision(
+    decision: EvidenceDecision,
     *,
-    required_roles: list[str],
-) -> bool:
-    if role is None:
-        return False
-    normalized = role.strip().casefold()
-    normalized_required = {item.strip().casefold() for item in required_roles}
-    return bool(normalized) and (
-        normalized in normalized_required
-        or any(marker in normalized for marker in _DIRECT_EVIDENCE_ROLE_MARKERS)
-    )
+    exam_point_code: str,
+) -> None:
+    """Validate the source-independent shape shared by admission and publish."""
+
+    if decision.exam_point_code != exam_point_code:
+        raise ValueError("exam point code does not match the requested exam point")
+    if decision.relevance_class is not RelevanceClass.DIRECT:
+        raise ValueError("evidence decision is not direct")
+    if decision.confidence < MINIMUM_ADMISSION_CONFIDENCE:
+        raise ValueError("confidence is below the evidence admission threshold")
+    if not decision.evidence_chunk_id.strip():
+        raise ValueError("direct evidence requires an evidence chunk id")
+    if not decision.support_claim.strip() or not decision.content_kind.strip():
+        raise ValueError("direct evidence requires a support claim and content kind")
+    if not decision.candidate_assessment_unit:
+        raise ValueError("direct evidence requires an assessment unit candidate")
+    if not decision.candidate_card_content:
+        raise ValueError("direct evidence requires a card candidate")
+    normalized_role = (decision.evidence_role or "").strip().casefold()
+    if normalized_role not in DIRECT_EVIDENCE_ROLES:
+        raise ValueError("direct evidence requires a fact or rubric evidence role")
 
 
 def _without_products(
@@ -196,14 +216,6 @@ def admit_evidence_decision(
                 keep_prompt_material=True,
             )
 
-    if not decision.candidate_assessment_unit:
-        raise ValueError("direct evidence requires an assessment unit candidate")
-    if not decision.candidate_card_content:
-        raise ValueError("direct evidence requires a card candidate")
-    if not _is_direct_evidence_role(
-        decision.evidence_role,
-        required_roles=point.required_evidence_roles,
-    ):
-        raise ValueError("direct evidence requires a fact or rubric evidence role")
+    validate_direct_evidence_decision(decision, exam_point_code=point.code)
 
     return decision.model_copy(deep=True)
