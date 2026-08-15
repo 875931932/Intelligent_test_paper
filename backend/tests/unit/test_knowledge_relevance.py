@@ -437,3 +437,32 @@ def test_exam_point_knowledge_consolidator_is_a_protocol_contract():
 
 def test_fact_keys_unify_equivalent_symbolic_and_operators():
     assert assessable_fact_keys(["A&&B"]) == assessable_fact_keys(["A∧B"])
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        ("a-(b+c)", "a-b+c"),
+        ("!(a&&b)", "!a&&b"),
+        ("版本1.2", "版本12"),
+        ("a＞b", "a＜b"),
+        ("C++", "C"),
+        ("a⊕b", "ab"),
+    ],
+)
+def test_fact_keys_preserve_semantically_significant_structure(left, right):
+    assert assessable_fact_keys([left]) != assessable_fact_keys([right])
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        ("Ａ　∧（Ｂ ≥ 1.2）", "a&&(b>=1.2)"),
+        ("A∨B", "a || b"),
+        ("¬A", "! a"),
+        ("A⇒B", "a -> b"),
+        ("A⇔B", "a <=> b"),
+    ],
+)
+def test_fact_keys_unify_whitespace_width_and_explicit_operator_aliases(left, right):
+    assert assessable_fact_keys([left]) == assessable_fact_keys([right])

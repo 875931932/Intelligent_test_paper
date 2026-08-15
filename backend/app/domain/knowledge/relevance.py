@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from enum import StrEnum
 from typing import Any, Literal, Protocol
 
@@ -262,46 +263,40 @@ def validate_direct_evidence_decision(
         raise ValueError("direct evidence requires a fact or rubric evidence role")
 
 
-_FACT_OPERATOR_TOKENS = (
-    ("<=>", " operator_iff "),
-    ("↔", " operator_iff "),
-    ("=>", " operator_implies "),
-    ("->", " operator_implies "),
-    ("→", " operator_implies "),
-    ("&&", " operator_and "),
-    ("∧", " operator_and "),
-    ("||", " operator_or "),
-    ("∨", " operator_or "),
-    (">=", " operator_greater_or_equal "),
-    ("<=", " operator_less_or_equal "),
-    ("!=", " operator_not_equal "),
-    ("==", " operator_equal "),
-    ("≥", " operator_greater_or_equal "),
-    ("≤", " operator_less_or_equal "),
-    ("≠", " operator_not_equal "),
-    ("!", " operator_not "),
-    ("¬", " operator_not "),
-    (">", " operator_greater_than "),
-    ("<", " operator_less_than "),
-    ("=", " operator_equal "),
-    ("+", " operator_plus "),
-    ("-", " operator_minus "),
-    ("*", " operator_multiply "),
-    ("×", " operator_multiply "),
-    ("/", " operator_divide "),
-    ("÷", " operator_divide "),
+_SEMANTIC_OPERATOR_ALIASES = {
+    "<=>": "<=>",
+    "⇔": "<=>",
+    "↔": "<=>",
+    "⇒": "->",
+    "→": "->",
+    "=>": "->",
+    "≥": ">=",
+    "≤": "<=",
+    "≠": "!=",
+    "∧": "&&",
+    "∨": "||",
+    "¬": "!",
+    "×": "*",
+    "÷": "/",
+}
+_SEMANTIC_OPERATOR_PATTERN = re.compile(
+    "|".join(
+        re.escape(operator)
+        for operator in sorted(_SEMANTIC_OPERATOR_ALIASES, key=len, reverse=True)
+    )
 )
 
 
-def _fact_key(value: str) -> str:
-    normalized = value.casefold()
-    for operator, token in _FACT_OPERATOR_TOKENS:
-        normalized = normalized.replace(operator, token)
-    return re.sub(
-        r"[^0-9a-z\u3400-\u4dbf\u4e00-\u9fff]+",
-        "",
+def semantic_text_key(value: str) -> str:
+    """Return a fail-closed key without erasing semantic text structure."""
+
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    normalized = normalized.replace("检索增强生成", "rag")
+    normalized = _SEMANTIC_OPERATOR_PATTERN.sub(
+        lambda match: _SEMANTIC_OPERATOR_ALIASES[match.group(0)],
         normalized,
     )
+    return re.sub(r"\s+", "", normalized)
 
 
 def assessable_fact_keys(values: list[str]) -> frozenset[str]:
@@ -311,7 +306,7 @@ def assessable_fact_keys(values: list[str]) -> frozenset[str]:
         key
         for value in values
         for atom in re.split(r"[;；\r\n]+", value)
-        if (key := _fact_key(atom.strip()))
+        if (key := semantic_text_key(atom.strip()))
     )
 
 

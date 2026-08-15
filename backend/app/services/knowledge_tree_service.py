@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-
 from app.domain.framework.exam_points import ExamPoint
 from app.domain.knowledge.models import (
     FileKnowledgeCandidate,
@@ -18,6 +16,7 @@ from app.domain.knowledge.relevance import (
     RelevanceClass,
     admit_evidence_decision,
     assessable_fact_keys,
+    semantic_text_key,
     validate_direct_evidence_decision,
 )
 
@@ -58,11 +57,6 @@ def sanitize_file_candidate(candidate: FileKnowledgeCandidate, *, allowed_anchor
     return FileKnowledgeCandidate(material_version_id=candidate.material_version_id, topics=accepted_topics, unmatched=unmatched)
 
 
-def _canonical(value: str) -> str:
-    normalized = value.casefold().replace("检索增强生成", "rag").replace("的", "")
-    return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", normalized)
-
-
 def _merge_card(existing: KnowledgeCardDraft, incoming: KnowledgeCardDraft) -> None:
     existing.evidence_chunk_ids = list(dict.fromkeys([*existing.evidence_chunk_ids, *incoming.evidence_chunk_ids]))
     existing.assessable_content = list(dict.fromkeys([*existing.assessable_content, *incoming.assessable_content]))
@@ -85,7 +79,8 @@ def merge_file_candidates(
                     existing
                     for existing in topics
                     if existing.framework_anchor_key == incoming_topic.framework_anchor_key
-                    and _canonical(existing.name) == _canonical(incoming_topic.name)
+                    and semantic_text_key(existing.name)
+                    == semantic_text_key(incoming_topic.name)
                 ),
                 None,
             )
@@ -98,8 +93,8 @@ def merge_file_candidates(
                         existing
                         for existing in topic.units
                         if existing.exam_point_code == incoming_unit.exam_point_code
-                        and _canonical(existing.title)
-                        == _canonical(incoming_unit.title)
+                        and semantic_text_key(existing.title)
+                        == semantic_text_key(incoming_unit.title)
                     ),
                     None,
                 )
@@ -107,7 +102,15 @@ def merge_file_candidates(
                     topic.units.append(incoming_unit.model_copy(deep=True))
                     continue
                 for incoming_card in incoming_unit.cards:
-                    card = next((existing for existing in unit.cards if _canonical(existing.name) == _canonical(incoming_card.name)), None)
+                    card = next(
+                        (
+                            existing
+                            for existing in unit.cards
+                            if semantic_text_key(existing.name)
+                            == semantic_text_key(incoming_card.name)
+                        ),
+                        None,
+                    )
                     if card is None:
                         unit.cards.append(incoming_card.model_copy(deep=True))
                     else:

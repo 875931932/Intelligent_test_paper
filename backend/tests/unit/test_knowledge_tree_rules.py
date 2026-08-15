@@ -129,6 +129,57 @@ def test_synonymous_cross_file_cards_merge_source_free_prompt_material():
     assert merged.topics[0].units[0].cards[0].prompt_material == ["场景一", "场景二"]
 
 
+def test_card_merge_key_preserves_language_name_operators():
+    first = _file_candidate(cards=[_card(name="C", evidence=("e1",))])
+    second = _file_candidate(cards=[_card(name="C++", evidence=("e2",))])
+    second.material_version_id = "material-v2"
+
+    merged = merge_file_candidates([first, second], allowed_anchor_keys={"rag"})
+
+    assert [card.name for card in merged.topics[0].units[0].cards] == ["C", "C++"]
+
+
+def test_unit_merge_key_preserves_comparison_direction():
+    first = _file_candidate(
+        unit="a < b",
+        exam_point_code="EP-1",
+        cards=[_card(name="less", evidence=("e1",))],
+    )
+    second = _file_candidate(
+        unit="a > b",
+        exam_point_code="EP-1",
+        cards=[_card(name="greater", evidence=("e2",))],
+    )
+    second.material_version_id = "material-v2"
+
+    merged = merge_file_candidates([first, second], allowed_anchor_keys={"rag"})
+
+    assert [unit.title for unit in merged.topics[0].units] == ["a < b", "a > b"]
+
+
+def test_merge_keys_unify_width_whitespace_and_explicit_rag_alias():
+    first = _file_candidate(
+        unit="Ａ ∧ Ｂ",
+        exam_point_code="EP-1",
+        cards=[_card(name="检索增强生成的基本流程", evidence=("e1",))],
+    )
+    second = _file_candidate(
+        unit="a&&b",
+        exam_point_code="EP-1",
+        cards=[_card(name="RAG的基本流程", evidence=("e2",))],
+    )
+    second.material_version_id = "material-v2"
+
+    merged = merge_file_candidates([first, second], allowed_anchor_keys={"rag"})
+
+    assert len(merged.topics[0].units) == 1
+    assert len(merged.topics[0].units[0].cards) == 1
+    assert set(merged.topics[0].units[0].cards[0].evidence_chunk_ids) == {
+        "e1",
+        "e2",
+    }
+
+
 def test_same_named_units_from_different_exam_points_are_not_merged():
     first = _file_candidate(
         exam_point_code="EP-1",
