@@ -47,6 +47,18 @@ from app.services.knowledge_publish_service import (
 from app.services.material_service import delete_material
 
 
+ORGANIZATION_SCHEMA_VERSION = 2
+
+
+def _frozen_input():
+    return {
+        "organization_schema_version": ORGANIZATION_SCHEMA_VERSION,
+        "framework_version_id": "framework-v1",
+        "exam_points": [{"id": "exam-point-1", "code": "EP-1"}],
+        "material_version_ids": ["material-v1"],
+    }
+
+
 def _session(tmp_path):
     engine = create_engine(f"sqlite:///{tmp_path / 'knowledge-publish.db'}")
     event.listen(engine, "connect", lambda connection, _: connection.execute("PRAGMA foreign_keys=ON"))
@@ -96,7 +108,7 @@ def _session(tmp_path):
             course_id="course",
             framework_version_id="framework-v1",
             status="running",
-            input_snapshot={},
+            input_snapshot=_frozen_input(),
         )
     )
     session.execute(materials.insert().values(id="material", course_id="course", logical_name="slides.pdf", material_type="teaching_material", status="staged"))
@@ -146,6 +158,7 @@ def _session(tmp_path):
         evidence_chunks.insert().values(
             id="evidence-1", course_id="course", organization_run_id="organization-run", material_version_id="material-v1",
             chunk_index=0, content="RAG包括检索、上下文构造和生成", content_hash="b" * 64,
+            embedding=[0.75, 0.25],
         )
     )
     session.commit()
@@ -213,6 +226,7 @@ def _organization_state(tree):
     return {
         "course_id": "course",
         "run_id": "organization-run",
+        "frozen_input": _frozen_input(),
         "file_decisions": [
             {
                 "exam_point_code": "EP-1",
@@ -250,6 +264,11 @@ def test_database_repository_publishes_catalog_and_index_atomically(tmp_path):
             "out_of_scope": 0,
         }
         assert teacher_candidate["payload"]["evidence_sources"][0]["exam_point_code"] == "EP-1"
+        assert (
+            teacher_candidate["payload"]["organization_schema_version"]
+            == ORGANIZATION_SCHEMA_VERSION
+        )
+        assert teacher_candidate["payload"]["frozen_input"] == _frozen_input()
 
         result = repository.publish(
             {**state, "candidate_id": candidate_id},
@@ -274,6 +293,65 @@ def test_database_repository_publishes_catalog_and_index_atomically(tmp_path):
         assert session.scalar(select(index_memberships.c.knowledge_card_id)) is not None
         assert session.scalar(select(index_versions.c.status)) == "published"
         assert session.scalar(select(exam_point_evidence_links.c.relevance_class)) == "direct"
+        published_payload = session.execute(
+            select(knowledge_catalog_versions.c.payload).where(
+                knowledge_catalog_versions.c.id == candidate_id
+            )
+        ).scalar_one()
+        assert published_payload["organization_schema_version"] == ORGANIZATION_SCHEMA_VERSION
+        assert published_payload["frozen_input"] == _frozen_input()
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_publish_uses_persisted_candidate_tree_as_only_baseline(tmp_path):
+    engine, session = _session(tmp_path)
+    try:
+        repository = DatabaseKnowledgeRepository(session)
+        tree = _tree()
+        state = _organization_state(tree)
+        candidate_id = repository.persist_candidate(state, tree)
+        mutated = tree.model_copy(deep=True)
+        mutated.topics[0].units[0].cards[0].name = "UNREVIEWED MUTATION"
+
+        repository.publish(
+            {**state, "candidate_id": candidate_id},
+            mutated,
+            _confirmation(),
+        )
+
+        assert session.scalar(
+            select(knowledge_cards.c.name).where(
+                knowledge_cards.c.name == "UNREVIEWED MUTATION"
+            )
+        ) is None
+        assert session.scalar(
+            select(knowledge_cards.c.name).where(
+                knowledge_cards.c.name == "RAG基本流程"
+            )
+        ) == "RAG基本流程"
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_existing_candidate_revalidates_frozen_exam_points_before_idempotent_return(tmp_path):
+    engine, session = _session(tmp_path)
+    try:
+        repository = DatabaseKnowledgeRepository(session)
+        tree = _tree()
+        state = _organization_state(tree)
+        repository.persist_candidate(state, tree)
+        session.execute(
+            exam_points.update()
+            .where(exam_points.c.id == "exam-point-1")
+            .values(status="candidate")
+        )
+        session.commit()
+
+        with pytest.raises(KnowledgePublishError, match="snapshot|exam point"):
+            repository.persist_candidate(state, tree)
     finally:
         session.close()
         engine.dispose()
@@ -305,8 +383,9 @@ def test_create_organization_state_snapshots_ready_blocks_without_putting_text_i
         assert "content" not in str(state)
         assert len(state["evidence_chunk_ids"]) == 1
         assert state["frozen_input"] == {
+            "organization_schema_version": ORGANIZATION_SCHEMA_VERSION,
             "framework_version_id": "framework-v1",
-            "exam_point_ids": ["exam-point-1"],
+            "exam_points": [{"id": "exam-point-1", "code": "EP-1"}],
             "material_version_ids": ["material-v1"],
         }
         row = session.execute(
@@ -321,6 +400,142 @@ def test_create_organization_state_snapshots_ready_blocks_without_putting_text_i
             "block_type": "text",
         }
         assert row["embedding"] == [1.0, 1.0]
+    finally:
+        session.close()
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("vectors", "message"),
+    [
+        ([[0.0, 0.0], [1.0, 0.0]], "zero norm"),
+        ([[1.0, 0.0], [1.0]], "dimension"),
+    ],
+)
+def test_create_organization_state_rejects_invalid_snapshot_embeddings(
+    tmp_path, vectors, message
+):
+    engine, session = _session(tmp_path)
+    try:
+        session.execute(
+            content_blocks.insert().values(
+                id="block-material-v1-2",
+                course_id="course",
+                document_parse_run_id="parse-material-v1",
+                material_version_id="material-v1",
+                block_index=1,
+                block_type="text",
+                text="RAG生成阶段使用检索上下文",
+                page_index=4,
+                bbox=[1, 2, 3, 4],
+                heading_path=["RAG"],
+                reading_order=1,
+                content_hash="f" * 64,
+            )
+        )
+        session.commit()
+
+        class InvalidEmbedder:
+            def embed(self, texts):
+                assert len(texts) == 2
+                return vectors
+
+        with pytest.raises(KnowledgePublishError, match=message):
+            create_organization_state(
+                session,
+                course_id="course",
+                material_version_ids=["material-v1"],
+                embedder=InvalidEmbedder(),
+            )
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_create_organization_state_rejects_embedding_dimension_changes_across_files(tmp_path):
+    engine, session = _session(tmp_path)
+    try:
+        session.execute(
+            materials.insert().values(
+                id="material-2",
+                course_id="course",
+                logical_name="exercise.pdf",
+                material_type="exercise",
+                status="staged",
+            )
+        )
+        session.execute(
+            material_versions.insert().values(
+                id="material-v2",
+                course_id="course",
+                material_id="material-2",
+                version_no=1,
+                status="staged",
+                object_key="courses/course/exercise.pdf",
+                size_bytes=10,
+                sha256="d" * 64,
+                mime_type="application/pdf",
+            )
+        )
+        session.execute(
+            document_parse_runs.insert().values(
+                id="parse-material-v2",
+                course_id="course",
+                material_version_id="material-v2",
+                parser_profile_id="parser-profile",
+                status="ready",
+                completed_at=datetime.now(UTC),
+            )
+        )
+        session.execute(
+            content_blocks.insert().values(
+                id="block-material-v2",
+                course_id="course",
+                document_parse_run_id="parse-material-v2",
+                material_version_id="material-v2",
+                block_index=0,
+                block_type="text",
+                text="RAG练习材料",
+                page_index=1,
+                bbox=[1, 2, 3, 4],
+                heading_path=["练习"],
+                reading_order=0,
+                content_hash="e" * 64,
+            )
+        )
+        session.commit()
+
+        class ChangingDimensionEmbedder:
+            def __init__(self):
+                self.calls = 0
+
+            def embed(self, texts):
+                self.calls += 1
+                return [[1.0, 0.0]] if self.calls == 1 else [[1.0, 0.0, 0.0]]
+
+        with pytest.raises(KnowledgePublishError, match="dimension"):
+            create_organization_state(
+                session,
+                course_id="course",
+                material_version_ids=["material-v1", "material-v2"],
+                embedder=ChangingDimensionEmbedder(),
+            )
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_repository_loads_frozen_chunk_embedding_for_retrieval(tmp_path):
+    engine, session = _session(tmp_path)
+    try:
+        chunks = DatabaseKnowledgeRepository(session).load_evidence_chunks(
+            course_id="course",
+            run_id="organization-run",
+            evidence_chunk_ids=["evidence-1"],
+        )
+
+        assert len(chunks) == 1
+        assert chunks[0].embedding == [0.75, 0.25]
     finally:
         session.close()
         engine.dispose()
@@ -468,6 +683,41 @@ def test_candidate_cannot_publish_after_its_only_direct_source_is_deleted(tmp_pa
         engine.dispose()
 
 
+def test_publish_rejects_when_frozen_exam_point_is_no_longer_confirmed(tmp_path):
+    engine, session = _session(tmp_path)
+    try:
+        repository = DatabaseKnowledgeRepository(session)
+        tree = _tree()
+        state = _organization_state(tree)
+        candidate_id = repository.persist_candidate(state, tree)
+        session.execute(
+            exam_points.update()
+            .where(exam_points.c.id == "exam-point-1")
+            .values(status="candidate")
+        )
+        session.commit()
+        delete_material(session, course_id="course", material_id="material")
+
+        with pytest.raises(KnowledgePublishError, match="snapshot|exam point"):
+            repository.publish(
+                {**state, "candidate_id": candidate_id},
+                tree,
+                _confirmation(),
+            )
+
+        assert session.scalar(select(assessment_units.c.id)) is None
+        assert session.scalar(select(knowledge_evidence_links.c.id)) is None
+        assert session.scalar(select(index_versions.c.id)) is None
+        assert session.scalar(
+            select(knowledge_catalog_versions.c.status).where(
+                knowledge_catalog_versions.c.id == candidate_id
+            )
+        ) == "candidate"
+    finally:
+        session.close()
+        engine.dispose()
+
+
 def test_publish_rejects_when_deleted_source_removes_only_answer_or_rubric_basis(tmp_path):
     engine, session = _session(tmp_path)
     try:
@@ -561,6 +811,15 @@ def test_publish_rejects_sufficient_exam_point_without_active_card_chain(tmp_pat
                 status="confirmed",
             )
         )
+        expanded_frozen_input = _frozen_input()
+        expanded_frozen_input["exam_points"].append(
+            {"id": "exam-point-2", "code": "EP-2"}
+        )
+        session.execute(
+            organization_runs.update()
+            .where(organization_runs.c.id == "organization-run")
+            .values(input_snapshot=expanded_frozen_input)
+        )
         session.commit()
         tree = _tree()
         tree.coverage.append(
@@ -569,6 +828,7 @@ def test_publish_rejects_sufficient_exam_point_without_active_card_chain(tmp_pat
             )
         )
         state = _organization_state(tree)
+        state["frozen_input"] = expanded_frozen_input
         repository = DatabaseKnowledgeRepository(session)
         candidate_id = repository.persist_candidate(state, tree)
         confirmation = _confirmation()

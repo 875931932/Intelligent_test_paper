@@ -31,7 +31,12 @@ from app.db.schema import (
     organization_runs,
 )
 from app.domain.framework.exam_points import ExamPoint
-from app.domain.knowledge.models import KnowledgeTreeCandidate, KnowledgeTreeConfirmation
+from app.domain.knowledge.models import (
+    LEGACY_ORGANIZATION_SCHEMA_VERSION,
+    ORGANIZATION_SCHEMA_VERSION,
+    KnowledgeTreeCandidate,
+    KnowledgeTreeConfirmation,
+)
 from app.domain.knowledge.relevance import (
     EvidenceDecision,
     ExamPointFileDecision,
@@ -88,20 +93,31 @@ def _exam_point_from_row(row) -> ExamPoint:
 
 
 def _confirmed_exam_point_rows(
-    session: Session, *, course_id: str, framework_version_id: str
+    session: Session,
+    *,
+    course_id: str,
+    framework_version_id: str,
+    lock: bool = False,
 ) -> list[dict]:
+    statement = (
+        select(exam_points)
+        .where(
+            exam_points.c.course_id == course_id,
+            exam_points.c.framework_version_id == framework_version_id,
+            exam_points.c.status == "confirmed",
+        )
+        .order_by(exam_points.c.code)
+    )
+    if lock:
+        statement = statement.with_for_update()
     return [
         dict(row)
-        for row in session.execute(
-            select(exam_points)
-            .where(
-                exam_points.c.course_id == course_id,
-                exam_points.c.framework_version_id == framework_version_id,
-                exam_points.c.status == "confirmed",
-            )
-            .order_by(exam_points.c.code)
-        ).mappings()
+        for row in session.execute(statement).mappings()
     ]
+
+
+def _exam_point_snapshot(point_rows: list[dict]) -> list[dict[str, str]]:
+    return [{"id": row["id"], "code": row["code"]} for row in point_rows]
 
 
 class DatabaseKnowledgeRepository:
@@ -133,6 +149,7 @@ class DatabaseKnowledgeRepository:
                 material_version_id=by_id[evidence_id]["material_version_id"],
                 content=by_id[evidence_id]["content"],
                 locator=by_id[evidence_id]["locator"] or {},
+                embedding=by_id[evidence_id]["embedding"],
             )
             for evidence_id in evidence_chunk_ids
         ]
@@ -141,30 +158,74 @@ class DatabaseKnowledgeRepository:
         course_id = state["course_id"]
         run_id = state["run_id"]
         existing = self.session.execute(
-            select(knowledge_catalog_versions.c.id).where(
+            select(
+                knowledge_catalog_versions.c.id,
+                knowledge_catalog_versions.c.framework_version_id,
+                knowledge_catalog_versions.c.status,
+                knowledge_catalog_versions.c.payload,
+            )
+            .where(
                 knowledge_catalog_versions.c.course_id == course_id,
                 knowledge_catalog_versions.c.organization_run_id == run_id,
             )
-        ).scalar_one_or_none()
+            .with_for_update()
+        ).mappings().one_or_none()
+        expected_run_status = "running"
         if existing is not None:
-            return existing
+            expected_run_status = {
+                "candidate": "awaiting_teacher_confirmation",
+                "published": "published",
+            }.get(existing["status"], "")
+            if not expected_run_status:
+                raise KnowledgePublishError("existing knowledge candidate status is unavailable")
         run = self.session.execute(
-            select(organization_runs).where(
+            select(organization_runs)
+            .where(
                 organization_runs.c.id == run_id,
                 organization_runs.c.course_id == course_id,
                 organization_runs.c.framework_version_id == tree.framework_version_id,
-                organization_runs.c.status == "running",
+                organization_runs.c.status == expected_run_status,
             )
+            .with_for_update()
         ).mappings().one_or_none()
         if run is None:
             raise KnowledgePublishError("organization run is unavailable")
+        frozen_input = state.get("frozen_input")
+        if (
+            not isinstance(frozen_input, dict)
+            or frozen_input.get("organization_schema_version")
+            != ORGANIZATION_SCHEMA_VERSION
+            or run["input_snapshot"] != frozen_input
+        ):
+            raise KnowledgePublishError("organization run frozen snapshot does not match")
         point_rows = _confirmed_exam_point_rows(
             self.session,
             course_id=course_id,
             framework_version_id=tree.framework_version_id,
+            lock=True,
         )
+        if frozen_input.get("exam_points") != _exam_point_snapshot(point_rows):
+            raise KnowledgePublishError("confirmed exam point snapshot does not match")
+        if existing is not None:
+            existing_payload = existing["payload"] or {}
+            if (
+                existing["framework_version_id"] != tree.framework_version_id
+                or existing_payload.get("organization_schema_version")
+                != ORGANIZATION_SCHEMA_VERSION
+                or existing_payload.get("frozen_input") != frozen_input
+                or existing_payload.get("failed_pairs", [])
+                != list(state.get("failed_pairs") or [])
+                or KnowledgeTreeCandidate.model_validate(existing_payload).model_dump(mode="json")
+                != tree.model_dump(mode="json")
+            ):
+                raise KnowledgePublishError(
+                    "existing knowledge candidate content or frozen snapshot does not match"
+                )
+            return existing["id"]
         point_ids = {row["code"]: row["id"] for row in point_rows}
         payload = tree.model_dump(mode="json")
+        payload["organization_schema_version"] = ORGANIZATION_SCHEMA_VERSION
+        payload["frozen_input"] = frozen_input
         payload["failed_pairs"] = list(state.get("failed_pairs") or [])
         version_no = self.session.scalar(
             select(func.coalesce(func.max(knowledge_catalog_versions.c.version_no), 0) + 1).where(
@@ -246,17 +307,23 @@ class DatabaseKnowledgeRepository:
         course_id = state["course_id"]
         catalog_id = state["candidate_id"]
         row = self.session.execute(
-            select(knowledge_catalog_versions).where(
+            select(knowledge_catalog_versions)
+            .where(
                 knowledge_catalog_versions.c.id == catalog_id,
                 knowledge_catalog_versions.c.course_id == course_id,
                 knowledge_catalog_versions.c.organization_run_id == state["run_id"],
                 knowledge_catalog_versions.c.status == "candidate",
             )
+            .with_for_update()
         ).mappings().one_or_none()
         if row is None:
             raise KnowledgePublishError("knowledge catalogue candidate is not available")
         if tree.framework_version_id != row["framework_version_id"]:
             raise KnowledgePublishError("candidate framework version cannot be changed")
+        candidate_payload = row["payload"] or {}
+        tree = KnowledgeTreeCandidate.model_validate(candidate_payload)
+        if tree.framework_version_id != row["framework_version_id"]:
+            raise KnowledgePublishError("persisted candidate framework version is invalid")
         framework = self.session.execute(
             select(framework_versions.c.payload).where(
                 framework_versions.c.id == row["framework_version_id"],
@@ -279,15 +346,45 @@ class DatabaseKnowledgeRepository:
         active_topics = {topic.code for topic in tree.topics if topic.status == "active"}
         if active_topics - set(confirmation.reviewed_topic_codes):
             raise KnowledgePublishError("every active topic requires teacher review")
-        point_rows = _confirmed_exam_point_rows(
-            self.session,
-            course_id=course_id,
-            framework_version_id=row["framework_version_id"],
-        )
+        schema_version = candidate_payload.get("organization_schema_version")
+        if schema_version not in {
+            LEGACY_ORGANIZATION_SCHEMA_VERSION,
+            ORGANIZATION_SCHEMA_VERSION,
+        }:
+            raise KnowledgePublishError("knowledge candidate schema version is missing or unsupported")
+        point_rows: list[dict] = []
+        if schema_version == ORGANIZATION_SCHEMA_VERSION:
+            run = self.session.execute(
+                select(organization_runs)
+                .where(
+                    organization_runs.c.id == state["run_id"],
+                    organization_runs.c.course_id == course_id,
+                    organization_runs.c.framework_version_id == row["framework_version_id"],
+                    organization_runs.c.status == "awaiting_teacher_confirmation",
+                )
+                .with_for_update()
+            ).mappings().one_or_none()
+            frozen_input = candidate_payload.get("frozen_input")
+            if run is None or not isinstance(frozen_input, dict):
+                raise KnowledgePublishError("organization run frozen snapshot is unavailable")
+            if (
+                frozen_input.get("organization_schema_version")
+                != ORGANIZATION_SCHEMA_VERSION
+                or run["input_snapshot"] != frozen_input
+            ):
+                raise KnowledgePublishError("organization run frozen snapshot does not match")
+            point_rows = _confirmed_exam_point_rows(
+                self.session,
+                course_id=course_id,
+                framework_version_id=row["framework_version_id"],
+                lock=True,
+            )
+            if frozen_input.get("exam_points") != _exam_point_snapshot(point_rows):
+                raise KnowledgePublishError("confirmed exam point snapshot does not match")
         points_by_code = {item["code"]: _exam_point_from_row(item) for item in point_rows}
         publishable_exam_point_codes: set[str] | None = None
         try:
-            if points_by_code:
+            if schema_version == ORGANIZATION_SCHEMA_VERSION:
                 excluded_codes = set(confirmation.teacher_exclusions)
                 if excluded_codes - set(points_by_code):
                     raise KnowledgePublishError(
@@ -385,7 +482,7 @@ class DatabaseKnowledgeRepository:
                         "active source evidence is no longer sufficient for publish"
                     ) from exc
             else:
-                # Explicit legacy migration path for pre-ExamPoint catalogue fixtures.
+                # Compatibility is allowed only for candidates explicitly marked legacy.
                 validate_publishable_tree(tree, allowed_anchor_keys=allowed)
         except KnowledgeTreeValidationError as exc:
             raise KnowledgePublishError(str(exc)) from exc
@@ -444,6 +541,9 @@ class DatabaseKnowledgeRepository:
             now = datetime.now(UTC)
             payload = tree.model_dump(mode="json")
             payload["failed_pairs"] = list(row["payload"].get("failed_pairs", []))
+            payload["organization_schema_version"] = schema_version
+            if schema_version == ORGANIZATION_SCHEMA_VERSION:
+                payload["frozen_input"] = candidate_payload["frozen_input"]
             self.session.execute(
                 update(knowledge_catalog_versions)
                 .where(
@@ -689,7 +789,12 @@ class DatabaseKnowledgeRepository:
         return filtered
 
 
-def _validated_embeddings(raw: object, *, expected: int) -> list[list[float]]:
+def _validated_embeddings(
+    raw: object,
+    *,
+    expected: int,
+    expected_dimension: int | None = None,
+) -> list[list[float]]:
     if not isinstance(raw, list) or len(raw) != expected:
         raise KnowledgePublishError("embedding response count does not match parsed blocks")
     vectors: list[list[float]] = []
@@ -702,6 +807,15 @@ def _validated_embeddings(raw: object, *, expected: int) -> list[list[float]]:
             raise KnowledgePublishError("embedding response contains non-numeric values") from exc
         if not all(math.isfinite(item) for item in vector):
             raise KnowledgePublishError("embedding response contains non-finite values")
+        norm = math.hypot(*vector)
+        if norm == 0:
+            raise KnowledgePublishError("embedding response contains a zero norm vector")
+        if not math.isfinite(norm):
+            raise KnowledgePublishError("embedding response contains a non-finite norm")
+        if expected_dimension is None:
+            expected_dimension = len(vector)
+        elif len(vector) != expected_dimension:
+            raise KnowledgePublishError("embedding response dimension is inconsistent")
         vectors.append(vector)
     return vectors
 
@@ -783,20 +897,27 @@ def create_organization_state(
         selected_blocks.append((version_id, blocks))
 
     embedded_blocks: list[tuple[str, dict, list[float]]] = []
+    embedding_dimension: int | None = None
     for version_id, blocks in selected_blocks:
         texts = [block["text"].strip() for block in blocks]
         try:
-            vectors = _validated_embeddings(embedder.embed(texts), expected=len(texts))
+            vectors = _validated_embeddings(
+                embedder.embed(texts),
+                expected=len(texts),
+                expected_dimension=embedding_dimension,
+            )
         except KnowledgePublishError:
             raise
         except Exception as exc:
             raise KnowledgePublishError("embedding service is unavailable") from exc
+        embedding_dimension = len(vectors[0])
         embedded_blocks.extend(zip([version_id] * len(blocks), blocks, vectors, strict=True))
 
     run_id = uuid4().hex
     frozen_input = {
+        "organization_schema_version": ORGANIZATION_SCHEMA_VERSION,
         "framework_version_id": framework["id"],
-        "exam_point_ids": [row["id"] for row in point_rows],
+        "exam_points": _exam_point_snapshot(point_rows),
         "material_version_ids": list(material_version_ids),
     }
     evidence_ids: list[str] = []

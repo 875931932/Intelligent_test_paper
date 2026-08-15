@@ -11,6 +11,10 @@ from app.domain.knowledge.relevance import EvidenceDecision, ExamPointCoverage
 from app.domain.model_calls import ModelCallContext
 
 
+LEGACY_ORGANIZATION_SCHEMA_VERSION = 1
+ORGANIZATION_SCHEMA_VERSION = 2
+
+
 class KnowledgeCardDraft(BaseModel):
     name: str
     performance_statement: str

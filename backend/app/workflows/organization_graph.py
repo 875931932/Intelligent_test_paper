@@ -18,6 +18,7 @@ from app.domain.knowledge.models import (
     KnowledgeRepository,
     KnowledgeTreeCandidate,
     KnowledgeTreeConfirmation,
+    ORGANIZATION_SCHEMA_VERSION,
 )
 from app.domain.knowledge.relevance import (
     ExamPointEvidenceClassifier,
@@ -58,7 +59,7 @@ class OrganizationState(TypedDict, total=False):
 
 _CREDENTIAL_KEY_PATTERN = (
     r"(?:api[ _-]?(?:key|token)|access[ _-]?token|client[ _-]?secret|"
-    r"password|passwd|token|secret)"
+    r"subscription[ _-]?key|password|passwd|token|secret)"
 )
 _SECRET_KEY_PATTERN = rf"(?:{_CREDENTIAL_KEY_PATTERN}|authorization)"
 _DOUBLE_QUOTED_SECRET_PATTERN = re.compile(
@@ -78,7 +79,8 @@ _UNTERMINATED_SINGLE_QUOTED_SECRET_PATTERN = re.compile(
     r"'(?:\\.|[^'\\\r\n])*\\?$"
 )
 _AUTH_SCHEME_SECRET_PATTERN = re.compile(
-    r"(?im)(?P<scheme>\b(?:basic|digest|aws4-hmac-sha256)\b)[^\r\n]*"
+    r"(?im)(?P<scheme>\b(?:basic|digest|aws4-hmac-sha256|token|api[ _-]?key)\b)"
+    r"\s+[^\r\n]*"
 )
 _BEARER_SECRET_PATTERN = re.compile(r"(?i)(\bbearer\s+)[^\s,;}\]\"']+")
 _UNQUOTED_SECRET_PATTERN = re.compile(
@@ -181,12 +183,28 @@ def build_organization_graph(
 
     def freeze_selected_materials(state: OrganizationState):
         expected = {
+            "organization_schema_version": ORGANIZATION_SCHEMA_VERSION,
             "framework_version_id": state["framework_version_id"],
-            "exam_point_ids": list(state["frozen_input"].get("exam_point_ids") or []),
+            "exam_points": list(state["frozen_input"].get("exam_points") or []),
             "material_version_ids": list(state["material_version_ids"]),
         }
         if state.get("frozen_input") != expected:
             raise ValueError("organization input snapshot is not frozen")
+        frozen_points = expected["exam_points"]
+        if (
+            any(
+                not isinstance(item, dict)
+                or not isinstance(item.get("id"), str)
+                or not item["id"].strip()
+                or not isinstance(item.get("code"), str)
+                or not item["code"].strip()
+                for item in frozen_points
+            )
+            or len({item["id"] for item in frozen_points}) != len(frozen_points)
+            or {item["code"] for item in frozen_points}
+            != {point.code for point in _points(state)}
+        ):
+            raise ValueError("organization exam point snapshot is invalid")
         return {"frozen_input": expected}
 
     def retrieve_per_exam_point(state: OrganizationState):
@@ -198,11 +216,21 @@ def build_organization_graph(
         coverage_reasons: dict[str, list[str]] = defaultdict(list)
         for point in _points(state):
             point_has_recall = False
+            embed_query = getattr(retriever, "embed_query", None)
+            query_vector = embed_query(point) if callable(embed_query) else None
             for material_version_id in sorted(chunks_by_material):
                 material_chunks = chunks_by_material[material_version_id]
                 allowed_ids = {chunk.id for chunk in material_chunks}
+                if query_vector is None:
+                    retrieved = retriever.retrieve(point, material_chunks)
+                else:
+                    retrieved = retriever.retrieve(
+                        point,
+                        material_chunks,
+                        query_vector=query_vector,
+                    )
                 ranked = sorted(
-                    retriever.retrieve(point, material_chunks),
+                    retrieved,
                     key=lambda item: (-item.score, item.chunk.id),
                 )
                 recalled_ids: list[str] = []
@@ -278,6 +306,10 @@ def build_organization_graph(
             decision_ids = [item.evidence_chunk_id for item in admitted]
             if len(decision_ids) != len(set(decision_ids)):
                 raise ValueError("classification response contains duplicate evidence decisions")
+            if set(decision_ids) != allowed_ids:
+                raise ValueError(
+                    "classification response must cover every recalled evidence chunk"
+                )
             return validated.model_copy(update={"decisions": admitted})
 
         decisions: list[ExamPointFileDecision] = []
@@ -475,9 +507,7 @@ def build_organization_graph(
             )
         return {
             "tree": revised.model_dump(mode="json"),
-            "confirmation": confirmation.model_copy(
-                update={"operations": []}
-            ).model_dump(mode="json"),
+            "confirmation": confirmation.model_dump(mode="json"),
         }
 
     def publish_catalog_and_index(state: OrganizationState):

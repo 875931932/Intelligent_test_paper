@@ -20,6 +20,7 @@ class StagingChunk(BaseModel):
     material_version_id: str
     content: str = Field(min_length=1)
     locator: dict[str, Any] = Field(default_factory=dict)
+    embedding: list[float] | None = None
 
 
 class RelevanceClass(StrEnum):

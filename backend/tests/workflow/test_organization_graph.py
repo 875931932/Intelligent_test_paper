@@ -17,7 +17,7 @@ from app.domain.knowledge.relevance import (
     RelevanceClass,
     StagingChunk,
 )
-from app.services.staging_retrieval_service import RankedChunk
+from app.services.staging_retrieval_service import HybridStagingRetriever, RankedChunk
 from app.config import settings
 from app.workflows.organization_graph import build_organization_graph
 
@@ -177,8 +177,12 @@ def _state(chunks=None):
         "material_version_ids": ["material-1", "material-2"],
         "evidence_chunk_ids": [chunk.id for chunk in chunks],
         "frozen_input": {
+            "organization_schema_version": 2,
             "framework_version_id": "framework-v1",
-            "exam_point_ids": ["db-ep-1", "db-ep-2"],
+            "exam_points": [
+                {"id": "db-ep-1", "code": "EP-1"},
+                {"id": "db-ep-2", "code": "EP-2"},
+            ],
             "material_version_ids": ["material-1", "material-2"],
         },
     }
@@ -304,6 +308,55 @@ def test_each_exam_point_material_pair_gets_its_own_top_k_budget(monkeypatch):
     ]
 
 
+def test_graph_embeds_each_exam_point_query_once_and_reuses_frozen_chunk_vectors():
+    class QueryOnlyEmbedder:
+        def __init__(self):
+            self.calls: list[list[str]] = []
+
+        def embed(self, texts):
+            self.calls.append(list(texts))
+            assert len(texts) == 1
+            return [[1.0, 0.0]]
+
+    chunks = [
+        StagingChunk(
+            id="m1",
+            material_version_id="material-1",
+            content="材料一",
+            embedding=[1.0, 0.0],
+        ),
+        StagingChunk(
+            id="m2",
+            material_version_id="material-2",
+            content="材料二",
+            embedding=[1.0, 0.0],
+        ),
+    ]
+    embedder = QueryOnlyEmbedder()
+    retriever = HybridStagingRetriever(
+        embedder=embedder,
+        top_k=24,
+        minimum_score=0.0,
+    )
+    graph, _, classifier, _, _ = _graph(retriever=retriever, chunks=chunks)
+
+    graph.invoke(
+        _state(chunks),
+        config={"configurable": {"thread_id": "reuse-frozen-embeddings"}},
+    )
+
+    assert embedder.calls == [
+        [_point("EP-1", "rag").retrieval_intent],
+        [_point("EP-2", "agent").retrieval_intent],
+    ]
+    assert sorted((point, material) for point, material, _ in classifier.calls) == [
+        ("EP-1", "material-1"),
+        ("EP-1", "material-2"),
+        ("EP-2", "material-1"),
+        ("EP-2", "material-2"),
+    ]
+
+
 class AdapterOutputError(RuntimeError):
     def __init__(self, error_code, message="api_key=secret-value malformed output"):
         super().__init__(message)
@@ -354,6 +407,24 @@ def test_classifier_failure_preserves_safe_adapter_error_code(error_code):
             "AWS4-HMAC-SHA256 Credential=aws-access-without-prefix, "
             "Signature=aws-signature-without-prefix",
             ["aws-access-without-prefix", "aws-signature-without-prefix"],
+        ),
+        (
+            "Token token-scheme-secret",
+            ["token-scheme-secret"],
+        ),
+        (
+            "ApiKey api-key-scheme-secret",
+            ["api-key-scheme-secret"],
+        ),
+        (
+            "X-API-Key: provider-api-secret\n"
+            "X-Amz-Security-Token: provider-session-secret\n"
+            "Ocp-Apim-Subscription-Key: provider-subscription-secret",
+            [
+                "provider-api-secret",
+                "provider-session-secret",
+                "provider-subscription-secret",
+            ],
         ),
         ('model returned {"api_key":"json-secret-456"}', ["json-secret-456"]),
         ("password='single-secret-789'", ["single-secret-789"]),
@@ -439,7 +510,7 @@ def test_failed_pair_message_redacts_credentials_before_truncation(message, secr
 
     graph, _, _, _, repository = _graph(classifier=FailingClassifier())
 
-    graph.invoke(
+    paused = graph.invoke(
         _state(),
         config={
             "configurable": {
@@ -451,6 +522,7 @@ def test_failed_pair_message_redacts_credentials_before_truncation(message, secr
     redacted = repository.persisted_state["failed_pairs"][0]["error_message"]
     assert len(redacted) <= 500
     assert all(secret not in redacted for secret in secrets)
+    assert all(secret not in str(paused["__interrupt__"]) for secret in secrets)
 
 
 @pytest.mark.parametrize("bad_output", ["cross_point", "duplicate"])
@@ -485,6 +557,66 @@ def test_bad_classifier_output_isolated_to_its_exam_point_file_pair(bad_output):
     assert repository.persisted_state["failed_pairs"][0]["exam_point_code"] == "EP-1"
     coverage = {item.exam_point_code: item.status for item in repository.candidate.coverage}
     assert coverage == {"EP-1": "insufficient", "EP-2": "sufficient"}
+
+
+@pytest.mark.parametrize("response_kind", ["empty", "partial"])
+def test_incomplete_classifier_response_isolated_to_its_pair(response_kind):
+    class MultiChunkRetriever(PairSelectingRetriever):
+        def retrieve(self, exam_point, chunks):
+            if exam_point.code == "EP-1" and chunks[0].material_version_id == "material-1":
+                self.calls.append((exam_point.code, [chunk.id for chunk in chunks]))
+                return [
+                    RankedChunk(
+                        chunk=chunk,
+                        score=0.9,
+                        lexical_score=0.8,
+                        semantic_score=0.95,
+                    )
+                    for chunk in chunks
+                ]
+            return super().retrieve(exam_point, chunks)
+
+    class IncompleteClassifier(RecordingClassifier):
+        def classify(self, *, exam_point, material_version_id, chunks, call_context=None):
+            if (exam_point.code, material_version_id) != ("EP-1", "material-1"):
+                return super().classify(
+                    exam_point=exam_point,
+                    material_version_id=material_version_id,
+                    chunks=chunks,
+                    call_context=call_context,
+                )
+            self.calls.append(
+                (exam_point.code, material_version_id, [chunk.id for chunk in chunks])
+            )
+            decisions = [] if response_kind == "empty" else [_decision(exam_point, chunks[0])]
+            return ExamPointFileDecision(
+                exam_point_code=exam_point.code,
+                material_version_id=material_version_id,
+                decisions=decisions,
+            )
+
+    graph, _, classifier, _, repository = _graph(
+        retriever=MultiChunkRetriever(), classifier=IncompleteClassifier()
+    )
+
+    graph.invoke(
+        _state(),
+        config={"configurable": {"thread_id": f"incomplete-{response_kind}"}},
+    )
+
+    assert ("EP-1", "material-1", ["chunk-1", "chunk-4"]) in classifier.calls
+    failures = repository.persisted_state["failed_pairs"]
+    assert len(failures) == 1
+    assert failures[0]["exam_point_code"] == "EP-1"
+    assert failures[0]["material_version_id"] == "material-1"
+    assert failures[0]["error_code"] == "classification_failed"
+    coverage = {item.exam_point_code: item.status for item in repository.candidate.coverage}
+    assert coverage == {"EP-1": "insufficient", "EP-2": "sufficient"}
+    assert any(
+        unit.exam_point_code == "EP-2"
+        for topic in repository.candidate.topics
+        for unit in topic.units
+    )
 
 
 def test_unsupported_consolidated_fact_isolated_to_one_exam_point():
@@ -561,6 +693,48 @@ def test_organization_graph_resumes_only_after_exam_points_are_reviewed():
     assert completed["catalog_version_id"] == "catalog-v1"
     assert completed["index_version_id"] == "index-v1"
     assert repository.published[1].reviewed_exam_point_codes == ["EP-1", "EP-2"]
+
+
+@pytest.mark.parametrize(
+    ("operation", "target_kind"),
+    [
+        ({"operation": "exclude_topic", "target_code": "topic-rag"}, "topic"),
+        ({"operation": "exclude_unit", "target_code": "unit-EP-1"}, "unit"),
+    ],
+)
+def test_graph_resume_preserves_explicit_hierarchy_exclusions(operation, target_kind):
+    graph, _, _, _, repository = _graph()
+    config = {
+        "configurable": {"thread_id": f"resume-exclude-{target_kind}"}
+    }
+    graph.invoke(_state(), config=config)
+
+    graph.invoke(
+        Command(
+            resume={
+                "operations": [operation],
+                "reviewed_topic_codes": ["topic-rag", "topic-agent"],
+                "reviewed_exam_point_codes": ["EP-1", "EP-2"],
+                "teacher_exclusions": [],
+            }
+        ),
+        config=config,
+    )
+
+    published_tree, confirmation = repository.published
+    assert [item.model_dump(mode="json") for item in confirmation.operations] == [
+        {**operation, "value": None}
+    ]
+    if target_kind == "topic":
+        target = next(topic for topic in published_tree.topics if topic.code == "topic-rag")
+    else:
+        target = next(
+            unit
+            for topic in published_tree.topics
+            for unit in topic.units
+            if unit.code == "unit-EP-1"
+        )
+    assert target.status == "excluded"
 
 
 def test_graph_blocks_unresolved_coverage_until_exam_point_is_excluded():

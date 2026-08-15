@@ -55,13 +55,15 @@ def test_retrieval_combines_semantic_and_lexical_scores_without_returning_noise(
         material_version_id="material-1",
         content="RAG检索结果遗漏关键内容的原因",
         locator={"page": 2},
+        embedding=[0.9, 0.1],
     )
     noise = StagingChunk(
         id="noise",
         material_version_id="material-1",
         content="安装CUDA并截图提交",
+        embedding=[0.0, 1.0],
     )
-    embedder = StaticEmbedder([[1.0, 0.0], [0.9, 0.1], [0.0, 1.0]])
+    embedder = StaticEmbedder([[1.0, 0.0]])
 
     result = retrieve_for_exam_point(
         point,
@@ -77,13 +79,16 @@ def test_retrieval_combines_semantic_and_lexical_scores_without_returning_noise(
     assert result[0].score == pytest.approx(
         0.35 * result[0].lexical_score + 0.65 * result[0].semantic_score
     )
-    assert embedder.calls == [[point.retrieval_intent, good.content, noise.content]]
+    assert embedder.calls == [[point.retrieval_intent]]
 
 
 def test_retrieval_returns_empty_when_all_chunks_are_below_threshold():
-    embedder = StaticEmbedder([[1.0, 0.0], [0.0, 1.0]])
+    embedder = StaticEmbedder([[1.0, 0.0]])
     chunk = StagingChunk(
-        id="noise", material_version_id="material-1", content="安装环境"
+        id="noise",
+        material_version_id="material-1",
+        content="安装环境",
+        embedding=[0.0, 1.0],
     )
 
     result = retrieve_for_exam_point(
@@ -103,8 +108,9 @@ def test_retrieval_does_not_accept_lexically_related_chunk_without_semantic_supp
         id="unsupported",
         material_version_id="material-2",
         content="检索链路软件安装说明",
+        embedding=[0.0, 1.0],
     )
-    embedder = StaticEmbedder([[1.0, 0.0], [0.0, 1.0]])
+    embedder = StaticEmbedder([[1.0, 0.0]])
 
     result = retrieve_for_exam_point(
         point,
@@ -123,12 +129,13 @@ def test_retrieval_rejects_exact_lexical_match_with_orthogonal_semantics():
         id="lexical-only",
         material_version_id="material-2",
         content=point.retrieval_intent,
+        embedding=[0.0, 1.0],
     )
 
     result = retrieve_for_exam_point(
         point,
         [exact_match],
-        StaticEmbedder([[1.0, 0.0], [0.0, 1.0]]),
+        StaticEmbedder([[1.0, 0.0]]),
         top_k=8,
         minimum_score=0.25,
     )
@@ -141,8 +148,9 @@ def test_retrieval_only_ranks_the_supplied_course_snapshot_chunks():
         id="course-a-v2",
         material_version_id="course-a-material-v2",
         content="召回遗漏可由切块边界不合理引起",
+        embedding=[1.0, 0.0],
     )
-    embedder = StaticEmbedder([[1.0, 0.0], [1.0, 0.0]])
+    embedder = StaticEmbedder([[1.0, 0.0]])
 
     result = HybridStagingRetriever(
         embedder=embedder,
@@ -152,25 +160,26 @@ def test_retrieval_only_ranks_the_supplied_course_snapshot_chunks():
 
     assert len(result) == 1
     assert result[0].chunk is supplied
-    assert embedder.calls[0] == [_exam_point().retrieval_intent, supplied.content]
+    assert embedder.calls == [[_exam_point().retrieval_intent]]
 
 
 @pytest.mark.parametrize(
     ("vectors", "message"),
     [
-        ([[1.0, 0.0]], "数量"),
-        ([[1.0, 0.0], [1.0]], "维度"),
-        ([[], []], "空向量"),
-        ([[1.0, 0.0], [math.nan, 0.0]], "有限"),
-        ([[0.0, 0.0], [1.0, 0.0]], "零范数"),
-        ([[1.0, 0.0], [0.0, 0.0]], "零范数"),
-        ([[1.7e308, 1.7e308], [1.0, 0.0]], "有限范数"),
-        ([[1.0, 0.0], [1.7e308, 1.7e308]], "有限范数"),
+        ([], "数量"),
+        ([[1.0, 0.0], [1.0, 0.0]], "数量"),
+        ([[]], "空向量"),
+        ([[math.nan, 0.0]], "有限"),
+        ([[0.0, 0.0]], "零范数"),
+        ([[1.7e308, 1.7e308]], "有限范数"),
     ],
 )
 def test_retrieval_rejects_invalid_embedding_results(vectors, message):
     chunk = StagingChunk(
-        id="chunk", material_version_id="material-1", content="检索结果"
+        id="chunk",
+        material_version_id="material-1",
+        content="检索结果",
+        embedding=[1.0, 0.0],
     )
 
     with pytest.raises(RetrievalConfigurationError, match=message):
@@ -178,6 +187,34 @@ def test_retrieval_rejects_invalid_embedding_results(vectors, message):
             _exam_point(),
             [chunk],
             StaticEmbedder(vectors),
+            top_k=8,
+            minimum_score=0.25,
+        )
+
+
+@pytest.mark.parametrize(
+    ("embedding", "message"),
+    [
+        ([], "空向量"),
+        ([math.nan, 0.0], "有限"),
+        ([0.0, 0.0], "零范数"),
+        ([1.7e308, 1.7e308], "有限范数"),
+        ([1.0], "维度"),
+    ],
+)
+def test_retrieval_rejects_invalid_persisted_chunk_embedding(embedding, message):
+    chunk = StagingChunk(
+        id="chunk",
+        material_version_id="material-1",
+        content="检索结果",
+        embedding=embedding,
+    )
+
+    with pytest.raises(RetrievalConfigurationError, match=message):
+        retrieve_for_exam_point(
+            _exam_point(),
+            [chunk],
+            StaticEmbedder([[1.0, 0.0]]),
             top_k=8,
             minimum_score=0.25,
         )
@@ -202,24 +239,26 @@ def test_equal_scores_use_material_version_and_chunk_id_as_stable_tiebreakers():
         id="z-chunk",
         material_version_id="material-a",
         content="相同证据内容",
+        embedding=[1.0, 0.0],
     )
     other = StagingChunk(
         id="a-chunk",
         material_version_id="material-b",
         content="相同证据内容",
+        embedding=[1.0, 0.0],
     )
 
     first = retrieve_for_exam_point(
         point,
         [preferred, other],
-        StaticEmbedder([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]),
+        StaticEmbedder([[1.0, 0.0]]),
         top_k=1,
         minimum_score=0.25,
     )
     reversed_input = retrieve_for_exam_point(
         point,
         [other, preferred],
-        StaticEmbedder([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]),
+        StaticEmbedder([[1.0, 0.0]]),
         top_k=1,
         minimum_score=0.25,
     )

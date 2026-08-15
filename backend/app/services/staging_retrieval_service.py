@@ -111,21 +111,26 @@ def retrieve_for_exam_point(
     *,
     top_k: int,
     minimum_score: float,
+    query_vector: list[float] | None = None,
 ) -> list[RankedChunk]:
-    """Rank only the provided staging snapshot; invalid embeddings fail closed."""
+    """Rank the supplied snapshot using its persisted chunk embeddings."""
 
     _validate_configuration(top_k=top_k, minimum_score=minimum_score)
     if not chunks:
         return []
 
-    texts = [point.retrieval_intent, *(chunk.content for chunk in chunks)]
-    try:
-        raw_vectors = embedder.embed(texts)
-    except RetrievalConfigurationError:
-        raise
-    except Exception as exc:
-        raise RetrievalConfigurationError("嵌入服务调用失败，暂存检索已中止") from exc
-    vectors = _validated_vectors(raw_vectors, expected_count=len(texts))
+    if query_vector is None:
+        try:
+            raw_query_vectors = embedder.embed([point.retrieval_intent])
+        except RetrievalConfigurationError:
+            raise
+        except Exception as exc:
+            raise RetrievalConfigurationError("嵌入服务调用失败，暂存检索已中止") from exc
+        query_vector = _validated_vectors(raw_query_vectors, expected_count=1)[0]
+    vectors = _validated_vectors(
+        [query_vector, *(chunk.embedding for chunk in chunks)],
+        expected_count=len(chunks) + 1,
+    )
     query_vector, chunk_vectors = vectors[0], vectors[1:]
 
     ranked: list[RankedChunk] = []
@@ -168,10 +173,21 @@ class HybridStagingRetriever:
         self.top_k = top_k
         self.minimum_score = float(minimum_score)
 
+    def embed_query(self, exam_point: ExamPoint) -> list[float]:
+        try:
+            raw_vectors = self.embedder.embed([exam_point.retrieval_intent])
+        except RetrievalConfigurationError:
+            raise
+        except Exception as exc:
+            raise RetrievalConfigurationError("嵌入服务调用失败，暂存检索已中止") from exc
+        return _validated_vectors(raw_vectors, expected_count=1)[0]
+
     def retrieve(
         self,
         exam_point: ExamPoint,
         chunks: list[StagingChunk],
+        *,
+        query_vector: list[float] | None = None,
     ) -> list[RankedChunk]:
         return retrieve_for_exam_point(
             exam_point,
@@ -179,4 +195,5 @@ class HybridStagingRetriever:
             self.embedder,
             top_k=self.top_k,
             minimum_score=self.minimum_score,
+            query_vector=query_vector,
         )
