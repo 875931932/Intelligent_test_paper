@@ -4,6 +4,7 @@ import pytest
 
 from app.domain.blueprint.models import PlanItem
 from app.domain.generation.coverage import CoveragePlanError, build_coverage_directives, compile_coverage_planning_payload
+from app.domain.generation.structure_signature import build_structure_signature
 
 
 def _cards():
@@ -29,6 +30,74 @@ def test_planning_payload_contains_only_pure_semantic_content():
     assert "anchor_key" not in text
     assert "evidence" not in text.lower()
     assert "检索增强生成" in text
+
+
+def test_recent_structure_signatures_are_serialized_without_old_question_content():
+    items = [
+        PlanItem(
+            item_index=1,
+            question_type="comprehensive",
+            score=10,
+            anchor_key="rag",
+            unit_id="u1",
+            card_id="c1",
+            cognitive_level="analyze",
+            assessment_mode="problem_solving",
+        )
+    ]
+    recent = build_structure_signature(
+        archetype="fault_diagnosis",
+        material_form="symptom_list",
+        cognitive_sequence=["analyze", "apply"],
+        subquestion_actions=["定位原因", "提出修正"],
+        answer_boundaries=["原因", "修正措施"],
+    )
+
+    payload = compile_coverage_planning_payload(items, _cards(), recent_structure_signatures=[recent])
+    serialized = json.dumps(payload.model_dump(), ensure_ascii=False).lower()
+
+    assert payload.global_policy["recent_comprehensive_structure_signatures"][0]["structure_key"] == recent.structure_key
+    for forbidden in ("old stem", "old answer", "old rubric", "filename", "page_index", "evidence", "source_id"):
+        assert forbidden not in serialized
+
+
+def test_recent_comprehensive_structure_conflict_is_rejected():
+    item = PlanItem(
+        item_index=1,
+        question_type="comprehensive",
+        score=10,
+        anchor_key="rag",
+        unit_id="u1",
+        card_id="c1",
+        cognitive_level="analyze",
+        assessment_mode="problem_solving",
+    )
+    recent = build_structure_signature(
+        archetype="fault_diagnosis",
+        material_form="symptom_list",
+        cognitive_sequence=["analyze", "apply"],
+        subquestion_actions=["分析成因", "给出改进"],
+        answer_boundaries=["成因", "改进方案"],
+    )
+    raw = {
+        "directives": [
+            {
+                "item_index": 1,
+                "coverage_atom": "根据异常表现定位原因并修正",
+                "answer_boundary": "诊断依据、原因与修正措施",
+                "cognitive_level": "analyze",
+                "comprehensive_archetype": "fault_diagnosis",
+                "material_form": "symptom_list",
+                "cognitive_sequence": ["analyze", "apply"],
+                "subquestion_count_range": [2, 3],
+                "subquestion_actions": ["定位原因", "提出修正"],
+                "answer_boundaries": ["原因", "修正措施"],
+            }
+        ]
+    }
+
+    with pytest.raises(CoveragePlanError, match="综合题结构与近期试卷重复"):
+        build_coverage_directives([item], _cards(), raw, recent_structure_signatures=[recent])
 
 
 def test_duplicate_coverage_atoms_are_rejected():

@@ -12,6 +12,7 @@ from app.domain.generation.coverage import (
     build_coverage_directives,
     compile_coverage_planning_payload,
 )
+from app.domain.generation.structure_signature import build_structure_signature
 from app.schemas.generation import QuestionGenerationPayload, compile_question_generation_payload
 from app.services.generation_service import audit_question_set, validate_generated_question
 
@@ -40,22 +41,36 @@ class GenerationState(TypedDict, total=False):
     questions: list[dict]
     conflicts: list[dict]
     repair_attempts: int
+    recent_structure_signatures: list[dict]
 
 
 def build_generation_graph(gateway: QuestionGateway, *, max_repair_attempts: int = 2, max_workers: int = 8, max_planning_attempts: int = 2):
     def plan_coverage(state):
         items = [PlanItem.model_validate(raw) for raw in state["plan_items"]]
-        payload = compile_coverage_planning_payload(items, state["knowledge_cards"])
+        recent_signatures = state.get("recent_structure_signatures", [])
+        payload = compile_coverage_planning_payload(
+            items,
+            state["knowledge_cards"],
+            recent_structure_signatures=recent_signatures,
+        )
         last_error: Exception | None = None
         for _ in range(max_planning_attempts):
             raw_plan = gateway.plan_coverage(payload)
             try:
-                directives = build_coverage_directives(items, state["knowledge_cards"], raw_plan)
+                directives = build_coverage_directives(
+                    items,
+                    state["knowledge_cards"],
+                    raw_plan,
+                    recent_structure_signatures=recent_signatures,
+                )
                 return {"directives": [directive.model_dump() for directive in directives], "repair_attempts": 0}
             except CoveragePlanError as exc:
                 last_error = exc
                 revised_policy = dict(payload.global_policy)
-                revised_policy["revision_instruction"] = str(exc)
+                revision_instruction = str(exc)
+                if exc.structure_key:
+                    revision_instruction += f"；冲突 structure_key={exc.structure_key}"
+                revised_policy["revision_instruction"] = revision_instruction
                 payload = payload.model_copy(update={"global_policy": revised_policy})
         raise CoveragePlanError(f"全卷考查计划连续无效：{last_error}")
 
@@ -78,6 +93,48 @@ def build_generation_graph(gateway: QuestionGateway, *, max_repair_attempts: int
                     "answer_boundary": directive.answer_boundary,
                 }
             )
+            if directive.question_type == "comprehensive":
+                raw_subquestions = question.get("subquestions")
+                subquestions = raw_subquestions if isinstance(raw_subquestions, list) else []
+                generated_actions = [
+                    str(row.get("action") or "").strip()
+                    for row in subquestions
+                    if isinstance(row, dict)
+                ]
+                generated_boundaries = [
+                    str(row.get("answer_boundary") or "").strip()
+                    for row in subquestions
+                    if isinstance(row, dict)
+                ]
+                subquestion_actions = generated_actions if generated_actions and all(generated_actions) else directive.subquestion_actions
+                answer_boundaries = (
+                    generated_boundaries
+                    if generated_boundaries and all(generated_boundaries)
+                    else directive.answer_boundaries
+                )
+                signature = build_structure_signature(
+                    archetype=str(directive.comprehensive_archetype),
+                    material_form=str(directive.material_form),
+                    cognitive_sequence=directive.cognitive_sequence,
+                    subquestion_actions=subquestion_actions,
+                    answer_boundaries=answer_boundaries,
+                )
+                question.update(
+                    {
+                        "comprehensive_archetype": directive.comprehensive_archetype,
+                        "material_form": directive.material_form,
+                        "cognitive_sequence": directive.cognitive_sequence,
+                        "structure_signature": signature.model_dump(),
+                    }
+                )
+            else:
+                for field in (
+                    "comprehensive_archetype",
+                    "material_form",
+                    "cognitive_sequence",
+                    "structure_signature",
+                ):
+                    question.pop(field, None)
             quality = validate_generated_question(question)
             if quality["status"] == "pass" or attempts >= max_repair_attempts:
                 question["quality"] = quality
@@ -108,9 +165,9 @@ def build_generation_graph(gateway: QuestionGateway, *, max_repair_attempts: int
     def semantic_audit(questions: list[dict]) -> list[dict]:
         if len(questions) < 2:
             return []
-        payload = {
-            "questions": [
-                {
+        question_summaries = []
+        for question in questions:
+            summary = {
                     "item_index": question["item_index"],
                     "question_type": question["question_type"],
                     "stem": question.get("stem", ""),
@@ -119,8 +176,18 @@ def build_generation_graph(gateway: QuestionGateway, *, max_repair_attempts: int
                     "coverage_atom": question.get("coverage_atom", ""),
                     "answer_boundary": question.get("answer_boundary", ""),
                 }
-                for question in questions
-            ],
+            if question.get("question_type") == "comprehensive":
+                signature = question.get("structure_signature")
+                summary.update(
+                    {
+                        "comprehensive_archetype": question.get("comprehensive_archetype"),
+                        "material_form": question.get("material_form"),
+                        "structure_key": signature.get("structure_key") if isinstance(signature, dict) else None,
+                    }
+                )
+            question_summaries.append(summary)
+        payload = {
+            "questions": question_summaries,
             "policy": {
                 "same_card_reuse_requires_distinct_atoms": True,
                 "cross_question_answer_leakage": "block",
@@ -167,7 +234,15 @@ def build_generation_graph(gateway: QuestionGateway, *, max_repair_attempts: int
             directive = directives[item_index]
             base_payload = state["payloads"][item_index]
             instruction = "全卷审查发现答案泄漏或题目冲突：" + "；".join(conflict_messages[item_index])
-            instruction += "。保持指定考查原子和答案边界不变，改写题干及选项，避免暴露其他题答案，并使用直接常用的术语、减少括号解释。"
+            has_duplicate_structure = any(
+                conflict.get("code") == "duplicate_comprehensive_structure"
+                for conflict in state["conflicts"]
+                if int(conflict["repair_item_index"]) == item_index
+            )
+            if has_duplicate_structure:
+                instruction += "。这是后一道综合题，请保持考查原子不变，调整分问动作或结构化答案边界以形成不同的来源无关结构；同时改写题干，避免暴露其他题答案。"
+            else:
+                instruction += "。保持指定考查原子和答案边界不变，改写题干及选项，避免暴露其他题答案，并使用直接常用的术语、减少括号解释。"
             repaired = generate_one(directive, base_payload.model_copy(update={"teacher_revision_instruction": instruction}))
             replacements[item_index] = repaired
         questions = [replacements.get(question["item_index"], question) for question in state["questions"]]

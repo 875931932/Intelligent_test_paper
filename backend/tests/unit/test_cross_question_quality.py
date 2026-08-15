@@ -32,3 +32,47 @@ def test_audit_marks_excessive_parenthetical_explanations_for_repair():
 
     assert conflicts[0]["code"] == "excessive_parentheses"
     assert conflicts[0]["repair_item_index"] == 1
+
+
+def test_audit_marks_only_the_later_duplicate_comprehensive_structure_for_repair():
+    signature = {
+        "archetype": "fault_diagnosis",
+        "material_form": "symptom_list",
+        "cognitive_sequence": ["analyze", "apply"],
+        "subquestion_actions": ["diagnose", "repair"],
+        "answer_boundaries": ["diagnose", "repair"],
+        "structure_key": "fault_diagnosis|symptom_list|analyze,apply|diagnose,repair|diagnose,repair",
+        "signature_hash": "same-hash",
+    }
+    questions = [
+        {
+            "item_index": 1,
+            "question_type": "comprehensive",
+            "stem": "诊断检索偏差并给出修正方法",
+            "answer": "原因甲与修正甲",
+            "coverage_atom": "检索偏差诊断",
+            "answer_boundary": "原因甲与修正甲",
+            "structure_signature": signature,
+        },
+        {
+            "item_index": 2,
+            "question_type": "comprehensive",
+            "stem": "诊断生成偏差并给出修正方法",
+            "answer": "原因乙与修正乙",
+            "coverage_atom": "生成偏差诊断",
+            "answer_boundary": "原因乙与修正乙",
+            "structure_signature": signature,
+        },
+    ]
+
+    conflicts = audit_question_set(questions)
+
+    duplicate = [row for row in conflicts if row["code"] == "duplicate_comprehensive_structure"]
+    assert duplicate == [
+        {
+            "code": "duplicate_comprehensive_structure",
+            "item_indexes": [1, 2],
+            "repair_item_index": 2,
+            "message": "同卷综合题结构重复",
+        }
+    ]

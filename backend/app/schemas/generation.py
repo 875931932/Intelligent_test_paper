@@ -36,6 +36,8 @@ class QuestionGenerationPayload(BaseModel):
     material_form: MaterialForm | None = None
     cognitive_sequence: list[str] = Field(default_factory=list)
     subquestion_count_range: list[int] | None = None
+    subquestion_actions: list[str] = Field(default_factory=list)
+    answer_boundaries: list[str] = Field(default_factory=list)
     expression_policy: dict = Field(default_factory=lambda: {"prefer_direct_common_terms": True, "max_parenthetical_pairs": 1})
     question_template: str
     output_schema: dict
@@ -107,6 +109,8 @@ def compile_question_generation_payload(plan_item: PlanItem | CoverageDirective,
             material_form=plan_item.material_form,
             cognitive_sequence=plan_item.cognitive_sequence,
             subquestion_count_range=plan_item.subquestion_count_range,
+            subquestion_actions=plan_item.subquestion_actions,
+            answer_boundaries=plan_item.answer_boundaries,
             question_template=question_template,
             output_schema=output_schema,
         )

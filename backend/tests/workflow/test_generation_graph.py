@@ -2,6 +2,7 @@ import json
 from collections import Counter
 
 from app.domain.blueprint.models import PlanItem
+from app.domain.generation.structure_signature import build_structure_signature
 from app.workflows.generation_graph import build_generation_graph
 
 
@@ -189,6 +190,7 @@ def test_generation_graph_plans_the_whole_paper_before_question_generation():
     assert [question["item_index"] for question in result["questions"]] == [1, 2]
     assert result["conflicts"] == []
     assert result["questions"][0]["quality"]["status"] == "pass"
+    assert all("structure_signature" not in question for question in result["questions"])
 
 
 def test_generation_graph_repairs_only_the_question_that_leaks_another_answer():
@@ -234,3 +236,56 @@ def test_generation_graph_carries_three_distinct_comprehensive_contracts_without
         assert forbidden not in generation_text.lower()
     assert [question["item_index"] for question in result["questions"]] == [1, 2, 3]
     assert all(question["quality"]["status"] == "pass" for question in result["questions"])
+    assert [question["comprehensive_archetype"] for question in result["questions"]] == [
+        "fault_diagnosis",
+        "comparative_decision",
+        "integrated_explanation",
+    ]
+    assert all(question["material_form"] for question in result["questions"])
+    assert all(question["cognitive_sequence"] for question in result["questions"])
+    assert all(question["structure_signature"]["signature_hash"] for question in result["questions"])
+
+
+def test_generation_graph_retries_recent_structure_conflict_with_safe_revision_instruction():
+    recent = build_structure_signature(
+        archetype="fault_diagnosis",
+        material_form="symptom_list",
+        cognitive_sequence=["analyze", "apply"],
+        subquestion_actions=["analyze", "apply"],
+        answer_boundaries=["定位依据、原因和修正", "定位依据、原因和修正"],
+    )
+
+    class RetryingGateway(ComprehensiveGateway):
+        def plan_coverage(self, payload):
+            self.planning_payloads.append(payload)
+            material_form = "symptom_list" if len(self.planning_payloads) == 1 else "error_process"
+            return {
+                "directives": [
+                    {
+                        "item_index": 1,
+                        "coverage_atom": "根据异常表现定位原因",
+                        "answer_boundary": "定位依据、原因和修正",
+                        "cognitive_level": "analyze",
+                        "comprehensive_archetype": "fault_diagnosis",
+                        "material_form": material_form,
+                        "cognitive_sequence": ["analyze", "apply"],
+                        "subquestion_count_range": [2, 3],
+                    }
+                ]
+            }
+
+    state = _comprehensive_state()
+    state["plan_items"] = state["plan_items"][:1]
+    state["knowledge_cards"] = {"c1": state["knowledge_cards"]["c1"]}
+    state["recent_structure_signatures"] = [recent.model_dump()]
+    gateway = RetryingGateway()
+
+    result = build_generation_graph(gateway).invoke(state)
+
+    assert len(gateway.planning_payloads) == 2
+    revision = gateway.planning_payloads[1].global_policy["revision_instruction"]
+    assert "综合题结构与近期试卷重复" in revision
+    assert recent.structure_key in revision
+    for forbidden in ("old stem", "old answer", "filename", "page", "evidence"):
+        assert forbidden not in revision.lower()
+    assert result["questions"][0]["material_form"] == "error_process"

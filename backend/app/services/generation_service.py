@@ -32,6 +32,31 @@ def audit_question_set(questions: list[dict]) -> list[dict]:
     conflicts: list[dict] = []
     ordered = sorted(questions, key=lambda row: int(row.get("item_index", 0)))
 
+    seen_comprehensive_structures: dict[tuple[str, str], dict] = {}
+    for question in ordered:
+        if question.get("question_type") != "comprehensive":
+            continue
+        signature = question.get("structure_signature")
+        if not isinstance(signature, dict):
+            continue
+        structure_key = str(signature.get("structure_key") or "").strip()
+        signature_hash = str(signature.get("signature_hash") or "").strip()
+        identity = ("structure_key", structure_key) if structure_key else ("signature_hash", signature_hash)
+        if not identity[1]:
+            continue
+        first = seen_comprehensive_structures.get(identity)
+        if first is None:
+            seen_comprehensive_structures[identity] = question
+            continue
+        conflicts.append(
+            {
+                "code": "duplicate_comprehensive_structure",
+                "item_indexes": [first.get("item_index"), question.get("item_index")],
+                "repair_item_index": question.get("item_index"),
+                "message": "同卷综合题结构重复",
+            }
+        )
+
     for question in ordered:
         stem = str(question.get("stem", ""))
         parenthetical_pairs = stem.count("（") + stem.count("(")

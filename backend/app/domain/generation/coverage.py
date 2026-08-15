@@ -7,10 +7,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domain.blueprint.models import AssessmentMode, PlanItem
 from app.domain.generation.archetypes import ARCHETYPE_CONTRACTS, ComprehensiveArchetype, MaterialForm
+from app.domain.generation.structure_signature import QuestionStructureSignature, build_structure_signature
 
 
 class CoveragePlanError(ValueError):
-    pass
+    def __init__(self, message: str, *, structure_key: str | None = None):
+        super().__init__(message)
+        self.structure_key = structure_key
 
 
 class CoveragePlanningSlot(BaseModel):
@@ -59,6 +62,8 @@ class CoverageDirective(BaseModel):
     material_form: MaterialForm | None = None
     cognitive_sequence: list[str] = Field(default_factory=list)
     subquestion_count_range: list[int] | None = None
+    subquestion_actions: list[str] = Field(default_factory=list)
+    answer_boundaries: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_comprehensive_contract(self):
@@ -69,6 +74,8 @@ class CoverageDirective(BaseModel):
             material_form=self.material_form,
             cognitive_sequence=self.cognitive_sequence,
             subquestion_count_range=self.subquestion_count_range,
+            subquestion_actions=self.subquestion_actions,
+            answer_boundaries=self.answer_boundaries,
         )
         return self
 
@@ -78,6 +85,8 @@ _COMPREHENSIVE_FIELDS = {
     "material_form",
     "cognitive_sequence",
     "subquestion_count_range",
+    "subquestion_actions",
+    "answer_boundaries",
 }
 _COGNITIVE_ACTIONS = {"remember", "understand", "apply", "analyze", "evaluate", "create"}
 
@@ -95,9 +104,18 @@ def _validate_comprehensive_contract(
     material_form: str | None,
     cognitive_sequence: list[str] | None,
     subquestion_count_range: list[int] | None,
+    subquestion_actions: list[str] | None,
+    answer_boundaries: list[str] | None,
 ) -> None:
     if question_type != "comprehensive":
-        if comprehensive_archetype is not None or material_form is not None or cognitive_sequence or subquestion_count_range is not None:
+        if (
+            comprehensive_archetype is not None
+            or material_form is not None
+            or cognitive_sequence
+            or subquestion_count_range is not None
+            or subquestion_actions
+            or answer_boundaries
+        ):
             raise CoveragePlanError("非综合题不能携带综合题合同字段")
         return
     if comprehensive_archetype is None or material_form is None or cognitive_sequence is None or subquestion_count_range is None:
@@ -117,9 +135,17 @@ def _validate_comprehensive_contract(
         or not 2 <= subquestion_count_range[0] <= subquestion_count_range[1] <= 4
     ):
         raise CoveragePlanError("综合题分问范围上下界必须在 2 至 4 之间且下界不大于上界")
+    if not subquestion_actions or not answer_boundaries or len(subquestion_actions) != len(answer_boundaries):
+        raise CoveragePlanError("综合题必须规划数量一致的分问动作和答案边界")
+    if not subquestion_count_range[0] <= len(subquestion_actions) <= subquestion_count_range[1]:
+        raise CoveragePlanError("综合题规划分问数量必须落在分问范围内")
 
 
-def compile_coverage_planning_payload(plan_items: list[PlanItem], knowledge_cards: dict[str, dict]) -> CoveragePlanningPayload:
+def compile_coverage_planning_payload(
+    plan_items: list[PlanItem],
+    knowledge_cards: dict[str, dict],
+    recent_structure_signatures: list[QuestionStructureSignature | dict] | None = None,
+) -> CoveragePlanningPayload:
     slots = []
     for item in plan_items:
         card = knowledge_cards[item.card_id]
@@ -138,6 +164,17 @@ def compile_coverage_planning_payload(plan_items: list[PlanItem], knowledge_card
                 scope_boundary=card.get("scope_boundary", {}),
             )
         )
+    recent = []
+    for raw_signature in recent_structure_signatures or []:
+        try:
+            signature = (
+                raw_signature
+                if isinstance(raw_signature, QuestionStructureSignature)
+                else QuestionStructureSignature.model_validate(raw_signature)
+            )
+        except (TypeError, ValueError):
+            continue
+        recent.append(signature.model_dump())
     return CoveragePlanningPayload(
         slots=slots,
         global_policy={
@@ -157,6 +194,8 @@ def compile_coverage_planning_payload(plan_items: list[PlanItem], knowledge_card
             },
             "comprehensive_structure_key": ["comprehensive_archetype", "material_form", "cognitive_sequence"],
             "comprehensive_structure_key_unique_within_paper": True,
+            "recent_comprehensive_structure_signatures": recent,
+            "avoid_recent_comprehensive_structure_keys": True,
             "comprehensive_subquestion_count_range": [2, 4],
             "comprehensive_template_policy": "先选择与题位 assessment_mode 兼容的原型；禁止固定套用某公司/某团队背景加三问的通用模板",
             "required_output_schema": {
@@ -173,6 +212,8 @@ def compile_coverage_planning_payload(plan_items: list[PlanItem], knowledge_card
                         "material_form": "required for comprehensive only",
                         "cognitive_sequence": ["recognized cognitive action"],
                         "subquestion_count_range": ["integer 2..4", "integer 2..4"],
+                        "subquestion_actions": ["source-independent task action"],
+                        "answer_boundaries": ["source-independent semantic answer boundary"],
                     }
                 ]
             },
@@ -184,7 +225,12 @@ def _normalized(value: str) -> str:
     return re.sub(r"[^\w\u4e00-\u9fff]", "", value).lower()
 
 
-def build_coverage_directives(plan_items: list[PlanItem], knowledge_cards: dict[str, dict], raw_plan: dict) -> list[CoverageDirective]:
+def build_coverage_directives(
+    plan_items: list[PlanItem],
+    knowledge_cards: dict[str, dict],
+    raw_plan: dict,
+    recent_structure_signatures: list[QuestionStructureSignature | dict] | None = None,
+) -> list[CoverageDirective]:
     rows = raw_plan.get("directives")
     if isinstance(rows, dict):
         rows = rows.get("slot_assignments") or rows.get("items")
@@ -201,6 +247,17 @@ def build_coverage_directives(plan_items: list[PlanItem], knowledge_cards: dict[
     used_answers: set[str] = set()
     used_levels_by_card: dict[str, set[str]] = {}
     used_comprehensive_structures: set[tuple[str, str, tuple[str, ...]]] = set()
+    recent_structure_keys: set[str] = set()
+    for raw_signature in recent_structure_signatures or []:
+        try:
+            signature = (
+                raw_signature
+                if isinstance(raw_signature, QuestionStructureSignature)
+                else QuestionStructureSignature.model_validate(raw_signature)
+            )
+        except (TypeError, ValueError):
+            continue
+        recent_structure_keys.add(signature.structure_key)
     for item in plan_items:
         row = by_index[item.item_index]
         if item.question_type != "comprehensive" and _COMPREHENSIVE_FIELDS.intersection(row):
@@ -256,6 +313,8 @@ def build_coverage_directives(plan_items: list[PlanItem], knowledge_cards: dict[
         material_form = row.get("material_form")
         cognitive_sequence = row.get("cognitive_sequence")
         subquestion_count_range = row.get("subquestion_count_range")
+        subquestion_actions = list(row.get("subquestion_actions") or cognitive_sequence or [])
+        answer_boundaries = list(row.get("answer_boundaries") or [answer_boundary] * len(subquestion_actions))
         _validate_comprehensive_contract(
             question_type=item.question_type,
             assessment_mode=item.assessment_mode,
@@ -263,12 +322,26 @@ def build_coverage_directives(plan_items: list[PlanItem], knowledge_cards: dict[
             material_form=material_form,
             cognitive_sequence=cognitive_sequence,
             subquestion_count_range=subquestion_count_range,
+            subquestion_actions=subquestion_actions,
+            answer_boundaries=answer_boundaries,
         )
         if item.question_type == "comprehensive":
             structure_key = (str(comprehensive_archetype), str(material_form), tuple(cognitive_sequence))
             if structure_key in used_comprehensive_structures:
                 raise CoveragePlanError("同卷综合题结构重复：原型、材料形式和认知序列必须形成唯一组合")
             used_comprehensive_structures.add(structure_key)
+            planned_signature = build_structure_signature(
+                archetype=str(comprehensive_archetype),
+                material_form=str(material_form),
+                cognitive_sequence=list(cognitive_sequence),
+                subquestion_actions=subquestion_actions,
+                answer_boundaries=answer_boundaries,
+            )
+            if planned_signature.structure_key in recent_structure_keys:
+                raise CoveragePlanError(
+                    "综合题结构与近期试卷重复",
+                    structure_key=planned_signature.structure_key,
+                )
         directives.append(
             CoverageDirective(
                 item_index=item.item_index,
@@ -291,6 +364,8 @@ def build_coverage_directives(plan_items: list[PlanItem], knowledge_cards: dict[
                 material_form=material_form,
                 cognitive_sequence=list(cognitive_sequence or []),
                 subquestion_count_range=list(subquestion_count_range) if subquestion_count_range is not None else None,
+                subquestion_actions=subquestion_actions,
+                answer_boundaries=answer_boundaries,
             )
         )
     return directives
