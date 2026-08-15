@@ -1,11 +1,15 @@
-"""Build a real exam demo from docs/素材 through MinerU and DeepSeek.
+"""Build an exam-point-led real-material demonstration pipeline.
 
-The script intentionally keeps source-bearing extraction artifacts separate
-from source-free question-generation payloads. Runtime artifacts are written
-to frontend/public/demo so the development UI can display every checkpoint.
+The assessment syllabus defines exam points and weights. Teaching materials
+are staged, embedded, retrieved, classified, and consolidated only after those
+points exist. Source-bearing evidence is isolated from generation payloads.
 """
 
 from __future__ import annotations
+
+# The demo is executable from the repository root, so it adds ``backend``
+# before importing the application package.
+# ruff: noqa: E402
 
 import asyncio
 import hashlib
@@ -14,12 +18,11 @@ import mimetypes
 import os
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-
-import httpx
 
 ROOT = Path(__file__).resolve().parents[2]
 BACKEND = ROOT / "backend"
@@ -28,22 +31,37 @@ if str(BACKEND) not in sys.path:
 
 from app.adapters.document.mineru_client import MineruClient
 from app.adapters.document.protocol import ParseRequest, ParseState
-from app.adapters.model.deepseek_gateway import DeepSeekGateway
-from app.domain.blueprint.models import BlueprintRequest
+from app.adapters.model.deepseek_gateway import DeepSeekGateway, DeepSeekJsonClient
+from app.adapters.model.deepseek_semantic_extractors import (
+    DeepSeekExamPointEvidenceClassifier,
+    DeepSeekExamPointKnowledgeConsolidator,
+    DeepSeekSyllabusExtractor,
+)
+from app.adapters.model.embedding_gateway import OpenAICompatibleEmbeddingGateway
+from app.domain.blueprint.models import BlueprintRequest, UnitCoverage
+from app.domain.framework.exam_points import ExamPoint, OperationalDetailPolicy
+from app.domain.framework.models import AssessmentOutline, TeachingTopic
+from app.domain.generation.structure_signature import QuestionStructureSignature
+from app.domain.knowledge.models import AssessmentUnitDraft, KnowledgeTreeCandidate
+from app.domain.knowledge.relevance import ExamPointFileDecision, RelevanceClass, StagingChunk
 from app.services.blueprint_service import allocate_plan_items
 from app.services.document_processing_service import read_mineru_zip
-from app.services.generation_service import validate_generated_question
+from app.services.staging_retrieval_service import retrieve_for_exam_point
 from app.workflows.generation_graph import build_generation_graph
+from app.workflows.knowledge_catalog_subgraph import build_knowledge_catalog_candidate
 
 SOURCE_DIR = ROOT / "docs" / "素材"
 CACHE_DIR = ROOT / ".runtime" / "mineru"
-MODEL_CACHE_DIR = ROOT / ".runtime" / "model-json"
+MODEL_CACHE_DIR = ROOT / ".runtime" / "model-curation"
 OUTPUT_DIR = ROOT / "frontend" / "public" / "demo"
 OUTPUT_FILE = OUTPUT_DIR / "pipeline.json"
+CURATION_SCHEMA_VERSION = "task10-exam-point-led-v1"
 
 
 def load_env() -> None:
     env_file = ROOT / ".env"
+    if not env_file.exists():
+        return
     for raw in env_file.read_text(encoding="utf-8").splitlines():
         if "=" not in raw or raw.lstrip().startswith("#"):
             continue
@@ -63,16 +81,11 @@ def write_snapshot(payload: dict[str, Any]) -> None:
 
 
 def source_type(path: Path) -> str:
-    name = path.name
-    if "课程教学大纲" in name:
+    if "课程教学大纲" in path.name:
         return "teaching_syllabus"
-    if "课程考核大纲" in name:
+    if "课程考核大纲" in path.name:
         return "assessment_syllabus"
     return "teaching_material"
-
-
-def content_type(path: Path) -> str:
-    return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
 
 
 async def file_chunks(path: Path):
@@ -88,12 +101,11 @@ async def parse_file(client: MineruClient, path: Path, semaphore: asyncio.Semaph
         cached = json.loads(cache_json.read_text(encoding="utf-8"))
         log(f"MinerU cache hit: {path.name} ({len(cached['blocks'])} blocks)")
         return cached
-
     async with semaphore:
         request = ParseRequest(
             material_version_id=digest[:32],
             filename=path.name,
-            content_type=content_type(path),
+            content_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
             content_factory=lambda: file_chunks(path),
             model_version=os.getenv("MINERU_MODEL_VERSION", "vlm"),
         )
@@ -123,364 +135,635 @@ async def parse_file(client: MineruClient, path: Path, semaphore: asyncio.Semaph
         return result
 
 
-def compact_blocks(document: dict[str, Any], limit: int) -> list[dict[str, Any]]:
-    result: list[dict[str, Any]] = []
+def extraction_blocks(document: dict[str, Any], limit: int = 100_000) -> list[str]:
+    result: list[str] = []
     used = 0
-    for index, block in enumerate(document["blocks"]):
+    for block in document.get("blocks", []):
         text = re.sub(r"\s+", " ", str(block.get("text", ""))).strip()
         if not text:
             continue
-        value = {
-            "block_id": f"B{index:04d}",
-            "page": block.get("page_index"),
-            "type": block.get("block_type"),
-            "text": text,
-        }
-        encoded = len(text)
-        if used + encoded > limit:
+        heading = " / ".join(str(item) for item in block.get("heading_path", []) if item)
+        value = f"{heading}：{text}" if heading else text
+        if used + len(value) > limit:
             break
         result.append(value)
-        used += encoded
+        used += len(value)
     return result
 
 
-class JsonModel:
-    def __init__(self) -> None:
-        self.base_url = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
-        self.api_key = os.environ["DEEPSEEK_API_KEY"]
-        self.model = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
-        self.client = httpx.AsyncClient(timeout=180)
-
-    async def close(self) -> None:
-        await self.client.aclose()
-
-    async def call(self, system: str, payload: dict[str, Any], *, retries: int = 4) -> dict[str, Any]:
-        cache_material = json.dumps({"model": self.model, "system": system, "payload": payload}, ensure_ascii=False, sort_keys=True)
-        cache_path = MODEL_CACHE_DIR / f"{hashlib.sha256(cache_material.encode()).hexdigest()}.json"
-        if cache_path.exists():
-            return json.loads(cache_path.read_text(encoding="utf-8"))
-        error = ""
-        for attempt in range(retries + 1):
-            user_payload = payload if not error else {**payload, "previous_error": error, "repair_instruction": "严格修复JSON结构，不要解释"}
-            try:
-                response = await self.client.post(
-                    f"{self.base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": self.model,
-                        "temperature": 0.1,
-                        "response_format": {"type": "json_object"},
-                        "messages": [
-                            {"role": "system", "content": system},
-                            {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
-                        ],
+def build_staging_chunks(document: dict[str, Any], *, max_chars: int = 1400) -> list[StagingChunk]:
+    chunks: list[StagingChunk] = []
+    for block_index, block in enumerate(document.get("blocks", [])):
+        text = re.sub(r"\s+", " ", str(block.get("text", ""))).strip()
+        if not text:
+            continue
+        headings = [str(item) for item in block.get("heading_path", []) if item]
+        for piece_index, start in enumerate(range(0, len(text), max_chars)):
+            chunks.append(
+                StagingChunk(
+                    id=f"{document['sha256'][:12]}-C{len(chunks):05d}",
+                    material_version_id=document["sha256"],
+                    content=text[start : start + max_chars],
+                    locator={
+                        "filename": document["filename"],
+                        "page_index": block.get("page_index"),
+                        "heading_path": headings,
+                        "block_index": block_index,
+                        "piece_index": piece_index,
                     },
                 )
-                response.raise_for_status()
-                content = response.json().get("choices", [{}])[0].get("message", {}).get("content")
-                if content:
-                    try:
-                        parsed = json.loads(content)
-                        if isinstance(parsed, dict):
-                            MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-                            cache_path.write_text(json.dumps(parsed, ensure_ascii=False), encoding="utf-8")
-                            return parsed
-                        error = "JSON根节点不是对象"
-                    except json.JSONDecodeError as exc:
-                        error = f"JSON解析失败: {exc}"
-                else:
-                    error = "模型返回空内容"
-            except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
-                error = f"{type(exc).__name__}: {exc}"
-            log(f"DeepSeek JSON retry {attempt + 1}: {error}")
-            if attempt < retries:
-                await asyncio.sleep(min(2 ** attempt, 12))
-        raise RuntimeError(error)
+            )
+    return chunks
 
 
-class CachedQuestionGateway:
-    def __init__(self, gateway: DeepSeekGateway) -> None:
-        self.gateway = gateway
+def embed_staging_chunks(
+    chunks: list[StagingChunk],
+    embedder: OpenAICompatibleEmbeddingGateway,
+    *,
+    batch_size: int = 64,
+) -> list[StagingChunk]:
+    embedded: list[StagingChunk] = []
+    for start in range(0, len(chunks), batch_size):
+        batch = chunks[start : start + batch_size]
+        vectors = embedder.embed([chunk.content for chunk in batch])
+        if len(vectors) != len(batch):
+            raise RuntimeError("embedding response count does not match staging chunks")
+        embedded.extend(
+            chunk.model_copy(update={"embedding": vector})
+            for chunk, vector in zip(batch, vectors, strict=True)
+        )
+    return embedded
 
-    def plan_coverage(self, payload) -> dict[str, Any]:
-        return self.gateway.plan_coverage(payload)
 
-    def audit_paper(self, payload) -> dict[str, Any]:
-        return self.gateway.audit_paper(payload)
+class CachedJsonRequester:
+    """Cache semantic curation calls while rerunning validators on every hit."""
 
-    def generate(self, payload) -> dict[str, Any]:
-        raw = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else dict(payload)
-        material = json.dumps({"model": self.gateway.model, "payload": raw}, ensure_ascii=False, sort_keys=True)
-        cache_path = MODEL_CACHE_DIR / f"question-{hashlib.sha256(material.encode()).hexdigest()}.json"
+    def __init__(self, client: DeepSeekJsonClient, *, context: dict[str, Any]):
+        self.client = client
+        self.context = context
+
+    def request_json(
+        self,
+        *,
+        system_prompt: str,
+        payload: Any,
+        temperature: float,
+        call_context=None,
+        response_validator=None,
+    ) -> dict:
+        raw = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else payload
+        cache_contract = {
+            "model": self.client.model,
+            "schema_version": CURATION_SCHEMA_VERSION,
+            "exam_point": self.context.get("exam_point"),
+            "material_hash": self.context.get("material_hash"),
+            "candidate_chunk_hashes": self.context.get("candidate_chunk_hashes", []),
+            "stage": self.context.get("stage"),
+            "system_prompt": system_prompt,
+            "input_payload": raw,
+        }
+        digest = hashlib.sha256(
+            json.dumps(cache_contract, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        cache_path = MODEL_CACHE_DIR / f"{digest}.json"
         if cache_path.exists():
             cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            candidate = {**cached, "question_type": raw["question_type"], "score": raw["score"]}
-            if validate_generated_question(candidate)["status"] == "pass":
+            try:
+                if response_validator is not None:
+                    response_validator(cached)
                 return cached
-            cache_path.unlink()
-        result = self.gateway.generate(payload)
+            except Exception:
+                cache_path.unlink(missing_ok=True)
+        result = self.client.request_json(
+            system_prompt=system_prompt,
+            payload=raw,
+            temperature=temperature,
+            call_context=call_context,
+            response_validator=response_validator,
+        )
         MODEL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(result, ensure_ascii=False), encoding="utf-8")
         return result
 
 
-async def build_framework(model: JsonModel, documents: list[dict[str, Any]]) -> dict[str, Any]:
-    teaching = next(item for item in documents if item["material_type"] == "teaching_syllabus")
-    assessment = next(item for item in documents if item["material_type"] == "assessment_syllabus")
-    teaching_task = model.call(
-        "你是高校课程教学大纲分析专家。只提取教学内容与要求中的实际教学主题，不提取课程封面、日期、教材信息、表格标题和行政描述。返回严格JSON。",
-        {
-            "task": "从教学大纲提取教学主题，为考核大纲对齐提供依据",
-            "schema": {"topics": [{"key": "stable_english_key", "title": "主题", "depth": "了解|理解|掌握|应用", "requirements": ["可观察学习要求"]}]},
-            "blocks": compact_blocks(teaching, 100_000),
-        },
+def semantic_client() -> DeepSeekJsonClient:
+    return DeepSeekJsonClient(
+        api_key=os.environ["DEEPSEEK_API_KEY"],
+        base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+        model=os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        timeout=180,
     )
-    assessment_task = model.call(
-        "你是高校期末考试考核大纲分析专家。考试范围和权重必须以期末考试栏为主，禁止把平时作业、实验过程考核的权重当作期末试卷权重。返回严格JSON。",
-        {
-            "task": "提取期末考试考核锚点、比例、能力要求、可用题型和明确排除项；锚点权重合计必须为100",
-            "schema": {
-                "anchors": [{"key": "stable_english_key", "title": "考核内容", "exam_weight": 0, "ability_requirements": [], "allowed_question_types": ["single_choice", "true_false", "fill_blank", "short_answer"], "excluded_content": [], "alignment_keys": []}],
-                "final_exam_rules": {"exam_form": "闭卷或开卷", "total_score": 100, "duration_minutes": 120, "source_statement": "从大纲提取的规则"},
-            },
-            "blocks": compact_blocks(assessment, 100_000),
-        },
-    )
-    teaching_result, assessment_result = await asyncio.gather(teaching_task, assessment_task)
-    topics = teaching_result.get("topics")
-    anchors = assessment_result.get("anchors")
-    if not isinstance(topics, list) or not topics:
-        raise RuntimeError("教学大纲模型没有返回topics")
-    if not isinstance(anchors, list) or not anchors:
-        raise RuntimeError("考核大纲模型没有返回anchors")
-    total = sum(float(item.get("exam_weight", 0)) for item in anchors)
-    if abs(total - 100) > 0.01:
-        repaired = await model.call(
-            "你负责校正高校期末考试权重。只能依据原始提取结果校正明显的百分比结构，返回JSON。",
-            {"task": "把anchors的exam_weight校正为合计100，其他内容保持不变", "anchors": anchors, "current_total": total},
-        )
-        anchors = repaired.get("anchors", anchors)
-        total = sum(float(item.get("exam_weight", 0)) for item in anchors)
-    if abs(total - 100) > 0.01:
-        raise RuntimeError(f"期末考试权重合计为{total}，无法构建蓝图")
-    topic_keys = {str(item.get("key")) for item in topics}
-    for anchor in anchors:
-        alignment = [key for key in anchor.get("alignment_keys", []) if key in topic_keys]
-        if not alignment:
-            title = str(anchor.get("title", ""))
-            ranked = sorted(topics, key=lambda topic: len(set(title) & set(str(topic.get("title", "")))), reverse=True)
-            alignment = [str(ranked[0]["key"])] if ranked else []
-        anchor["alignment_keys"] = alignment
+
+
+def align_teaching_scope(points: list[ExamPoint], topics: list[TeachingTopic]) -> list[ExamPoint]:
+    valid_keys = {topic.key for topic in topics}
+    result: list[ExamPoint] = []
+    for point in points:
+        aligned = [key for key in point.teaching_anchor_keys if key in valid_keys]
+        if not aligned:
+            ranked = sorted(topics, key=lambda topic: len(set(point.title) & set(topic.title)), reverse=True)
+            if ranked and len(set(point.title) & set(ranked[0].title)) >= 2:
+                aligned = [ranked[0].key]
+        result.append(point.model_copy(update={"teaching_anchor_keys": aligned}))
+    return result
+
+
+def source_free_card(card: dict[str, Any], fallback_statement: str) -> dict[str, Any]:
+    prompt_material = card.get("prompt_material") or []
+    if isinstance(prompt_material, str):
+        prompt_material = [prompt_material]
     return {
-        "teaching_topics": topics,
-        "anchors": anchors,
-        "final_exam_rules": assessment_result.get("final_exam_rules", {}),
-        "source_versions": {"teaching": teaching["sha256"], "assessment": assessment["sha256"]},
+        "name": card.get("name", ""),
+        "performance_statement": card.get("performance_statement") or fallback_statement,
+        "assessable_content": list(card.get("assessable_content") or []),
+        "scope_boundary": dict(card.get("scope_boundary") or {}),
+        "cognitive_targets": list(card.get("cognitive_targets") or ["understand"]),
+        "allowed_question_types": list(card.get("allowed_question_types") or []),
+        "prompt_material": list(prompt_material),
+        "importance": card.get("importance", 1),
     }
 
 
-async def extract_material_candidate(model: JsonModel, document: dict[str, Any], framework: dict[str, Any], semaphore: asyncio.Semaphore) -> dict[str, Any]:
-    async with semaphore:
-        result = await model.call(
-            "你是跨学科高校期末命题知识整理专家。依据考核框架从一份教学材料中提炼可考知识。重点保留理论、概念、原理、比较、理解、应用和问题解决；剔除安装下载命令、环境版本、操作系统要求、文件名、实验编号、报告封面、提交要求、截图要求、机械操作步骤和偶然参数。不要把资料来源写进知识名称。返回严格JSON。",
-            {
-                "task": "一个文件独立整理候选知识，所有内容必须落在给定考核锚点内",
-                "framework": {"anchors": framework["anchors"]},
-                "schema": {
-                    "topics": [{
-                        "code": "stable_code", "name": "知识主题", "framework_anchor_key": "anchor key", "status": "active",
-                        "units": [{"code": "stable_code", "title": "考核单元", "performance_statement": "学生能够...", "scope_boundary": {"include": [], "exclude": []}, "status": "active", "cards": [{"name": "纯净知识点", "performance_statement": "学生能够...", "assessable_content": ["可直接命题的事实、原理或关系"], "scope_boundary": {"include": [], "exclude": []}, "cognitive_targets": ["remember|understand|apply|analyze"], "allowed_question_types": ["single_choice", "true_false", "fill_blank", "short_answer"], "importance": 1, "evidence_block_ids": ["B0001"], "status": "active"}]}]
-                    }],
-                    "unmatched": [{"label": "被剔除内容", "reason": "原因"}],
-                },
-                "blocks": compact_blocks(document, 65_000),
-            },
-        )
-        topics = result.get("topics") if isinstance(result.get("topics"), list) else []
-        valid_anchor_keys = {item["key"] for item in framework["anchors"]}
-        cleaned_topics = []
-        for topic in topics:
-            if topic.get("framework_anchor_key") not in valid_anchor_keys:
-                continue
-            for unit in topic.get("units", []):
-                for card in unit.get("cards", []):
-                    refs = [str(item) for item in card.pop("evidence_block_ids", []) if re.fullmatch(r"B\d{4}", str(item))]
-                    card["evidence_refs"] = [f"{document['sha256'][:12]}:{item}" for item in refs]
-            cleaned_topics.append(topic)
-        candidate = {
-            "material_version": document["sha256"],
-            "filename": document["filename"],
-            "source_path": document["source_path"],
-            "topics": cleaned_topics,
-            "unmatched": result.get("unmatched", []),
-        }
-        log(f"DeepSeek material organized: {document['filename']} ({sum(len(t.get('units', [])) for t in cleaned_topics)} units)")
-        return candidate
-
-
-async def consolidate_tree(model: JsonModel, framework: dict[str, Any], candidates: list[dict[str, Any]]) -> dict[str, Any]:
-    result = await model.call(
-        "你是高校期末考试知识树总编。合并多份材料的同义、近义和上下位知识，避免知识点过散。知识树必须服务于期末命题，而不是复述材料目录。保留候选中已有的evidence_refs供教师追溯，但名称和可考内容不得包含来源话术。返回严格JSON。",
-        {
-            "task": "形成L2主题-L3考核单元-L4纯净知识卡；每个考核锚点最多4个主题，每主题最多3个单元，每单元1至3张知识卡",
-            "framework": {"anchors": framework["anchors"]},
-            "schema": {
-                "topics": [{"code": "topic_code", "name": "主题", "framework_anchor_key": "anchor key", "status": "active", "units": [{"code": "unit_code", "title": "考核单元", "performance_statement": "学生能够...", "scope_boundary": {"include": [], "exclude": []}, "status": "active", "cards": [{"id": "card_code", "name": "纯净知识点", "performance_statement": "学生能够...", "assessable_content": [], "scope_boundary": {"include": [], "exclude": []}, "cognitive_targets": [], "allowed_question_types": [], "importance": 1, "evidence_refs": [], "status": "active"}]}]}],
-                "excluded_summary": ["被系统性剔除的内容类型"],
-            },
-            "file_candidates": candidates,
-        },
-    )
-    topics = result.get("topics")
-    if not isinstance(topics, list) or not topics:
-        raise RuntimeError("知识树汇总没有返回topics")
-    seen_cards: set[str] = set()
-    for topic_index, topic in enumerate(topics):
-        topic.setdefault("code", f"topic_{topic_index + 1}")
-        for unit_index, unit in enumerate(topic.get("units", [])):
-            unit.setdefault("code", f"{topic['code']}_unit_{unit_index + 1}")
-            for card_index, card in enumerate(unit.get("cards", [])):
-                base = re.sub(r"[^a-z0-9_]+", "_", str(card.get("id", "")).lower()).strip("_") or f"card_{topic_index + 1}_{unit_index + 1}_{card_index + 1}"
-                card_id = base
-                suffix = 2
-                while card_id in seen_cards:
-                    card_id = f"{base}_{suffix}"
-                    suffix += 1
-                card["id"] = card_id
-                seen_cards.add(card_id)
-    return {"topics": topics, "excluded_summary": result.get("excluded_summary", [])}
-
-
-def build_blueprint(framework: dict[str, Any], tree: dict[str, Any]) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
-    units = []
-    knowledge_cards: dict[str, dict[str, Any]] = {}
-    card_question_types: dict[str, list[str]] = {}
-    anchors_with_units: set[str] = set()
-    for topic in tree["topics"]:
-        anchor = topic["framework_anchor_key"]
-        for unit in topic.get("units", []):
-            card_ids = []
-            for card in unit.get("cards", []):
-                card_id = card["id"]
-                card_ids.append(card_id)
-                cognitive_targets = card.get("cognitive_targets", ["understand"])
-                allowed_types = list(card.get("allowed_question_types", []))
-                if any(level in {"apply", "analyze", "evaluate", "create"} for level in cognitive_targets):
-                    allowed_types = list(dict.fromkeys([*allowed_types, "short_answer", "comprehensive"]))
-                if any(level in {"remember", "understand"} for level in cognitive_targets):
-                    allowed_types = list(dict.fromkeys([*allowed_types, "single_choice", "true_false", "fill_blank"]))
-                card_question_types[card_id] = allowed_types
-                knowledge_cards[card_id] = {
-                    "name": card.get("name", ""),
-                    "performance_statement": card.get("performance_statement", unit.get("performance_statement", "")),
-                    "assessable_content": card.get("assessable_content", []),
-                    "scope_boundary": card.get("scope_boundary", unit.get("scope_boundary", {})),
-                    "cognitive_targets": cognitive_targets,
-                    "allowed_question_types": allowed_types,
+def tree_for_snapshot(tree: KnowledgeTreeCandidate) -> dict[str, Any]:
+    topics: list[dict[str, Any]] = []
+    for topic in tree.topics:
+        units: list[dict[str, Any]] = []
+        for unit in topic.units:
+            units.append(
+                {
+                    "code": unit.code,
+                    "title": unit.title,
+                    "performance_statement": unit.performance_statement,
+                    "exam_point_code": unit.exam_point_code,
+                    "scope_boundary": unit.scope_boundary,
+                    "status": unit.status,
+                    "cards": [
+                        {
+                            "id": f"{unit.code}:{index + 1}",
+                            **source_free_card(card.model_dump(mode="json"), unit.performance_statement),
+                            "status": card.status,
+                        }
+                        for index, card in enumerate(unit.cards)
+                    ],
                 }
-            if card_ids:
-                units.append({"unit_id": unit["code"], "anchor_key": anchor, "card_ids": card_ids})
-                anchors_with_units.add(anchor)
-    anchors = [item for item in framework["anchors"] if item["key"] in anchors_with_units]
-    total_weight = sum(float(item["exam_weight"]) for item in anchors)
-    weights = {item["key"]: round(float(item["exam_weight"]) * 100 / total_weight, 6) for item in anchors}
-    difference = 100 - sum(weights.values())
-    if weights:
-        first = next(iter(weights))
-        weights[first] += difference
+            )
+        topics.append(
+            {
+                "code": topic.code,
+                "name": topic.name,
+                "framework_anchor_key": topic.framework_anchor_key,
+                "status": topic.status,
+                "units": units,
+            }
+        )
+    return {"framework_version_id": tree.framework_version_id, "topics": topics}
+
+
+def cards_for_generation(tree: KnowledgeTreeCandidate, points: list[ExamPoint]) -> dict[str, dict[str, Any]]:
+    points_by_code = {point.code: point for point in points}
+    cards: dict[str, dict[str, Any]] = {}
+    for topic in tree.topics:
+        for unit in topic.units:
+            point = points_by_code.get(unit.exam_point_code)
+            if point is None:
+                continue
+            for index, card in enumerate(unit.cards):
+                card_id = f"{unit.code}:{index + 1}"
+                semantic = source_free_card(card.model_dump(mode="json"), unit.performance_statement)
+                allowed = list(dict.fromkeys(semantic["allowed_question_types"]))
+                levels = set(semantic["cognitive_targets"])
+                if not allowed:
+                    allowed = ["single_choice", "true_false", "fill_blank"]
+                if levels & {"understand", "apply", "analyze", "evaluate", "create"}:
+                    allowed = list(dict.fromkeys([*allowed, "short_answer"]))
+                if levels & {"apply", "analyze", "evaluate", "create"} or point.assessment_orientations:
+                    allowed = list(dict.fromkeys([*allowed, "comprehensive"]))
+                semantic["allowed_question_types"] = allowed
+                cards[card_id] = semantic
+    return cards
+
+
+def build_blueprint(points: list[ExamPoint], tree: KnowledgeTreeCandidate) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    cards = cards_for_generation(tree, points)
+    points_by_code = {point.code: point for point in points}
+    units: list[UnitCoverage] = []
+    active_points: set[str] = set()
+    for topic in tree.topics:
+        for unit in topic.units:
+            point = points_by_code.get(unit.exam_point_code)
+            if point is None:
+                continue
+            card_ids = [f"{unit.code}:{index + 1}" for index in range(len(unit.cards)) if f"{unit.code}:{index + 1}" in cards]
+            if not card_ids:
+                continue
+            active_points.add(point.code)
+            modes = ["theory_recall", "conceptual", "application", "problem_solving"]
+            if point.operational_detail_policy is OperationalDetailPolicy.DIRECTLY_ASSESSABLE:
+                modes.append("practical_operation")
+            units.append(
+                UnitCoverage(
+                    unit_id=unit.code,
+                    exam_point_id=point.code,
+                    anchor_key=point.code,
+                    card_ids=card_ids,
+                    allowed_assessment_modes=modes,
+                    operational_detail_policy=point.operational_detail_policy.value,
+                )
+            )
+    if not units:
+        raise RuntimeError("knowledge tree has no publishable cards")
+    raw_weights = {point.code: point.weight_value for point in points if point.code in active_points}
+    total = sum(raw_weights.values())
+    if total <= 0:
+        raise RuntimeError("exam-point weights must contain a positive total")
+    weights = {code: round(value * 100 / total, 6) for code, value in raw_weights.items()}
+    first = next(iter(weights))
+    weights[first] += 100 - sum(weights.values())
     request = BlueprintRequest(
         total_score=100,
         type_rules={
-            "single_choice": {"count": 10, "score": 2, "difficulty_distribution": {"low": 40, "medium": 40, "high": 20}},
-            "true_false": {"count": 10, "score": 2, "difficulty_distribution": {"low": 50, "medium": 40, "high": 10}},
-            "fill_blank": {"count": 10, "score": 1, "difficulty_distribution": {"low": 60, "medium": 40, "high": 0}},
-            "short_answer": {"count": 4, "score": 5, "difficulty_distribution": {"low": 20, "medium": 50, "high": 30}},
-            "comprehensive": {"count": 3, "score": 10, "difficulty_distribution": {"low": 0, "medium": 40, "high": 60}},
+            "single_choice": {"count": 10, "score": 2, "difficulty_distribution": {"low": 40, "medium": 40, "high": 20}, "assessment_mode_distribution": {"theory_recall": 50, "conceptual": 50}},
+            "true_false": {"count": 10, "score": 2, "difficulty_distribution": {"low": 50, "medium": 40, "high": 10}, "assessment_mode_distribution": {"theory_recall": 50, "conceptual": 50}},
+            "fill_blank": {"count": 10, "score": 1, "difficulty_distribution": {"low": 60, "medium": 40, "high": 0}, "assessment_mode_distribution": {"theory_recall": 80, "conceptual": 20}},
+            "short_answer": {"count": 4, "score": 5, "difficulty_distribution": {"low": 20, "medium": 50, "high": 30}, "assessment_mode_distribution": {"conceptual": 40, "application": 30, "problem_solving": 30}},
+            "comprehensive": {"count": 3, "score": 10, "difficulty_distribution": {"low": 0, "medium": 40, "high": 60}, "assessment_mode_distribution": {"application": 30, "problem_solving": 70}},
         },
         chapter_weights=weights,
         units=units,
-        card_question_types=card_question_types,
+        card_question_types={card_id: card["allowed_question_types"] for card_id, card in cards.items()},
     )
     plan = allocate_plan_items(request)
     return {
         "request": request.model_dump(mode="json"),
         "plan": plan.model_dump(mode="json"),
-        "allocation_basis": "严格采用考核大纲期末考试栏：选择20%、判断20%、填空10%、简答20%、综合30%；各题型独立配置低中高比例并按低到高排序",
-    }, knowledge_cards
+        "allocation_basis": "以考核大纲 exam_points 的期末权重归一化分配；UnitCoverage 保留 exam_point_id 与操作政策；每种题型显式配置低→中→高难度与考查方式分布",
+        "weight_source": "assessment_syllabus.exam_points",
+    }, cards
+
+
+def relevance_counts(tree: KnowledgeTreeCandidate) -> dict[str, int]:
+    counts = {member.value: 0 for member in RelevanceClass}
+    for decision in tree.evidence_decisions:
+        counts[decision.relevance_class.value] += 1
+    return counts
+
+
+def teacher_review_snapshot(
+    documents: list[dict[str, Any]],
+    chunks_by_material: dict[str, list[StagingChunk]],
+    decisions: list[ExamPointFileDecision],
+) -> dict[str, Any]:
+    sources = []
+    for document in documents:
+        if document["material_type"] != "teaching_material":
+            continue
+        sources.append(
+            {
+                "material_version_id": document["sha256"],
+                "filename": document["filename"],
+                "source_path": document["source_path"],
+                "chunks": [
+                    {"chunk_id": chunk.id, "content": chunk.content, "locator": chunk.locator}
+                    for chunk in chunks_by_material.get(document["sha256"], [])
+                ],
+            }
+        )
+    return {
+        "evidence_source_locations": sources,
+        "file_decisions": [decision.model_dump(mode="json") for decision in decisions],
+    }
+
+
+_FORBIDDEN_SOURCE_KEYS = (
+    "filename", "source_path", "provider_batch_id", "material_version_id", "material_id",
+    "evidence_chunk_id", "evidence_ids", "evidence_refs", "source_locator", "locator",
+    "page_index", "page_number", "block_id", "chunk_id", "sha256", "signature_hash",
+)
+_FORBIDDEN_SOURCE_VALUE = re.compile(
+    r"(?:第\s*\d+\s*页|\bpage\s*\d+\b|\bp\.\s*\d+\b|"
+    r"文件名|页码|证据(?:id|编号)|材料(?:id|版本)|"
+    r"\b[\w./ -]+\.(?:pdf|docx|pptx|py|md|txt)\b)",
+    re.IGNORECASE,
+)
+
+
+def assert_source_free(value: Any, *, path: str = "payload") -> None:
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if any(token in str(key).casefold() for token in _FORBIDDEN_SOURCE_KEYS):
+                raise ValueError(f"source-free serialization rejected field: {path}.{key}")
+            assert_source_free(child, path=f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            assert_source_free(child, path=f"{path}[{index}]")
+    elif isinstance(value, str) and _FORBIDDEN_SOURCE_VALUE.search(value):
+        raise ValueError(f"source-free serialization rejected source locator text: {path}")
+
+
+def signature_dto(signature: dict[str, Any] | QuestionStructureSignature) -> dict[str, Any]:
+    raw = signature.model_dump(mode="json") if hasattr(signature, "model_dump") else dict(signature)
+    return {
+        "archetype": raw.get("archetype", ""),
+        "material_form": raw.get("material_form", ""),
+        "cognitive_sequence": list(raw.get("cognitive_sequence") or []),
+        "subquestion_actions": list(raw.get("subquestion_actions") or []),
+        "answer_boundaries": list(raw.get("answer_boundaries") or []),
+        "structure_key": raw.get("structure_key", ""),
+        "signature_hash": raw.get("signature_hash", ""),
+    }
+
+
+def read_signature_history() -> list[dict[str, Any]]:
+    if not OUTPUT_FILE.exists():
+        return []
+    try:
+        previous = json.loads(OUTPUT_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return []
+    rows = previous.get("signature_history") if isinstance(previous, dict) else None
+    if not isinstance(rows, list):
+        rows = []
+        paper = previous.get("paper", {}) if isinstance(previous, dict) else {}
+        questions = paper.get("questions", []) if isinstance(paper, dict) else []
+        for question in questions:
+            if isinstance(question, dict) and question.get("question_type") == "comprehensive" and isinstance(question.get("structure_signature"), dict):
+                rows.append(question["structure_signature"])
+    result = []
+    for row in rows:
+        try:
+            result.append(signature_dto(row))
+        except (TypeError, ValueError):
+            continue
+    return result[:5]
+
+
+def required_environment_missing() -> list[str]:
+    required = [
+        "MINERU_API_TOKEN", "DEEPSEEK_API_KEY", "EMBEDDING_BASE_URL",
+        "EMBEDDING_API_KEY", "EMBEDDING_MODEL", "MINERU_BASE_URL",
+    ]
+    missing = [name for name in required if not os.getenv(name, "").strip()]
+    base = os.getenv("MINERU_BASE_URL", "").strip()
+    if base and not re.match(r"^https?://", base):
+        missing.append("MINERU_BASE_URL")
+    return list(dict.fromkeys(missing))
 
 
 async def main() -> None:
     load_env()
+    missing = required_environment_missing()
+    if missing:
+        raise RuntimeError("missing required environment variables: " + ", ".join(missing))
     files = sorted(SOURCE_DIR.rglob("*.pdf")) + sorted(SOURCE_DIR.rglob("*.docx"))
     if not files:
         raise RuntimeError(f"no supported files under {SOURCE_DIR}")
+
+    recent_signatures = read_signature_history()
     snapshot: dict[str, Any] = {
         "status": "parsing",
         "started_at": datetime.now().isoformat(),
         "source_directory": str(SOURCE_DIR.resolve()),
         "files_total": len(files),
         "model": os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        "curation_schema_version": CURATION_SCHEMA_VERSION,
+        "signature_history": recent_signatures,
     }
     write_snapshot(snapshot)
 
     mineru = MineruClient(base_url=os.environ["MINERU_BASE_URL"], token=os.environ["MINERU_API_TOKEN"], max_attempts=4)
     try:
-        parse_semaphore = asyncio.Semaphore(8)
-        documents = await asyncio.gather(*(parse_file(mineru, path, parse_semaphore) for path in files))
+        semaphore = asyncio.Semaphore(8)
+        documents = await asyncio.gather(*(parse_file(mineru, path, semaphore) for path in files))
     finally:
         await mineru.close()
-    snapshot.update({
-        "status": "framework",
-        "extraction": [{
-            "filename": item["filename"], "source_path": item["source_path"], "material_type": item["material_type"],
-            "sha256": item["sha256"], "provider_batch_id": item["provider_batch_id"], "block_count": len(item["blocks"]),
-            "content_preview": compact_blocks(item, 5_000),
-        } for item in documents],
-    })
+    snapshot.update(
+        {
+            "status": "framework",
+            "extraction": [
+                {
+                    "filename": item["filename"],
+                    "source_path": item["source_path"],
+                    "material_type": item["material_type"],
+                    "sha256": item["sha256"],
+                    "provider_batch_id": item["provider_batch_id"],
+                    "block_count": len(item["blocks"]),
+                    "content_preview": [
+                        {"page": block.get("page_index"), "type": block.get("block_type"), "text": str(block.get("text", ""))[:500]}
+                        for block in item["blocks"][:10]
+                    ],
+                }
+                for item in documents
+            ],
+        }
+    )
     write_snapshot(snapshot)
 
-    model = JsonModel()
-    try:
-        framework = await build_framework(model, documents)
-        snapshot.update({"status": "knowledge_organization", "framework": framework})
-        write_snapshot(snapshot)
-        material_documents = [item for item in documents if item["material_type"] == "teaching_material"]
-        semaphore = asyncio.Semaphore(8)
-        candidates = await asyncio.gather(*(extract_material_candidate(model, item, framework, semaphore) for item in material_documents))
-        snapshot["file_candidates"] = candidates
-        snapshot["status"] = "knowledge_consolidation"
-        write_snapshot(snapshot)
-        tree = await consolidate_tree(model, framework, candidates)
-        snapshot.update({"status": "blueprint", "knowledge_tree": tree})
-        blueprint, cards = build_blueprint(framework, tree)
-        snapshot["blueprint"] = blueprint
-        snapshot["status"] = "generating"
-        write_snapshot(snapshot)
+    assessment_document = next(item for item in documents if item["material_type"] == "assessment_syllabus")
+    teaching_document = next(item for item in documents if item["material_type"] == "teaching_syllabus")
+    teaching_extractor = DeepSeekSyllabusExtractor(
+        CachedJsonRequester(semantic_client(), context={"stage": "teaching_syllabus", "material_hash": teaching_document["sha256"]})
+    )
+    assessment_extractor = DeepSeekSyllabusExtractor(
+        CachedJsonRequester(semantic_client(), context={"stage": "assessment_syllabus", "material_hash": assessment_document["sha256"]})
+    )
+    teaching_result, assessment_result = await asyncio.gather(
+        asyncio.to_thread(teaching_extractor.extract_teaching, extraction_blocks(teaching_document)),
+        asyncio.to_thread(assessment_extractor.extract_assessment, extraction_blocks(assessment_document)),
+    )
+    if not isinstance(assessment_result, AssessmentOutline) or not assessment_result.exam_points:
+        raise RuntimeError("assessment syllabus did not return exam_points")
+    points = align_teaching_scope(assessment_result.exam_points, teaching_result)
+    teaching_by_key = {topic.key: topic for topic in teaching_result}
+    snapshot.update(
+        {
+            "status": "knowledge_organization",
+            "framework": {
+                "teaching_topics": [topic.model_dump(mode="json") for topic in teaching_result],
+                "anchors": [anchor.model_dump(mode="json") for anchor in assessment_result.anchors],
+                "exam_points": [point.model_dump(mode="json") for point in points],
+                "final_exam_rules": assessment_result.final_exam_rules,
+                "weight_source": "assessment_syllabus",
+                "scope_depth_alignment": {
+                    point.code: [
+                        teaching_by_key[key].model_dump(mode="json")
+                        for key in point.teaching_anchor_keys
+                        if key in teaching_by_key
+                    ]
+                    for point in points
+                },
+            },
+        }
+    )
+    write_snapshot(snapshot)
 
-        gateway = DeepSeekGateway(
-            api_key=os.environ["DEEPSEEK_API_KEY"],
-            base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
-            model=os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
-            timeout=180,
+    material_documents = [item for item in documents if item["material_type"] == "teaching_material"]
+    embedder = OpenAICompatibleEmbeddingGateway(
+        api_key=os.environ["EMBEDDING_API_KEY"],
+        base_url=os.environ["EMBEDDING_BASE_URL"],
+        model=os.environ["EMBEDDING_MODEL"],
+        timeout=180,
+    )
+    chunks_by_material: dict[str, list[StagingChunk]] = {}
+    for document in material_documents:
+        chunks_by_material[document["sha256"]] = await asyncio.to_thread(
+            embed_staging_chunks, build_staging_chunks(document), embedder
         )
-        result = await asyncio.to_thread(
-            build_generation_graph(CachedQuestionGateway(gateway)).invoke,
-            {"plan_items": blueprint["plan"]["items"], "knowledge_cards": cards},
+    chunk_by_id = {
+        chunk.id: chunk
+        for chunks in chunks_by_material.values()
+        for chunk in chunks
+    }
+    snapshot["staging"] = {
+        "material_files": len(material_documents),
+        "chunk_count": len(chunk_by_id),
+        "embedding_batch_size": 64,
+    }
+    write_snapshot(snapshot)
+
+    def classify_one(point: ExamPoint, document: dict[str, Any]) -> ExamPointFileDecision:
+        material_hash = document["sha256"]
+        ranked = retrieve_for_exam_point(
+            point,
+            chunks_by_material[material_hash],
+            embedder,
+            top_k=24,
+            minimum_score=0.25,
         )
-        snapshot.update({
+        recalled = [item.chunk for item in ranked]
+        requester = CachedJsonRequester(
+            semantic_client(),
+            context={
+                "stage": "classify_exam_point_file",
+                "exam_point": point.model_dump(mode="json"),
+                "material_hash": material_hash,
+                "candidate_chunk_hashes": [hashlib.sha256(chunk.content.encode()).hexdigest() for chunk in recalled],
+            },
+        )
+        return DeepSeekExamPointEvidenceClassifier(requester).classify(
+            exam_point=point,
+            material_version_id=material_hash,
+            chunks=recalled,
+        )
+
+    decisions: list[ExamPointFileDecision] = []
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        futures = [executor.submit(classify_one, point, document) for point in points for document in material_documents]
+        for future in as_completed(futures):
+            decisions.append(future.result())
+    decisions.sort(key=lambda item: (item.exam_point_code, item.material_version_id))
+    snapshot["knowledge_organization"] = {"pair_count": len(decisions), "classifier_max_workers": 16}
+    write_snapshot(snapshot)
+
+    admitted_by_point: dict[str, list] = {point.code: [] for point in points}
+    for file_decision in decisions:
+        admitted_by_point[file_decision.exam_point_code].extend(
+            decision
+            for decision in file_decision.decisions
+            if decision.relevance_class in {RelevanceClass.DIRECT, RelevanceClass.SUPPORTING}
+        )
+
+    def consolidate_one(point: ExamPoint) -> tuple[str, list[AssessmentUnitDraft]]:
+        admitted = admitted_by_point.get(point.code, [])
+        if not admitted:
+            return point.code, []
+        candidate_hashes = [
+            hashlib.sha256(chunk_by_id[decision.evidence_chunk_id].content.encode()).hexdigest()
+            for decision in admitted
+            if decision.evidence_chunk_id in chunk_by_id
+        ]
+        requester = CachedJsonRequester(
+            semantic_client(),
+            context={
+                "stage": "consolidate_exam_point",
+                "exam_point": point.model_dump(mode="json"),
+                "material_hash": "multi-material",
+                "candidate_chunk_hashes": candidate_hashes,
+            },
+        )
+        units = DeepSeekExamPointKnowledgeConsolidator(requester).consolidate(
+            exam_point=point,
+            admitted_decisions=admitted,
+        )
+        return point.code, units
+
+    consolidated: dict[str, list[AssessmentUnitDraft]] = {}
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(consolidate_one, point) for point in points]
+        for future in as_completed(futures):
+            code, units = future.result()
+            consolidated[code] = units
+    tree = build_knowledge_catalog_candidate(
+        framework_version_id=f"demo:{assessment_document['sha256'][:12]}",
+        exam_points=points,
+        file_decisions=decisions,
+        consolidated_units=consolidated,
+    )
+    snapshot.update(
+        {
+            "status": "blueprint",
+            "knowledge_tree": tree_for_snapshot(tree),
+            "knowledge_organization": {
+                **snapshot.get("knowledge_organization", {}),
+                "relevance_counts": relevance_counts(tree),
+                "consolidator_max_workers": 8,
+            },
+            "exam_point_coverage": [coverage.model_dump(mode="json") for coverage in tree.coverage],
+            "teacher_review": teacher_review_snapshot(documents, chunks_by_material, decisions),
+        }
+    )
+    blueprint, cards = build_blueprint(points, tree)
+    assert_source_free(cards, path="knowledge_cards")
+    snapshot["blueprint"] = blueprint
+    snapshot["status"] = "generating"
+    write_snapshot(snapshot)
+
+    gateway = DeepSeekGateway(
+        api_key=os.environ["DEEPSEEK_API_KEY"],
+        base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+        model=os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        timeout=180,
+    )
+    result = await asyncio.to_thread(
+        build_generation_graph(gateway).invoke,
+        {
+            "plan_items": blueprint["plan"]["items"],
+            "knowledge_cards": cards,
+            "recent_structure_signatures": recent_signatures[:5],
+        },
+    )
+    payload_snapshots = {
+        str(index): payload.model_dump(mode="json") if hasattr(payload, "model_dump") else payload
+        for index, payload in (result.get("payloads") or {}).items()
+    }
+    assert_source_free(payload_snapshots, path="source_free_generation_payloads")
+    questions = result.get("questions", [])
+    signatures = [
+        signature_dto(question["structure_signature"])
+        for question in questions
+        if question.get("question_type") == "comprehensive"
+        and isinstance(question.get("structure_signature"), dict)
+    ]
+    snapshot.update(
+        {
             "status": "complete",
             "completed_at": datetime.now().isoformat(),
-            "paper": {"questions": result["questions"], "total_score": 100, "question_count": len(result["questions"])},
-        })
-        write_snapshot(snapshot)
-        log(f"Demo complete: {OUTPUT_FILE}")
-    except Exception as exc:
-        snapshot.update({"status": "failed", "error": f"{type(exc).__name__}: {exc}"})
-        write_snapshot(snapshot)
-        raise
-    finally:
-        await model.close()
+            "source_free_generation_payloads": payload_snapshots,
+            "paper": {
+                "questions": questions,
+                "total_score": 100,
+                "question_count": len(questions),
+                "comprehensive_signatures": signatures,
+            },
+            "signature_history": (signatures + recent_signatures)[:5],
+        }
+    )
+    write_snapshot(snapshot)
+    log(f"Demo complete: {OUTPUT_FILE}")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except Exception as exc:
+        log(f"Demo failed: {type(exc).__name__}: {exc}")
+        raise
