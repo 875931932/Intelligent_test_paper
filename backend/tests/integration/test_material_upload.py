@@ -12,6 +12,8 @@ from sqlalchemy.pool import StaticPool
 
 from app.db.schema import Base
 from app.db.session import get_session
+from app.adapters.model.embedding_gateway import OpenAICompatibleEmbeddingGateway
+from app.config import settings
 from app.main import app
 from app.api.v1 import materials as materials_api
 
@@ -83,6 +85,27 @@ def test_organization_run_requires_all_semantic_dependencies(client, missing_att
 
     assert response.status_code == 503
     assert response.json()["detail"] == expected_detail
+
+
+def test_organization_dependency_lazily_builds_embedding_client(client, monkeypatch):
+    monkeypatch.setattr(settings, "embedding_api_key", "embedding-test-key")
+    monkeypatch.setattr(settings, "embedding_base_url", "https://embedding.invalid/v1")
+    monkeypatch.setattr(settings, "embedding_model", "embedding-model")
+    app.state.exam_point_evidence_classifier = object()
+    app.state.exam_point_knowledge_consolidator = object()
+    if hasattr(app.state, "organization_embedder"):
+        del app.state.organization_embedder
+    try:
+        response = client.post(
+            "/api/v1/courses/not-needed/organization-runs",
+            json={"material_version_ids": ["material-v1"]},
+        )
+        assert response.status_code == 404
+        assert isinstance(app.state.organization_embedder, OpenAICompatibleEmbeddingGateway)
+    finally:
+        for name in ("organization_embedder", "exam_point_evidence_classifier", "exam_point_knowledge_consolidator"):
+            if hasattr(app.state, name):
+                delattr(app.state, name)
 
 
 def test_course_crud_hides_course_owned_by_another_teacher(client):

@@ -1,60 +1,256 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import time
+from typing import Any, Protocol
 
 import httpx
 
-
-class DeepSeekGatewayError(Exception):
-    pass
+from app.domain.model_calls import ModelCallContext
 
 
-class DeepSeekGateway:
-    def __init__(self, *, api_key: str, base_url: str = "https://api.deepseek.com/v1", model: str = "deepseek-v4-flash", timeout: float = 90.0, max_attempts: int = 4):
+class ModelCallRecorder(Protocol):
+    def record(self, **values: Any) -> None: ...
+
+
+class DeepSeekModelError(RuntimeError):
+    """A safe model failure that can be persisted or returned to a workflow."""
+
+    def __init__(self, error_code: str, message: str, *, details: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.error_code = error_code
+        self.details = details or {}
+
+
+class DeepSeekGatewayError(DeepSeekModelError):
+    """Backward-compatible gateway error name."""
+
+
+class DeepSeekJsonClient:
+    """OpenAI-compatible strict JSON client with final-outcome observability."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str = "https://api.deepseek.com/v1",
+        model: str = "deepseek-v4-flash",
+        timeout: float = 90.0,
+        max_attempts: int = 4,
+        client: httpx.Client | None = None,
+        recorder: ModelCallRecorder | None = None,
+    ) -> None:
         if not api_key.strip():
             raise ValueError("DeepSeek API key is required")
+        if not base_url.strip():
+            raise ValueError("DeepSeek base URL is required")
+        if not model.strip():
+            raise ValueError("DeepSeek model is required")
+        if max_attempts < 1:
+            raise ValueError("DeepSeek max_attempts must be positive")
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout
         self.max_attempts = max_attempts
+        self.client = client
+        self.recorder = recorder
 
-    def _request_json(self, payload, *, system_prompt: str, temperature: float) -> dict:
+    def request_json(
+        self,
+        *,
+        system_prompt: str,
+        payload: Any,
+        temperature: float,
+        call_context: ModelCallContext | None = None,
+    ) -> dict:
         prompt = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else dict(payload)
-        last_error: Exception | None = None
-        for attempt in range(self.max_attempts):
+        canonical_prompt = json.dumps(prompt, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        prompt_hash = hashlib.sha256(f"{system_prompt}\n{canonical_prompt}".encode()).hexdigest()
+        started = time.perf_counter()
+        attempts: list[dict[str, Any]] = []
+        last_error: DeepSeekModelError | None = None
+        request_id: str | None = None
+        input_tokens: int | None = None
+        output_tokens: int | None = None
+
+        for attempt in range(1, self.max_attempts + 1):
             try:
-                response = httpx.post(
-                    f"{self.base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
-                    json={
-                        "model": self.model,
-                        "temperature": temperature,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
-                        ],
-                        "response_format": {"type": "json_object"},
-                    },
-                    timeout=self.timeout,
-                )
+                response = self._post(system_prompt, canonical_prompt, temperature)
+                headers = getattr(response, "headers", {})
+                request_id = headers.get("x-request-id") if hasattr(headers, "get") else None
                 response.raise_for_status()
                 body = response.json()
-                content = body.get("choices", [{}])[0].get("message", {}).get("content")
-                if not content:
-                    raise DeepSeekGatewayError("model returned empty content")
-                result = json.loads(content)
+                if not isinstance(body, dict):
+                    raise DeepSeekModelError("model_invalid_envelope", "model response envelope is invalid")
+                request_id = request_id or _optional_text(body.get("id"))
+                usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+                input_tokens = _optional_int(usage.get("prompt_tokens"))
+                output_tokens = _optional_int(usage.get("completion_tokens"))
+                try:
+                    content = body["choices"][0]["message"]["content"]
+                except (KeyError, IndexError, TypeError):
+                    raise DeepSeekModelError(
+                        "model_invalid_envelope",
+                        "model response is missing message content",
+                    ) from None
+                if not isinstance(content, str) or not content.strip():
+                    raise DeepSeekModelError("model_empty_response", "model returned empty content")
+                try:
+                    result = json.loads(content)
+                except json.JSONDecodeError:
+                    raise DeepSeekModelError(
+                        "model_non_json_response",
+                        "model returned content that is not valid JSON",
+                    ) from None
                 if not isinstance(result, dict):
-                    raise DeepSeekGatewayError("model returned a non-object JSON value")
+                    raise DeepSeekModelError(
+                        "model_non_object_response",
+                        "model returned a non-object JSON value",
+                    )
+                duration_ms = round((time.perf_counter() - started) * 1000)
+                self._record(
+                    context=call_context,
+                    status="succeeded",
+                    prompt_hash=prompt_hash,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    duration_ms=duration_ms,
+                    error=None,
+                    request_id=request_id,
+                    details={"attempt_count": attempt, "attempts": attempts},
+                )
                 return result
-            except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError, json.JSONDecodeError, DeepSeekGatewayError) as exc:
+            except httpx.HTTPStatusError as exc:
+                last_error = DeepSeekModelError(
+                    "deepseek_http_error",
+                    f"DeepSeek request failed with HTTP status {exc.response.status_code}",
+                )
+                attempts.append({"attempt": attempt, "http_status": exc.response.status_code})
+            except httpx.HTTPError:
+                last_error = DeepSeekModelError(
+                    "deepseek_transport_error",
+                    "DeepSeek request failed",
+                )
+                attempts.append({"attempt": attempt, "error_code": last_error.error_code})
+            except (ValueError, KeyError, IndexError, TypeError) as exc:
+                last_error = DeepSeekModelError(
+                    "model_invalid_envelope",
+                    "model response envelope is invalid",
+                )
+                attempts.append({"attempt": attempt, "error_type": type(exc).__name__})
+            except DeepSeekModelError as exc:
                 last_error = exc
-                if attempt + 1 < self.max_attempts:
-                    time.sleep(min(2 ** attempt, 8))
-        if isinstance(last_error, httpx.HTTPError):
-            raise DeepSeekGatewayError(f"DeepSeek HTTP request failed after {self.max_attempts} attempts: {last_error}") from last_error
-        raise DeepSeekGatewayError(f"DeepSeek returned invalid content after {self.max_attempts} attempts: {last_error}") from last_error
+                attempts.append({"attempt": attempt, "error_code": exc.error_code})
+
+            if attempt < self.max_attempts:
+                time.sleep(min(2 ** (attempt - 1), 8))
+
+        assert last_error is not None
+        duration_ms = round((time.perf_counter() - started) * 1000)
+        details = {"attempt_count": self.max_attempts, "attempts": attempts, **last_error.details}
+        self._record(
+            context=call_context,
+            status="failed",
+            prompt_hash=prompt_hash,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            duration_ms=duration_ms,
+            error=last_error,
+            request_id=request_id,
+            details=details,
+        )
+        raise DeepSeekGatewayError(last_error.error_code, str(last_error), details=details) from last_error
+
+    def _post(self, system_prompt: str, canonical_prompt: str, temperature: float) -> httpx.Response:
+        request = {
+            "headers": {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            "json": {
+                "model": self.model,
+                "temperature": temperature,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": canonical_prompt},
+                ],
+                "response_format": {"type": "json_object"},
+            },
+            "timeout": self.timeout,
+        }
+        if self.client is not None:
+            return self.client.post(f"{self.base_url}/chat/completions", **request)
+        return httpx.post(f"{self.base_url}/chat/completions", **request)
+
+    def _record(
+        self,
+        *,
+        context: ModelCallContext | None,
+        status: str,
+        prompt_hash: str,
+        input_tokens: int | None,
+        output_tokens: int | None,
+        duration_ms: int,
+        error: DeepSeekModelError | None,
+        request_id: str | None,
+        details: dict[str, Any],
+    ) -> None:
+        if self.recorder is None or context is None:
+            return
+        self.recorder.record(
+            context=context,
+            provider="deepseek",
+            model=self.model,
+            status=status,
+            prompt_hash=prompt_hash,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            duration_ms=duration_ms,
+            error_code=error.error_code if error else None,
+            error_message=str(error) if error else None,
+            request_id=request_id,
+            details=details,
+        )
+
+
+class DeepSeekGateway:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        base_url: str = "https://api.deepseek.com/v1",
+        model: str = "deepseek-v4-flash",
+        timeout: float = 90.0,
+        max_attempts: int = 4,
+        client: httpx.Client | None = None,
+        recorder: ModelCallRecorder | None = None,
+    ) -> None:
+        self.json_client = DeepSeekJsonClient(
+            api_key=api_key,
+            base_url=base_url,
+            model=model,
+            timeout=timeout,
+            max_attempts=max_attempts,
+            client=client,
+            recorder=recorder,
+        )
+
+    def _request_json(
+        self,
+        payload: Any,
+        *,
+        system_prompt: str,
+        temperature: float,
+        call_context: ModelCallContext | None = None,
+    ) -> dict:
+        return self.json_client.request_json(
+            system_prompt=system_prompt,
+            payload=payload,
+            temperature=temperature,
+            call_context=call_context,
+        )
 
     def plan_coverage(self, payload) -> dict:
         return self._request_json(
@@ -92,3 +288,11 @@ class DeepSeekGateway:
                 "没有冲突时返回空数组。"
             ),
         )
+
+
+def _optional_text(value: Any) -> str | None:
+    return value if isinstance(value, str) and value.strip() else None
+
+
+def _optional_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None

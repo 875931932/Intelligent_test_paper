@@ -7,8 +7,14 @@ from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
+from app.adapters.model.deepseek_gateway import DeepSeekJsonClient
+from app.adapters.model.deepseek_semantic_extractors import (
+    DeepSeekExamPointEvidenceClassifier,
+    DeepSeekExamPointKnowledgeConsolidator,
+)
+from app.adapters.model.embedding_gateway import OpenAICompatibleEmbeddingGateway
 from app.config import settings
-from app.db.session import get_session
+from app.db.session import get_session, get_session_factory
 from app.domain.knowledge.models import (
     ExamPointKnowledgeConsolidator,
     KnowledgeTreeCandidate,
@@ -16,6 +22,7 @@ from app.domain.knowledge.models import (
 )
 from app.domain.knowledge.relevance import ExamPointEvidenceClassifier
 from app.services import course_service, knowledge_publish_service
+from app.services.model_call_service import DatabaseModelCallRecorder
 from app.services.staging_retrieval_service import EmbeddingClient, HybridStagingRetriever
 from app.workflows.organization_graph import build_organization_graph
 
@@ -29,23 +36,59 @@ class OrganizationRunCreate(BaseModel):
 
 def get_organization_embedder(request: Request) -> EmbeddingClient:
     embedder = getattr(request.app.state, "organization_embedder", None)
-    if embedder is None:
+    if embedder is not None:
+        return embedder
+    if not (
+        settings.embedding_api_key.strip()
+        and settings.embedding_base_url.strip()
+        and settings.embedding_model.strip()
+    ):
         raise HTTPException(status_code=503, detail="embedding client is not configured")
+    embedder = OpenAICompatibleEmbeddingGateway(
+        api_key=settings.embedding_api_key,
+        base_url=settings.embedding_base_url,
+        model=settings.embedding_model,
+    )
+    request.app.state.organization_embedder = embedder
     return embedder
 
 
 def get_exam_point_classifier(request: Request) -> ExamPointEvidenceClassifier:
     classifier = getattr(request.app.state, "exam_point_evidence_classifier", None)
-    if classifier is None:
+    if classifier is not None:
+        return classifier
+    if not settings.deepseek_api_key.strip():
         raise HTTPException(status_code=503, detail="semantic classifier is not configured")
+    client = _get_semantic_json_client(request)
+    classifier = DeepSeekExamPointEvidenceClassifier(client)
+    request.app.state.exam_point_evidence_classifier = classifier
     return classifier
 
 
 def get_exam_point_consolidator(request: Request) -> ExamPointKnowledgeConsolidator:
     consolidator = getattr(request.app.state, "exam_point_knowledge_consolidator", None)
-    if consolidator is None:
+    if consolidator is not None:
+        return consolidator
+    if not settings.deepseek_api_key.strip():
         raise HTTPException(status_code=503, detail="knowledge consolidator is not configured")
+    client = _get_semantic_json_client(request)
+    consolidator = DeepSeekExamPointKnowledgeConsolidator(client)
+    request.app.state.exam_point_knowledge_consolidator = consolidator
     return consolidator
+
+
+def _get_semantic_json_client(request: Request) -> DeepSeekJsonClient:
+    client = getattr(request.app.state, "semantic_json_client", None)
+    if client is not None:
+        return client
+    client = DeepSeekJsonClient(
+        api_key=settings.deepseek_api_key,
+        base_url=settings.deepseek_base_url,
+        model=settings.deepseek_model,
+        recorder=DatabaseModelCallRecorder(get_session_factory()),
+    )
+    request.app.state.semantic_json_client = client
+    return client
 
 
 def _not_found() -> HTTPException:

@@ -19,6 +19,8 @@ from app.db.schema import (
     parser_profiles,
 )
 from app.db.session import get_session
+from app.adapters.model.deepseek_semantic_extractors import DeepSeekSyllabusExtractor
+from app.config import settings
 from app.domain.framework.exam_points import ExamPoint, OperationalDetailPolicy, WeightSource
 from app.domain.framework.models import AssessmentAnchor, AssessmentOutline, TeachingTopic
 from app.main import app
@@ -240,7 +242,7 @@ def test_framework_api_builds_candidate_and_publishes_structured_confirmation(tm
         engine.dispose()
 
 
-def test_framework_build_requires_configured_semantic_extractor(tmp_path):
+def test_framework_build_requires_configured_semantic_extractor(tmp_path, monkeypatch):
     engine = create_engine(f"sqlite:///{tmp_path / 'framework-no-model.db'}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
 
@@ -249,6 +251,7 @@ def test_framework_build_requires_configured_semantic_extractor(tmp_path):
             yield session
 
     app.dependency_overrides[get_session] = session_override
+    monkeypatch.setattr(settings, "deepseek_api_key", "")
     if hasattr(app.state, "syllabus_extractor"):
         del app.state.syllabus_extractor
     try:
@@ -264,4 +267,39 @@ def test_framework_build_requires_configured_semantic_extractor(tmp_path):
             assert response.json()["detail"] == "syllabus semantic extractor is not configured"
     finally:
         app.dependency_overrides.clear()
+        engine.dispose()
+
+
+def test_framework_dependency_lazily_builds_deepseek_extractor(tmp_path, monkeypatch):
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'framework-lazy-model.db'}",
+        connect_args={"check_same_thread": False},
+    )
+    Base.metadata.create_all(engine)
+
+    def session_override():
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = session_override
+    monkeypatch.setattr(settings, "deepseek_api_key", "configured-test-key")
+    monkeypatch.setattr(settings, "deepseek_base_url", "https://deepseek.invalid/v1")
+    monkeypatch.setattr(settings, "deepseek_model", "deepseek-v4-flash")
+    if hasattr(app.state, "syllabus_extractor"):
+        del app.state.syllabus_extractor
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/api/v1/courses/missing/framework-runs",
+                json={
+                    "teaching_material_version_id": "teaching-v1",
+                    "assessment_material_version_id": "assessment-v1",
+                },
+            )
+        assert response.status_code == 404
+        assert isinstance(app.state.syllabus_extractor, DeepSeekSyllabusExtractor)
+    finally:
+        app.dependency_overrides.clear()
+        if hasattr(app.state, "syllabus_extractor"):
+            del app.state.syllabus_extractor
         engine.dispose()

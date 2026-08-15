@@ -7,9 +7,14 @@ from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
+from app.adapters.model.deepseek_gateway import DeepSeekJsonClient
+from app.adapters.model.deepseek_semantic_extractors import DeepSeekSyllabusExtractor
+from app.config import settings
 from app.db.session import get_session
+from app.db.session import get_session_factory
 from app.domain.framework.models import FrameworkConfirmation, SyllabusExtractor
 from app.services import course_service, framework_service
+from app.services.model_call_service import DatabaseModelCallRecorder
 from app.workflows.framework_graph import build_framework_graph
 
 router = APIRouter(prefix="/api/v1/courses/{course_id}", tags=["framework"])
@@ -24,8 +29,18 @@ class FrameworkRunCreate(BaseModel):
 
 def get_syllabus_extractor(request: Request) -> SyllabusExtractor:
     extractor = getattr(request.app.state, "syllabus_extractor", None)
-    if extractor is None:
+    if extractor is not None:
+        return extractor
+    if not settings.deepseek_api_key.strip():
         raise HTTPException(status_code=503, detail="syllabus semantic extractor is not configured")
+    client = DeepSeekJsonClient(
+        api_key=settings.deepseek_api_key,
+        base_url=settings.deepseek_base_url,
+        model=settings.deepseek_model,
+        recorder=DatabaseModelCallRecorder(get_session_factory()),
+    )
+    extractor = DeepSeekSyllabusExtractor(client)
+    request.app.state.syllabus_extractor = extractor
     return extractor
 
 
