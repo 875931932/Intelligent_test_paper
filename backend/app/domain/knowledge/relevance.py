@@ -325,10 +325,24 @@ def _semantic_tokens(value: str) -> list[tuple[str, str]]:
     return tokens
 
 
+def _normalize_semantic_width(value: str) -> str:
+    """Normalize common fullwidth ASCII without compatibility-folding notation."""
+
+    normalized = unicodedata.normalize("NFC", value)
+    return "".join(
+        " "
+        if character == "\u3000"
+        else chr(ord(character) - 0xFEE0)
+        if "\uff01" <= character <= "\uff5e"
+        else character
+        for character in normalized
+    )
+
+
 def semantic_text_key(value: str) -> str:
     """Return a fail-closed key without erasing semantic text structure."""
 
-    normalized = unicodedata.normalize("NFKC", value).casefold()
+    normalized = _normalize_semantic_width(value).casefold()
     normalized = normalized.replace("检索增强生成", "rag")
     normalized = _SEMANTIC_OPERATOR_PATTERN.sub(
         lambda match: _SEMANTIC_OPERATOR_ALIASES[match.group(0)],

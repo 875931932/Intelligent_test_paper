@@ -452,6 +452,11 @@ def test_fact_keys_unify_equivalent_symbolic_and_operators():
         ("C + +", "C++"),
         ("a - - b", "a--b"),
         ("a⊕b", "ab"),
+        ("x²", "x2"),
+        ("Fe²⁺", "Fe2+"),
+        ("①", "1"),
+        ("H₂O", "H2O"),
+        ("Ⅰ", "I"),
     ],
 )
 def test_fact_keys_preserve_semantically_significant_structure(left, right):
@@ -467,6 +472,7 @@ def test_fact_keys_preserve_semantically_significant_structure(left, right):
         ("A⇒B", "a -> b"),
         ("A⇔B", "a <=> b"),
         ("a < b", "a<b"),
+        ("a＜b", "a<b"),
         ("( a )", "(a)"),
     ],
 )

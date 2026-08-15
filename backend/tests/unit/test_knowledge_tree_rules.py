@@ -145,6 +145,11 @@ def test_card_merge_key_preserves_language_name_operators():
         ("not able", "notable"),
         ("a b", "ab"),
         ("C + +", "C++"),
+        ("x²", "x2"),
+        ("Fe²⁺", "Fe2+"),
+        ("①", "1"),
+        ("H₂O", "H2O"),
+        ("Ⅰ", "I"),
     ],
 )
 def test_card_merge_key_preserves_lexical_and_operator_token_boundaries(
@@ -518,6 +523,38 @@ def test_strict_publish_does_not_treat_separate_words_as_one_word():
             _direct_decision(
                 evidence_chunk_id="e1",
                 assessable_content=["not able"],
+            )
+        ],
+    )
+
+    with pytest.raises(KnowledgeTreeValidationError, match="direct evidence"):
+        validate_publishable_tree(
+            tree,
+            allowed_anchor_keys={"rag"},
+            allowed_exam_point_codes={"EP-1"},
+        )
+
+
+@pytest.mark.parametrize(
+    ("card_fact", "evidence_fact"),
+    [
+        ("x²", "x2"),
+        ("Fe²⁺", "Fe2+"),
+        ("①", "1"),
+        ("H₂O", "H2O"),
+        ("Ⅰ", "I"),
+    ],
+)
+def test_strict_publish_preserves_scientific_and_enumeration_notation(
+    card_fact, evidence_fact
+):
+    tree = _strict_tree(
+        card_content=[card_fact],
+        evidence_ids=("e1",),
+        decisions=[
+            _direct_decision(
+                evidence_chunk_id="e1",
+                assessable_content=[evidence_fact],
             )
         ],
     )
