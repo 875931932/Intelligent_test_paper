@@ -734,7 +734,31 @@ def test_graph_resume_preserves_explicit_hierarchy_exclusions(operation, target_
             for unit in topic.units
             if unit.code == "unit-EP-1"
         )
-    assert target.status == "excluded"
+        assert target.status == "excluded"
+
+
+def test_graph_resume_reviews_only_topics_left_active_after_exclusions():
+    graph, _, _, _, repository = _graph()
+    config = {"configurable": {"thread_id": "exclude-all-topics-before-review"}}
+    graph.invoke(_state(), config=config)
+
+    graph.invoke(
+        Command(
+            resume={
+                "operations": [
+                    {"operation": "exclude_topic", "target_code": "topic-rag"},
+                    {"operation": "exclude_topic", "target_code": "topic-agent"},
+                ],
+                "reviewed_topic_codes": [],
+                "reviewed_exam_point_codes": ["EP-1", "EP-2"],
+                "teacher_exclusions": [],
+            }
+        ),
+        config=config,
+    )
+
+    published_tree, _ = repository.published
+    assert {topic.status for topic in published_tree.topics} == {"excluded"}
 
 
 def test_graph_blocks_unresolved_coverage_until_exam_point_is_excluded():

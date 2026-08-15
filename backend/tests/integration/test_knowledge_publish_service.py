@@ -237,6 +237,44 @@ def _organization_state(tree):
     }
 
 
+def _add_outside_snapshot_evidence(session):
+    session.execute(
+        materials.insert().values(
+            id="material-2",
+            course_id="course",
+            logical_name="notes.pdf",
+            material_type="teaching_material",
+            status="staged",
+        )
+    )
+    session.execute(
+        material_versions.insert().values(
+            id="material-v2",
+            course_id="course",
+            material_id="material-2",
+            version_no=1,
+            status="staged",
+            object_key="courses/course/notes.pdf",
+            size_bytes=10,
+            sha256="d" * 64,
+            mime_type="application/pdf",
+        )
+    )
+    session.execute(
+        evidence_chunks.insert().values(
+            id="evidence-2",
+            course_id="course",
+            organization_run_id="organization-run",
+            material_version_id="material-v2",
+            chunk_index=1,
+            content="RAG包括检索、上下文构造和生成",
+            content_hash="e" * 64,
+            embedding=[0.5, 0.5],
+        )
+    )
+    session.commit()
+
+
 def _confirmation(*, operations=None, exclusions=None, reviewed=True):
     return KnowledgeTreeConfirmation(
         operations=operations or [],
@@ -352,6 +390,103 @@ def test_existing_candidate_revalidates_frozen_exam_points_before_idempotent_ret
 
         with pytest.raises(KnowledgePublishError, match="snapshot|exam point"):
             repository.persist_candidate(state, tree)
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_persist_rejects_file_decision_from_material_outside_frozen_snapshot(tmp_path):
+    engine, session = _session(tmp_path)
+    try:
+        _add_outside_snapshot_evidence(session)
+        repository = DatabaseKnowledgeRepository(session)
+        tree = _tree()
+        outside_decision = tree.evidence_decisions[0].model_copy(
+            update={"evidence_chunk_id": "evidence-2"}
+        )
+        state = _organization_state(tree)
+        state["file_decisions"].append(
+            {
+                "exam_point_code": "EP-1",
+                "material_version_id": "material-v2",
+                "decisions": [outside_decision.model_dump(mode="json")],
+            }
+        )
+
+        with pytest.raises(KnowledgePublishError, match="frozen material"):
+            repository.persist_candidate(state, tree)
+
+        assert session.scalar(select(knowledge_catalog_versions.c.id)) is None
+        assert session.scalar(select(exam_point_evidence_links.c.id)) is None
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_publish_rejects_persisted_evidence_link_outside_frozen_snapshot(tmp_path):
+    engine, session = _session(tmp_path)
+    try:
+        repository = DatabaseKnowledgeRepository(session)
+        tree = _tree()
+        state = _organization_state(tree)
+        candidate_id = repository.persist_candidate(state, tree)
+        _add_outside_snapshot_evidence(session)
+        session.execute(
+            exam_point_evidence_links.insert().values(
+                id="outside-link",
+                course_id="course",
+                organization_run_id="organization-run",
+                exam_point_id="exam-point-1",
+                evidence_chunk_id="evidence-2",
+                relevance_class="direct",
+                support_claim="不属于冻结资料的证据",
+                evidence_role="answer_or_rubric_basis",
+                confidence=90,
+                status="candidate",
+            )
+        )
+        session.commit()
+
+        with pytest.raises(KnowledgePublishError, match="frozen material"):
+            repository.publish(
+                {**state, "candidate_id": candidate_id},
+                tree,
+                _confirmation(),
+            )
+
+        assert session.scalar(select(index_versions.c.id)) is None
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_publish_rejects_boolean_organization_schema_version(tmp_path):
+    engine, session = _session(tmp_path)
+    try:
+        repository = DatabaseKnowledgeRepository(session)
+        tree = _tree()
+        state = _organization_state(tree)
+        candidate_id = repository.persist_candidate(state, tree)
+        payload = session.execute(
+            select(knowledge_catalog_versions.c.payload).where(
+                knowledge_catalog_versions.c.id == candidate_id
+            )
+        ).scalar_one()
+        session.execute(
+            knowledge_catalog_versions.update()
+            .where(knowledge_catalog_versions.c.id == candidate_id)
+            .values(payload={**payload, "organization_schema_version": True})
+        )
+        session.commit()
+
+        with pytest.raises(KnowledgePublishError, match="schema version"):
+            repository.publish(
+                {**state, "candidate_id": candidate_id},
+                tree,
+                _confirmation(),
+            )
+
+        assert session.scalar(select(index_versions.c.id)) is None
     finally:
         session.close()
         engine.dispose()
@@ -763,6 +898,14 @@ def test_publish_rejects_when_deleted_source_removes_only_answer_or_rubric_basis
         tree.topics[0].units[0].cards[0].evidence_chunk_ids.append("evidence-2")
         tree.coverage[0].direct_count = 2
         state = _organization_state(tree)
+        expanded_frozen_input = _frozen_input()
+        expanded_frozen_input["material_version_ids"] = ["material-v1", "material-v2"]
+        state["frozen_input"] = expanded_frozen_input
+        session.execute(
+            organization_runs.update()
+            .where(organization_runs.c.id == "organization-run")
+            .values(input_snapshot=expanded_frozen_input)
+        )
         state["file_decisions"].append(
             {
                 "exam_point_code": "EP-1",
@@ -780,6 +923,52 @@ def test_publish_rejects_when_deleted_source_removes_only_answer_or_rubric_basis
                 tree,
                 _confirmation(),
             )
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_publish_keeps_card_when_redundant_deleted_source_has_complete_live_replacement(tmp_path):
+    engine, session = _session(tmp_path)
+    try:
+        _add_outside_snapshot_evidence(session)
+        tree = _tree()
+        replacement = tree.evidence_decisions[0].model_copy(
+            update={"evidence_chunk_id": "evidence-2"}
+        )
+        tree.evidence_decisions.append(replacement)
+        tree.topics[0].units[0].cards[0].evidence_chunk_ids.append("evidence-2")
+        tree.coverage[0].direct_count = 2
+        state = _organization_state(tree)
+        expanded_frozen_input = _frozen_input()
+        expanded_frozen_input["material_version_ids"] = ["material-v1", "material-v2"]
+        state["frozen_input"] = expanded_frozen_input
+        state["file_decisions"].append(
+            {
+                "exam_point_code": "EP-1",
+                "material_version_id": "material-v2",
+                "decisions": [replacement.model_dump(mode="json")],
+            }
+        )
+        session.execute(
+            organization_runs.update()
+            .where(organization_runs.c.id == "organization-run")
+            .values(input_snapshot=expanded_frozen_input)
+        )
+        repository = DatabaseKnowledgeRepository(session)
+        candidate_id = repository.persist_candidate(state, tree)
+        delete_material(session, course_id="course", material_id="material")
+
+        repository.publish(
+            {**state, "candidate_id": candidate_id},
+            tree,
+            _confirmation(),
+        )
+
+        assert session.scalar(select(index_memberships.c.id)) is not None
+        assert session.scalars(select(knowledge_evidence_links.c.evidence_chunk_id)).all() == [
+            "evidence-2"
+        ]
     finally:
         session.close()
         engine.dispose()

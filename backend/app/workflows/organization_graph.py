@@ -467,13 +467,13 @@ def build_organization_graph(
         )
         confirmation = KnowledgeTreeConfirmation.model_validate(decision)
         tree = KnowledgeTreeCandidate.model_validate(state["tree"])
-        active_topic_codes = {item.code for item in tree.topics if item.status == "active"}
-        if active_topic_codes - set(confirmation.reviewed_topic_codes):
-            raise ValueError("every active topic requires teacher review")
         allowed = {item["key"] for item in state["framework_anchors"]}
         points = _points(state)
         points_by_code = {point.code: point for point in points}
         revised = apply_tree_operations(tree, confirmation.operations, allowed_anchor_keys=allowed)
+        active_topic_codes = {item.code for item in revised.topics if item.status == "active"}
+        if active_topic_codes - set(confirmation.reviewed_topic_codes):
+            raise ValueError("every active topic requires teacher review")
         excluded_codes = set(confirmation.teacher_exclusions)
         if excluded_codes - set(points_by_code):
             raise ValueError("teacher exclusion references an unknown exam point")

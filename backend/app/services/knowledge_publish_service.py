@@ -120,6 +120,18 @@ def _exam_point_snapshot(point_rows: list[dict]) -> list[dict[str, str]]:
     return [{"id": row["id"], "code": row["code"]} for row in point_rows]
 
 
+def _frozen_material_version_ids(frozen_input: dict) -> set[str]:
+    raw_ids = frozen_input.get("material_version_ids")
+    if (
+        not isinstance(raw_ids, list)
+        or not raw_ids
+        or any(not isinstance(item, str) or not item.strip() for item in raw_ids)
+        or len(raw_ids) != len(set(raw_ids))
+    ):
+        raise KnowledgePublishError("organization frozen material snapshot is invalid")
+    return set(raw_ids)
+
+
 class DatabaseKnowledgeRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -206,6 +218,7 @@ class DatabaseKnowledgeRepository:
         )
         if frozen_input.get("exam_points") != _exam_point_snapshot(point_rows):
             raise KnowledgePublishError("confirmed exam point snapshot does not match")
+        frozen_material_ids = _frozen_material_version_ids(frozen_input)
         if existing is not None:
             existing_payload = existing["payload"] or {}
             if (
@@ -251,6 +264,10 @@ class DatabaseKnowledgeRepository:
                 key=lambda item: (item["exam_point_code"], item["material_version_id"]),
             ):
                 file_decision = ExamPointFileDecision.model_validate(raw)
+                if file_decision.material_version_id not in frozen_material_ids:
+                    raise KnowledgePublishError(
+                        "evidence decision references a material outside the frozen material snapshot"
+                    )
                 point_id = point_ids.get(file_decision.exam_point_code)
                 if point_id is None:
                     raise KnowledgePublishError("evidence decision references an unconfirmed exam point")
@@ -347,7 +364,7 @@ class DatabaseKnowledgeRepository:
         if active_topics - set(confirmation.reviewed_topic_codes):
             raise KnowledgePublishError("every active topic requires teacher review")
         schema_version = candidate_payload.get("organization_schema_version")
-        if schema_version not in {
+        if type(schema_version) is not int or schema_version not in {
             LEGACY_ORGANIZATION_SCHEMA_VERSION,
             ORGANIZATION_SCHEMA_VERSION,
         }:
@@ -381,6 +398,29 @@ class DatabaseKnowledgeRepository:
             )
             if frozen_input.get("exam_points") != _exam_point_snapshot(point_rows):
                 raise KnowledgePublishError("confirmed exam point snapshot does not match")
+            frozen_material_ids = _frozen_material_version_ids(frozen_input)
+            linked_material_rows = self.session.execute(
+                select(
+                    exam_point_evidence_links.c.id,
+                    evidence_chunks.c.material_version_id,
+                )
+                .join(
+                    evidence_chunks,
+                    evidence_chunks.c.id == exam_point_evidence_links.c.evidence_chunk_id,
+                )
+                .where(
+                    exam_point_evidence_links.c.course_id == course_id,
+                    exam_point_evidence_links.c.organization_run_id == state["run_id"],
+                )
+                .with_for_update()
+            ).mappings()
+            if any(
+                item["material_version_id"] not in frozen_material_ids
+                for item in linked_material_rows
+            ):
+                raise KnowledgePublishError(
+                    "persisted evidence references a material outside the frozen material snapshot"
+                )
         points_by_code = {item["code"]: _exam_point_from_row(item) for item in point_rows}
         publishable_exam_point_codes: set[str] | None = None
         try:
