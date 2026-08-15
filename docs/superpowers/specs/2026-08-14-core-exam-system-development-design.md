@@ -1154,3 +1154,25 @@ frontend   Vite 开发服务器
 - 旧蓝图未提供比例时全部为中等难度；
 - 难度分配不改变章节分值权重；
 - 生成模型收到的是单题难度，不收到全卷难度字段。
+
+## 22. 考点驱动整理与综合题原型
+
+真实试卷验证表明，仅在资料整理后过滤零散知识点，无法阻止文件职责、配置项和操作过程因资料数量较多而占据过多题位；综合题只有一个通用场景模板时，也会在不同生成运行中反复出现相似结构。详细设计见 `2026-08-15-exam-point-guided-curation-and-comprehensive-diversity-design.md`。
+
+核心链路调整为：
+
+```text
+考核大纲期末考试栏目
+  → 带权重和能力边界的 ExamPoint
+  → 教学大纲校验范围与深度
+  → 每个 ExamPoint 定向检索教学资料
+  → direct/supporting/background/out_of_scope 分类
+  → 最小充分 AssessmentUnit 与纯净知识卡
+  → 蓝图按权重、难度、认知层级和考查方式分配题位
+```
+
+`ExamPoint` 是考纲分配层，不替换既有 `AssessmentUnit`：前者承载考试范围、权重和操作细节权限，后者承载资料证据支持的可评分表现，知识卡再提供答案与评分点需要的课程事实。
+
+文件名、命令、路径、安装步骤和配置项等操作细节只有在考核大纲明确要求时才能作为独立答案核心；否则只能服务原理解释、案例条件或故障诊断。该规则由考点的 `operational_detail_policy` 表达，不使用课程专属禁词表。
+
+`PlanItem` 新增 `assessment_mode`，用于区分理论识记、概念理解、知识应用、问题解决和实践操作。综合题在生成前由主脑分配 `case_analysis`、`fault_diagnosis`、`comparative_decision`、`solution_design`、`process_optimization`、`critique_correction` 或 `integrated_explanation` 原型；同卷优先使用不同原型、材料形式和认知动作组合，并使用近期已确认试卷的结构签名降低跨卷重复。
