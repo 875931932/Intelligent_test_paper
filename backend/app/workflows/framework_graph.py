@@ -16,6 +16,7 @@ from app.domain.framework.models import (
     SyllabusExtractor,
     TeachingTopic,
 )
+from app.domain.model_calls import ModelCallContext
 
 
 class FrameworkState(TypedDict, total=False):
@@ -64,11 +65,25 @@ def build_framework_graph(extractor: SyllabusExtractor, repository: FrameworkRep
         return {}
 
     def extract_teaching_syllabus(state: FrameworkState):
-        topics = extractor.extract_teaching(state["teaching_blocks"])
+        topics = extractor.extract_teaching(
+            state["teaching_blocks"],
+            call_context=ModelCallContext(
+                course_id=state["course_id"],
+                framework_build_run_id=state["run_id"],
+                stage="teaching_syllabus_extraction",
+            ),
+        )
         return {"teaching_topics": [topic.model_dump(mode="json") for topic in topics]}
 
     def extract_assessment_syllabus(state: FrameworkState):
-        outline = extractor.extract_assessment(state["assessment_blocks"])
+        outline = extractor.extract_assessment(
+            state["assessment_blocks"],
+            call_context=ModelCallContext(
+                course_id=state["course_id"],
+                framework_build_run_id=state["run_id"],
+                stage="assessment_syllabus_extraction",
+            ),
+        )
         return {"assessment_outline": outline.model_dump(mode="json")}
 
     def merge_assessment_led_framework(state: FrameworkState):
@@ -96,11 +111,56 @@ def build_framework_graph(extractor: SyllabusExtractor, repository: FrameworkRep
             )
         candidate = FrameworkCandidate(
             anchors=assessment.anchors,
+            exam_points=assessment.exam_points,
             teaching_topics=teaching,
             conflicts=conflicts,
             final_exam_rules=assessment.final_exam_rules,
         )
         return {"candidate": candidate.model_dump(mode="json")}
+
+    def align_exam_points_with_teaching(state: FrameworkState):
+        candidate = FrameworkCandidate.model_validate(state["candidate"])
+        topics_by_key = {topic.key: topic for topic in candidate.teaching_topics}
+        conflicts = list(candidate.conflicts)
+        conflict_keys = {conflict.key for conflict in conflicts}
+        for point in candidate.exam_points:
+            aligned_topics = [
+                topics_by_key[key]
+                for key in point.teaching_anchor_keys
+                if key in topics_by_key
+            ]
+            if not aligned_topics:
+                key = f"exam-point-coverage:{point.code}"
+                if key not in conflict_keys:
+                    conflicts.append(
+                        FrameworkConflict(
+                            key=key,
+                            kind="missing_teaching_coverage",
+                            message=f"考点“{point.title}”未在教学大纲中找到覆盖依据",
+                        )
+                    )
+                    conflict_keys.add(key)
+                continue
+            point_depth = _highest_depth(point.cognitive_targets)
+            teaching_depths = [
+                depth
+                for topic in aligned_topics
+                if (depth := _highest_depth([topic.depth, *topic.requirements])) is not None
+            ]
+            teaching_depth = max(teaching_depths, default=None)
+            if point_depth is not None and teaching_depth is not None and point_depth > teaching_depth:
+                key = f"exam-point-depth:{point.code}"
+                if key not in conflict_keys:
+                    conflicts.append(
+                        FrameworkConflict(
+                            key=key,
+                            kind="teaching_depth_conflict",
+                            message=f"考点“{point.title}”的认知要求高于教学大纲中的教学深度",
+                        )
+                    )
+                    conflict_keys.add(key)
+        revised = candidate.model_copy(update={"conflicts": conflicts})
+        return {"candidate": revised.model_dump(mode="json")}
 
     def validate_conflicts(state: FrameworkState):
         FrameworkCandidate.model_validate(state["candidate"])
@@ -131,6 +191,7 @@ def build_framework_graph(extractor: SyllabusExtractor, repository: FrameworkRep
     graph.add_node("extract_teaching_syllabus", extract_teaching_syllabus)
     graph.add_node("extract_assessment_syllabus", extract_assessment_syllabus)
     graph.add_node("merge_assessment_led_framework", merge_assessment_led_framework)
+    graph.add_node("align_exam_points_with_teaching", align_exam_points_with_teaching)
     graph.add_node("validate_conflicts", validate_conflicts)
     graph.add_node("persist_candidate", persist_candidate)
     graph.add_node("interrupt_teacher_confirmation", interrupt_teacher_confirmation)
@@ -141,9 +202,42 @@ def build_framework_graph(extractor: SyllabusExtractor, repository: FrameworkRep
     graph.add_edge("ensure_document_parsed", "extract_teaching_syllabus")
     graph.add_edge("ensure_document_parsed", "extract_assessment_syllabus")
     graph.add_edge(["extract_teaching_syllabus", "extract_assessment_syllabus"], "merge_assessment_led_framework")
-    graph.add_edge("merge_assessment_led_framework", "validate_conflicts")
+    graph.add_edge("merge_assessment_led_framework", "align_exam_points_with_teaching")
+    graph.add_edge("align_exam_points_with_teaching", "validate_conflicts")
     graph.add_edge("validate_conflicts", "persist_candidate")
     graph.add_edge("persist_candidate", "interrupt_teacher_confirmation")
     graph.add_edge("interrupt_teacher_confirmation", "publish_framework_version")
     graph.add_edge("publish_framework_version", END)
     return graph.compile(checkpointer=checkpointer)
+
+
+_DEPTH_TERMS = (
+    ("create", 5),
+    ("创造", 5),
+    ("设计", 5),
+    ("evaluate", 4),
+    ("评价", 4),
+    ("评估", 4),
+    ("analyze", 3),
+    ("分析", 3),
+    ("apply", 2),
+    ("应用", 2),
+    ("掌握", 2),
+    ("understand", 1),
+    ("理解", 1),
+    ("解释", 1),
+    ("remember", 0),
+    ("了解", 0),
+    ("识记", 0),
+    ("记忆", 0),
+)
+
+
+def _highest_depth(values: list[str]) -> int | None:
+    ranks = [
+        rank
+        for value in values
+        for term, rank in _DEPTH_TERMS
+        if term in value.strip().lower()
+    ]
+    return max(ranks) if ranks else None

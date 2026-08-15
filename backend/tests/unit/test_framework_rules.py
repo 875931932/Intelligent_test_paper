@@ -5,7 +5,8 @@ from pydantic import ValidationError
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
-from app.db.schema import Base, Course, User, framework_build_runs, framework_conflicts, framework_versions
+from app.db.schema import Base, Course, User, exam_points, framework_build_runs, framework_conflicts, framework_versions
+from app.domain.framework.exam_points import ExamPoint, OperationalDetailPolicy, WeightSource
 from app.domain.framework.models import (
     AssessmentAnchor,
     AssessmentOutline,
@@ -15,6 +16,31 @@ from app.domain.framework.models import (
     TeachingTopic,
 )
 from app.services.framework_service import DatabaseFrameworkRepository, FrameworkInputError
+
+
+def _exam_point(
+    *,
+    code="core-concept",
+    anchor_key="unit-1",
+    weight_value=100,
+    weight_source=WeightSource.ASSESSMENT_SYLLABUS,
+    teaching_anchor_keys=None,
+):
+    return ExamPoint(
+        code=code,
+        anchor_key=anchor_key,
+        title="核心概念",
+        assessment_requirement="理解并应用核心概念",
+        weight_value=weight_value,
+        weight_source=weight_source,
+        weight_group_id=anchor_key,
+        cognitive_targets=["apply"],
+        allowed_question_types=["single_choice"],
+        operational_detail_policy=OperationalDetailPolicy.SUPPORTING_ONLY,
+        retrieval_intent="检索核心概念的定义、原理与应用依据",
+        assessment_anchor_keys=[anchor_key],
+        teaching_anchor_keys=teaching_anchor_keys or ["topic-1"],
+    )
 
 
 def test_framework_confirmation_rejects_boolean_only_payload():
@@ -37,6 +63,7 @@ def test_framework_confirmation_requires_explicit_exclusion_list():
                         "alignment_keys": ["topic-1"],
                     }
                 ],
+                "exam_points": [_exam_point().model_dump(mode="json")],
                 "conflict_resolutions": {},
             }
         )
@@ -53,6 +80,7 @@ def test_framework_confirmation_requires_weights_to_total_one_hundred():
                         "exam_weight": 60,
                     }
                 ],
+                "exam_points": [_exam_point(weight_value=60).model_dump(mode="json")],
                 "conflict_resolutions": {},
                 "teacher_exclusions": [],
             }
@@ -70,6 +98,7 @@ def test_framework_confirmation_rejects_blank_conflict_decisions():
                         "exam_weight": 100,
                     }
                 ],
+                "exam_points": [_exam_point().model_dump(mode="json")],
                 "conflict_resolutions": {"coverage:unit-1": "   "},
                 "teacher_exclusions": [],
             }
@@ -78,7 +107,7 @@ def test_framework_confirmation_rejects_blank_conflict_decisions():
 
 def test_assessment_outline_requires_at_least_one_exam_anchor():
     with pytest.raises(ValidationError, match="at least one assessment anchor"):
-        AssessmentOutline(anchors=[])
+        AssessmentOutline(anchors=[], exam_points=[])
 
 
 def test_assessment_outline_rejects_duplicate_anchor_keys():
@@ -87,7 +116,8 @@ def test_assessment_outline_rejects_duplicate_anchor_keys():
             anchors=[
                 AssessmentAnchor(key="same", title="范围一", exam_weight=50),
                 AssessmentAnchor(key="same", title="范围二", exam_weight=50),
-            ]
+            ],
+            exam_points=[_exam_point(anchor_key="same", weight_value=50)],
         )
 
 
@@ -99,6 +129,53 @@ def test_confirmation_rejects_duplicate_anchor_keys():
                     {"key": "same", "title": "范围一", "exam_weight": 50},
                     {"key": "same", "title": "范围二", "exam_weight": 50},
                 ],
+                "exam_points": [_exam_point(anchor_key="same", weight_value=50).model_dump(mode="json")],
+                "conflict_resolutions": {},
+                "teacher_exclusions": [],
+            }
+        )
+
+
+def test_assessment_outline_rejects_duplicate_exam_point_codes():
+    with pytest.raises(ValidationError, match="exam point codes must be unique"):
+        AssessmentOutline(
+            anchors=[AssessmentAnchor(key="unit-1", title="核心概念", exam_weight=100)],
+            exam_points=[_exam_point(), _exam_point()],
+        )
+
+
+def test_assessment_outline_rejects_explicit_exam_point_total_above_parent_weight():
+    with pytest.raises(ValidationError, match="explicit exam point weight must not exceed parent anchor weight"):
+        AssessmentOutline(
+            anchors=[AssessmentAnchor(key="unit-1", title="核心概念", exam_weight=100)],
+            exam_points=[
+                _exam_point(code="concept-a", weight_value=60),
+                _exam_point(code="concept-b", weight_value=60),
+            ],
+        )
+
+
+def test_confirmation_rejects_exam_point_outside_confirmed_anchor_scope():
+    with pytest.raises(ValidationError, match="exam point anchor_key must belong to confirmed anchors"):
+        FrameworkConfirmation.model_validate(
+            {
+                "anchors": [{"key": "unit-1", "title": "核心概念", "exam_weight": 100}],
+                "exam_points": [_exam_point(anchor_key="removed-unit").model_dump(mode="json")],
+                "conflict_resolutions": {},
+                "teacher_exclusions": [],
+            }
+        )
+
+
+def test_confirmation_rejects_explicit_exam_point_weight_above_parent_anchor():
+    with pytest.raises(ValidationError, match="explicit exam point weight must not exceed parent anchor weight"):
+        FrameworkConfirmation.model_validate(
+            {
+                "anchors": [
+                    {"key": "unit-1", "title": "核心概念", "exam_weight": 40},
+                    {"key": "unit-2", "title": "其他范围", "exam_weight": 60},
+                ],
+                "exam_points": [_exam_point(weight_value=60).model_dump(mode="json")],
                 "conflict_resolutions": {},
                 "teacher_exclusions": [],
             }
@@ -129,6 +206,7 @@ def _framework_session(tmp_path):
 def _candidate(*, conflict=True):
     return FrameworkCandidate(
         anchors=[AssessmentAnchor(key="unit-1", title="核心概念", exam_weight=100, alignment_keys=["topic-1"])],
+        exam_points=[_exam_point()],
         teaching_topics=[TeachingTopic(key="topic-1", title="核心概念", depth="apply")],
         conflicts=(
             [
@@ -148,6 +226,7 @@ def _valid_confirmation(*, resolutions=None):
     return FrameworkConfirmation.model_validate(
         {
             "anchors": [{"key": "unit-1", "title": "核心概念", "exam_weight": 100}],
+            "exam_points": [_exam_point().model_dump(mode="json")],
             "conflict_resolutions": resolutions or {},
             "teacher_exclusions": [],
         }
@@ -236,6 +315,64 @@ def test_persist_candidate_is_idempotent_for_the_same_framework_run(tmp_path):
             select(framework_versions.c.id).where(framework_versions.c.framework_build_run_id == "run-1")
         ).all()
         assert version_ids == [first_id]
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_repository_persists_and_confirms_exam_points(tmp_path):
+    engine, session = _framework_session(tmp_path)
+    try:
+        repository = DatabaseFrameworkRepository(session)
+        candidate_id = repository.persist_candidate(
+            {"course_id": "course", "run_id": "run-1"},
+            _candidate(conflict=False),
+        )
+
+        candidate_row = session.execute(
+            select(exam_points).where(
+                exam_points.c.course_id == "course",
+                exam_points.c.framework_version_id == candidate_id,
+            )
+        ).mappings().one()
+        assert candidate_row["status"] == "candidate"
+        assert candidate_row["code"] == "core-concept"
+
+        repository.publish(
+            {"course_id": "course", "candidate_id": candidate_id},
+            _valid_confirmation(),
+        )
+
+        confirmed_row = session.execute(
+            select(exam_points).where(
+                exam_points.c.course_id == "course",
+                exam_points.c.framework_version_id == candidate_id,
+            )
+        ).mappings().one()
+        assert confirmed_row["status"] == "confirmed"
+        assert confirmed_row["operational_detail_policy"] == "supporting_only"
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_repository_rejects_confirmed_exam_point_not_in_candidate_version(tmp_path):
+    engine, session = _framework_session(tmp_path)
+    try:
+        repository = DatabaseFrameworkRepository(session)
+        candidate_id = repository.persist_candidate(
+            {"course_id": "course", "run_id": "run-1"},
+            _candidate(conflict=False),
+        )
+        confirmation = _valid_confirmation().model_copy(
+            update={"exam_points": [_exam_point(code="invented")]}
+        )
+
+        with pytest.raises(FrameworkInputError, match="not part of the current candidate"):
+            repository.publish(
+                {"course_id": "course", "candidate_id": candidate_id},
+                confirmation,
+            )
     finally:
         session.close()
         engine.dispose()

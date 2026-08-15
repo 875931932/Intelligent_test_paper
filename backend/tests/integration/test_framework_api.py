@@ -12,23 +12,27 @@ from app.db.schema import (
     User,
     content_blocks,
     document_parse_runs,
+    exam_points,
     framework_build_runs,
     material_versions,
     materials,
     parser_profiles,
 )
 from app.db.session import get_session
+from app.domain.framework.exam_points import ExamPoint, OperationalDetailPolicy, WeightSource
 from app.domain.framework.models import AssessmentAnchor, AssessmentOutline, TeachingTopic
 from app.main import app
 
 
 class FakeSyllabusExtractor:
-    def extract_teaching(self, blocks):
+    def extract_teaching(self, blocks, *, call_context=None):
         assert blocks == ["教学内容与要求：理解核心概念"]
+        assert call_context.course_id == "course"
         return [TeachingTopic(key="core", title="核心概念", depth="understand")]
 
-    def extract_assessment(self, blocks):
+    def extract_assessment(self, blocks, *, call_context=None):
         assert blocks == ["期末考试：核心概念占100%"]
+        assert call_context.course_id == "course"
         return AssessmentOutline(
             anchors=[
                 AssessmentAnchor(
@@ -38,6 +42,24 @@ class FakeSyllabusExtractor:
                     ability_requirements=["理解"],
                     allowed_question_types=["single_choice"],
                     alignment_keys=["core"],
+                )
+            ],
+            exam_points=[
+                ExamPoint(
+                    code="core-understanding",
+                    anchor_key="core-exam",
+                    title="核心概念理解",
+                    assessment_requirement="理解核心概念并能判断典型情形",
+                    weight_value=100,
+                    weight_source=WeightSource.ASSESSMENT_SYLLABUS,
+                    weight_group_id="core-exam",
+                    cognitive_targets=["understand"],
+                    assessment_orientations=["conceptual"],
+                    allowed_question_types=["single_choice"],
+                    operational_detail_policy=OperationalDetailPolicy.SUPPORTING_ONLY,
+                    retrieval_intent="检索核心概念的定义与典型判断依据",
+                    assessment_anchor_keys=["core-exam"],
+                    teaching_anchor_keys=["core"],
                 )
             ],
             final_exam_rules={"question_type_weights": {"single_choice": 100}},
@@ -152,12 +174,17 @@ def test_framework_api_builds_candidate_and_publishes_structured_confirmation(tm
             candidate = client.get(f"/api/v1/courses/course/framework-runs/{run_id}/candidate")
             assert candidate.status_code == 200
             assert candidate.json()["payload"]["anchors"][0]["exam_weight"] == 100
+            assert candidate.json()["payload"]["exam_points"][0]["code"] == "core-understanding"
             assert candidate.json()["payload"]["final_exam_rules"]["question_type_weights"]["single_choice"] == 100
+
+            confirmed_exam_points = candidate.json()["payload"]["exam_points"]
+            confirmed_exam_points[0]["priority"] = "high"
 
             confirmed = client.post(
                 f"/api/v1/courses/course/framework-runs/{run_id}/confirm",
                 json={
                     "anchors": candidate.json()["payload"]["anchors"],
+                    "exam_points": confirmed_exam_points,
                     "conflict_resolutions": {},
                     "teacher_exclusions": [],
                 },
@@ -168,10 +195,22 @@ def test_framework_api_builds_candidate_and_publishes_structured_confirmation(tm
             current = client.get("/api/v1/courses/course/framework-versions/current")
             assert current.status_code == 200
             assert current.json()["id"] == confirmed.json()["id"]
+            assert current.json()["payload"]["exam_points"][0]["status"] == "confirmed"
 
         with Session(engine) as session:
             run_status = session.scalar(select(framework_build_runs.c.status).where(framework_build_runs.c.id == run_id))
             assert run_status == "published"
+            current_version_id = confirmed.json()["id"]
+            rows = session.execute(
+                select(exam_points).where(
+                    exam_points.c.course_id == "course",
+                    exam_points.c.framework_version_id == current_version_id,
+                )
+            ).mappings().all()
+            assert len(rows) == 1
+            assert rows[0]["status"] == "confirmed"
+            assert rows[0]["priority"] == "high"
+            assert rows[0]["operational_detail_policy"] == "supporting_only"
     finally:
         app.dependency_overrides.clear()
         del app.state.syllabus_extractor

@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.db.schema import (
     content_blocks,
     document_parse_runs,
+    exam_points,
     framework_anchors,
     framework_build_runs,
     framework_conflicts,
@@ -18,6 +19,7 @@ from app.db.schema import (
     material_versions,
     materials,
 )
+from app.domain.framework.exam_points import ExamPoint
 from app.domain.framework.models import FrameworkCandidate, FrameworkConfirmation
 from app.services.course_service import get_course
 
@@ -135,8 +137,22 @@ class DatabaseFrameworkRepository:
         unknown_resolutions = set(confirmation.conflict_resolutions) - open_keys
         if unknown_resolutions:
             raise FrameworkInputError("confirmation contains an unknown conflict resolution")
+        candidate_point_rows = self.session.execute(
+            select(exam_points).where(
+                exam_points.c.framework_version_id == version_id,
+                exam_points.c.course_id == course_id,
+            )
+        ).mappings().all()
+        candidate_points_by_code = {point["code"]: point for point in candidate_point_rows}
+        unknown_point_codes = {point.code for point in confirmation.exam_points} - set(candidate_points_by_code)
+        if unknown_point_codes:
+            raise FrameworkInputError("confirmed exam point is not part of the current candidate version")
         payload = dict(row["payload"])
         payload["anchors"] = [anchor.model_dump(mode="json") for anchor in confirmation.anchors]
+        payload["exam_points"] = [
+            point.model_copy(update={"status": "confirmed"}).model_dump(mode="json")
+            for point in confirmation.exam_points
+        ]
         payload["teacher_exclusions"] = confirmation.teacher_exclusions
         payload["conflict_resolutions"] = confirmation.conflict_resolutions
         self.session.execute(
@@ -166,6 +182,32 @@ class DatabaseFrameworkRepository:
                     anchor_key=anchor.key,
                     payload=anchor.model_dump(mode="json"),
                 )
+            )
+        confirmed_codes = {point.code for point in confirmation.exam_points}
+        if confirmed_codes:
+            self.session.execute(
+                delete(exam_points).where(
+                    exam_points.c.framework_version_id == version_id,
+                    exam_points.c.course_id == course_id,
+                    exam_points.c.code.not_in(confirmed_codes),
+                )
+            )
+        else:
+            self.session.execute(
+                delete(exam_points).where(
+                    exam_points.c.framework_version_id == version_id,
+                    exam_points.c.course_id == course_id,
+                )
+            )
+        for point in confirmation.exam_points:
+            self.session.execute(
+                update(exam_points)
+                .where(
+                    exam_points.c.id == candidate_points_by_code[point.code]["id"],
+                    exam_points.c.framework_version_id == version_id,
+                    exam_points.c.course_id == course_id,
+                )
+                .values(**_exam_point_values(point, status="confirmed"))
             )
         for conflict in conflicts:
             details = dict(conflict["details"])
@@ -207,6 +249,15 @@ class DatabaseFrameworkRepository:
                     payload=topic.model_dump(mode="json"),
                 )
             )
+        for point in candidate.exam_points:
+            self.session.execute(
+                exam_points.insert().values(
+                    id=uuid4().hex,
+                    course_id=course_id,
+                    framework_version_id=version_id,
+                    **_exam_point_values(point, status="candidate"),
+                )
+            )
         for conflict in candidate.conflicts:
             self.session.execute(
                 framework_conflicts.insert().values(
@@ -217,6 +268,28 @@ class DatabaseFrameworkRepository:
                     details=conflict.model_dump(mode="json"),
                 )
             )
+
+
+def _exam_point_values(point: ExamPoint, *, status: str) -> dict:
+    return {
+        "anchor_key": point.anchor_key,
+        "code": point.code,
+        "title": point.title,
+        "assessment_requirement": point.assessment_requirement,
+        "weight_value": point.weight_value,
+        "weight_source": point.weight_source.value,
+        "weight_group_id": point.weight_group_id,
+        "priority": point.priority,
+        "cognitive_targets": point.cognitive_targets,
+        "assessment_orientations": point.assessment_orientations,
+        "allowed_question_types": point.allowed_question_types,
+        "operational_detail_policy": point.operational_detail_policy.value,
+        "scope_boundary": point.scope_boundary,
+        "required_evidence_roles": point.required_evidence_roles,
+        "retrieval_intent": point.retrieval_intent,
+        "teaching_anchor_keys": point.teaching_anchor_keys,
+        "status": status,
+    }
 
 
 def get_framework_candidate(session: Session, *, course_id: str, run_id: str) -> dict:
