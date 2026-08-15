@@ -77,15 +77,16 @@ class DeepSeekJsonClient:
         input_tokens: int | None = None
         output_tokens: int | None = None
         final_http_status: int | None = None
+        last_retry_error_code: str | None = None
 
         for attempt in range(1, self.max_attempts + 1):
             try:
                 response = self._post(system_prompt, canonical_prompt, temperature)
                 headers = getattr(response, "headers", {})
                 request_id = headers.get("x-request-id") if hasattr(headers, "get") else None
-                response.raise_for_status()
                 status_code = getattr(response, "status_code", None)
                 final_http_status = status_code if isinstance(status_code, int) else 200
+                response.raise_for_status()
                 body = response.json()
                 if not isinstance(body, dict):
                     raise DeepSeekModelError("model_invalid_envelope", "model response envelope is invalid")
@@ -130,7 +131,7 @@ class DeepSeekJsonClient:
                         "attempt_count": attempt,
                         "retry_count": attempt - 1,
                         "final_http_status": final_http_status,
-                        "last_error_code": None,
+                        "last_error_code": last_retry_error_code,
                         "attempts": attempts,
                     },
                 )
@@ -140,21 +141,31 @@ class DeepSeekJsonClient:
                     "deepseek_http_error",
                     f"DeepSeek request failed with HTTP status {exc.response.status_code}",
                 )
-                attempts.append({"attempt": attempt, "http_status": exc.response.status_code})
+                last_retry_error_code = last_error.error_code
+                attempts.append(
+                    {
+                        "attempt": attempt,
+                        "http_status": exc.response.status_code,
+                        "error_code": last_error.error_code,
+                    }
+                )
             except httpx.HTTPError:
                 last_error = DeepSeekModelError(
                     "deepseek_transport_error",
                     "DeepSeek request failed",
                 )
+                last_retry_error_code = last_error.error_code
                 attempts.append({"attempt": attempt, "error_code": last_error.error_code})
             except (ValueError, KeyError, IndexError, TypeError) as exc:
                 last_error = DeepSeekModelError(
                     "model_invalid_envelope",
                     "model response envelope is invalid",
                 )
+                last_retry_error_code = last_error.error_code
                 attempts.append({"attempt": attempt, "error_type": type(exc).__name__})
             except DeepSeekModelError as exc:
                 last_error = exc
+                last_retry_error_code = exc.error_code
                 attempts.append(
                     {
                         "attempt": attempt,

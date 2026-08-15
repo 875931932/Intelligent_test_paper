@@ -176,6 +176,73 @@ def test_json_client_preserves_safe_failure_code(payload, error_code):
     assert "material body" not in repr(recorder.calls[0])
 
 
+def test_json_client_records_terminal_http_status_in_safe_details():
+    recorder = RecordingModelCalls()
+    client = DeepSeekJsonClient(
+        api_key="test-key",
+        base_url="https://deepseek.invalid/v1",
+        model="deepseek-v4-flash",
+        max_attempts=1,
+        client=httpx.Client(
+            transport=httpx.MockTransport(lambda _: httpx.Response(503, text="secret upstream body"))
+        ),
+        recorder=recorder,
+    )
+
+    with pytest.raises(DeepSeekModelError):
+        client.request_json(
+            system_prompt="system",
+            payload={"blocks": ["material"]},
+            temperature=0,
+            call_context=ModelCallContext(course_id="course", organization_run_id="run", stage="classification"),
+        )
+
+    details = recorder.calls[0]["details"]
+    assert details["final_http_status"] == 503
+    assert details["last_error_code"] == "deepseek_http_error"
+    assert details["attempts"] == [
+        {"attempt": 1, "http_status": 503, "error_code": "deepseek_http_error"}
+    ]
+    assert "secret upstream body" not in repr(details)
+
+
+def test_json_client_success_retains_last_retry_error_code(monkeypatch):
+    responses = iter(
+        [
+            httpx.Response(503),
+            httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": '{"ok":true}'}}]},
+            ),
+        ]
+    )
+    recorder = RecordingModelCalls()
+    monkeypatch.setattr("app.adapters.model.deepseek_gateway.time.sleep", lambda _: None)
+    client = DeepSeekJsonClient(
+        api_key="test-key",
+        base_url="https://deepseek.invalid/v1",
+        model="deepseek-v4-flash",
+        max_attempts=2,
+        client=httpx.Client(transport=httpx.MockTransport(lambda _: next(responses))),
+        recorder=recorder,
+    )
+
+    assert client.request_json(
+        system_prompt="system",
+        payload={"blocks": ["material"]},
+        temperature=0,
+        call_context=ModelCallContext(course_id="course", organization_run_id="run", stage="classification"),
+    ) == {"ok": True}
+
+    details = recorder.calls[0]["details"]
+    assert details["retry_count"] == 1
+    assert details["final_http_status"] == 200
+    assert details["last_error_code"] == "deepseek_http_error"
+    assert details["attempts"] == [
+        {"attempt": 1, "http_status": 503, "error_code": "deepseek_http_error"}
+    ]
+
+
 def test_semantic_schema_failure_records_one_final_failed_model_call():
     recorder = RecordingModelCalls()
     client = DeepSeekJsonClient(
