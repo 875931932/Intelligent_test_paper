@@ -409,3 +409,35 @@ def test_blueprint_allocates_practical_mode_only_to_directly_assessable_unit():
 
     assert plan.items[0].assessment_mode == "practical_operation"
     assert plan.items[0].exam_point_id == "ep-practical"
+
+
+def test_blueprint_allocates_large_valid_plan_without_recursion_limit():
+    request = BlueprintRequest(
+        total_score=500,
+        type_rules={
+            "single_choice": {
+                "count": 1000,
+                "score": 0.5,
+                "assessment_mode_distribution": {
+                    "theory_recall": 100,
+                    "conceptual": 0,
+                    "application": 0,
+                    "problem_solving": 0,
+                    "practical_operation": 0,
+                },
+            }
+        },
+        chapter_weights={"chapter": 100},
+        units=[
+            UnitCoverage(
+                unit_id="unit",
+                anchor_key="chapter",
+                card_ids=["card"],
+                allowed_assessment_modes=["theory_recall"],
+            )
+        ],
+    )
+
+    plan = allocate_plan_items(request)
+
+    assert len(plan.items) == 1000

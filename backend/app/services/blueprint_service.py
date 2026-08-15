@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterator
 from typing import Any
 
 from app.domain.blueprint.models import (
@@ -171,79 +172,150 @@ def _assign_slots_to_anchors(
             slot["type_index"],
         ),
     )
-    initial = tuple(remaining[anchor] for anchor in anchor_order)
-    failed_states: set[tuple[int, tuple[int, ...]]] = set()
-
-    def search(
-        position: int,
-        capacities: tuple[int, ...],
-        assignment: dict[tuple[int, int], str],
-    ) -> dict[tuple[int, int], str] | None:
-        state_key = (position, capacities)
-        if state_key in failed_states:
-            return None
-        if position == len(ordered):
-            return dict(assignment) if not any(capacities) else None
-        slot = ordered[position]
+    grouped_slots: dict[
+        tuple[int, tuple[str, ...]],
+        list[dict[str, Any]],
+    ] = {}
+    for slot in ordered:
         slot_key = (slot["type_order"], slot["type_index"])
-        slot_units = round(slot["score"] * 2)
-        candidates = [
-            anchor
-            for anchor in eligible_by_slot[slot_key]
-            if capacities[anchor_order.index(anchor)] >= slot_units
-        ]
-        candidates.sort(
-            key=lambda anchor: (
-                -capacities[anchor_order.index(anchor)],
-                anchor,
-            )
+        group_key = (
+            round(slot["score"] * 2),
+            eligible_by_slot[slot_key],
         )
-        for anchor in candidates:
-            anchor_index = anchor_order.index(anchor)
-            revised = list(capacities)
-            revised[anchor_index] -= slot_units
-            revised_tuple = tuple(revised)
-            if not _future_capacity_is_possible(
-                ordered,
-                position + 1,
-                revised_tuple,
-                anchor_order,
-                eligible_by_slot,
-            ):
-                continue
-            assignment[slot_key] = anchor
-            resolved = search(position + 1, revised_tuple, assignment)
-            if resolved is not None:
-                return resolved
-            assignment.pop(slot_key, None)
-        failed_states.add(state_key)
-        return None
+        grouped_slots.setdefault(group_key, []).append(slot)
+    groups = [
+        {
+            "slot_units": group_key[0],
+            "anchors": group_key[1],
+            "slots": grouped_slots[group_key],
+        }
+        for group_key in sorted(
+            grouped_slots,
+            key=lambda key: (len(key[1]), -key[0], key[1]),
+        )
+    ]
 
-    resolved = search(0, initial, {})
-    if resolved is None:
+    anchor_indexes = {anchor: index for index, anchor in enumerate(anchor_order)}
+    suffix_available = [tuple(0 for _ in anchor_order) for _ in range(len(groups) + 1)]
+    for group_position in range(len(groups) - 1, -1, -1):
+        available = list(suffix_available[group_position + 1])
+        group = groups[group_position]
+        group_units = group["slot_units"] * len(group["slots"])
+        for anchor in group["anchors"]:
+            available[anchor_indexes[anchor]] += group_units
+        suffix_available[group_position] = tuple(available)
+
+    initial = tuple(remaining[anchor] for anchor in anchor_order)
+    states = {initial: 0}
+    nodes: list[tuple[int, int, tuple[int, ...]]] = [(-1, -1, ())]
+    for group_position, group in enumerate(groups):
+        eligible_indexes = tuple(anchor_indexes[anchor] for anchor in group["anchors"])
+        future_available = suffix_available[group_position + 1]
+        next_states: dict[tuple[int, ...], int] = {}
+        for capacities, node_id in sorted(states.items()):
+            for allocation in _iter_group_allocations(
+                item_count=len(group["slots"]),
+                slot_units=group["slot_units"],
+                eligible_indexes=eligible_indexes,
+                capacities=capacities,
+                future_available=future_available,
+            ):
+                revised = list(capacities)
+                for anchor_index, count in zip(
+                    eligible_indexes,
+                    allocation,
+                    strict=True,
+                ):
+                    revised[anchor_index] -= count * group["slot_units"]
+                revised_tuple = tuple(revised)
+                if any(
+                    capacity > future
+                    for capacity, future in zip(
+                        revised_tuple,
+                        future_available,
+                        strict=True,
+                    )
+                ):
+                    continue
+                if revised_tuple not in next_states:
+                    nodes.append((node_id, group_position, allocation))
+                    next_states[revised_tuple] = len(nodes) - 1
+        if not next_states:
+            states = {}
+            break
+        states = next_states
+
+    zero = tuple(0 for _ in anchor_order)
+    if zero not in states:
         raise BlueprintValidationError(
             "selected question scores, assessment modes and chapter weights cannot be jointly satisfied"
         )
-    return resolved
+
+    allocations_by_group: dict[int, tuple[int, ...]] = {}
+    node_id = states[zero]
+    while node_id:
+        previous_node_id, group_position, allocation = nodes[node_id]
+        allocations_by_group[group_position] = allocation
+        node_id = previous_node_id
+
+    assignment: dict[tuple[int, int], str] = {}
+    for group_position, group in enumerate(groups):
+        offset = 0
+        for anchor, count in zip(
+            group["anchors"],
+            allocations_by_group[group_position],
+            strict=True,
+        ):
+            for slot in group["slots"][offset : offset + count]:
+                assignment[(slot["type_order"], slot["type_index"])] = anchor
+            offset += count
+    return assignment
 
 
-def _future_capacity_is_possible(
-    ordered_slots: list[dict[str, Any]],
-    start: int,
+def _iter_group_allocations(
+    *,
+    item_count: int,
+    slot_units: int,
+    eligible_indexes: tuple[int, ...],
     capacities: tuple[int, ...],
-    anchor_order: tuple[str, ...],
-    eligible_by_slot: dict[tuple[int, int], tuple[str, ...]],
-) -> bool:
-    for anchor_index, anchor in enumerate(anchor_order):
-        available = sum(
-            round(slot["score"] * 2)
-            for slot in ordered_slots[start:]
-            if anchor
-            in eligible_by_slot[(slot["type_order"], slot["type_index"])]
+    future_available: tuple[int, ...],
+) -> Iterator[tuple[int, ...]]:
+    if slot_units == 0:
+        yield (item_count, *(0 for _ in eligible_indexes[1:]))
+        return
+
+    lower_bounds = []
+    upper_bounds = []
+    for anchor_index in eligible_indexes:
+        required_units = max(0, capacities[anchor_index] - future_available[anchor_index])
+        lower_bounds.append((required_units + slot_units - 1) // slot_units)
+        upper_bounds.append(min(item_count, capacities[anchor_index] // slot_units))
+    if sum(lower_bounds) > item_count or sum(upper_bounds) < item_count:
+        return
+
+    suffix_lower = [0] * (len(eligible_indexes) + 1)
+    suffix_upper = [0] * (len(eligible_indexes) + 1)
+    for position in range(len(eligible_indexes) - 1, -1, -1):
+        suffix_lower[position] = suffix_lower[position + 1] + lower_bounds[position]
+        suffix_upper[position] = suffix_upper[position + 1] + upper_bounds[position]
+
+    stack: list[tuple[int, int, tuple[int, ...]]] = [(0, item_count, ())]
+    while stack:
+        position, remaining_items, prefix = stack.pop()
+        if position == len(eligible_indexes) - 1:
+            if lower_bounds[position] <= remaining_items <= upper_bounds[position]:
+                yield (*prefix, remaining_items)
+            continue
+        minimum = max(
+            lower_bounds[position],
+            remaining_items - suffix_upper[position + 1],
         )
-        if capacities[anchor_index] > available:
-            return False
-    return True
+        maximum = min(
+            upper_bounds[position],
+            remaining_items - suffix_lower[position + 1],
+        )
+        for count in range(minimum, maximum + 1):
+            stack.append((position + 1, remaining_items - count, (*prefix, count)))
 
 
 def allocate_plan_items(request: BlueprintRequest) -> BlueprintPlan:
