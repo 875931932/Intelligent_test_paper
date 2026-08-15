@@ -108,6 +108,48 @@ def test_organization_dependency_lazily_builds_embedding_client(client, monkeypa
                 delattr(app.state, name)
 
 
+@pytest.mark.parametrize("missing_setting", ["deepseek_api_key", "deepseek_base_url", "deepseek_model"])
+@pytest.mark.parametrize(
+    ("injected_attribute", "missing_attribute", "expected_detail"),
+    [
+        ("exam_point_knowledge_consolidator", "exam_point_evidence_classifier", "semantic classifier is not configured"),
+        ("exam_point_evidence_classifier", "exam_point_knowledge_consolidator", "knowledge consolidator is not configured"),
+    ],
+)
+def test_organization_semantic_dependencies_require_complete_deepseek_config(
+    client,
+    monkeypatch,
+    missing_setting,
+    injected_attribute,
+    missing_attribute,
+    expected_detail,
+):
+    monkeypatch.setattr(settings, "deepseek_api_key", "configured-test-key")
+    monkeypatch.setattr(settings, "deepseek_base_url", "https://deepseek.invalid/v1")
+    monkeypatch.setattr(settings, "deepseek_model", "deepseek-v4-flash")
+    monkeypatch.setattr(settings, missing_setting, "")
+    app.state.organization_embedder = object()
+    setattr(app.state, injected_attribute, object())
+    if hasattr(app.state, missing_attribute):
+        delattr(app.state, missing_attribute)
+    try:
+        response = client.post(
+            "/api/v1/courses/not-needed/organization-runs",
+            json={"material_version_ids": ["material-v1"]},
+        )
+        assert response.status_code == 503
+        assert response.json()["detail"] == expected_detail
+    finally:
+        for name in (
+            "organization_embedder",
+            "exam_point_evidence_classifier",
+            "exam_point_knowledge_consolidator",
+            "semantic_json_client",
+        ):
+            if hasattr(app.state, name):
+                delattr(app.state, name)
+
+
 def test_course_crud_hides_course_owned_by_another_teacher(client):
     with client.app.state.test_engine.begin() as connection:
         connection.execute(text("INSERT INTO users (id, display_name, role) VALUES ('owner-other', 'Other', 'teacher')"))

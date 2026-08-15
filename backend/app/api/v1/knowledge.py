@@ -57,7 +57,7 @@ def get_exam_point_classifier(request: Request) -> ExamPointEvidenceClassifier:
     classifier = getattr(request.app.state, "exam_point_evidence_classifier", None)
     if classifier is not None:
         return classifier
-    if not settings.deepseek_api_key.strip():
+    if not _deepseek_configured():
         raise HTTPException(status_code=503, detail="semantic classifier is not configured")
     client = _get_semantic_json_client(request)
     classifier = DeepSeekExamPointEvidenceClassifier(client)
@@ -69,7 +69,7 @@ def get_exam_point_consolidator(request: Request) -> ExamPointKnowledgeConsolida
     consolidator = getattr(request.app.state, "exam_point_knowledge_consolidator", None)
     if consolidator is not None:
         return consolidator
-    if not settings.deepseek_api_key.strip():
+    if not _deepseek_configured():
         raise HTTPException(status_code=503, detail="knowledge consolidator is not configured")
     client = _get_semantic_json_client(request)
     consolidator = DeepSeekExamPointKnowledgeConsolidator(client)
@@ -89,6 +89,17 @@ def _get_semantic_json_client(request: Request) -> DeepSeekJsonClient:
     )
     request.app.state.semantic_json_client = client
     return client
+
+
+def _deepseek_configured() -> bool:
+    return all(
+        value.strip()
+        for value in (
+            settings.deepseek_api_key,
+            settings.deepseek_base_url,
+            settings.deepseek_model,
+        )
+    )
 
 
 def _not_found() -> HTTPException:

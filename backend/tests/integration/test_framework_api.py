@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
@@ -242,7 +243,8 @@ def test_framework_api_builds_candidate_and_publishes_structured_confirmation(tm
         engine.dispose()
 
 
-def test_framework_build_requires_configured_semantic_extractor(tmp_path, monkeypatch):
+@pytest.mark.parametrize("missing_setting", ["deepseek_api_key", "deepseek_base_url", "deepseek_model"])
+def test_framework_build_requires_configured_semantic_extractor(tmp_path, monkeypatch, missing_setting):
     engine = create_engine(f"sqlite:///{tmp_path / 'framework-no-model.db'}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
 
@@ -251,11 +253,14 @@ def test_framework_build_requires_configured_semantic_extractor(tmp_path, monkey
             yield session
 
     app.dependency_overrides[get_session] = session_override
-    monkeypatch.setattr(settings, "deepseek_api_key", "")
+    monkeypatch.setattr(settings, "deepseek_api_key", "configured-test-key")
+    monkeypatch.setattr(settings, "deepseek_base_url", "https://deepseek.invalid/v1")
+    monkeypatch.setattr(settings, "deepseek_model", "deepseek-v4-flash")
+    monkeypatch.setattr(settings, missing_setting, "")
     if hasattr(app.state, "syllabus_extractor"):
         del app.state.syllabus_extractor
     try:
-        with TestClient(app) as client:
+        with TestClient(app, raise_server_exceptions=False) as client:
             response = client.post(
                 "/api/v1/courses/course/framework-runs",
                 json={

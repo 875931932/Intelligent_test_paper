@@ -31,7 +31,7 @@ def get_syllabus_extractor(request: Request) -> SyllabusExtractor:
     extractor = getattr(request.app.state, "syllabus_extractor", None)
     if extractor is not None:
         return extractor
-    if not settings.deepseek_api_key.strip():
+    if not _deepseek_configured():
         raise HTTPException(status_code=503, detail="syllabus semantic extractor is not configured")
     client = DeepSeekJsonClient(
         api_key=settings.deepseek_api_key,
@@ -42,6 +42,17 @@ def get_syllabus_extractor(request: Request) -> SyllabusExtractor:
     extractor = DeepSeekSyllabusExtractor(client)
     request.app.state.syllabus_extractor = extractor
     return extractor
+
+
+def _deepseek_configured() -> bool:
+    return all(
+        value.strip()
+        for value in (
+            settings.deepseek_api_key,
+            settings.deepseek_base_url,
+            settings.deepseek_model,
+        )
+    )
 
 
 def _not_found() -> HTTPException:

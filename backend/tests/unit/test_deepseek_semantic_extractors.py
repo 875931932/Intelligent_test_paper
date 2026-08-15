@@ -26,7 +26,15 @@ class RecordingJsonClient:
         self.responses = list(responses)
         self.recorded_payloads: list[dict] = []
 
-    def request_json(self, *, system_prompt, payload, temperature, call_context=None):
+    def request_json(
+        self,
+        *,
+        system_prompt,
+        payload,
+        temperature,
+        call_context=None,
+        response_validator=None,
+    ):
         self.recorded_payloads.append(
             {
                 "system": system_prompt,
@@ -35,7 +43,10 @@ class RecordingJsonClient:
                 "call_context": call_context,
             }
         )
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if response_validator is not None:
+            response_validator(response)
+        return response
 
 
 class RecordingModelCalls:
@@ -165,6 +176,43 @@ def test_json_client_preserves_safe_failure_code(payload, error_code):
     assert "material body" not in repr(recorder.calls[0])
 
 
+def test_semantic_schema_failure_records_one_final_failed_model_call():
+    recorder = RecordingModelCalls()
+    client = DeepSeekJsonClient(
+        api_key="test-key",
+        base_url="https://deepseek.invalid/v1",
+        model="deepseek-v4-flash",
+        max_attempts=1,
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(
+                    200,
+                    headers={"x-request-id": "req-bad"},
+                    json={"choices": [{"message": {"content": "{}"}}]},
+                )
+            )
+        ),
+        recorder=recorder,
+    )
+
+    with pytest.raises(DeepSeekModelError) as caught:
+        DeepSeekSyllabusExtractor(client).extract_assessment(
+            ["期末考试"],
+            call_context=ModelCallContext(
+                course_id="course",
+                framework_build_run_id="run",
+                stage="assessment_syllabus_extraction",
+            ),
+        )
+
+    assert caught.value.error_code == "model_schema_validation_failed"
+    assert [(item["status"], item["error_code"]) for item in recorder.calls] == [
+        ("failed", "model_schema_validation_failed")
+    ]
+    assert recorder.calls[0]["request_id"] == "req-bad"
+    assert recorder.calls[0]["details"]["invalid_fields"]
+
+
 def test_syllabus_extractor_requires_final_exam_points_and_sends_only_supplied_outline():
     client = RecordingJsonClient(
         [
@@ -225,6 +273,61 @@ def test_syllabus_extractor_validates_teaching_topic_schema():
 
     assert topics[0].key == "rag-teaching"
     assert "行政内容" in client.recorded_payloads[0]["system"]
+
+
+@pytest.mark.parametrize(
+    "point_override",
+    [
+        {"weight_source": "teacher_confirmed"},
+        {"cognitive_targets": None},
+        {"assessment_orientations": None},
+        {"operational_detail_policy": None},
+        {"teaching_anchor_keys": None},
+    ],
+)
+def test_assessment_response_requires_strict_exam_point_fields(point_override):
+    point = {
+        "code": "rag-diagnosis",
+        "anchor_key": "rag",
+        "title": "检索效果诊断",
+        "assessment_requirement": "能够诊断召回偏差",
+        "weight_value": 100,
+        "weight_source": "assessment_syllabus",
+        "weight_group_id": "rag",
+        "cognitive_targets": ["analyze"],
+        "assessment_orientations": ["diagnostic"],
+        "operational_detail_policy": "supporting_only",
+        "retrieval_intent": "检索偏差及诊断依据",
+        "teaching_anchor_keys": ["rag-teaching"],
+    }
+    key, value = next(iter(point_override.items()))
+    if value is None:
+        point.pop(key)
+    else:
+        point[key] = value
+    extractor = DeepSeekSyllabusExtractor(
+        RecordingJsonClient(
+            [
+                {
+                    "anchors": [
+                        {
+                            "key": "rag",
+                            "title": "RAG",
+                            "exam_weight": 100,
+                            "alignment_keys": ["rag-teaching"],
+                        }
+                    ],
+                    "exam_points": [point],
+                    "final_exam_rules": {},
+                }
+            ]
+        )
+    )
+
+    with pytest.raises(DeepSeekModelError) as caught:
+        extractor.extract_assessment(["期末考试"])
+
+    assert caught.value.error_code == "model_schema_validation_failed"
 
 
 def test_database_model_call_recorder_persists_only_redacted_metadata(tmp_path):
@@ -297,6 +400,8 @@ def test_material_classifier_sends_one_exam_point_and_one_file_with_locators():
     assert request["chunks"][0]["locator"]["page"] == 3
     assert "all_exam_points" not in request
     assert result.decisions[0].evidence_chunk_id == "e1"
+    assert "相关背景" in client.recorded_payloads[-1]["system"]
+    assert "考点边界之外" in client.recorded_payloads[-1]["system"]
 
 
 def test_classifier_rejects_evidence_from_another_pair():
@@ -386,6 +491,33 @@ def test_consolidator_rejects_fact_without_direct_evidence_coverage():
 
     with pytest.raises(DeepSeekModelError) as caught:
         consolidator.consolidate(
+            exam_point=_point(),
+            admitted_decisions=[EvidenceDecision.model_validate(_decision())],
+        )
+
+    assert caught.value.error_code == "model_output_evidence_gap"
+
+
+def test_consolidator_rejects_active_unit_without_knowledge_cards():
+    client = RecordingJsonClient(
+        [
+            {
+                "exam_point_code": "rag-diagnosis",
+                "assessment_units": [
+                    {
+                        "code": "empty-unit",
+                        "title": "空单元",
+                        "performance_statement": "没有卡片",
+                        "exam_point_code": "rag-diagnosis",
+                        "cards": [],
+                    }
+                ],
+            }
+        ]
+    )
+
+    with pytest.raises(DeepSeekModelError) as caught:
+        DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
             exam_point=_point(),
             admitted_decisions=[EvidenceDecision.model_validate(_decision())],
         )

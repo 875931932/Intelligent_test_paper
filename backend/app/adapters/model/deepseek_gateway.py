@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Callable
 from typing import Any, Protocol
 
 import httpx
@@ -64,6 +65,7 @@ class DeepSeekJsonClient:
         payload: Any,
         temperature: float,
         call_context: ModelCallContext | None = None,
+        response_validator: Callable[[dict], None] | None = None,
     ) -> dict:
         prompt = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else dict(payload)
         canonical_prompt = json.dumps(prompt, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -74,6 +76,7 @@ class DeepSeekJsonClient:
         request_id: str | None = None
         input_tokens: int | None = None
         output_tokens: int | None = None
+        final_http_status: int | None = None
 
         for attempt in range(1, self.max_attempts + 1):
             try:
@@ -81,6 +84,8 @@ class DeepSeekJsonClient:
                 headers = getattr(response, "headers", {})
                 request_id = headers.get("x-request-id") if hasattr(headers, "get") else None
                 response.raise_for_status()
+                status_code = getattr(response, "status_code", None)
+                final_http_status = status_code if isinstance(status_code, int) else 200
                 body = response.json()
                 if not isinstance(body, dict):
                     raise DeepSeekModelError("model_invalid_envelope", "model response envelope is invalid")
@@ -109,6 +114,8 @@ class DeepSeekJsonClient:
                         "model_non_object_response",
                         "model returned a non-object JSON value",
                     )
+                if response_validator is not None:
+                    response_validator(result)
                 duration_ms = round((time.perf_counter() - started) * 1000)
                 self._record(
                     context=call_context,
@@ -119,7 +126,13 @@ class DeepSeekJsonClient:
                     duration_ms=duration_ms,
                     error=None,
                     request_id=request_id,
-                    details={"attempt_count": attempt, "attempts": attempts},
+                    details={
+                        "attempt_count": attempt,
+                        "retry_count": attempt - 1,
+                        "final_http_status": final_http_status,
+                        "last_error_code": None,
+                        "attempts": attempts,
+                    },
                 )
                 return result
             except httpx.HTTPStatusError as exc:
@@ -142,14 +155,27 @@ class DeepSeekJsonClient:
                 attempts.append({"attempt": attempt, "error_type": type(exc).__name__})
             except DeepSeekModelError as exc:
                 last_error = exc
-                attempts.append({"attempt": attempt, "error_code": exc.error_code})
+                attempts.append(
+                    {
+                        "attempt": attempt,
+                        "http_status": final_http_status,
+                        "error_code": exc.error_code,
+                    }
+                )
 
             if attempt < self.max_attempts:
                 time.sleep(min(2 ** (attempt - 1), 8))
 
         assert last_error is not None
         duration_ms = round((time.perf_counter() - started) * 1000)
-        details = {"attempt_count": self.max_attempts, "attempts": attempts, **last_error.details}
+        details = {
+            "attempt_count": self.max_attempts,
+            "retry_count": self.max_attempts - 1,
+            "final_http_status": final_http_status,
+            "last_error_code": last_error.error_code,
+            "attempts": attempts,
+            **last_error.details,
+        }
         self._record(
             context=call_context,
             status="failed",
