@@ -86,6 +86,7 @@ class KnowledgeTreeConfirmation(BaseModel):
 
     operations: list[TreeOperation]
     reviewed_topic_codes: list[str]
+    reviewed_exam_point_codes: list[str] = Field(default_factory=list)
     teacher_exclusions: list[str]
 
 

@@ -54,6 +54,37 @@ def test_course_create_and_list_are_scoped_to_development_owner(client):
     assert [course["id"] for course in listed.json()] == [payload["id"]]
 
 
+@pytest.mark.parametrize(
+    ("missing_attribute", "expected_detail"),
+    [
+        ("organization_embedder", "embedding client is not configured"),
+        ("exam_point_evidence_classifier", "semantic classifier is not configured"),
+        ("exam_point_knowledge_consolidator", "knowledge consolidator is not configured"),
+    ],
+)
+def test_organization_run_requires_all_semantic_dependencies(client, missing_attribute, expected_detail):
+    attributes = {
+        "organization_embedder": object(),
+        "exam_point_evidence_classifier": object(),
+        "exam_point_knowledge_consolidator": object(),
+    }
+    for name, value in attributes.items():
+        setattr(client.app.state, name, value)
+    delattr(client.app.state, missing_attribute)
+    try:
+        response = client.post(
+            "/api/v1/courses/not-needed/organization-runs",
+            json={"material_version_ids": ["material-v1"]},
+        )
+    finally:
+        for name in attributes:
+            if hasattr(client.app.state, name):
+                delattr(client.app.state, name)
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == expected_detail
+
+
 def test_course_crud_hides_course_owned_by_another_teacher(client):
     with client.app.state.test_engine.begin() as connection:
         connection.execute(text("INSERT INTO users (id, display_name, role) VALUES ('owner-other', 'Other', 'teacher')"))
@@ -589,3 +620,65 @@ def test_material_reads_and_completion_are_course_scoped_and_delete_is_retained(
     retained = client.get(f"/api/v1/courses/{course_a['id']}/materials?include_deleted=true")
     assert retained.status_code == 200
     assert retained.json()[0]["status"] == "deleted"
+
+
+def test_deleting_material_invalidates_direct_evidence_and_current_index_membership(client):
+    storage = FakeStorage()
+    client.app.state.storage = storage
+    course = _course(client, "delete-evidence")
+    body = b"pdf"
+    request = _upload_request(size_bytes=3, sha256=hashlib.sha256(body).hexdigest())
+    upload = client.post(f"/api/v1/courses/{course['id']}/upload-sessions", json=request).json()
+    storage.objects[upload["object_key"]] = {
+        "size": 3,
+        "content_type": "application/pdf",
+        "metadata": {},
+        "body": body,
+    }
+    version = client.post(
+        f"/api/v1/courses/{course['id']}/upload-sessions/{upload['session_id']}/complete"
+    ).json()
+    values = {
+        "course": course["id"],
+        "material": version["material_id"],
+        "version": version["id"],
+    }
+    with client.app.state.test_engine.begin() as connection:
+        connection.execute(text("INSERT INTO framework_build_runs (id, course_id, status, input_snapshot) VALUES ('fr', :course, 'published', '{}')"), values)
+        connection.execute(text("INSERT INTO framework_versions (id, course_id, framework_build_run_id, version_no, status, payload) VALUES ('fv', :course, 'fr', 1, 'published', '{\"anchors\":[{\"key\":\"core\"}]}')"), values)
+        connection.execute(text("""
+            INSERT INTO exam_points (
+                id, course_id, framework_version_id, anchor_key, code, title,
+                assessment_requirement, weight_value, weight_source, weight_group_id,
+                priority, cognitive_targets, assessment_orientations, allowed_question_types,
+                operational_detail_policy, scope_boundary, required_evidence_roles,
+                retrieval_intent, teaching_anchor_keys, status
+            ) VALUES (
+                'ep', :course, 'fv', 'core', 'EP-1', '核心', '理解核心', 100,
+                'assessment_syllabus', 'core', 'normal', '[]', '[]', '[]',
+                'supporting_only', '{}', '[\"answer_or_rubric_basis\"]', '检索核心', '[]', 'confirmed'
+            )
+        """), values)
+        connection.execute(text("INSERT INTO organization_runs (id, course_id, framework_version_id, status, input_snapshot) VALUES ('org', :course, 'fv', 'published', '{}')"), values)
+        connection.execute(text("INSERT INTO evidence_chunks (id, course_id, organization_run_id, material_version_id, chunk_index, content, content_hash) VALUES ('ev', :course, 'org', :version, 0, '事实', :hash)"), {**values, "hash": "e" * 64})
+        connection.execute(text("INSERT INTO exam_point_evidence_links (id, course_id, organization_run_id, exam_point_id, evidence_chunk_id, relevance_class, support_claim, evidence_role, confidence, status) VALUES ('epl', :course, 'org', 'ep', 'ev', 'direct', '事实', 'answer_or_rubric_basis', 95, 'published')"), values)
+        connection.execute(
+            text("INSERT INTO knowledge_catalog_versions (id, course_id, organization_run_id, framework_version_id, version_no, status, payload) VALUES ('cat', :course, 'org', 'fv', 1, 'published', :payload)"),
+            {**values, "payload": '{"historical":true}'},
+        )
+        connection.execute(text("INSERT INTO content_domains (id, course_id, catalog_version_id, level, framework_anchor_key, code, name, status) VALUES ('domain', :course, 'cat', 1, 'core', 'core', '核心', 'active')"), values)
+        connection.execute(text("INSERT INTO assessment_units (id, course_id, catalog_version_id, content_domain_id, exam_point_id, code, title, performance_statement, scope_boundary, status) VALUES ('unit', :course, 'cat', 'domain', 'ep', 'U1', '核心', '理解核心', '{}', 'active')"), values)
+        connection.execute(text("INSERT INTO knowledge_cards (id, course_id, catalog_version_id, assessment_unit_id, name, performance_statement, assessable_content, scope_boundary, cognitive_targets, allowed_question_types, importance, content_hash, status, version) VALUES ('card', :course, 'cat', 'unit', '核心事实', '说明事实', '[\"事实\"]', '{}', '[]', '[]', 1, :hash, 'active', 1)"), {**values, "hash": "f" * 64})
+        connection.execute(text("INSERT INTO knowledge_evidence_links (id, course_id, knowledge_card_id, evidence_chunk_id, evidence_role, confidence, teacher_confirmed, lifecycle_status) VALUES ('kel', :course, 'card', 'ev', 'answer_or_rubric_basis', 95, 1, 'active')"), values)
+        connection.execute(text("INSERT INTO index_versions (id, course_id, catalog_version_id, version_no, status) VALUES ('idx', :course, 'cat', 1, 'published')"), values)
+        connection.execute(text("INSERT INTO index_memberships (id, course_id, index_version_id, knowledge_card_id) VALUES ('member', :course, 'idx', 'card')"), values)
+
+    response = client.delete(f"/api/v1/courses/{course['id']}/materials/{version['material_id']}")
+
+    assert response.status_code == 204
+    with client.app.state.test_engine.connect() as connection:
+        assert connection.execute(text("SELECT status FROM exam_point_evidence_links WHERE id='epl'")).scalar_one() == "source_deleted"
+        assert connection.execute(text("SELECT lifecycle_status FROM knowledge_evidence_links WHERE id='kel'")).scalar_one() == "source_deleted"
+        assert connection.execute(text("SELECT status FROM knowledge_cards WHERE id='card'")).scalar_one() == "affected_by_source_deletion"
+        assert connection.execute(text("SELECT COUNT(*) FROM index_memberships WHERE knowledge_card_id='card'")).scalar_one() == 0
+        assert connection.execute(text("SELECT payload FROM knowledge_catalog_versions WHERE id='cat'")).scalar_one() is not None

@@ -1,10 +1,12 @@
-"""Persistence and atomic publication for the knowledge catalogue boundary."""
+"""Persistence and atomic publication for exam-point-led knowledge catalogues."""
 
 from __future__ import annotations
 
 import json
-from hashlib import sha256
+import math
+from collections import Counter
 from datetime import UTC, datetime
+from hashlib import sha256
 from uuid import uuid4
 
 from sqlalchemy import func, select, update
@@ -12,29 +14,115 @@ from sqlalchemy.orm import Session
 
 from app.db.schema import (
     assessment_units,
+    content_blocks,
     content_domains,
+    document_parse_runs,
+    evidence_chunks,
+    exam_point_evidence_links,
+    exam_points,
     framework_versions,
     index_memberships,
     index_versions,
     knowledge_cards,
     knowledge_catalog_versions,
     knowledge_evidence_links,
-    organization_runs,
-    content_blocks,
     material_versions,
     materials,
+    organization_runs,
 )
+from app.domain.framework.exam_points import ExamPoint
 from app.domain.knowledge.models import KnowledgeTreeCandidate, KnowledgeTreeConfirmation
-from app.services.knowledge_tree_service import validate_publishable_tree, KnowledgeTreeValidationError
+from app.domain.knowledge.relevance import (
+    EvidenceDecision,
+    ExamPointFileDecision,
+    RelevanceClass,
+    StagingChunk,
+)
+from app.services.knowledge_tree_service import (
+    KnowledgeTreeValidationError,
+    apply_tree_operations,
+    validate_publishable_tree,
+)
 
 
 class KnowledgePublishError(Exception):
     pass
 
 
+def _exam_point_from_row(row) -> ExamPoint:
+    return ExamPoint.model_validate(
+        {
+            "code": row["code"],
+            "anchor_key": row["anchor_key"],
+            "title": row["title"],
+            "assessment_requirement": row["assessment_requirement"],
+            "weight_value": row["weight_value"],
+            "weight_source": row["weight_source"],
+            "weight_group_id": row["weight_group_id"],
+            "priority": row["priority"],
+            "cognitive_targets": row["cognitive_targets"] or [],
+            "assessment_orientations": row["assessment_orientations"] or [],
+            "allowed_question_types": row["allowed_question_types"] or [],
+            "operational_detail_policy": row["operational_detail_policy"],
+            "scope_boundary": row["scope_boundary"] or {},
+            "required_evidence_roles": row["required_evidence_roles"] or [],
+            "retrieval_intent": row["retrieval_intent"],
+            "assessment_anchor_keys": [row["anchor_key"]],
+            "teaching_anchor_keys": row["teaching_anchor_keys"] or [],
+            "status": row["status"],
+        }
+    )
+
+
+def _confirmed_exam_point_rows(
+    session: Session, *, course_id: str, framework_version_id: str
+) -> list[dict]:
+    return [
+        dict(row)
+        for row in session.execute(
+            select(exam_points)
+            .where(
+                exam_points.c.course_id == course_id,
+                exam_points.c.framework_version_id == framework_version_id,
+                exam_points.c.status == "confirmed",
+            )
+            .order_by(exam_points.c.code)
+        ).mappings()
+    ]
+
+
 class DatabaseKnowledgeRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
+
+    def load_evidence_chunks(
+        self,
+        *,
+        course_id: str,
+        run_id: str,
+        evidence_chunk_ids: list[str],
+    ) -> list[StagingChunk]:
+        if not evidence_chunk_ids:
+            return []
+        rows = self.session.execute(
+            select(evidence_chunks).where(
+                evidence_chunks.c.course_id == course_id,
+                evidence_chunks.c.organization_run_id == run_id,
+                evidence_chunks.c.id.in_(evidence_chunk_ids),
+            )
+        ).mappings().all()
+        by_id = {row["id"]: row for row in rows}
+        if set(by_id) != set(evidence_chunk_ids):
+            raise KnowledgePublishError("evidence snapshot is unavailable or outside this course")
+        return [
+            StagingChunk(
+                id=evidence_id,
+                material_version_id=by_id[evidence_id]["material_version_id"],
+                content=by_id[evidence_id]["content"],
+                locator=by_id[evidence_id]["locator"] or {},
+            )
+            for evidence_id in evidence_chunk_ids
+        ]
 
     def persist_candidate(self, state: dict, tree: KnowledgeTreeCandidate) -> str:
         course_id = state["course_id"]
@@ -47,44 +135,115 @@ class DatabaseKnowledgeRepository:
         ).scalar_one_or_none()
         if existing is not None:
             return existing
-        framework_version_id = tree.framework_version_id
+        run = self.session.execute(
+            select(organization_runs).where(
+                organization_runs.c.id == run_id,
+                organization_runs.c.course_id == course_id,
+                organization_runs.c.framework_version_id == tree.framework_version_id,
+                organization_runs.c.status == "running",
+            )
+        ).mappings().one_or_none()
+        if run is None:
+            raise KnowledgePublishError("organization run is unavailable")
+        point_rows = _confirmed_exam_point_rows(
+            self.session,
+            course_id=course_id,
+            framework_version_id=tree.framework_version_id,
+        )
+        point_ids = {row["code"]: row["id"] for row in point_rows}
+        payload = tree.model_dump(mode="json")
+        payload["failed_pairs"] = list(state.get("failed_pairs") or [])
         version_no = self.session.scalar(
             select(func.coalesce(func.max(knowledge_catalog_versions.c.version_no), 0) + 1).where(
                 knowledge_catalog_versions.c.course_id == course_id
             )
         )
         catalog_id = uuid4().hex
-        self.session.execute(
-            knowledge_catalog_versions.insert().values(
-                id=catalog_id,
-                course_id=course_id,
-                organization_run_id=run_id,
-                framework_version_id=framework_version_id,
-                version_no=version_no,
-                status="candidate",
-                payload=tree.model_dump(mode="json"),
+        try:
+            self.session.execute(
+                knowledge_catalog_versions.insert().values(
+                    id=catalog_id,
+                    course_id=course_id,
+                    organization_run_id=run_id,
+                    framework_version_id=tree.framework_version_id,
+                    version_no=version_no,
+                    status="candidate",
+                    payload=payload,
+                )
             )
-        )
-        self.session.execute(
-            update(organization_runs)
-            .where(organization_runs.c.id == run_id, organization_runs.c.course_id == course_id)
-            .values(status="awaiting_teacher_confirmation", updated_at=datetime.now(UTC))
-        )
-        self.session.commit()
+            seen: set[tuple[str, str]] = set()
+            for raw in sorted(
+                state.get("file_decisions") or [],
+                key=lambda item: (item["exam_point_code"], item["material_version_id"]),
+            ):
+                file_decision = ExamPointFileDecision.model_validate(raw)
+                point_id = point_ids.get(file_decision.exam_point_code)
+                if point_id is None:
+                    raise KnowledgePublishError("evidence decision references an unconfirmed exam point")
+                for decision in sorted(file_decision.decisions, key=lambda item: item.evidence_chunk_id):
+                    key = (file_decision.exam_point_code, decision.evidence_chunk_id)
+                    if key in seen:
+                        raise KnowledgePublishError("duplicate exam-point evidence decision")
+                    seen.add(key)
+                    evidence_exists = self.session.execute(
+                        select(evidence_chunks.c.id).where(
+                            evidence_chunks.c.id == decision.evidence_chunk_id,
+                            evidence_chunks.c.course_id == course_id,
+                            evidence_chunks.c.organization_run_id == run_id,
+                            evidence_chunks.c.material_version_id == file_decision.material_version_id,
+                        )
+                    ).scalar_one_or_none()
+                    if evidence_exists is None:
+                        raise KnowledgePublishError("evidence decision is outside the frozen snapshot")
+                    self.session.execute(
+                        exam_point_evidence_links.insert().values(
+                            id=uuid4().hex,
+                            course_id=course_id,
+                            organization_run_id=run_id,
+                            exam_point_id=point_id,
+                            evidence_chunk_id=decision.evidence_chunk_id,
+                            relevance_class=decision.relevance_class.value,
+                            support_claim=decision.support_claim,
+                            evidence_role=decision.evidence_role,
+                            confidence=decision.confidence,
+                            prompt_material=decision.prompt_material,
+                            status="candidate",
+                        )
+                    )
+            self.session.execute(
+                update(organization_runs)
+                .where(
+                    organization_runs.c.id == run_id,
+                    organization_runs.c.course_id == course_id,
+                )
+                .values(status="awaiting_teacher_confirmation", updated_at=datetime.now(UTC))
+            )
+            self.session.commit()
+        except Exception:
+            self.session.rollback()
+            raise
         return catalog_id
 
-    def publish(self, state: dict, tree: KnowledgeTreeCandidate, confirmation: KnowledgeTreeConfirmation) -> dict:
+    def publish(
+        self,
+        state: dict,
+        tree: KnowledgeTreeCandidate,
+        confirmation: KnowledgeTreeConfirmation,
+    ) -> dict:
         course_id = state["course_id"]
         catalog_id = state["candidate_id"]
         row = self.session.execute(
             select(knowledge_catalog_versions).where(
                 knowledge_catalog_versions.c.id == catalog_id,
                 knowledge_catalog_versions.c.course_id == course_id,
+                knowledge_catalog_versions.c.organization_run_id == state["run_id"],
                 knowledge_catalog_versions.c.status == "candidate",
             )
         ).mappings().one_or_none()
         if row is None:
             raise KnowledgePublishError("knowledge catalogue candidate is not available")
+        if tree.framework_version_id != row["framework_version_id"]:
+            raise KnowledgePublishError("candidate framework version cannot be changed")
         framework = self.session.execute(
             select(framework_versions.c.payload).where(
                 framework_versions.c.id == row["framework_version_id"],
@@ -95,84 +254,495 @@ class DatabaseKnowledgeRepository:
         if not framework:
             raise KnowledgePublishError("published framework is required")
         allowed = {anchor["key"] for anchor in framework.get("anchors", [])}
+        if confirmation.operations:
+            try:
+                tree = apply_tree_operations(
+                    tree,
+                    confirmation.operations,
+                    allowed_anchor_keys=allowed,
+                )
+            except KnowledgeTreeValidationError as exc:
+                raise KnowledgePublishError(str(exc)) from exc
+        active_topics = {topic.code for topic in tree.topics if topic.status == "active"}
+        if active_topics - set(confirmation.reviewed_topic_codes):
+            raise KnowledgePublishError("every active topic requires teacher review")
+        point_rows = _confirmed_exam_point_rows(
+            self.session,
+            course_id=course_id,
+            framework_version_id=row["framework_version_id"],
+        )
+        points_by_code = {item["code"]: _exam_point_from_row(item) for item in point_rows}
         try:
-            validate_publishable_tree(tree, allowed_anchor_keys=allowed)
+            if points_by_code:
+                insufficient = {
+                    item.exam_point_code
+                    for item in tree.coverage
+                    if item.status in {"insufficient", "conflicting"}
+                }
+                required_reviews = (
+                    set(points_by_code)
+                    - set(confirmation.teacher_exclusions)
+                    - insufficient
+                )
+                if required_reviews - set(confirmation.reviewed_exam_point_codes):
+                    raise KnowledgePublishError(
+                        "every sufficient exam point requires teacher review"
+                    )
+                validate_publishable_tree(
+                    tree,
+                    allowed_anchor_keys=allowed,
+                    allowed_exam_point_codes=set(points_by_code),
+                    exam_points_by_code=points_by_code,
+                )
+            else:
+                # Explicit legacy migration path for pre-ExamPoint catalogue fixtures.
+                validate_publishable_tree(tree, allowed_anchor_keys=allowed)
         except KnowledgeTreeValidationError as exc:
             raise KnowledgePublishError(str(exc)) from exc
-        self._insert_tree(course_id, catalog_id, tree, allowed)
-        index_no = self.session.scalar(select(func.coalesce(func.max(index_versions.c.version_no), 0) + 1).where(index_versions.c.course_id == course_id))
-        index_id = uuid4().hex
-        self.session.execute(
-            index_versions.insert().values(
-                id=index_id, course_id=course_id, catalog_version_id=catalog_id,
-                version_no=index_no, status="published",
+
+        point_ids = {item["code"]: item["id"] for item in point_rows}
+        try:
+            active_direct_card_ids = self._insert_tree(
+                course_id,
+                catalog_id,
+                tree,
+                allowed,
+                point_ids,
             )
-        )
-        for card_id in self.session.scalars(select(knowledge_cards.c.id).where(knowledge_cards.c.course_id == course_id, knowledge_cards.c.catalog_version_id == catalog_id)):
-            self.session.execute(index_memberships.insert().values(id=uuid4().hex, course_id=course_id, index_version_id=index_id, knowledge_card_id=card_id))
-        self.session.execute(update(knowledge_catalog_versions).where(knowledge_catalog_versions.c.course_id == course_id, knowledge_catalog_versions.c.status == "published").values(status="superseded"))
-        self.session.execute(update(index_versions).where(index_versions.c.course_id == course_id, index_versions.c.status == "published", index_versions.c.id != index_id).values(status="superseded"))
-        now = datetime.now(UTC)
-        self.session.execute(update(knowledge_catalog_versions).where(knowledge_catalog_versions.c.id == catalog_id, knowledge_catalog_versions.c.course_id == course_id).values(status="published", published_at=now, payload=tree.model_dump(mode="json")))
-        self.session.execute(update(organization_runs).where(organization_runs.c.id == state["run_id"], organization_runs.c.course_id == course_id).values(status="published", updated_at=now, completed_at=now))
-        self.session.commit()
+            index_no = self.session.scalar(
+                select(func.coalesce(func.max(index_versions.c.version_no), 0) + 1).where(
+                    index_versions.c.course_id == course_id
+                )
+            )
+            index_id = uuid4().hex
+            self.session.execute(
+                index_versions.insert().values(
+                    id=index_id,
+                    course_id=course_id,
+                    catalog_version_id=catalog_id,
+                    version_no=index_no,
+                    status="published",
+                )
+            )
+            for card_id in active_direct_card_ids:
+                self.session.execute(
+                    index_memberships.insert().values(
+                        id=uuid4().hex,
+                        course_id=course_id,
+                        index_version_id=index_id,
+                        knowledge_card_id=card_id,
+                    )
+                )
+            self.session.execute(
+                update(knowledge_catalog_versions)
+                .where(
+                    knowledge_catalog_versions.c.course_id == course_id,
+                    knowledge_catalog_versions.c.status == "published",
+                )
+                .values(status="superseded")
+            )
+            self.session.execute(
+                update(index_versions)
+                .where(
+                    index_versions.c.course_id == course_id,
+                    index_versions.c.status == "published",
+                    index_versions.c.id != index_id,
+                )
+                .values(status="superseded")
+            )
+            now = datetime.now(UTC)
+            payload = tree.model_dump(mode="json")
+            payload["failed_pairs"] = list(row["payload"].get("failed_pairs", []))
+            self.session.execute(
+                update(knowledge_catalog_versions)
+                .where(
+                    knowledge_catalog_versions.c.id == catalog_id,
+                    knowledge_catalog_versions.c.course_id == course_id,
+                )
+                .values(status="published", published_at=now, payload=payload)
+            )
+            self.session.execute(
+                update(exam_point_evidence_links)
+                .where(
+                    exam_point_evidence_links.c.course_id == course_id,
+                    exam_point_evidence_links.c.organization_run_id == state["run_id"],
+                    exam_point_evidence_links.c.status == "candidate",
+                )
+                .values(status="published")
+            )
+            self.session.execute(
+                update(organization_runs)
+                .where(
+                    organization_runs.c.id == state["run_id"],
+                    organization_runs.c.course_id == course_id,
+                )
+                .values(status="published", updated_at=now, completed_at=now)
+            )
+            self.session.commit()
+        except Exception:
+            self.session.rollback()
+            raise
         return {"catalog_version_id": catalog_id, "index_version_id": index_id}
 
-    def _insert_tree(self, course_id: str, catalog_id: str, tree: KnowledgeTreeCandidate, allowed: set[str]) -> None:
-        roots = {}
-        for anchor_key in allowed:
+    def _insert_tree(
+        self,
+        course_id: str,
+        catalog_id: str,
+        tree: KnowledgeTreeCandidate,
+        allowed: set[str],
+        point_ids: dict[str, str],
+    ) -> list[str]:
+        roots: dict[str, str] = {}
+        for anchor_key in sorted(allowed):
             root_id = uuid4().hex
             roots[anchor_key] = root_id
-            self.session.execute(content_domains.insert().values(id=root_id, course_id=course_id, catalog_version_id=catalog_id, parent_domain_id=None, level=1, framework_anchor_key=anchor_key, code=anchor_key, name=anchor_key, status="active"))
+            self.session.execute(
+                content_domains.insert().values(
+                    id=root_id,
+                    course_id=course_id,
+                    catalog_version_id=catalog_id,
+                    parent_domain_id=None,
+                    level=1,
+                    framework_anchor_key=anchor_key,
+                    code=anchor_key,
+                    name=anchor_key,
+                    status="active",
+                )
+            )
+        decisions: dict[tuple[str, str], EvidenceDecision] = {}
+        for decision in tree.evidence_decisions:
+            if decision.relevance_class is RelevanceClass.DIRECT:
+                decisions[(decision.exam_point_code, decision.evidence_chunk_id)] = decision
+        active_direct_card_ids: list[str] = []
         for topic in tree.topics:
             topic_id = uuid4().hex
-            self.session.execute(content_domains.insert().values(id=topic_id, course_id=course_id, catalog_version_id=catalog_id, parent_domain_id=roots[topic.framework_anchor_key], level=2, framework_anchor_key=topic.framework_anchor_key, code=topic.code, name=topic.name, status=topic.status))
+            self.session.execute(
+                content_domains.insert().values(
+                    id=topic_id,
+                    course_id=course_id,
+                    catalog_version_id=catalog_id,
+                    parent_domain_id=roots[topic.framework_anchor_key],
+                    level=2,
+                    framework_anchor_key=topic.framework_anchor_key,
+                    code=topic.code,
+                    name=topic.name,
+                    status=topic.status,
+                )
+            )
             for unit in topic.units:
                 unit_id = uuid4().hex
-                self.session.execute(assessment_units.insert().values(id=unit_id, course_id=course_id, catalog_version_id=catalog_id, content_domain_id=topic_id, code=unit.code, title=unit.title, performance_statement=unit.performance_statement, scope_boundary=unit.scope_boundary, status=unit.status))
+                exam_point_id = point_ids.get(unit.exam_point_code)
+                if point_ids and exam_point_id is None:
+                    raise KnowledgePublishError(
+                        "assessment unit does not reference a confirmed exam point"
+                    )
+                self.session.execute(
+                    assessment_units.insert().values(
+                        id=unit_id,
+                        course_id=course_id,
+                        catalog_version_id=catalog_id,
+                        content_domain_id=topic_id,
+                        exam_point_id=exam_point_id,
+                        code=unit.code,
+                        title=unit.title,
+                        performance_statement=unit.performance_statement,
+                        scope_boundary=unit.scope_boundary,
+                        status=unit.status,
+                    )
+                )
                 for card in unit.cards:
                     card_id = uuid4().hex
-                    material = json.dumps({"name": card.name, "performance_statement": card.performance_statement, "assessable_content": card.assessable_content, "scope_boundary": card.scope_boundary}, ensure_ascii=False, sort_keys=True)
-                    self.session.execute(knowledge_cards.insert().values(id=card_id, course_id=course_id, catalog_version_id=catalog_id, assessment_unit_id=unit_id, name=card.name, performance_statement=card.performance_statement, assessable_content=card.assessable_content, scope_boundary=card.scope_boundary, cognitive_targets=card.cognitive_targets, allowed_question_types=card.allowed_question_types, importance=card.importance, content_hash=sha256(material.encode()).hexdigest(), status=card.status, version=1))
+                    material = json.dumps(
+                        {
+                            "exam_point_code": unit.exam_point_code,
+                            "name": card.name,
+                            "performance_statement": card.performance_statement,
+                            "assessable_content": card.assessable_content,
+                            "scope_boundary": card.scope_boundary,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                    )
+                    self.session.execute(
+                        knowledge_cards.insert().values(
+                            id=card_id,
+                            course_id=course_id,
+                            catalog_version_id=catalog_id,
+                            assessment_unit_id=unit_id,
+                            name=card.name,
+                            performance_statement=card.performance_statement,
+                            assessable_content=card.assessable_content,
+                            scope_boundary=card.scope_boundary,
+                            cognitive_targets=card.cognitive_targets,
+                            allowed_question_types=card.allowed_question_types,
+                            importance=card.importance,
+                            content_hash=sha256(material.encode()).hexdigest(),
+                            status=card.status,
+                            version=1,
+                        )
+                    )
+                    direct_count = 0
                     for evidence_id in card.evidence_chunk_ids:
-                        self.session.execute(knowledge_evidence_links.insert().values(id=uuid4().hex, course_id=course_id, knowledge_card_id=card_id, evidence_chunk_id=evidence_id, evidence_role="fact", confidence=100, teacher_confirmed=True, lifecycle_status="active"))
+                        decision = decisions.get((unit.exam_point_code, evidence_id))
+                        if decision is None:
+                            continue
+                        direct_count += 1
+                        self.session.execute(
+                            knowledge_evidence_links.insert().values(
+                                id=uuid4().hex,
+                                course_id=course_id,
+                                knowledge_card_id=card_id,
+                                evidence_chunk_id=evidence_id,
+                                evidence_role=decision.evidence_role or "fact",
+                                confidence=decision.confidence,
+                                teacher_confirmed=True,
+                                lifecycle_status="active",
+                            )
+                        )
+                    if card.status == "active" and direct_count:
+                        active_direct_card_ids.append(card_id)
+        return active_direct_card_ids
 
 
-def create_organization_state(session: Session, *, course_id: str, material_version_ids: list[str]) -> dict:
+def _validated_embeddings(raw: object, *, expected: int) -> list[list[float]]:
+    if not isinstance(raw, list) or len(raw) != expected:
+        raise KnowledgePublishError("embedding response count does not match parsed blocks")
+    vectors: list[list[float]] = []
+    for value in raw:
+        if not isinstance(value, list) or not value:
+            raise KnowledgePublishError("embedding response contains an empty vector")
+        try:
+            vector = [float(item) for item in value]
+        except (TypeError, ValueError) as exc:
+            raise KnowledgePublishError("embedding response contains non-numeric values") from exc
+        if not all(math.isfinite(item) for item in vector):
+            raise KnowledgePublishError("embedding response contains non-finite values")
+        vectors.append(vector)
+    return vectors
+
+
+def create_organization_state(
+    session: Session,
+    course_id: str,
+    material_version_ids: list[str],
+    embedder,
+) -> dict:
     from app.services.course_service import get_course
 
     get_course(session, course_id)
     framework = session.execute(
-        select(framework_versions).where(framework_versions.c.course_id == course_id, framework_versions.c.status == "published").order_by(framework_versions.c.version_no.desc()).limit(1)
+        select(framework_versions)
+        .where(
+            framework_versions.c.course_id == course_id,
+            framework_versions.c.status == "published",
+        )
+        .order_by(framework_versions.c.version_no.desc())
+        .limit(1)
     ).mappings().one_or_none()
     if framework is None:
         raise KnowledgePublishError("published framework is required")
+    point_rows = _confirmed_exam_point_rows(
+        session,
+        course_id=course_id,
+        framework_version_id=framework["id"],
+    )
+    if not point_rows:
+        raise KnowledgePublishError("published framework has no confirmed exam points")
     if not material_version_ids or len(material_version_ids) != len(set(material_version_ids)):
         raise KnowledgePublishError("at least one unique material version is required")
-    files = []
+
+    selected_blocks: list[tuple[str, list[dict]]] = []
     for version_id in material_version_ids:
-        material_type = session.execute(select(materials.c.material_type).join(material_versions, material_versions.c.material_id == materials.c.id).where(material_versions.c.id == version_id, material_versions.c.course_id == course_id)).scalar_one_or_none()
-        if material_type not in {"teaching_material", "exercise"}:
+        version = session.execute(
+            select(material_versions.c.id, materials.c.material_type)
+            .join(materials, material_versions.c.material_id == materials.c.id)
+            .where(
+                material_versions.c.id == version_id,
+                material_versions.c.course_id == course_id,
+                material_versions.c.status == "staged",
+                materials.c.course_id == course_id,
+                materials.c.status == "staged",
+            )
+        ).mappings().one_or_none()
+        if version is None:
+            raise KnowledgePublishError("selected material version is not available")
+        if version["material_type"] not in {"teaching_material", "exercise"}:
             raise KnowledgePublishError("only teaching materials or exercises can be organized")
-        blocks = session.scalars(select(content_blocks.c.text).where(content_blocks.c.course_id == course_id, content_blocks.c.material_version_id == version_id).order_by(content_blocks.c.reading_order)).all()
+        parse_run_id = session.execute(
+            select(document_parse_runs.c.id)
+            .where(
+                document_parse_runs.c.course_id == course_id,
+                document_parse_runs.c.material_version_id == version_id,
+                document_parse_runs.c.status == "ready",
+            )
+            .order_by(document_parse_runs.c.completed_at.desc(), document_parse_runs.c.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if parse_run_id is None:
+            raise KnowledgePublishError("selected material has no ready parsed content")
+        blocks = [
+            dict(row)
+            for row in session.execute(
+                select(content_blocks)
+                .where(
+                    content_blocks.c.course_id == course_id,
+                    content_blocks.c.material_version_id == version_id,
+                    content_blocks.c.document_parse_run_id == parse_run_id,
+                )
+                .order_by(content_blocks.c.reading_order, content_blocks.c.block_index)
+            ).mappings()
+            if row["text"].strip()
+        ]
         if not blocks:
-            raise KnowledgePublishError("selected material has no parsed content")
-        files.append({"material_version_id": version_id, "blocks": [item for item in blocks if item.strip()]})
+            raise KnowledgePublishError("selected material has no ready parsed content")
+        selected_blocks.append((version_id, blocks))
+
+    embedded_blocks: list[tuple[str, dict, list[float]]] = []
+    for version_id, blocks in selected_blocks:
+        texts = [block["text"].strip() for block in blocks]
+        try:
+            vectors = _validated_embeddings(embedder.embed(texts), expected=len(texts))
+        except KnowledgePublishError:
+            raise
+        except Exception as exc:
+            raise KnowledgePublishError("embedding service is unavailable") from exc
+        embedded_blocks.extend(zip([version_id] * len(blocks), blocks, vectors, strict=True))
+
     run_id = uuid4().hex
-    session.execute(organization_runs.insert().values(id=run_id, course_id=course_id, framework_version_id=framework["id"], status="running", input_snapshot={"material_version_ids": material_version_ids}))
-    session.commit()
-    return {"course_id": course_id, "run_id": run_id, "framework_version_id": framework["id"], "framework_anchors": framework["payload"].get("anchors", []), "files": files}
+    frozen_input = {
+        "framework_version_id": framework["id"],
+        "exam_point_ids": [row["id"] for row in point_rows],
+        "material_version_ids": list(material_version_ids),
+    }
+    evidence_ids: list[str] = []
+    try:
+        session.execute(
+            organization_runs.insert().values(
+                id=run_id,
+                course_id=course_id,
+                framework_version_id=framework["id"],
+                status="running",
+                input_snapshot=frozen_input,
+            )
+        )
+        for chunk_index, (version_id, block, vector) in enumerate(embedded_blocks):
+            evidence_id = uuid4().hex
+            evidence_ids.append(evidence_id)
+            locator = {
+                "page_index": block["page_index"],
+                "bbox": block["bbox"],
+                "heading_path": block["heading_path"] or [],
+                "reading_order": block["reading_order"],
+                "block_type": block["block_type"],
+            }
+            session.execute(
+                evidence_chunks.insert().values(
+                    id=evidence_id,
+                    course_id=course_id,
+                    organization_run_id=run_id,
+                    material_version_id=version_id,
+                    content_block_id=block["id"],
+                    chunk_index=chunk_index,
+                    content=block["text"].strip(),
+                    content_hash=block["content_hash"] or sha256(block["text"].encode()).hexdigest(),
+                    locator=locator,
+                    embedding=vector,
+                )
+            )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return {
+        "course_id": course_id,
+        "run_id": run_id,
+        "framework_version_id": framework["id"],
+        "framework_anchors": framework["payload"].get("anchors", []),
+        "exam_points": [_exam_point_from_row(row).model_dump(mode="json") for row in point_rows],
+        "material_version_ids": list(material_version_ids),
+        "evidence_chunk_ids": evidence_ids,
+        "frozen_input": frozen_input,
+    }
 
 
 def get_organization_run(session: Session, *, course_id: str, run_id: str) -> dict:
-    row = session.execute(select(organization_runs).where(organization_runs.c.id == run_id, organization_runs.c.course_id == course_id)).mappings().one_or_none()
+    row = session.execute(
+        select(organization_runs).where(
+            organization_runs.c.id == run_id,
+            organization_runs.c.course_id == course_id,
+        )
+    ).mappings().one_or_none()
     if row is None:
         raise KnowledgePublishError("organization run not found")
     return dict(row)
 
 
 def get_organization_candidate(session: Session, *, course_id: str, run_id: str) -> dict:
-    row = session.execute(select(knowledge_catalog_versions).where(knowledge_catalog_versions.c.course_id == course_id, knowledge_catalog_versions.c.organization_run_id == run_id).order_by(knowledge_catalog_versions.c.version_no.desc()).limit(1)).mappings().one_or_none()
+    row = session.execute(
+        select(knowledge_catalog_versions)
+        .where(
+            knowledge_catalog_versions.c.course_id == course_id,
+            knowledge_catalog_versions.c.organization_run_id == run_id,
+        )
+        .order_by(knowledge_catalog_versions.c.version_no.desc())
+        .limit(1)
+    ).mappings().one_or_none()
     if row is None:
         raise KnowledgePublishError("knowledge catalogue candidate not found")
-    return dict(row)
+    result = dict(row)
+    payload = dict(result["payload"])
+    counts = Counter(
+        session.scalars(
+            select(exam_point_evidence_links.c.relevance_class).where(
+                exam_point_evidence_links.c.course_id == course_id,
+                exam_point_evidence_links.c.organization_run_id == run_id,
+            )
+        )
+    )
+    payload["relevance_counts"] = {
+        relevance.value: counts.get(relevance.value, 0) for relevance in RelevanceClass
+    }
+    payload["evidence_sources"] = [
+        {
+            "evidence_chunk_id": item["evidence_chunk_id"],
+            "exam_point_code": item["exam_point_code"],
+            "material_version_id": item["material_version_id"],
+            "locator": item["locator"] or {},
+            "relevance_class": item["relevance_class"],
+            "support_claim": item["support_claim"],
+            "evidence_role": item["evidence_role"],
+            "confidence": item["confidence"],
+        }
+        for item in session.execute(
+            select(
+                exam_point_evidence_links.c.evidence_chunk_id,
+                exam_points.c.code.label("exam_point_code"),
+                exam_point_evidence_links.c.relevance_class,
+                exam_point_evidence_links.c.support_claim,
+                exam_point_evidence_links.c.evidence_role,
+                exam_point_evidence_links.c.confidence,
+                evidence_chunks.c.material_version_id,
+                evidence_chunks.c.locator,
+            )
+            .join(
+                evidence_chunks,
+                evidence_chunks.c.id == exam_point_evidence_links.c.evidence_chunk_id,
+            )
+            .join(
+                exam_points,
+                exam_points.c.id == exam_point_evidence_links.c.exam_point_id,
+            )
+            .where(
+                exam_point_evidence_links.c.course_id == course_id,
+                exam_point_evidence_links.c.organization_run_id == run_id,
+                evidence_chunks.c.course_id == course_id,
+                exam_points.c.course_id == course_id,
+            )
+            .order_by(
+                exam_point_evidence_links.c.exam_point_id,
+                exam_point_evidence_links.c.evidence_chunk_id,
+            )
+        ).mappings()
+    ]
+    result["payload"] = payload
+    return result

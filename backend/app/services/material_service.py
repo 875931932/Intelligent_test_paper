@@ -6,12 +6,22 @@ import hashlib
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.adapters.storage.minio_storage import ObjectInfo, StoragePort, StoragePreconditionError, StorageUnavailableError
-from app.db.schema import material_versions, materials, upload_sessions
+from app.db.schema import (
+    evidence_chunks,
+    exam_point_evidence_links,
+    index_memberships,
+    index_versions,
+    knowledge_cards,
+    knowledge_evidence_links,
+    material_versions,
+    materials,
+    upload_sessions,
+)
 from app.domain.material.models import UploadSessionCreate
 from app.services.course_service import get_course
 
@@ -273,6 +283,95 @@ def get_material(session: Session, *, course_id: str, material_id: str) -> dict:
 
 def delete_material(session: Session, *, course_id: str, material_id: str) -> None:
     get_material(session, course_id=course_id, material_id=material_id)
-    session.execute(update(materials).where(materials.c.id == material_id, materials.c.course_id == course_id).values(status="deleted"))
-    session.execute(update(material_versions).where(material_versions.c.material_id == material_id, material_versions.c.course_id == course_id).values(status="deleted"))
-    session.commit()
+    version_ids = list(
+        session.scalars(
+            select(material_versions.c.id).where(
+                material_versions.c.material_id == material_id,
+                material_versions.c.course_id == course_id,
+            )
+        )
+    )
+    evidence_ids = list(
+        session.scalars(
+            select(evidence_chunks.c.id).where(
+                evidence_chunks.c.course_id == course_id,
+                evidence_chunks.c.material_version_id.in_(version_ids),
+            )
+        )
+    ) if version_ids else []
+    affected_candidates = list(
+        session.scalars(
+            select(knowledge_evidence_links.c.knowledge_card_id)
+            .where(
+                knowledge_evidence_links.c.course_id == course_id,
+                knowledge_evidence_links.c.evidence_chunk_id.in_(evidence_ids),
+            )
+            .distinct()
+        )
+    ) if evidence_ids else []
+    try:
+        if evidence_ids:
+            session.execute(
+                update(exam_point_evidence_links)
+                .where(
+                    exam_point_evidence_links.c.course_id == course_id,
+                    exam_point_evidence_links.c.evidence_chunk_id.in_(evidence_ids),
+                )
+                .values(status="source_deleted")
+            )
+            session.execute(
+                update(knowledge_evidence_links)
+                .where(
+                    knowledge_evidence_links.c.course_id == course_id,
+                    knowledge_evidence_links.c.evidence_chunk_id.in_(evidence_ids),
+                )
+                .values(lifecycle_status="source_deleted")
+            )
+        affected_cards = []
+        for card_id in affected_candidates:
+            active_direct = session.execute(
+                select(knowledge_evidence_links.c.id).where(
+                    knowledge_evidence_links.c.course_id == course_id,
+                    knowledge_evidence_links.c.knowledge_card_id == card_id,
+                    knowledge_evidence_links.c.lifecycle_status == "active",
+                ).limit(1)
+            ).scalar_one_or_none()
+            if active_direct is None:
+                affected_cards.append(card_id)
+        if affected_cards:
+            session.execute(
+                update(knowledge_cards)
+                .where(
+                    knowledge_cards.c.course_id == course_id,
+                    knowledge_cards.c.id.in_(affected_cards),
+                )
+                .values(status="affected_by_source_deletion")
+            )
+            current_index_ids = select(index_versions.c.id).where(
+                index_versions.c.course_id == course_id,
+                index_versions.c.status == "published",
+            )
+            session.execute(
+                delete(index_memberships).where(
+                    index_memberships.c.course_id == course_id,
+                    index_memberships.c.index_version_id.in_(current_index_ids),
+                    index_memberships.c.knowledge_card_id.in_(affected_cards),
+                )
+            )
+        session.execute(
+            update(materials)
+            .where(materials.c.id == material_id, materials.c.course_id == course_id)
+            .values(status="deleted")
+        )
+        session.execute(
+            update(material_versions)
+            .where(
+                material_versions.c.material_id == material_id,
+                material_versions.c.course_id == course_id,
+            )
+            .values(status="deleted")
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
