@@ -68,8 +68,16 @@ def _confirmation(*, conflict_resolutions=None):
     }
 
 
-def _exam_points(*, weight_source=WeightSource.ASSESSMENT_SYLLABUS, weight_value=50, teaching_anchor_keys=None):
+def _exam_points(
+    *,
+    weight_source=WeightSource.ASSESSMENT_SYLLABUS,
+    weight_value=50,
+    teaching_anchor_keys=None,
+    cognitive_targets=None,
+):
     teaching_keys = ["taught-topic"] if teaching_anchor_keys is None else teaching_anchor_keys
+    first_cognitive_targets = ["analyze"] if cognitive_targets is None else cognitive_targets
+    second_cognitive_targets = ["evaluate"] if cognitive_targets is None else cognitive_targets
     return [
         ExamPoint(
             code="rag-diagnosis",
@@ -79,7 +87,7 @@ def _exam_points(*, weight_source=WeightSource.ASSESSMENT_SYLLABUS, weight_value
             weight_value=weight_value,
             weight_source=weight_source,
             weight_group_id="assessment-unit",
-            cognitive_targets=["analyze"],
+            cognitive_targets=first_cognitive_targets,
             assessment_orientations=["problem_solving"],
             allowed_question_types=["short_answer", "comprehensive"],
             operational_detail_policy=OperationalDetailPolicy.SUPPORTING_ONLY,
@@ -95,7 +103,7 @@ def _exam_points(*, weight_source=WeightSource.ASSESSMENT_SYLLABUS, weight_value
             weight_value=weight_value,
             weight_source=weight_source,
             weight_group_id="assessment-unit",
-            cognitive_targets=["evaluate"],
+            cognitive_targets=second_cognitive_targets,
             assessment_orientations=["application"],
             allowed_question_types=["short_answer", "comprehensive"],
             operational_detail_policy=OperationalDetailPolicy.SUPPORTING_ONLY,
@@ -223,6 +231,18 @@ def test_exam_point_depth_above_aligned_teaching_depth_creates_conflict_without_
     assert candidate.exam_points[0].cognitive_targets == ["analyze"]
 
 
+def test_depth_alignment_supports_noun_variants():
+    graph, _, repository = _graph(
+        teaching_topics=[TeachingTopic(key="taught-topic", title="已教主题", depth="application")],
+        exam_points=_exam_points(cognitive_targets=["analysis"]),
+    )
+
+    graph.invoke(_state(), config={"configurable": {"thread_id": "depth-noun-variants"}})
+
+    conflicts = {item.key: item for item in repository.candidates[0][1].conflicts}
+    assert conflicts["exam-point-depth:rag-diagnosis"].kind == "teaching_depth_conflict"
+
+
 def test_depth_alignment_ignores_unknown_labels_when_a_known_teaching_depth_exists():
     graph, _, repository = _graph(
         teaching_topics=[
@@ -236,6 +256,52 @@ def test_depth_alignment_ignores_unknown_labels_when_a_known_teaching_depth_exis
 
     conflicts = {item.key: item for item in repository.candidates[0][1].conflicts}
     assert conflicts["exam-point-depth:rag-diagnosis"].kind == "teaching_depth_conflict"
+
+
+def test_unknown_exam_point_depth_creates_teacher_review_conflict():
+    graph, _, repository = _graph(
+        exam_points=_exam_points(cognitive_targets=["unmapped_cognitive_level"]),
+    )
+
+    graph.invoke(_state(), config={"configurable": {"thread_id": "unknown-point-depth"}})
+
+    conflicts = {item.key: item for item in repository.candidates[0][1].conflicts}
+    assert conflicts["exam-point-depth:rag-diagnosis"].kind == "teaching_depth_conflict"
+
+
+def test_unknown_teaching_depth_creates_teacher_review_conflict():
+    graph, _, repository = _graph(
+        teaching_topics=[TeachingTopic(key="taught-topic", title="未分级主题", depth="unmapped_depth")],
+    )
+
+    graph.invoke(_state(), config={"configurable": {"thread_id": "unknown-teaching-depth"}})
+
+    conflicts = {item.key: item for item in repository.candidates[0][1].conflicts}
+    assert conflicts["exam-point-depth:rag-diagnosis"].kind == "teaching_depth_conflict"
+
+
+def test_incomplete_explicit_exam_point_weights_create_weight_conflict():
+    graph, _, repository = _graph(exam_points=_exam_points(weight_value=30))
+
+    graph.invoke(_state(), config={"configurable": {"thread_id": "incomplete-point-weights"}})
+
+    conflicts = {item.key: item for item in repository.candidates[0][1].conflicts}
+    assert conflicts["exam-point-weight:assessment-unit"].kind == "exam_point_weight_conflict"
+
+
+def test_explicit_and_inherited_exam_point_weights_do_not_get_closed_or_split():
+    points = _exam_points(weight_source=WeightSource.INHERITED_GROUP, weight_value=0)
+    points[0] = points[0].model_copy(
+        update={"weight_source": WeightSource.ASSESSMENT_SYLLABUS, "weight_value": 20}
+    )
+    graph, _, repository = _graph(exam_points=points)
+
+    graph.invoke(_state(), config={"configurable": {"thread_id": "mixed-point-weights"}})
+
+    conflicts = {item.key: item for item in repository.candidates[0][1].conflicts}
+    assert "exam-point-weight:assessment-unit" not in conflicts
+    candidate_points = repository.candidates[0][1].exam_points
+    assert [point.weight_value for point in candidate_points] == [20, 0]
 
 
 def test_inherited_group_weights_are_preserved_without_automatic_equal_split():

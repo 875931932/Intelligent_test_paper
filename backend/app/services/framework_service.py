@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
+from pydantic import ValidationError
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
@@ -114,6 +115,12 @@ class DatabaseFrameworkRepository:
     def publish(self, state: dict, confirmation: FrameworkConfirmation) -> str:
         course_id = state["course_id"]
         version_id = state["candidate_id"]
+        if not confirmation.exam_points:
+            raise FrameworkInputError("at least one exam point is required")
+        try:
+            confirmation = FrameworkConfirmation.model_validate(confirmation.model_dump(mode="json"))
+        except ValidationError as exc:
+            raise FrameworkInputError(str(exc)) from exc
         row = self.session.execute(
             select(framework_versions).where(
                 framework_versions.c.id == version_id,

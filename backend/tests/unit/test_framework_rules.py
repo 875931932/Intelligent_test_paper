@@ -107,7 +107,15 @@ def test_framework_confirmation_rejects_blank_conflict_decisions():
 
 def test_assessment_outline_requires_at_least_one_exam_anchor():
     with pytest.raises(ValidationError, match="at least one assessment anchor"):
-        AssessmentOutline(anchors=[], exam_points=[])
+        AssessmentOutline(anchors=[], exam_points=[_exam_point()])
+
+
+def test_assessment_outline_requires_at_least_one_exam_point():
+    with pytest.raises(ValidationError, match="at least 1 item"):
+        AssessmentOutline(
+            anchors=[AssessmentAnchor(key="unit-1", title="核心概念", exam_weight=100)],
+            exam_points=[],
+        )
 
 
 def test_assessment_outline_rejects_duplicate_anchor_keys():
@@ -153,6 +161,77 @@ def test_assessment_outline_rejects_explicit_exam_point_total_above_parent_weigh
                 _exam_point(code="concept-b", weight_value=60),
             ],
         )
+
+
+def test_framework_candidate_requires_at_least_one_exam_point():
+    with pytest.raises(ValidationError, match="at least 1 item"):
+        FrameworkCandidate(
+            anchors=[AssessmentAnchor(key="unit-1", title="核心概念", exam_weight=100)],
+            exam_points=[],
+            teaching_topics=[],
+            conflicts=[],
+        )
+
+
+def test_framework_confirmation_requires_at_least_one_exam_point():
+    with pytest.raises(ValidationError, match="at least 1 item"):
+        FrameworkConfirmation.model_validate(
+            {
+                "anchors": [{"key": "unit-1", "title": "核心概念", "exam_weight": 100}],
+                "exam_points": [],
+                "conflict_resolutions": {},
+                "teacher_exclusions": [],
+            }
+        )
+
+
+def test_confirmation_rejects_explicit_exam_point_weight_total_below_parent_weight():
+    with pytest.raises(ValidationError, match="must equal parent anchor weight"):
+        FrameworkConfirmation.model_validate(
+            {
+                "anchors": [{"key": "unit-1", "title": "核心概念", "exam_weight": 100}],
+                "exam_points": [
+                    _exam_point(code="concept-a", weight_value=30).model_dump(mode="json"),
+                    _exam_point(code="concept-b", weight_value=30).model_dump(mode="json"),
+                ],
+                "conflict_resolutions": {},
+                "teacher_exclusions": [],
+            }
+        )
+
+
+def test_confirmation_allows_explicit_and_inherited_group_weights_without_equal_split():
+    explicit = _exam_point(code="concept-explicit", weight_value=20)
+    inherited = _exam_point(
+        code="concept-inherited",
+        weight_value=0,
+        weight_source=WeightSource.INHERITED_GROUP,
+    )
+    confirmation = FrameworkConfirmation.model_validate(
+        {
+            "anchors": [{"key": "unit-1", "title": "核心概念", "exam_weight": 100}],
+            "exam_points": [explicit.model_dump(mode="json"), inherited.model_dump(mode="json")],
+            "conflict_resolutions": {},
+            "teacher_exclusions": [],
+        }
+    )
+    assert [point.weight_value for point in confirmation.exam_points] == [20, 0]
+
+
+def test_confirmation_accepts_explicit_weights_with_small_float_rounding_error():
+    confirmation = FrameworkConfirmation.model_validate(
+        {
+            "anchors": [{"key": "unit-1", "title": "核心概念", "exam_weight": 100}],
+            "exam_points": [
+                _exam_point(code="concept-a", weight_value=33.33).model_dump(mode="json"),
+                _exam_point(code="concept-b", weight_value=33.33).model_dump(mode="json"),
+                _exam_point(code="concept-c", weight_value=33.33).model_dump(mode="json"),
+            ],
+            "conflict_resolutions": {},
+            "teacher_exclusions": [],
+        }
+    )
+    assert len(confirmation.exam_points) == 3
 
 
 def test_confirmation_rejects_exam_point_outside_confirmed_anchor_scope():
@@ -373,6 +452,60 @@ def test_repository_rejects_confirmed_exam_point_not_in_candidate_version(tmp_pa
                 {"course_id": "course", "candidate_id": candidate_id},
                 confirmation,
             )
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_repository_refuses_empty_exam_point_confirmation_without_deleting_candidate_rows(tmp_path):
+    engine, session = _framework_session(tmp_path)
+    try:
+        repository = DatabaseFrameworkRepository(session)
+        candidate_id = repository.persist_candidate(
+            {"course_id": "course", "run_id": "run-1"},
+            _candidate(conflict=False),
+        )
+        empty_confirmation = _valid_confirmation().model_copy(update={"exam_points": []})
+
+        with pytest.raises(FrameworkInputError, match="at least one exam point"):
+            repository.publish(
+                {"course_id": "course", "candidate_id": candidate_id},
+                empty_confirmation,
+            )
+
+        rows = session.execute(
+            select(exam_points).where(
+                exam_points.c.course_id == "course",
+                exam_points.c.framework_version_id == candidate_id,
+            )
+        ).mappings().all()
+        assert len(rows) == 1
+        assert rows[0]["status"] == "candidate"
+        assert session.scalar(select(framework_versions.c.status).where(framework_versions.c.id == candidate_id)) == "candidate"
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_repository_rejects_bypassed_underweight_confirmation_before_publishing(tmp_path):
+    engine, session = _framework_session(tmp_path)
+    try:
+        repository = DatabaseFrameworkRepository(session)
+        candidate_id = repository.persist_candidate(
+            {"course_id": "course", "run_id": "run-1"},
+            _candidate(conflict=False),
+        )
+        bypassed_confirmation = _valid_confirmation().model_copy(
+            update={"exam_points": [_exam_point(weight_value=30)]}
+        )
+
+        with pytest.raises(FrameworkInputError, match="must equal parent anchor weight"):
+            repository.publish(
+                {"course_id": "course", "candidate_id": candidate_id},
+                bypassed_confirmation,
+            )
+
+        assert session.scalar(select(framework_versions.c.status).where(framework_versions.c.id == candidate_id)) == "candidate"
     finally:
         session.close()
         engine.dispose()

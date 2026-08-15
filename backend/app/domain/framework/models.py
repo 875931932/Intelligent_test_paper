@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -29,7 +30,7 @@ class AssessmentAnchor(BaseModel):
 
 class AssessmentOutline(BaseModel):
     anchors: list[AssessmentAnchor]
-    exam_points: list[ExamPoint]
+    exam_points: list[ExamPoint] = Field(min_length=1)
     final_exam_rules: dict = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -63,7 +64,7 @@ class FrameworkConflict(BaseModel):
 
 class FrameworkCandidate(BaseModel):
     anchors: list[AssessmentAnchor]
-    exam_points: list[ExamPoint]
+    exam_points: list[ExamPoint] = Field(min_length=1)
     teaching_topics: list[TeachingTopic]
     conflicts: list[FrameworkConflict]
     final_exam_rules: dict = Field(default_factory=dict)
@@ -92,7 +93,7 @@ class FrameworkConfirmation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     anchors: list[AnchorRevision]
-    exam_points: list[ExamPoint]
+    exam_points: list[ExamPoint] = Field(min_length=1)
     conflict_resolutions: dict[str, str]
     teacher_exclusions: list[str]
 
@@ -110,6 +111,7 @@ class FrameworkConfirmation(BaseModel):
             self.exam_points,
             self.anchors,
             anchor_error="exam point anchor_key must belong to confirmed anchors",
+            require_closed_weights=True,
         )
         if any(not resolution.strip() for resolution in self.conflict_resolutions.values()):
             raise ValueError("conflict resolution must not be blank")
@@ -143,6 +145,7 @@ def _validate_exam_points(
     anchors: list[AssessmentAnchor | AnchorRevision],
     *,
     anchor_error: str,
+    require_closed_weights: bool = False,
 ) -> None:
     codes = [point.code for point in exam_points]
     if len(codes) != len(set(codes)):
@@ -158,7 +161,18 @@ def _validate_exam_points(
                 explicit_weight_by_anchor.get(point.anchor_key, 0) + point.weight_value
             )
     if any(
-        weight > anchors_by_key[anchor_key].exam_weight + 0.01
+        weight > anchors_by_key[anchor_key].exam_weight + 0.011
         for anchor_key, weight in explicit_weight_by_anchor.items()
     ):
         raise ValueError("explicit exam point weight must not exceed parent anchor weight")
+    if require_closed_weights:
+        points_by_anchor: dict[str, list[ExamPoint]] = {}
+        for point in exam_points:
+            points_by_anchor.setdefault(point.anchor_key, []).append(point)
+        for anchor in anchors:
+            points = points_by_anchor.get(anchor.key, [])
+            if any(point.weight_source == WeightSource.INHERITED_GROUP for point in points):
+                continue
+            total = sum(point.weight_value for point in points)
+            if not math.isclose(total, anchor.exam_weight, rel_tol=0, abs_tol=0.011):
+                raise ValueError("explicit exam point weights must equal parent anchor weight")

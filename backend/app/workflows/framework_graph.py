@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import math
 from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from app.domain.framework.exam_points import WeightSource
 from app.domain.framework.models import (
     AssessmentOutline,
     FrameworkCandidate,
@@ -109,6 +111,22 @@ def build_framework_graph(extractor: SyllabusExtractor, repository: FrameworkRep
                     message=f"期末考试章节权重合计为 {total:g}%，需要修订为 100%",
                 )
             )
+        points_by_anchor = {}
+        for point in assessment.exam_points:
+            points_by_anchor.setdefault(point.anchor_key, []).append(point)
+        for anchor in assessment.anchors:
+            points = points_by_anchor.get(anchor.key, [])
+            if any(point.weight_source == WeightSource.INHERITED_GROUP for point in points):
+                continue
+            point_weight_total = sum(point.weight_value for point in points)
+            if not math.isclose(point_weight_total, anchor.exam_weight, rel_tol=0, abs_tol=0.011):
+                conflicts.append(
+                    FrameworkConflict(
+                        key=f"exam-point-weight:{anchor.key}",
+                        kind="exam_point_weight_conflict",
+                        message=f"考核范围“{anchor.title}”的显式考点权重未闭合到父范围权重",
+                    )
+                )
         candidate = FrameworkCandidate(
             anchors=assessment.anchors,
             exam_points=assessment.exam_points,
@@ -137,6 +155,20 @@ def build_framework_graph(extractor: SyllabusExtractor, repository: FrameworkRep
                             key=key,
                             kind="missing_teaching_coverage",
                             message=f"考点“{point.title}”未在教学大纲中找到覆盖依据",
+                        )
+                    )
+                    conflict_keys.add(key)
+                continue
+            if _has_unrecognized_depth(point.cognitive_targets) or any(
+                _has_unrecognized_depth([topic.depth]) for topic in aligned_topics
+            ):
+                key = f"exam-point-depth:{point.code}"
+                if key not in conflict_keys:
+                    conflicts.append(
+                        FrameworkConflict(
+                            key=key,
+                            kind="teaching_depth_conflict",
+                            message=f"考点“{point.title}”或其教学覆盖的认知层级无法识别，需要教师确认",
                         )
                     )
                     conflict_keys.add(key)
@@ -212,21 +244,34 @@ def build_framework_graph(extractor: SyllabusExtractor, repository: FrameworkRep
 
 
 _DEPTH_TERMS = (
+    ("creation", 5),
+    ("creating", 5),
     ("create", 5),
     ("创造", 5),
     ("设计", 5),
+    ("synthesis", 5),
+    ("evaluation", 4),
+    ("evaluating", 4),
     ("evaluate", 4),
     ("评价", 4),
     ("评估", 4),
     ("analyze", 3),
+    ("analysis", 3),
+    ("analyzing", 3),
     ("分析", 3),
+    ("application", 2),
+    ("applying", 2),
     ("apply", 2),
     ("应用", 2),
     ("掌握", 2),
     ("understand", 1),
+    ("understanding", 1),
+    ("comprehension", 1),
     ("理解", 1),
     ("解释", 1),
     ("remember", 0),
+    ("remembering", 0),
+    ("knowledge", 0),
     ("了解", 0),
     ("识记", 0),
     ("记忆", 0),
@@ -241,3 +286,7 @@ def _highest_depth(values: list[str]) -> int | None:
         if term in value.strip().lower()
     ]
     return max(ranks) if ranks else None
+
+
+def _has_unrecognized_depth(values: list[str]) -> bool:
+    return any(value.strip() and _highest_depth([value]) is None for value in values)

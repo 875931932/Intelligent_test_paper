@@ -180,6 +180,29 @@ def test_framework_api_builds_candidate_and_publishes_structured_confirmation(tm
             confirmed_exam_points = candidate.json()["payload"]["exam_points"]
             confirmed_exam_points[0]["priority"] = "high"
 
+            empty_confirmation = client.post(
+                f"/api/v1/courses/course/framework-runs/{run_id}/confirm",
+                json={
+                    "anchors": candidate.json()["payload"]["anchors"],
+                    "exam_points": [],
+                    "conflict_resolutions": {},
+                    "teacher_exclusions": [],
+                },
+            )
+            assert empty_confirmation.status_code == 422
+            with Session(engine) as session:
+                candidate_status = session.scalar(
+                    select(framework_build_runs.c.status).where(framework_build_runs.c.id == run_id)
+                )
+                candidate_point_status = session.scalar(
+                    select(exam_points.c.status).where(
+                        exam_points.c.course_id == "course",
+                        exam_points.c.code == "core-understanding",
+                    )
+                )
+            assert candidate_status == "awaiting_teacher_confirmation"
+            assert candidate_point_status == "candidate"
+
             confirmed = client.post(
                 f"/api/v1/courses/course/framework-runs/{run_id}/confirm",
                 json={
