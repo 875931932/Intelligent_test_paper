@@ -285,6 +285,44 @@ _SEMANTIC_OPERATOR_PATTERN = re.compile(
         for operator in sorted(_SEMANTIC_OPERATOR_ALIASES, key=len, reverse=True)
     )
 )
+_SEMANTIC_DELIMITERS = frozenset("()[]{}")
+
+
+def _is_semantic_word_character(character: str) -> bool:
+    category = unicodedata.category(character)
+    return character == "_" or category[0] in {"L", "M", "N"}
+
+
+def _semantic_tokens(value: str) -> list[tuple[str, str]]:
+    tokens: list[tuple[str, str]] = []
+    cursor = 0
+    while cursor < len(value):
+        character = value[cursor]
+        if character.isspace():
+            end = cursor + 1
+            while end < len(value) and value[end].isspace():
+                end += 1
+            tokens.append(("whitespace", " "))
+        elif _is_semantic_word_character(character):
+            end = cursor + 1
+            while end < len(value) and _is_semantic_word_character(value[end]):
+                end += 1
+            tokens.append(("word", value[cursor:end]))
+        elif character in _SEMANTIC_DELIMITERS:
+            end = cursor + 1
+            tokens.append(("delimiter", character))
+        else:
+            end = cursor + 1
+            while (
+                end < len(value)
+                and not value[end].isspace()
+                and not _is_semantic_word_character(value[end])
+                and value[end] not in _SEMANTIC_DELIMITERS
+            ):
+                end += 1
+            tokens.append(("operator", value[cursor:end]))
+        cursor = end
+    return tokens
 
 
 def semantic_text_key(value: str) -> str:
@@ -296,7 +334,23 @@ def semantic_text_key(value: str) -> str:
         lambda match: _SEMANTIC_OPERATOR_ALIASES[match.group(0)],
         normalized,
     )
-    return re.sub(r"\s+", "", normalized)
+    key_parts: list[str] = []
+    previous_kind: str | None = None
+    pending_whitespace = False
+    for kind, token in _semantic_tokens(normalized):
+        if kind == "whitespace":
+            pending_whitespace = True
+            continue
+        if (
+            pending_whitespace
+            and key_parts
+            and (previous_kind, kind) in {("word", "word"), ("operator", "operator")}
+        ):
+            key_parts.append(" ")
+        key_parts.append(token)
+        previous_kind = kind
+        pending_whitespace = False
+    return "".join(key_parts)
 
 
 def assessable_fact_keys(values: list[str]) -> frozenset[str]:

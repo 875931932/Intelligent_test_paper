@@ -139,6 +139,26 @@ def test_card_merge_key_preserves_language_name_operators():
     assert [card.name for card in merged.topics[0].units[0].cards] == ["C", "C++"]
 
 
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        ("not able", "notable"),
+        ("a b", "ab"),
+        ("C + +", "C++"),
+    ],
+)
+def test_card_merge_key_preserves_lexical_and_operator_token_boundaries(
+    left, right
+):
+    first = _file_candidate(cards=[_card(name=left, evidence=("e1",))])
+    second = _file_candidate(cards=[_card(name=right, evidence=("e2",))])
+    second.material_version_id = "material-v2"
+
+    merged = merge_file_candidates([first, second], allowed_anchor_keys={"rag"})
+
+    assert [card.name for card in merged.topics[0].units[0].cards] == [left, right]
+
+
 def test_unit_merge_key_preserves_comparison_direction():
     first = _file_candidate(
         unit="a < b",
@@ -478,6 +498,26 @@ def test_strict_publish_preserves_comparison_direction_during_fact_matching():
             _direct_decision(
                 evidence_chunk_id="e1",
                 assessable_content=["a > b"],
+            )
+        ],
+    )
+
+    with pytest.raises(KnowledgeTreeValidationError, match="direct evidence"):
+        validate_publishable_tree(
+            tree,
+            allowed_anchor_keys={"rag"},
+            allowed_exam_point_codes={"EP-1"},
+        )
+
+
+def test_strict_publish_does_not_treat_separate_words_as_one_word():
+    tree = _strict_tree(
+        card_content=["notable"],
+        evidence_ids=("e1",),
+        decisions=[
+            _direct_decision(
+                evidence_chunk_id="e1",
+                assessable_content=["not able"],
             )
         ],
     )

@@ -447,6 +447,10 @@ def test_fact_keys_unify_equivalent_symbolic_and_operators():
         ("版本1.2", "版本12"),
         ("a＞b", "a＜b"),
         ("C++", "C"),
+        ("not able", "notable"),
+        ("a b", "ab"),
+        ("C + +", "C++"),
+        ("a - - b", "a--b"),
         ("a⊕b", "ab"),
     ],
 )
@@ -462,6 +466,8 @@ def test_fact_keys_preserve_semantically_significant_structure(left, right):
         ("¬A", "! a"),
         ("A⇒B", "a -> b"),
         ("A⇔B", "a <=> b"),
+        ("a < b", "a<b"),
+        ("( a )", "(a)"),
     ],
 )
 def test_fact_keys_unify_whitespace_width_and_explicit_operator_aliases(left, right):
