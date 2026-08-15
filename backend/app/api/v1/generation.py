@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from threading import Lock
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict
 
@@ -8,6 +10,7 @@ from app.config import settings
 from app.workflows.generation_graph import build_generation_graph
 
 router = APIRouter(prefix="/api/v1/courses/{course_id}", tags=["generation"])
+_gateway_lock = Lock()
 
 
 class GenerationRequest(BaseModel):
@@ -20,11 +23,26 @@ def get_gateway(request: Request):
     gateway = getattr(request.app.state, "generation_gateway", None)
     if gateway is not None:
         return gateway
-    if not settings.deepseek_api_key.strip():
-        raise HTTPException(status_code=503, detail="DeepSeek model is not configured")
-    gateway = DeepSeekGateway(api_key=settings.deepseek_api_key, base_url=settings.deepseek_base_url, model=settings.deepseek_model)
-    request.app.state.generation_gateway = gateway
-    return gateway
+    with _gateway_lock:
+        gateway = getattr(request.app.state, "generation_gateway", None)
+        if gateway is not None:
+            return gateway
+        if not all(
+            value.strip()
+            for value in (
+                settings.deepseek_api_key,
+                settings.deepseek_base_url,
+                settings.deepseek_model,
+            )
+        ):
+            raise HTTPException(status_code=503, detail="DeepSeek model is not configured")
+        gateway = DeepSeekGateway(
+            api_key=settings.deepseek_api_key,
+            base_url=settings.deepseek_base_url,
+            model=settings.deepseek_model,
+        )
+        request.app.state.generation_gateway = gateway
+        return gateway
 
 
 @router.post("/generation-runs", status_code=status.HTTP_202_ACCEPTED)

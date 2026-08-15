@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from threading import Lock
+
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, ConfigDict
@@ -18,6 +20,7 @@ from app.services.model_call_service import DatabaseModelCallRecorder
 from app.workflows.framework_graph import build_framework_graph
 
 router = APIRouter(prefix="/api/v1/courses/{course_id}", tags=["framework"])
+_syllabus_extractor_lock = Lock()
 
 
 class FrameworkRunCreate(BaseModel):
@@ -31,17 +34,21 @@ def get_syllabus_extractor(request: Request) -> SyllabusExtractor:
     extractor = getattr(request.app.state, "syllabus_extractor", None)
     if extractor is not None:
         return extractor
-    if not _deepseek_configured():
-        raise HTTPException(status_code=503, detail="syllabus semantic extractor is not configured")
-    client = DeepSeekJsonClient(
-        api_key=settings.deepseek_api_key,
-        base_url=settings.deepseek_base_url,
-        model=settings.deepseek_model,
-        recorder=DatabaseModelCallRecorder(get_session_factory()),
-    )
-    extractor = DeepSeekSyllabusExtractor(client)
-    request.app.state.syllabus_extractor = extractor
-    return extractor
+    with _syllabus_extractor_lock:
+        extractor = getattr(request.app.state, "syllabus_extractor", None)
+        if extractor is not None:
+            return extractor
+        if not _deepseek_configured():
+            raise HTTPException(status_code=503, detail="syllabus semantic extractor is not configured")
+        client = DeepSeekJsonClient(
+            api_key=settings.deepseek_api_key,
+            base_url=settings.deepseek_base_url,
+            model=settings.deepseek_model,
+            recorder=DatabaseModelCallRecorder(get_session_factory()),
+        )
+        extractor = DeepSeekSyllabusExtractor(client)
+        request.app.state.syllabus_extractor = extractor
+        return extractor
 
 
 def _deepseek_configured() -> bool:

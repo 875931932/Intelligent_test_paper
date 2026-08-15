@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError, model_validator
 
 from app.adapters.model.deepseek_gateway import DeepSeekJsonClient, DeepSeekModelError
 from app.domain.framework.exam_points import ExamPoint
@@ -32,14 +32,71 @@ class JsonRequester(Protocol):
     ) -> dict: ...
 
 
+_Text = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
+
+class _TeachingTopicResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: _Text
+    title: _Text
+    depth: _Text
+    requirements: list[_Text] = Field(default_factory=list)
+
+
+class _AssessmentAnchorResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    key: _Text
+    title: _Text
+    exam_weight: float = Field(ge=0, le=100)
+    ability_requirements: list[_Text] = Field(default_factory=list)
+    allowed_question_types: list[_Text] = Field(default_factory=list)
+    excluded_content: list[_Text] = Field(default_factory=list)
+    alignment_keys: list[_Text] = Field(default_factory=list)
+
+
+class _KnowledgeCardResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: _Text
+    performance_statement: _Text
+    assessable_content: list[_Text] = Field(default_factory=list)
+    scope_boundary: dict[str, Any] = Field(default_factory=dict)
+    cognitive_targets: list[_Text] = Field(default_factory=list)
+    allowed_question_types: list[_Text] = Field(default_factory=list)
+    importance: int = Field(default=1, ge=1, le=5)
+    evidence_chunk_ids: list[_Text] = Field(default_factory=list)
+    prompt_material: list[_Text] = Field(default_factory=list)
+    status: Literal["active", "excluded", "material_only", "needs_teacher_review"] = "active"
+
+    @model_validator(mode="after")
+    def require_active_content(self):
+        if self.status == "active" and not self.assessable_content:
+            raise ValueError("active knowledge card requires assessable_content")
+        return self
+
+
+class _AssessmentUnitResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: _Text
+    title: _Text
+    performance_statement: _Text
+    exam_point_code: _Text
+    scope_boundary: dict[str, Any] = Field(default_factory=dict)
+    cards: list[_KnowledgeCardResponse] = Field(default_factory=list)
+    status: Literal["active", "excluded", "needs_teacher_review"] = "active"
+
+
 class _TeachingResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    teaching_topics: list[TeachingTopic]
+    teaching_topics: list[_TeachingTopicResponse]
 
 
 class _AssessmentResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    anchors: list[AssessmentAnchor]
+    anchors: list[_AssessmentAnchorResponse]
     exam_points: list["_AssessmentPointResponse"] = Field(min_length=1)
     final_exam_rules: dict[str, Any] = Field(default_factory=dict)
 
@@ -47,25 +104,25 @@ class _AssessmentResponse(BaseModel):
 class _AssessmentPointResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    code: str
-    anchor_key: str
-    title: str
-    assessment_requirement: str
+    code: _Text
+    anchor_key: _Text
+    title: _Text
+    assessment_requirement: _Text
     weight_value: float = Field(ge=0, le=100)
     weight_source: Literal["assessment_syllabus", "inherited_group"]
-    weight_group_id: str
-    cognitive_targets: list[str]
-    assessment_orientations: list[str]
+    weight_group_id: _Text
+    cognitive_targets: list[_Text]
+    assessment_orientations: list[_Text]
     operational_detail_policy: Literal[
         "forbidden", "supporting_only", "directly_assessable"
     ]
-    retrieval_intent: str
-    teaching_anchor_keys: list[str]
-    priority: str = "normal"
-    allowed_question_types: list[str] = Field(default_factory=list)
+    retrieval_intent: _Text
+    teaching_anchor_keys: list[_Text]
+    priority: _Text = "normal"
+    allowed_question_types: list[_Text] = Field(default_factory=list)
     scope_boundary: dict[str, Any] = Field(default_factory=dict)
-    required_evidence_roles: list[str] = Field(default_factory=list)
-    assessment_anchor_keys: list[str] = Field(default_factory=list)
+    required_evidence_roles: list[_Text] = Field(default_factory=list)
+    assessment_anchor_keys: list[_Text] = Field(default_factory=list)
 
 
 class _EvidenceDecisionResponse(EvidenceDecision):
@@ -75,16 +132,16 @@ class _EvidenceDecisionResponse(EvidenceDecision):
 
 class _ClassificationResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    exam_point_code: str
-    material_version_id: str
+    exam_point_code: _Text
+    material_version_id: _Text
     decisions: list[_EvidenceDecisionResponse]
     source_locations: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class _ConsolidationResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    exam_point_code: str
-    assessment_units: list[AssessmentUnitDraft]
+    exam_point_code: _Text
+    assessment_units: list[_AssessmentUnitResponse]
     source_locations: list[dict[str, Any]] = Field(default_factory=list)
 
 
@@ -102,7 +159,10 @@ class DeepSeekSyllabusExtractor:
 
         def validate_response(result: dict) -> None:
             try:
-                parsed.append(_TeachingResponse.model_validate(result).teaching_topics)
+                response = _TeachingResponse.model_validate(result)
+                parsed.append(
+                    [TeachingTopic.model_validate(topic.model_dump(mode="json")) for topic in response.teaching_topics]
+                )
             except ValidationError as exc:
                 raise _schema_error(exc) from None
 
@@ -131,7 +191,10 @@ class DeepSeekSyllabusExtractor:
             try:
                 response = _AssessmentResponse.model_validate(result)
                 outline = AssessmentOutline(
-                    anchors=response.anchors,
+                    anchors=[
+                        AssessmentAnchor.model_validate(anchor.model_dump(mode="json"))
+                        for anchor in response.anchors
+                    ],
                     exam_points=[
                         ExamPoint.model_validate(point.model_dump(mode="json"))
                         for point in response.exam_points
@@ -288,9 +351,17 @@ class DeepSeekExamPointKnowledgeConsolidator:
             _validate_consolidated_units(
                 exam_point,
                 admitted,
-                response.assessment_units,
+                [
+                    AssessmentUnitDraft.model_validate(unit.model_dump(mode="json"))
+                    for unit in response.assessment_units
+                ],
             )
-            parsed.append(response.assessment_units)
+            parsed.append(
+                [
+                    AssessmentUnitDraft.model_validate(unit.model_dump(mode="json"))
+                    for unit in response.assessment_units
+                ]
+            )
 
         self.client.request_json(
             system_prompt=(

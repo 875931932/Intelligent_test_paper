@@ -11,6 +11,70 @@ import httpx
 from app.domain.model_calls import ModelCallContext
 
 
+_PERSISTED_ERROR_MESSAGES = {
+    "deepseek_http_error": "DeepSeek request failed with an HTTP error",
+    "deepseek_transport_error": "DeepSeek request failed",
+    "model_empty_response": "model returned empty content",
+    "model_invalid_envelope": "model response envelope is invalid",
+    "model_non_json_response": "model returned content that is not valid JSON",
+    "model_non_object_response": "model returned a non-object JSON value",
+    "model_output_evidence_gap": "model response failed evidence validation",
+    "model_output_scope_violation": "model response failed scope validation",
+    "model_schema_validation_failed": "model JSON does not match the required schema",
+}
+_PERSISTED_VALIDATION_FIELDS = {
+    "ability_requirements",
+    "alignment_keys",
+    "allowed_question_types",
+    "anchors",
+    "assessable_content",
+    "assessment_anchor_keys",
+    "assessment_orientations",
+    "assessment_requirement",
+    "assessment_units",
+    "candidate_assessment_unit",
+    "candidate_card_content",
+    "cards",
+    "code",
+    "cognitive_targets",
+    "confidence",
+    "content_kind",
+    "decisions",
+    "depth",
+    "evidence_chunk_id",
+    "evidence_chunk_ids",
+    "evidence_role",
+    "exam_point_code",
+    "exam_points",
+    "exam_weight",
+    "excluded_content",
+    "final_exam_rules",
+    "importance",
+    "key",
+    "material_version_id",
+    "name",
+    "operational_detail_policy",
+    "performance_statement",
+    "priority",
+    "prompt_material",
+    "relevance_class",
+    "required_evidence_roles",
+    "requirements",
+    "retrieval_intent",
+    "scope_boundary",
+    "source_locations",
+    "source_locator",
+    "status",
+    "support_claim",
+    "teaching_anchor_keys",
+    "teaching_topics",
+    "title",
+    "weight_group_id",
+    "weight_source",
+    "weight_value",
+}
+
+
 class ModelCallRecorder(Protocol):
     def record(self, **values: Any) -> None: ...
 
@@ -78,8 +142,15 @@ class DeepSeekJsonClient:
         output_tokens: int | None = None
         final_http_status: int | None = None
         last_retry_error_code: str | None = None
+        attempt_count = 0
 
         for attempt in range(1, self.max_attempts + 1):
+            attempt_count = attempt
+            request_id = None
+            input_tokens = None
+            output_tokens = None
+            final_http_status = None
+            should_retry = True
             try:
                 response = self._post(system_prompt, canonical_prompt, temperature)
                 headers = getattr(response, "headers", {})
@@ -117,30 +188,12 @@ class DeepSeekJsonClient:
                     )
                 if response_validator is not None:
                     response_validator(result)
-                duration_ms = round((time.perf_counter() - started) * 1000)
-                self._record(
-                    context=call_context,
-                    status="succeeded",
-                    prompt_hash=prompt_hash,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    duration_ms=duration_ms,
-                    error=None,
-                    request_id=request_id,
-                    details={
-                        "attempt_count": attempt,
-                        "retry_count": attempt - 1,
-                        "final_http_status": final_http_status,
-                        "last_error_code": last_retry_error_code,
-                        "attempts": attempts,
-                    },
-                )
-                return result
             except httpx.HTTPStatusError as exc:
                 last_error = DeepSeekModelError(
                     "deepseek_http_error",
                     f"DeepSeek request failed with HTTP status {exc.response.status_code}",
                 )
+                should_retry = _is_retryable_http_status(exc.response.status_code)
                 last_retry_error_code = last_error.error_code
                 attempts.append(
                     {
@@ -165,28 +218,53 @@ class DeepSeekJsonClient:
                 attempts.append({"attempt": attempt, "error_type": type(exc).__name__})
             except DeepSeekModelError as exc:
                 last_error = exc
-                last_retry_error_code = exc.error_code
+                persisted_error_code, _ = _persistence_error(exc)
+                last_retry_error_code = persisted_error_code
                 attempts.append(
                     {
                         "attempt": attempt,
                         "http_status": final_http_status,
-                        "error_code": exc.error_code,
+                        "error_code": persisted_error_code,
                     }
                 )
+            else:
+                duration_ms = round((time.perf_counter() - started) * 1000)
+                self._record(
+                    context=call_context,
+                    status="succeeded",
+                    prompt_hash=prompt_hash,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    duration_ms=duration_ms,
+                    error=None,
+                    request_id=request_id,
+                    details={
+                        "attempt_count": attempt,
+                        "retry_count": attempt - 1,
+                        "final_http_status": final_http_status,
+                        "last_error_code": last_retry_error_code,
+                        "attempts": attempts,
+                    },
+                )
+                return result
 
+            if not should_retry:
+                break
             if attempt < self.max_attempts:
                 time.sleep(min(2 ** (attempt - 1), 8))
 
         assert last_error is not None
         duration_ms = round((time.perf_counter() - started) * 1000)
         details = {
-            "attempt_count": self.max_attempts,
-            "retry_count": self.max_attempts - 1,
+            "attempt_count": attempt_count,
+            "retry_count": attempt_count - 1,
             "final_http_status": final_http_status,
-            "last_error_code": last_error.error_code,
+            "last_error_code": _persistence_error(last_error)[0],
             "attempts": attempts,
-            **last_error.details,
         }
+        validation_details = _sanitized_validation_details(last_error)
+        if validation_details is not None:
+            details["validation"] = validation_details
         self._record(
             context=call_context,
             status="failed",
@@ -236,20 +314,25 @@ class DeepSeekJsonClient:
     ) -> None:
         if self.recorder is None or context is None:
             return
-        self.recorder.record(
-            context=context,
-            provider="deepseek",
-            model=self.model,
-            status=status,
-            prompt_hash=prompt_hash,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            duration_ms=duration_ms,
-            error_code=error.error_code if error else None,
-            error_message=str(error) if error else None,
-            request_id=request_id,
-            details=details,
-        )
+        error_code, error_message = _persistence_error(error) if error else (None, None)
+        try:
+            self.recorder.record(
+                context=context,
+                provider="deepseek",
+                model=self.model,
+                status=status,
+                prompt_hash=prompt_hash,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                duration_ms=duration_ms,
+                error_code=error_code,
+                error_message=error_message,
+                request_id=request_id,
+                details=details,
+            )
+        except Exception:
+            # Observability is deliberately best-effort and must never alter model-call semantics.
+            return
 
 
 class DeepSeekGateway:
@@ -333,3 +416,34 @@ def _optional_text(value: Any) -> str | None:
 
 def _optional_int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _is_retryable_http_status(status_code: int) -> bool:
+    return status_code in {408, 429} or status_code >= 500
+
+
+def _persistence_error(error: DeepSeekModelError) -> tuple[str, str]:
+    message = _PERSISTED_ERROR_MESSAGES.get(error.error_code)
+    if message is None:
+        return "model_validation_failed", "model response validation failed"
+    return error.error_code, message
+
+
+def _sanitized_validation_details(error: DeepSeekModelError) -> dict[str, list[str]] | None:
+    if error.error_code != "model_schema_validation_failed":
+        return None
+    invalid_fields = error.details.get("invalid_fields")
+    if not isinstance(invalid_fields, list):
+        return None
+    safe_fields: list[str] = []
+    for field in invalid_fields:
+        if not isinstance(field, str) or not field:
+            continue
+        safe_parts = [
+            part if part.isdigit() or part in _PERSISTED_VALIDATION_FIELDS else "unexpected_field"
+            for part in field.split(".")[:8]
+        ]
+        safe_fields.append(".".join(safe_parts))
+        if len(safe_fields) == 20:
+            break
+    return {"invalid_fields": safe_fields}

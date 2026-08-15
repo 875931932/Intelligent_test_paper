@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.adapters.model.deepseek_semantic_extractors import (
     DeepSeekExamPointEvidenceClassifier,
@@ -55,6 +55,11 @@ class RecordingModelCalls:
 
     def record(self, **values):
         self.calls.append(values)
+
+
+class FailingModelCallRecorder:
+    def record(self, **values):
+        raise ValueError("observability storage unavailable")
 
 
 def _point() -> ExamPoint:
@@ -140,6 +145,91 @@ def test_json_client_uses_injected_http_client_and_records_one_success():
     assert recorder.calls[0]["input_tokens"] == 12
     assert recorder.calls[0]["output_tokens"] == 3
     assert "期末考试" not in repr(recorder.calls[0])
+
+
+def test_json_client_does_not_retry_success_when_recorder_fails(monkeypatch):
+    request_count = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": '{"ok": true}'}}]},
+        )
+
+    monkeypatch.setattr("app.adapters.model.deepseek_gateway.time.sleep", lambda _: None)
+    client = DeepSeekJsonClient(
+        api_key="test-key",
+        max_attempts=2,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        recorder=FailingModelCallRecorder(),
+    )
+
+    result = client.request_json(
+        system_prompt="system",
+        payload={"blocks": ["material"]},
+        temperature=0,
+        call_context=ModelCallContext(
+            course_id="course",
+            organization_run_id="run",
+            stage="classification",
+        ),
+    )
+
+    assert result == {"ok": True}
+    assert request_count == 1
+
+
+def test_json_client_preserves_model_failure_when_recorder_fails():
+    client = DeepSeekJsonClient(
+        api_key="test-key",
+        max_attempts=1,
+        client=httpx.Client(
+            transport=httpx.MockTransport(lambda _: httpx.Response(401))
+        ),
+        recorder=FailingModelCallRecorder(),
+    )
+
+    with pytest.raises(DeepSeekModelError) as caught:
+        client.request_json(
+            system_prompt="system",
+            payload={"blocks": ["material"]},
+            temperature=0,
+            call_context=ModelCallContext(
+                course_id="course",
+                organization_run_id="run",
+                stage="classification",
+            ),
+        )
+
+    assert caught.value.error_code == "deepseek_http_error"
+
+
+@pytest.mark.parametrize("status_code", [400, 401, 403])
+def test_json_client_does_not_retry_permanent_http_errors(status_code, monkeypatch):
+    request_count = 0
+
+    def handler(_: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(status_code)
+
+    monkeypatch.setattr("app.adapters.model.deepseek_gateway.time.sleep", lambda _: None)
+    client = DeepSeekJsonClient(
+        api_key="test-key",
+        max_attempts=4,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(DeepSeekModelError):
+        client.request_json(
+            system_prompt="system",
+            payload={"blocks": ["material"]},
+            temperature=0,
+        )
+
+    assert request_count == 1
 
 
 @pytest.mark.parametrize(
@@ -243,6 +333,53 @@ def test_json_client_success_retains_last_retry_error_code(monkeypatch):
     ]
 
 
+def test_json_client_terminal_transport_error_does_not_retain_prior_response_metadata(monkeypatch):
+    responses = iter(
+        [
+            httpx.Response(
+                503,
+                headers={"x-request-id": "req-stale"},
+                json={"usage": {"prompt_tokens": 91, "completion_tokens": 17}},
+            ),
+            httpx.ConnectError("connection failed"),
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        outcome = next(responses)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    recorder = RecordingModelCalls()
+    monkeypatch.setattr("app.adapters.model.deepseek_gateway.time.sleep", lambda _: None)
+    client = DeepSeekJsonClient(
+        api_key="test-key",
+        max_attempts=2,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+        recorder=recorder,
+    )
+
+    with pytest.raises(DeepSeekModelError):
+        client.request_json(
+            system_prompt="system",
+            payload={"blocks": ["material"]},
+            temperature=0,
+            call_context=ModelCallContext(
+                course_id="course",
+                organization_run_id="run",
+                stage="classification",
+            ),
+        )
+
+    recorded = recorder.calls[0]
+    assert recorded["request_id"] is None
+    assert recorded["input_tokens"] is None
+    assert recorded["output_tokens"] is None
+    assert recorded["details"]["final_http_status"] is None
+    assert recorded["details"]["attempts"][0]["http_status"] == 503
+
+
 def test_semantic_schema_failure_records_one_final_failed_model_call():
     recorder = RecordingModelCalls()
     client = DeepSeekJsonClient(
@@ -277,7 +414,55 @@ def test_semantic_schema_failure_records_one_final_failed_model_call():
         ("failed", "model_schema_validation_failed")
     ]
     assert recorder.calls[0]["request_id"] == "req-bad"
-    assert recorder.calls[0]["details"]["invalid_fields"]
+    assert recorder.calls[0]["details"]["validation"]["invalid_fields"]
+
+
+def test_json_client_redacts_arbitrary_validator_failure_from_persisted_metadata():
+    recorder = RecordingModelCalls()
+    client = DeepSeekJsonClient(
+        api_key="test-key",
+        max_attempts=1,
+        client=httpx.Client(
+            transport=httpx.MockTransport(
+                lambda _: httpx.Response(
+                    200,
+                    json={"choices": [{"message": {"content": '{"ok": true}'}}]},
+                )
+            )
+        ),
+        recorder=recorder,
+    )
+
+    def reject_response(_: dict) -> None:
+        raise DeepSeekModelError(
+            "validator_custom_failure",
+            "SECRET validator message",
+            details={
+                "attempt_count": 999,
+                "secret": "SECRET detail",
+                "invalid_fields": ["SECRET field"],
+            },
+        )
+
+    with pytest.raises(DeepSeekModelError):
+        client.request_json(
+            system_prompt="system",
+            payload={"blocks": ["material"]},
+            temperature=0,
+            call_context=ModelCallContext(
+                course_id="course",
+                organization_run_id="run",
+                stage="classification",
+            ),
+            response_validator=reject_response,
+        )
+
+    recorded = recorder.calls[0]
+    assert recorded["error_code"] == "model_validation_failed"
+    assert recorded["error_message"] == "model response validation failed"
+    assert recorded["details"]["attempt_count"] == 1
+    assert "validation" not in recorded["details"]
+    assert "SECRET" not in repr(recorded)
 
 
 def test_syllabus_extractor_requires_final_exam_points_and_sends_only_supplied_outline():
@@ -340,6 +525,29 @@ def test_syllabus_extractor_validates_teaching_topic_schema():
 
     assert topics[0].key == "rag-teaching"
     assert "行政内容" in client.recorded_payloads[0]["system"]
+
+
+def test_syllabus_extractor_rejects_unknown_teaching_topic_fields():
+    client = RecordingJsonClient(
+        [
+            {
+                "teaching_topics": [
+                    {
+                        "key": "rag-teaching",
+                        "title": "检索增强生成",
+                        "depth": "analyze",
+                        "requirements": ["分析检索偏差"],
+                        "requirement": "must not be ignored",
+                    }
+                ]
+            }
+        ]
+    )
+
+    with pytest.raises(DeepSeekModelError) as caught:
+        DeepSeekSyllabusExtractor(client).extract_teaching(["教学内容与要求"])
+
+    assert caught.value.error_code == "model_schema_validation_failed"
 
 
 @pytest.mark.parametrize(
@@ -415,7 +623,7 @@ def test_database_model_call_recorder_persists_only_redacted_metadata(tmp_path):
         )
         session.commit()
 
-        DatabaseModelCallRecorder(session).record(
+        DatabaseModelCallRecorder(sessionmaker(bind=engine)).record(
             context=ModelCallContext(
                 course_id="course",
                 framework_build_run_id="run",
@@ -438,6 +646,57 @@ def test_database_model_call_recorder_persists_only_redacted_metadata(tmp_path):
         assert row["error_code"] == "model_empty_response"
         assert row["details"] == {"attempt_count": 1}
         assert "blocks" not in row
+    engine.dispose()
+
+
+def test_database_model_call_recorder_rejects_borrowed_session(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'borrowed-session.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        with pytest.raises(TypeError, match="session factory"):
+            DatabaseModelCallRecorder(session)
+    engine.dispose()
+
+
+def test_database_model_call_recorder_does_not_commit_callers_pending_transaction(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'transaction-ownership.db'}")
+    Base.metadata.create_all(engine)
+    with Session(engine) as setup:
+        setup.add(User(id="owner", display_name="Owner", role="teacher"))
+        setup.flush()
+        setup.add(Course(id="course", owner_id="owner", slug="course", name="Course"))
+        setup.flush()
+        setup.execute(
+            framework_build_runs.insert().values(
+                id="run",
+                course_id="course",
+                status="running",
+                input_snapshot={},
+            )
+        )
+        setup.commit()
+
+    factory = sessionmaker(bind=engine)
+    with Session(engine) as caller:
+        owner = caller.get(User, "owner")
+        owner.display_name = "Pending change"
+        DatabaseModelCallRecorder(factory).record(
+            context=ModelCallContext(course_id="course", framework_build_run_id="run", stage="assessment"),
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            status="succeeded",
+            prompt_hash="a" * 64,
+            input_tokens=1,
+            output_tokens=1,
+            duration_ms=1,
+            error_code=None,
+            error_message=None,
+        )
+        caller.rollback()
+
+    with Session(engine) as check:
+        assert check.get(User, "owner").display_name == "Owner"
+        assert check.scalar(select(model_calls.c.status)) == "succeeded"
     engine.dispose()
 
 
@@ -590,3 +849,37 @@ def test_consolidator_rejects_active_unit_without_knowledge_cards():
         )
 
     assert caught.value.error_code == "model_output_evidence_gap"
+
+
+def test_consolidator_rejects_active_card_with_empty_assessable_content():
+    client = RecordingJsonClient(
+        [
+            {
+                "exam_point_code": "rag-diagnosis",
+                "assessment_units": [
+                    {
+                        "code": "diagnose-retrieval",
+                        "title": "诊断检索偏差",
+                        "performance_statement": "分析召回偏差成因",
+                        "exam_point_code": "rag-diagnosis",
+                        "cards": [
+                            {
+                                "name": "空事实",
+                                "performance_statement": "没有可评分事实",
+                                "assessable_content": [],
+                                "evidence_chunk_ids": ["e1"],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    )
+
+    with pytest.raises(DeepSeekModelError) as caught:
+        DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+            exam_point=_point(),
+            admitted_decisions=[EvidenceDecision.model_validate(_decision())],
+        )
+
+    assert caught.value.error_code == "model_schema_validation_failed"

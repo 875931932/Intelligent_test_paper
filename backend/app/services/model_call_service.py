@@ -15,8 +15,10 @@ from app.domain.model_calls import ModelCallContext
 class DatabaseModelCallRecorder:
     """Write one row for the final success or failure of a logical model call."""
 
-    def __init__(self, session_source: Session | Callable[[], Session]) -> None:
-        self.session_source = session_source
+    def __init__(self, session_factory: Callable[[], Session]) -> None:
+        if not callable(session_factory):
+            raise TypeError("DatabaseModelCallRecorder requires an owned session factory")
+        self.session_factory = session_factory
 
     def record(
         self,
@@ -34,8 +36,7 @@ class DatabaseModelCallRecorder:
         request_id: str | None = None,
         details: dict[str, Any] | None = None,
     ) -> None:
-        owns_session = not isinstance(self.session_source, Session)
-        session = self.session_source() if owns_session else self.session_source
+        session = self.session_factory()
         try:
             session.execute(
                 model_calls.insert().values(
@@ -60,5 +61,4 @@ class DatabaseModelCallRecorder:
             )
             session.commit()
         finally:
-            if owns_session:
-                session.close()
+            session.close()
