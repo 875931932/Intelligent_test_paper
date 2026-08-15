@@ -108,3 +108,128 @@ def test_blueprint_defaults_legacy_type_rule_to_all_medium_without_global_diffic
 
     assert all(item.difficulty == "medium" for item in plan.items)
     assert plan.difficulty_counts["single_choice"] == {"low": 0, "medium": 15, "high": 0}
+    assert all(item.exam_point_id == item.unit_id for item in plan.items)
+
+
+def test_blueprint_mode_distribution_is_not_driven_by_material_card_count():
+    request = BlueprintRequest(
+        total_score=20,
+        type_rules={
+            "single_choice": {
+                "count": 10,
+                "score": 2,
+                "assessment_mode_distribution": {
+                    "theory_recall": 40,
+                    "conceptual": 50,
+                    "application": 10,
+                    "problem_solving": 0,
+                    "practical_operation": 0,
+                },
+            }
+        },
+        chapter_weights={"chapter": 100},
+        units=[
+            UnitCoverage(
+                unit_id="theory",
+                exam_point_id="ep-theory",
+                anchor_key="chapter",
+                card_ids=["theory-card"],
+                allowed_assessment_modes=["theory_recall", "conceptual", "application"],
+                operational_detail_policy="supporting_only",
+            ),
+            UnitCoverage(
+                unit_id="practical",
+                exam_point_id="ep-practical",
+                anchor_key="chapter",
+                card_ids=[f"operation-{index}" for index in range(20)],
+                allowed_assessment_modes=["practical_operation"],
+                operational_detail_policy="directly_assessable",
+            ),
+        ],
+    )
+
+    plan = allocate_plan_items(request)
+
+    assert plan.assessment_mode_counts["single_choice"] == {
+        "theory_recall": 4,
+        "conceptual": 5,
+        "application": 1,
+        "problem_solving": 0,
+        "practical_operation": 0,
+    }
+    assert all(item.assessment_mode != "practical_operation" for item in plan.items)
+    assert all(item.unit_id == "theory" for item in plan.items)
+
+
+def test_blueprint_rejects_invalid_mode_distribution_and_unsupported_practical_mode():
+    request = _request()
+    request.type_rules["single_choice"]["assessment_mode_distribution"] = {
+        "theory_recall": 70,
+        "conceptual": 20,
+    }
+    with pytest.raises(BlueprintValidationError, match="assessment mode distribution"):
+        allocate_plan_items(request)
+
+    request = BlueprintRequest(
+        total_score=2,
+        type_rules={
+            "single_choice": {
+                "count": 1,
+                "score": 2,
+                "assessment_mode_distribution": {
+                    "theory_recall": 0,
+                    "conceptual": 0,
+                    "application": 0,
+                    "problem_solving": 0,
+                    "practical_operation": 100,
+                },
+            }
+        },
+        chapter_weights={"chapter": 100},
+        units=[
+            UnitCoverage(
+                unit_id="unit",
+                anchor_key="chapter",
+                card_ids=["card"],
+                allowed_assessment_modes=["practical_operation"],
+                operational_detail_policy="supporting_only",
+            )
+        ],
+    )
+    with pytest.raises(BlueprintValidationError, match="practical_operation"):
+        allocate_plan_items(request)
+
+
+def test_blueprint_orders_each_question_type_by_difficulty_then_assessment_mode():
+    request = BlueprintRequest(
+        total_score=4,
+        type_rules={
+            "single_choice": {
+                "count": 2,
+                "score": 2,
+                "difficulty_distribution": {"low": 50, "medium": 50, "high": 0},
+                "assessment_mode_distribution": {
+                    "theory_recall": 50,
+                    "conceptual": 50,
+                    "application": 0,
+                    "problem_solving": 0,
+                    "practical_operation": 0,
+                },
+            }
+        },
+        chapter_weights={"chapter": 100},
+        units=[
+            UnitCoverage(
+                unit_id="unit",
+                anchor_key="chapter",
+                card_ids=["card"],
+            )
+        ],
+    )
+
+    plan = allocate_plan_items(request)
+
+    assert [(item.difficulty, item.assessment_mode) for item in plan.items] == [
+        ("low", "theory_recall"),
+        ("medium", "conceptual"),
+    ]
