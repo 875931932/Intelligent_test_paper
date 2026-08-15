@@ -54,3 +54,97 @@ def test_generation_payload_contains_unique_atom_common_terms_and_expression_pol
     assert payload.expression_policy["max_parenthetical_pairs"] == 1
     assert "理论填空题" in payload.question_template
     assert "不设计实际场景" in payload.question_template
+
+
+def test_comprehensive_payloads_use_distinct_archetype_templates_and_source_free_contracts():
+    items = [
+        PlanItem(
+            item_index=index,
+            question_type="comprehensive",
+            score=10,
+            anchor_key="rag",
+            unit_id=f"u{index}",
+            card_id=f"c{index}",
+            cognitive_level="analyze",
+            assessment_mode="problem_solving",
+        )
+        for index in (1, 2)
+    ]
+    cards = {
+        "c1": {
+            "performance_statement": "能够依据异常表现诊断故障",
+            "assessable_content": ["故障表现、原因与修正方法"],
+            "prompt_material": "异常表现：检索结果与问题无关",
+            "scope_boundary": {},
+        },
+        "c2": {
+            "performance_statement": "能够在约束下比较并选择方案",
+            "assessable_content": ["候选方案的性能与资源约束"],
+            "prompt_material": ["候选方案A与B", "资源上限和质量目标"],
+            "scope_boundary": {},
+        },
+    }
+    directives = build_coverage_directives(
+        items,
+        cards,
+        {
+            "directives": [
+                {
+                    "item_index": 1,
+                    "coverage_atom": "根据异常表现定位原因并修正",
+                    "answer_boundary": "诊断依据、原因与修正措施",
+                    "cognitive_level": "analyze",
+                    "comprehensive_archetype": "fault_diagnosis",
+                    "material_form": "symptom_list",
+                    "cognitive_sequence": ["analyze", "apply"],
+                    "subquestion_count_range": [2, 3],
+                },
+                {
+                    "item_index": 2,
+                    "coverage_atom": "在约束下比较候选方案",
+                    "answer_boundary": "比较依据、选择结论与理由",
+                    "cognitive_level": "evaluate",
+                    "comprehensive_archetype": "comparative_decision",
+                    "material_form": "constraint_table",
+                    "cognitive_sequence": ["analyze", "evaluate"],
+                    "subquestion_count_range": [2, 4],
+                },
+            ]
+        },
+    )
+
+    payloads = [compile_question_generation_payload(directive) for directive in directives]
+    serialized = json.dumps([payload.model_dump() for payload in payloads], ensure_ascii=False)
+
+    assert payloads[0].prompt_material == ["异常表现：检索结果与问题无关"]
+    assert payloads[1].prompt_material == ["候选方案A与B", "资源上限和质量目标"]
+    assert "异常表现" in payloads[0].question_template
+    assert "候选方案" in payloads[1].question_template
+    assert payloads[0].question_template != payloads[1].question_template
+    assert payloads[0].output_schema["subquestions"]["items"]["required"] == [
+        "action",
+        "prompt",
+        "answer_boundary",
+        "answer",
+        "rubric",
+    ]
+    for forbidden in ("card_id", "exam_point_id", "filename", "page", "evidence", "material_version_id"):
+        assert forbidden not in serialized.lower()
+
+
+def test_non_comprehensive_plan_item_remains_backward_compatible_with_new_fields():
+    payload = compile_question_generation_payload(
+        PlanItem(item_index=1, question_type="true_false", score=2, anchor_key="rag", unit_id="u1", card_id="c1"),
+        {
+            "performance_statement": "能够判断基本概念",
+            "assessable_content": ["基本概念"],
+            "scope_boundary": {},
+        },
+    )
+
+    assert payload.assessment_mode == "conceptual"
+    assert payload.prompt_material == []
+    assert payload.comprehensive_archetype is None
+    assert payload.material_form is None
+    assert payload.cognitive_sequence == []
+    assert payload.subquestion_count_range is None

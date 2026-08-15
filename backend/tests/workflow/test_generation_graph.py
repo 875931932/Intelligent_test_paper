@@ -53,6 +53,77 @@ class CoordinatingGateway:
         return {"conflicts": []}
 
 
+class ComprehensiveGateway:
+    def __init__(self):
+        self.planning_payloads = []
+        self.generation_payloads = []
+
+    def plan_coverage(self, payload):
+        self.planning_payloads.append(payload)
+        return {
+            "directives": [
+                {
+                    "item_index": 1,
+                    "coverage_atom": "根据异常表现定位原因",
+                    "answer_boundary": "定位依据、原因和修正",
+                    "cognitive_level": "analyze",
+                    "comprehensive_archetype": "fault_diagnosis",
+                    "material_form": "symptom_list",
+                    "cognitive_sequence": ["analyze", "apply"],
+                    "subquestion_count_range": [2, 3],
+                },
+                {
+                    "item_index": 2,
+                    "coverage_atom": "根据约束比较候选方案",
+                    "answer_boundary": "比较依据、选择和理由",
+                    "cognitive_level": "evaluate",
+                    "comprehensive_archetype": "comparative_decision",
+                    "material_form": "constraint_table",
+                    "cognitive_sequence": ["analyze", "evaluate"],
+                    "subquestion_count_range": [2, 4],
+                },
+                {
+                    "item_index": 3,
+                    "coverage_atom": "解释复合现象的因果链",
+                    "answer_boundary": "关键环节和因果关系",
+                    "cognitive_level": "analyze",
+                    "comprehensive_archetype": "integrated_explanation",
+                    "material_form": "causal_chain",
+                    "cognitive_sequence": ["understand", "analyze"],
+                    "subquestion_count_range": [2, 3],
+                },
+            ]
+        }
+
+    def generate(self, payload):
+        self.generation_payloads.append(payload)
+        return {
+            "stem": payload.prompt_material[0],
+            "subquestions": [
+                {
+                    "action": payload.cognitive_sequence[0],
+                    "prompt": "完成指定任务",
+                    "answer_boundary": payload.answer_boundary,
+                    "answer": payload.answer_boundary,
+                    "rubric": ["依据充分"],
+                },
+                {
+                    "action": payload.cognitive_sequence[-1],
+                    "prompt": "说明结论",
+                    "answer_boundary": payload.answer_boundary,
+                    "answer": payload.answer_boundary,
+                    "rubric": ["结论明确"],
+                },
+            ],
+            "answer": payload.answer_boundary,
+            "explanation": "按合同完成",
+            "rubric": ["结构完整"],
+        }
+
+    def audit_paper(self, payload):
+        return {"conflicts": []}
+
+
 def _state():
     return {
         "plan_items": [
@@ -69,6 +140,38 @@ def _state():
                 "cognitive_targets": ["understand"],
                 "allowed_question_types": ["fill_blank", "true_false"],
             }
+        },
+    }
+
+
+def _comprehensive_state():
+    archetype_material = [
+        ("诊断任务", "异常表现：召回结果持续偏离问题"),
+        ("决策任务", "约束表：质量优先且资源有限"),
+        ("解释任务", "因果链：输入变化引发多阶段响应"),
+    ]
+    return {
+        "plan_items": [
+            PlanItem(
+                item_index=index,
+                question_type="comprehensive",
+                score=10,
+                anchor_key=f"anchor-{index}",
+                unit_id=f"u{index}",
+                card_id=f"c{index}",
+                cognitive_level="analyze",
+                assessment_mode="problem_solving" if index < 3 else "application",
+            ).model_dump()
+            for index in (1, 2, 3)
+        ],
+        "knowledge_cards": {
+            f"c{index}": {
+                "performance_statement": f"能够完成{task}",
+                "assessable_content": [task],
+                "prompt_material": material,
+                "scope_boundary": {},
+            }
+            for index, (task, material) in enumerate(archetype_material, start=1)
         },
     }
 
@@ -110,3 +213,24 @@ def test_generation_graph_uses_one_compact_semantic_audit_and_repairs_only_flagg
     assert gateway.calls_by_atom["向量化的基本定义"] == 1
     assert gateway.calls_by_atom["训练数据的基本作用"] == 2
     assert result["conflicts"] == []
+
+
+def test_generation_graph_carries_three_distinct_comprehensive_contracts_without_sources():
+    gateway = ComprehensiveGateway()
+
+    result = build_generation_graph(gateway).invoke(_comprehensive_state())
+
+    assert [payload.comprehensive_archetype for payload in gateway.generation_payloads] == [
+        "fault_diagnosis",
+        "comparative_decision",
+        "integrated_explanation",
+    ]
+    assert len({payload.question_template for payload in gateway.generation_payloads}) == 3
+    planning_text = json.dumps(gateway.planning_payloads[0].model_dump(), ensure_ascii=False)
+    generation_text = json.dumps([payload.model_dump() for payload in gateway.generation_payloads], ensure_ascii=False)
+    assert "prompt_material" in planning_text
+    assert "assessment_mode" in planning_text
+    for forbidden in ("card_id", "exam_point_id", "filename", "page", "evidence", "material_version_id"):
+        assert forbidden not in generation_text.lower()
+    assert [question["item_index"] for question in result["questions"]] == [1, 2, 3]
+    assert all(question["quality"]["status"] == "pass" for question in result["questions"])
