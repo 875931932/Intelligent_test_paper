@@ -4,6 +4,7 @@ import math
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from app.adapters.model.embedding_gateway import (
     EmbeddingGatewayError,
@@ -116,6 +117,25 @@ def test_retrieval_does_not_accept_lexically_related_chunk_without_semantic_supp
     assert result == []
 
 
+def test_retrieval_rejects_exact_lexical_match_with_orthogonal_semantics():
+    point = _exam_point(retrieval_intent="完全相同的检索表述")
+    exact_match = StagingChunk(
+        id="lexical-only",
+        material_version_id="material-2",
+        content=point.retrieval_intent,
+    )
+
+    result = retrieve_for_exam_point(
+        point,
+        [exact_match],
+        StaticEmbedder([[1.0, 0.0], [0.0, 1.0]]),
+        top_k=8,
+        minimum_score=0.25,
+    )
+
+    assert result == []
+
+
 def test_retrieval_only_ranks_the_supplied_course_snapshot_chunks():
     supplied = StagingChunk(
         id="course-a-v2",
@@ -142,6 +162,10 @@ def test_retrieval_only_ranks_the_supplied_course_snapshot_chunks():
         ([[1.0, 0.0], [1.0]], "维度"),
         ([[], []], "空向量"),
         ([[1.0, 0.0], [math.nan, 0.0]], "有限"),
+        ([[0.0, 0.0], [1.0, 0.0]], "零范数"),
+        ([[1.0, 0.0], [0.0, 0.0]], "零范数"),
+        ([[1.7e308, 1.7e308], [1.0, 0.0]], "有限范数"),
+        ([[1.0, 0.0], [1.7e308, 1.7e308]], "有限范数"),
     ],
 )
 def test_retrieval_rejects_invalid_embedding_results(vectors, message):
@@ -170,6 +194,38 @@ def test_hybrid_retriever_rejects_unsafe_configuration(top_k, minimum_score):
             top_k=top_k,
             minimum_score=minimum_score,
         )
+
+
+def test_equal_scores_use_material_version_and_chunk_id_as_stable_tiebreakers():
+    point = _exam_point()
+    preferred = StagingChunk(
+        id="z-chunk",
+        material_version_id="material-a",
+        content="相同证据内容",
+    )
+    other = StagingChunk(
+        id="a-chunk",
+        material_version_id="material-b",
+        content="相同证据内容",
+    )
+
+    first = retrieve_for_exam_point(
+        point,
+        [preferred, other],
+        StaticEmbedder([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]),
+        top_k=1,
+        minimum_score=0.25,
+    )
+    reversed_input = retrieve_for_exam_point(
+        point,
+        [other, preferred],
+        StaticEmbedder([[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]]),
+        top_k=1,
+        minimum_score=0.25,
+    )
+
+    assert [item.chunk.id for item in first] == ["z-chunk"]
+    assert [item.chunk.id for item in reversed_input] == ["z-chunk"]
 
 
 def test_embedding_gateway_sorts_response_by_index_and_returns_vectors():
@@ -280,6 +336,8 @@ def test_embedding_gateway_redacts_credentials_and_input_from_errors(failure):
 
     assert api_key not in str(error.value)
     assert full_input not in str(error.value)
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
 
 
 def test_organization_retrieval_settings_have_safe_defaults(monkeypatch):
@@ -301,3 +359,21 @@ def test_organization_retrieval_settings_have_safe_defaults(monkeypatch):
     assert settings.organization_retrieval_top_k == 24
     assert settings.organization_retrieval_min_score == 0.25
     assert settings.organization_max_workers == 16
+
+
+@pytest.mark.parametrize(
+    ("variable", "value"),
+    [
+        ("ORGANIZATION_RETRIEVAL_TOP_K", "0"),
+        ("ORGANIZATION_RETRIEVAL_MIN_SCORE", "-0.01"),
+        ("ORGANIZATION_RETRIEVAL_MIN_SCORE", "1.01"),
+        ("ORGANIZATION_MAX_WORKERS", "0"),
+    ],
+)
+def test_organization_retrieval_settings_reject_invalid_environment_values(
+    monkeypatch, variable, value
+):
+    monkeypatch.setenv(variable, value)
+
+    with pytest.raises(ValidationError):
+        Settings()

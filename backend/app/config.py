@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,9 +24,9 @@ class Settings(BaseSettings):
     embedding_base_url: str = "https://api.openai.com/v1"
     embedding_api_key: str = ""
     embedding_model: str = "text-embedding-3-small"
-    organization_retrieval_top_k: int = 24
-    organization_retrieval_min_score: float = 0.25
-    organization_max_workers: int = 16
+    organization_retrieval_top_k: int = Field(default=24, gt=0)
+    organization_retrieval_min_score: float = Field(default=0.25, ge=0, le=1)
+    organization_max_workers: int = Field(default=16, gt=0)
     seed_dev_data: bool = False
     upload_max_bytes: int = 209715200
     s3_endpoint: str = "http://localhost:9000"

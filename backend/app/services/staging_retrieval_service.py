@@ -28,6 +28,9 @@ class RetrievalConfigurationError(RuntimeError):
     """Raised when retrieval cannot safely rank the supplied staging snapshot."""
 
 
+MINIMUM_SEMANTIC_SCORE = 0.0
+
+
 def _validate_configuration(*, top_k: int, minimum_score: float) -> None:
     if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k <= 0:
         raise RetrievalConfigurationError("top_k 必须是正整数")
@@ -63,13 +66,12 @@ def lexical_overlap(left: str, right: str) -> float:
 
 
 def cosine_similarity(left: list[float], right: list[float]) -> float:
-    left_norm = math.sqrt(sum(value * value for value in left))
-    right_norm = math.sqrt(sum(value * value for value in right))
-    if left_norm == 0 or right_norm == 0:
-        return 0.0
-    return sum(a * b for a, b in zip(left, right, strict=True)) / (
-        left_norm * right_norm
+    left_norm = math.hypot(*left)
+    right_norm = math.hypot(*right)
+    similarity = math.fsum(
+        (a / left_norm) * (b / right_norm) for a, b in zip(left, right, strict=True)
     )
+    return max(-1.0, min(1.0, similarity))
 
 
 def _validated_vectors(
@@ -89,6 +91,11 @@ def _validated_vectors(
             raise RetrievalConfigurationError("嵌入向量必须只包含数值") from exc
         if not all(math.isfinite(value) for value in vector):
             raise RetrievalConfigurationError("嵌入向量必须只包含有限数值")
+        norm = math.hypot(*vector)
+        if norm == 0:
+            raise RetrievalConfigurationError("嵌入向量不能是零范数向量")
+        if not math.isfinite(norm):
+            raise RetrievalConfigurationError("嵌入向量必须具有有限范数")
         if expected_dimension is None:
             expected_dimension = len(vector)
         elif len(vector) != expected_dimension:
@@ -125,6 +132,8 @@ def retrieve_for_exam_point(
     for chunk, vector in zip(chunks, chunk_vectors, strict=True):
         lexical_score = lexical_overlap(point.retrieval_intent, chunk.content)
         semantic_score = cosine_similarity(query_vector, vector)
+        if semantic_score <= MINIMUM_SEMANTIC_SCORE:
+            continue
         score = 0.35 * lexical_score + 0.65 * semantic_score
         if score >= float(minimum_score):
             ranked.append(
@@ -136,7 +145,13 @@ def retrieve_for_exam_point(
                 )
             )
 
-    ranked.sort(key=lambda item: item.score, reverse=True)
+    ranked.sort(
+        key=lambda item: (
+            -item.score,
+            item.chunk.material_version_id,
+            item.chunk.id,
+        )
+    )
     return ranked[:top_k]
 
 

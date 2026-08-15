@@ -40,25 +40,29 @@ class OpenAICompatibleEmbeddingGateway:
         if not texts:
             return []
 
+        request_error: str | None = None
         try:
             response = self._post(texts)
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            raise EmbeddingGatewayError(
+            request_error = (
                 f"embedding request failed with HTTP status {exc.response.status_code}"
-            ) from exc
-        except httpx.HTTPError as exc:
-            raise EmbeddingGatewayError("embedding request failed") from exc
+            )
+        except httpx.HTTPError:
+            request_error = "embedding request failed"
+        if request_error is not None:
+            raise EmbeddingGatewayError(request_error) from None
 
+        invalid_json = False
         try:
             payload = response.json()
-            return self._parse_embeddings(payload, expected_count=len(texts))
-        except EmbeddingGatewayError:
-            raise
-        except (TypeError, ValueError, KeyError, IndexError) as exc:
+        except (TypeError, ValueError, KeyError, IndexError):
+            invalid_json = True
+        if invalid_json:
             raise EmbeddingGatewayError(
                 "embedding response was not valid JSON data"
-            ) from exc
+            ) from None
+        return self._parse_embeddings(payload, expected_count=len(texts))
 
     def _post(self, texts: list[str]) -> httpx.Response:
         request = {
@@ -105,12 +109,16 @@ class OpenAICompatibleEmbeddingGateway:
                 raise EmbeddingGatewayError(
                     "embedding response contains an empty vector"
                 )
+            invalid_vector = False
             try:
                 vector = [float(value) for value in raw_vector]
-            except (TypeError, ValueError) as exc:
+            except (TypeError, ValueError):
+                invalid_vector = True
+                vector = []
+            if invalid_vector:
                 raise EmbeddingGatewayError(
                     "embedding response contains a non-numeric vector"
-                ) from exc
+                ) from None
             if not all(math.isfinite(value) for value in vector):
                 raise EmbeddingGatewayError(
                     "embedding response contains a non-finite vector"
