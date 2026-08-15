@@ -77,6 +77,9 @@ _UNTERMINATED_SINGLE_QUOTED_SECRET_PATTERN = re.compile(
     rf"(?im)(?P<prefix>[\"']?{_SECRET_KEY_PATTERN}[\"']?\s*[:=]\s*)"
     r"'(?:\\.|[^'\\\r\n])*\\?$"
 )
+_AUTH_SCHEME_SECRET_PATTERN = re.compile(
+    r"(?im)(?P<scheme>\b(?:basic|digest|aws4-hmac-sha256)\b)[^\r\n]*"
+)
 _BEARER_SECRET_PATTERN = re.compile(r"(?i)(\bbearer\s+)[^\s,;}\]\"']+")
 _UNQUOTED_SECRET_PATTERN = re.compile(
     rf"(?i)(?P<prefix>[\"']?{_SECRET_KEY_PATTERN}[\"']?\s*[:=]\s*)"
@@ -100,6 +103,10 @@ def _redacted_error_message(exc: Exception) -> str:
     )
     redacted = _UNTERMINATED_SINGLE_QUOTED_SECRET_PATTERN.sub(
         lambda match: f"{match.group('prefix')}'[REDACTED]",
+        redacted,
+    )
+    redacted = _AUTH_SCHEME_SECRET_PATTERN.sub(
+        lambda match: f"{match.group('scheme')} [REDACTED]",
         redacted,
     )
     redacted = _BEARER_SECRET_PATTERN.sub(

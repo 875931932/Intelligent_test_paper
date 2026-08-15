@@ -342,6 +342,19 @@ def test_classifier_failure_preserves_safe_adapter_error_code(error_code):
             "request failed Authorization: Bearer auth-secret-123",
             ["auth-secret-123"],
         ),
+        (
+            "Basic basic-secret-without-prefix",
+            ["basic-secret-without-prefix"],
+        ),
+        (
+            'Digest username="digest-user", response="digest-secret-without-prefix"',
+            ["digest-user", "digest-secret-without-prefix"],
+        ),
+        (
+            "AWS4-HMAC-SHA256 Credential=aws-access-without-prefix, "
+            "Signature=aws-signature-without-prefix",
+            ["aws-access-without-prefix", "aws-signature-without-prefix"],
+        ),
         ('model returned {"api_key":"json-secret-456"}', ["json-secret-456"]),
         ("password='single-secret-789'", ["single-secret-789"]),
         (
