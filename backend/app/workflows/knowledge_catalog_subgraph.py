@@ -119,7 +119,7 @@ def _coverage(
     )
 
 
-def _validate_consolidated_units(
+def validate_consolidated_units(
     point: ExamPoint,
     units: list[AssessmentUnitDraft],
     admitted_direct: list[EvidenceDecision],
@@ -235,7 +235,7 @@ def build_knowledge_catalog_candidate(
             for item in admitted_by_point.get(point.code, [])
             if item.relevance_class is RelevanceClass.DIRECT
         ]
-        _validate_consolidated_units(point, units, direct)
+        validate_consolidated_units(point, units, direct)
         if not units:
             continue
         candidates.append(

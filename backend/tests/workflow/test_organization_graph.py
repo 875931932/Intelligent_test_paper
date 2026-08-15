@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from time import sleep
 
+import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
@@ -159,7 +160,8 @@ def _chunks():
     ]
 
 
-def _state():
+def _state(chunks=None):
+    chunks = chunks or _chunks()
     return {
         "course_id": "course-1",
         "run_id": "organization-run-1",
@@ -173,7 +175,7 @@ def _state():
             _point("EP-2", "agent").model_dump(mode="json"),
         ],
         "material_version_ids": ["material-1", "material-2"],
-        "evidence_chunk_ids": [chunk.id for chunk in _chunks()],
+        "evidence_chunk_ids": [chunk.id for chunk in chunks],
         "frozen_input": {
             "framework_version_id": "framework-v1",
             "exam_point_ids": ["db-ep-1", "db-ep-2"],
@@ -182,12 +184,12 @@ def _state():
     }
 
 
-def _graph(*, classifier=None, retriever=None):
-    chunks = _chunks()
+def _graph(*, classifier=None, retriever=None, consolidator=None, chunks=None):
+    chunks = chunks or _chunks()
     repository = RecordingKnowledgeRepository(chunks)
     retriever = retriever or PairSelectingRetriever()
     classifier = classifier or RecordingClassifier()
-    consolidator = RecordingConsolidator()
+    consolidator = consolidator or RecordingConsolidator()
     graph = build_organization_graph(
         retriever,
         classifier,
@@ -203,7 +205,11 @@ def test_organization_graph_classifies_only_recalled_exam_point_file_pairs():
 
     paused = graph.invoke(_state(), config={"configurable": {"thread_id": "per-pair"}})
 
-    assert len(retriever.calls) == 2
+    assert len(retriever.calls) == 4
+    assert all(
+        len({repository.chunks[chunk_id].material_version_id for chunk_id in chunk_ids}) == 1
+        for _, chunk_ids in retriever.calls
+    )
     assert sorted((point, material) for point, material, _ in classifier.calls) == [
         ("EP-1", "material-1"),
         ("EP-1", "material-2"),
@@ -260,25 +266,133 @@ def test_one_pair_failure_is_redacted_and_does_not_repeat_or_block_other_pairs()
     assert {item.exam_point_code for item in repository.candidate.coverage} == {"EP-1", "EP-2"}
 
 
-def test_each_classifier_pair_is_capped_to_configured_top_k(monkeypatch):
+def test_each_exam_point_material_pair_gets_its_own_top_k_budget(monkeypatch):
     class SameFileRetriever(PairSelectingRetriever):
         def retrieve(self, exam_point, chunks):
+            self.calls.append((exam_point.code, [chunk.id for chunk in chunks]))
             if exam_point.code == "EP-2":
                 return []
             return [
                 RankedChunk(chunk=chunk, score=0.9, lexical_score=0.8, semantic_score=0.95)
                 for chunk in chunks
-                if chunk.id in {"chunk-1", "chunk-4"}
             ]
 
     monkeypatch.setattr(settings, "organization_retrieval_top_k", 1)
-    graph, _, classifier, _, _ = _graph(retriever=SameFileRetriever())
-
-    graph.invoke(_state(), config={"configurable": {"thread_id": "pair-top-k"}})
-
-    assert [(point, material, ids) for point, material, ids in classifier.calls] == [
-        ("EP-1", "material-1", ["chunk-1"])
+    chunks = [
+        StagingChunk(id="m1-a", material_version_id="material-1", content="A"),
+        StagingChunk(id="m1-b", material_version_id="material-1", content="B"),
+        StagingChunk(id="m2-a", material_version_id="material-2", content="C"),
+        StagingChunk(id="m2-b", material_version_id="material-2", content="D"),
     ]
+    graph, retriever, classifier, _, _ = _graph(
+        retriever=SameFileRetriever(), chunks=chunks
+    )
+
+    graph.invoke(
+        _state(chunks), config={"configurable": {"thread_id": "pair-top-k"}}
+    )
+
+    assert sorted((point, material, ids) for point, material, ids in classifier.calls) == [
+        ("EP-1", "material-1", ["m1-a"]),
+        ("EP-1", "material-2", ["m2-a"]),
+    ]
+    assert sorted((point, ids) for point, ids in retriever.calls) == [
+        ("EP-1", ["m1-a", "m1-b"]),
+        ("EP-1", ["m2-a", "m2-b"]),
+        ("EP-2", ["m1-a", "m1-b"]),
+        ("EP-2", ["m2-a", "m2-b"]),
+    ]
+
+
+class AdapterOutputError(RuntimeError):
+    def __init__(self, error_code):
+        super().__init__("api_key=secret-value malformed output")
+        self.error_code = error_code
+
+
+@pytest.mark.parametrize(
+    "error_code",
+    ["model_json_missing_field", "model_non_json_response", "model_empty_response"],
+)
+def test_classifier_failure_preserves_safe_adapter_error_code(error_code):
+    class FailingClassifier(RecordingClassifier):
+        def classify(self, *, exam_point, material_version_id, chunks, call_context=None):
+            if (exam_point.code, material_version_id) == ("EP-1", "material-1"):
+                raise AdapterOutputError(error_code)
+            return super().classify(
+                exam_point=exam_point,
+                material_version_id=material_version_id,
+                chunks=chunks,
+                call_context=call_context,
+            )
+
+    graph, _, _, _, repository = _graph(classifier=FailingClassifier())
+
+    graph.invoke(_state(), config={"configurable": {"thread_id": error_code}})
+
+    failure = repository.persisted_state["failed_pairs"][0]
+    assert failure["error_code"] == error_code
+    assert "secret-value" not in failure["error_message"]
+
+
+@pytest.mark.parametrize("bad_output", ["cross_point", "duplicate"])
+def test_bad_classifier_output_isolated_to_its_exam_point_file_pair(bad_output):
+    class BadClassifier(RecordingClassifier):
+        def classify(self, *, exam_point, material_version_id, chunks, call_context=None):
+            if (exam_point.code, material_version_id) != ("EP-1", "material-1"):
+                return super().classify(
+                    exam_point=exam_point,
+                    material_version_id=material_version_id,
+                    chunks=chunks,
+                    call_context=call_context,
+                )
+            if bad_output == "cross_point":
+                decisions = [_decision(_point("EP-2", "agent"), chunks[0])]
+            else:
+                decision = _decision(exam_point, chunks[0])
+                decisions = [decision, decision]
+            return ExamPointFileDecision(
+                exam_point_code=exam_point.code,
+                material_version_id=material_version_id,
+                decisions=decisions,
+            )
+
+    graph, _, _, _, repository = _graph(classifier=BadClassifier())
+
+    graph.invoke(
+        _state(), config={"configurable": {"thread_id": f"bad-{bad_output}"}}
+    )
+
+    assert len(repository.persisted_state["failed_pairs"]) == 1
+    assert repository.persisted_state["failed_pairs"][0]["exam_point_code"] == "EP-1"
+    coverage = {item.exam_point_code: item.status for item in repository.candidate.coverage}
+    assert coverage == {"EP-1": "insufficient", "EP-2": "sufficient"}
+
+
+def test_unsupported_consolidated_fact_isolated_to_one_exam_point():
+    class BadConsolidator(RecordingConsolidator):
+        def consolidate(self, *, exam_point, admitted_decisions, call_context=None):
+            units = super().consolidate(
+                exam_point=exam_point,
+                admitted_decisions=admitted_decisions,
+                call_context=call_context,
+            )
+            if exam_point.code == "EP-1":
+                units[0].cards[0].assessable_content = ["模型臆造且证据中不存在的事实"]
+            return units
+
+    graph, _, _, _, repository = _graph(consolidator=BadConsolidator())
+
+    graph.invoke(_state(), config={"configurable": {"thread_id": "bad-consolidation"}})
+
+    assert repository.persisted_state["failed_pairs"][0]["error_code"] == "consolidation_failed"
+    assert all(
+        unit.exam_point_code != "EP-1"
+        for topic in repository.candidate.topics
+        for unit in topic.units
+    )
+    coverage = {item.exam_point_code: item.status for item in repository.candidate.coverage}
+    assert coverage == {"EP-1": "insufficient", "EP-2": "sufficient"}
 
 
 def test_organization_graph_resumes_only_after_exam_points_are_reviewed():
@@ -301,3 +415,50 @@ def test_organization_graph_resumes_only_after_exam_points_are_reviewed():
     assert completed["catalog_version_id"] == "catalog-v1"
     assert completed["index_version_id"] == "index-v1"
     assert repository.published[1].reviewed_exam_point_codes == ["EP-1", "EP-2"]
+
+
+def test_graph_blocks_unresolved_coverage_until_exam_point_is_excluded():
+    classifier = RecordingClassifier(fail_pair=("EP-1", "material-1"))
+    graph, _, _, _, _ = _graph(classifier=classifier)
+    config = {"configurable": {"thread_id": "unresolved-coverage"}}
+    graph.invoke(_state(), config=config)
+
+    with pytest.raises(ValueError, match="coverage"):
+        graph.invoke(
+            Command(
+                resume={
+                    "operations": [],
+                    "reviewed_topic_codes": ["topic-rag", "topic-agent"],
+                    "reviewed_exam_point_codes": ["EP-1", "EP-2"],
+                    "teacher_exclusions": [],
+                }
+            ),
+            config=config,
+        )
+
+
+def test_graph_teacher_exclusion_marks_every_unit_for_exam_point_excluded():
+    classifier = RecordingClassifier(fail_pair=("EP-1", "material-1"))
+    graph, _, _, _, repository = _graph(classifier=classifier)
+    config = {"configurable": {"thread_id": "exclude-unresolved"}}
+    graph.invoke(_state(), config=config)
+
+    graph.invoke(
+        Command(
+            resume={
+                "operations": [],
+                "reviewed_topic_codes": ["topic-rag", "topic-agent"],
+                "reviewed_exam_point_codes": ["EP-2"],
+                "teacher_exclusions": ["EP-1"],
+            }
+        ),
+        config=config,
+    )
+
+    ep1_units = [
+        unit
+        for topic in repository.published[0].topics
+        for unit in topic.units
+        if unit.exam_point_code == "EP-1"
+    ]
+    assert ep1_units and all(unit.status == "excluded" for unit in ep1_units)

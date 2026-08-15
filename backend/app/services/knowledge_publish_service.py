@@ -49,6 +49,19 @@ class KnowledgePublishError(Exception):
     pass
 
 
+_ANSWER_OR_RUBRIC_ROLES = frozenset(
+    {
+        "answer",
+        "answer_basis",
+        "rubric",
+        "rubric_basis",
+        "answer_or_rubric_basis",
+        "scoring",
+        "scoring_basis",
+    }
+)
+
+
 def _exam_point_from_row(row) -> ExamPoint:
     return ExamPoint.model_validate(
         {
@@ -272,28 +285,64 @@ class DatabaseKnowledgeRepository:
             framework_version_id=row["framework_version_id"],
         )
         points_by_code = {item["code"]: _exam_point_from_row(item) for item in point_rows}
+        publishable_exam_point_codes: set[str] | None = None
         try:
             if points_by_code:
-                insufficient = {
-                    item.exam_point_code
-                    for item in tree.coverage
-                    if item.status in {"insufficient", "conflicting"}
+                excluded_codes = set(confirmation.teacher_exclusions)
+                if excluded_codes - set(points_by_code):
+                    raise KnowledgePublishError(
+                        "teacher exclusion references an unknown exam point"
+                    )
+                tree = tree.model_copy(deep=True)
+                for topic in tree.topics:
+                    for unit in topic.units:
+                        if unit.exam_point_code in excluded_codes:
+                            unit.status = "excluded"
+                            for card in unit.cards:
+                                card.status = "excluded"
+                coverage_by_code = {
+                    item.exam_point_code: item for item in tree.coverage
                 }
-                required_reviews = (
-                    set(points_by_code)
-                    - set(confirmation.teacher_exclusions)
-                    - insufficient
+                if len(coverage_by_code) != len(tree.coverage):
+                    raise KnowledgePublishError("exam point coverage entries must be unique")
+                if set(coverage_by_code) - set(points_by_code):
+                    raise KnowledgePublishError(
+                        "exam point coverage references an unknown exam point"
+                    )
+                publishable_exam_point_codes = set(points_by_code) - excluded_codes
+                unresolved = sorted(
+                    code
+                    for code in publishable_exam_point_codes
+                    if code not in coverage_by_code
+                    or coverage_by_code[code].status != "sufficient"
                 )
+                if unresolved:
+                    raise KnowledgePublishError(
+                        "exam point coverage must be sufficient or explicitly excluded"
+                    )
+                required_reviews = publishable_exam_point_codes
                 if required_reviews - set(confirmation.reviewed_exam_point_codes):
                     raise KnowledgePublishError(
                         "every sufficient exam point requires teacher review"
                     )
-                validate_publishable_tree(
-                    tree,
-                    allowed_anchor_keys=allowed,
-                    allowed_exam_point_codes=set(points_by_code),
-                    exam_points_by_code=points_by_code,
+                tree = self._filter_live_direct_evidence(
+                    course_id=course_id,
+                    run_id=state["run_id"],
+                    tree=tree,
+                    point_rows=point_rows,
+                    publishable_exam_point_codes=publishable_exam_point_codes,
                 )
+                try:
+                    validate_publishable_tree(
+                        tree,
+                        allowed_anchor_keys=allowed,
+                        allowed_exam_point_codes=set(points_by_code),
+                        exam_points_by_code=points_by_code,
+                    )
+                except KnowledgeTreeValidationError as exc:
+                    raise KnowledgePublishError(
+                        "active source evidence is no longer sufficient for publish"
+                    ) from exc
             else:
                 # Explicit legacy migration path for pre-ExamPoint catalogue fixtures.
                 validate_publishable_tree(tree, allowed_anchor_keys=allowed)
@@ -308,6 +357,7 @@ class DatabaseKnowledgeRepository:
                 tree,
                 allowed,
                 point_ids,
+                publishable_exam_point_codes,
             )
             index_no = self.session.scalar(
                 select(func.coalesce(func.max(index_versions.c.version_no), 0) + 1).where(
@@ -391,6 +441,7 @@ class DatabaseKnowledgeRepository:
         tree: KnowledgeTreeCandidate,
         allowed: set[str],
         point_ids: dict[str, str],
+        publishable_exam_point_codes: set[str] | None,
     ) -> list[str]:
         roots: dict[str, str] = {}
         for anchor_key in sorted(allowed):
@@ -499,9 +550,102 @@ class DatabaseKnowledgeRepository:
                                 lifecycle_status="active",
                             )
                         )
-                    if card.status == "active" and direct_count:
+                    hierarchy_is_publishable = (
+                        topic.status == "active"
+                        and unit.status == "active"
+                        and card.status == "active"
+                        and (
+                            publishable_exam_point_codes is None
+                            or unit.exam_point_code in publishable_exam_point_codes
+                        )
+                    )
+                    if hierarchy_is_publishable and direct_count:
                         active_direct_card_ids.append(card_id)
         return active_direct_card_ids
+
+    def _filter_live_direct_evidence(
+        self,
+        *,
+        course_id: str,
+        run_id: str,
+        tree: KnowledgeTreeCandidate,
+        point_rows: list[dict],
+        publishable_exam_point_codes: set[str],
+    ) -> KnowledgeTreeCandidate:
+        point_codes_by_id = {row["id"]: row["code"] for row in point_rows}
+        rows = self.session.execute(
+            select(
+                exam_point_evidence_links.c.exam_point_id,
+                exam_point_evidence_links.c.evidence_chunk_id,
+            )
+            .join(
+                evidence_chunks,
+                evidence_chunks.c.id == exam_point_evidence_links.c.evidence_chunk_id,
+            )
+            .join(
+                material_versions,
+                material_versions.c.id == evidence_chunks.c.material_version_id,
+            )
+            .join(materials, materials.c.id == material_versions.c.material_id)
+            .where(
+                exam_point_evidence_links.c.course_id == course_id,
+                exam_point_evidence_links.c.organization_run_id == run_id,
+                exam_point_evidence_links.c.relevance_class == "direct",
+                exam_point_evidence_links.c.status.in_(["candidate", "published"]),
+                evidence_chunks.c.course_id == course_id,
+                evidence_chunks.c.organization_run_id == run_id,
+                material_versions.c.course_id == course_id,
+                material_versions.c.status == "staged",
+                materials.c.course_id == course_id,
+                materials.c.status == "staged",
+            )
+            .with_for_update()
+        ).all()
+        live_keys = {
+            (point_codes_by_id[point_id], evidence_id)
+            for point_id, evidence_id in rows
+            if point_id in point_codes_by_id
+        }
+        filtered = tree.model_copy(deep=True)
+        filtered.evidence_decisions = [
+            decision
+            for decision in filtered.evidence_decisions
+            if decision.relevance_class is not RelevanceClass.DIRECT
+            or (decision.exam_point_code, decision.evidence_chunk_id) in live_keys
+        ]
+        live_direct_by_point: dict[str, list[EvidenceDecision]] = {}
+        for decision in filtered.evidence_decisions:
+            if decision.relevance_class is RelevanceClass.DIRECT:
+                live_direct_by_point.setdefault(decision.exam_point_code, []).append(decision)
+        for point_code in publishable_exam_point_codes:
+            direct = live_direct_by_point.get(point_code, [])
+            if not any(
+                (decision.evidence_role or "").strip().casefold()
+                in _ANSWER_OR_RUBRIC_ROLES
+                for decision in direct
+            ):
+                raise KnowledgePublishError(
+                    "active source evidence no longer contains an answer or rubric basis"
+                )
+            coverage = next(
+                (
+                    item
+                    for item in filtered.coverage
+                    if item.exam_point_code == point_code
+                ),
+                None,
+            )
+            if coverage is not None:
+                coverage.direct_count = len(direct)
+        for topic in filtered.topics:
+            for unit in topic.units:
+                for card in unit.cards:
+                    card.evidence_chunk_ids = [
+                        evidence_id
+                        for evidence_id in card.evidence_chunk_ids
+                        if (unit.exam_point_code, evidence_id) in live_keys
+                    ]
+        return filtered
 
 
 def _validated_embeddings(raw: object, *, expected: int) -> list[list[float]]:

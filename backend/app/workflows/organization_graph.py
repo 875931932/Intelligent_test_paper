@@ -29,7 +29,10 @@ from app.domain.knowledge.relevance import (
 from app.domain.model_calls import ModelCallContext
 from app.services.knowledge_tree_service import apply_tree_operations, validate_publishable_tree
 from app.services.staging_retrieval_service import HybridStagingRetriever
-from app.workflows.knowledge_catalog_subgraph import build_knowledge_catalog_candidate
+from app.workflows.knowledge_catalog_subgraph import (
+    build_knowledge_catalog_candidate,
+    validate_consolidated_units,
+)
 
 
 class OrganizationState(TypedDict, total=False):
@@ -66,11 +69,19 @@ def _redacted_error_message(exc: Exception) -> str:
 
 
 def _failure(*, stage: str, point_code: str, material_version_id: str | None, exc: Exception) -> dict:
+    fallback_code = "classification_failed" if stage == "classification" else "consolidation_failed"
+    adapter_code = getattr(exc, "error_code", None)
+    error_code = (
+        adapter_code
+        if isinstance(adapter_code, str)
+        and re.fullmatch(r"[a-z][a-z0-9_.-]{0,79}", adapter_code)
+        else fallback_code
+    )
     return {
         "stage": stage,
         "exam_point_code": point_code,
         "material_version_id": material_version_id,
-        "error_code": "classification_failed" if stage == "classification" else "consolidation_failed",
+        "error_code": error_code,
         "error_message": _redacted_error_message(exc),
     }
 
@@ -125,28 +136,45 @@ def build_organization_graph(
 
     def retrieve_per_exam_point(state: OrganizationState):
         chunks = _chunks(state)
+        chunks_by_material: dict[str, list[StagingChunk]] = defaultdict(list)
+        for chunk in chunks:
+            chunks_by_material[chunk.material_version_id].append(chunk)
         pairs: list[dict] = []
         coverage_reasons: dict[str, list[str]] = defaultdict(list)
         for point in _points(state):
-            ranked = retriever.retrieve(point, chunks)
-            by_material: dict[str, list[str]] = defaultdict(list)
-            for item in ranked:
-                chunk = item.chunk
-                if chunk.id not in state["evidence_chunk_ids"]:
-                    raise ValueError("retriever returned evidence outside the frozen snapshot")
-                by_material[chunk.material_version_id].append(chunk.id)
-            if not by_material:
-                coverage_reasons[point.code].append("no_recalled_evidence")
-            for material_version_id in sorted(by_material):
-                pairs.append(
-                    {
-                        "exam_point_code": point.code,
-                        "material_version_id": material_version_id,
-                        "evidence_chunk_ids": sorted(set(by_material[material_version_id]))[
-                            : settings.organization_retrieval_top_k
-                        ],
-                    }
+            point_has_recall = False
+            for material_version_id in sorted(chunks_by_material):
+                material_chunks = chunks_by_material[material_version_id]
+                allowed_ids = {chunk.id for chunk in material_chunks}
+                ranked = sorted(
+                    retriever.retrieve(point, material_chunks),
+                    key=lambda item: (-item.score, item.chunk.id),
                 )
+                recalled_ids: list[str] = []
+                for item in ranked:
+                    chunk = item.chunk
+                    if (
+                        chunk.id not in allowed_ids
+                        or chunk.material_version_id != material_version_id
+                    ):
+                        raise ValueError(
+                            "retriever returned evidence outside its exam-point material pair"
+                        )
+                    if chunk.id not in recalled_ids:
+                        recalled_ids.append(chunk.id)
+                    if len(recalled_ids) == settings.organization_retrieval_top_k:
+                        break
+                if recalled_ids:
+                    point_has_recall = True
+                    pairs.append(
+                        {
+                            "exam_point_code": point.code,
+                            "material_version_id": material_version_id,
+                            "evidence_chunk_ids": recalled_ids,
+                        }
+                    )
+            if not point_has_recall:
+                coverage_reasons[point.code].append("no_recalled_evidence")
         return {
             "retrieval_pairs": pairs,
             "coverage_reasons": dict(coverage_reasons),
@@ -192,6 +220,9 @@ def build_organization_graph(
             allowed_ids = set(pair["evidence_chunk_ids"])
             if any(item.evidence_chunk_id not in allowed_ids for item in admitted):
                 raise ValueError("classification response references evidence outside its pair")
+            decision_ids = [item.evidence_chunk_id for item in admitted]
+            if len(decision_ids) != len(set(decision_ids)):
+                raise ValueError("classification response contains duplicate evidence decisions")
             return validated.model_copy(update={"decisions": admitted})
 
         decisions: list[ExamPointFileDecision] = []
@@ -262,7 +293,12 @@ def build_organization_graph(
                     stage="consolidate_exam_point",
                 ),
             )
-            return point.code, [AssessmentUnitDraft.model_validate(item) for item in units]
+            validated_units = [AssessmentUnitDraft.model_validate(item) for item in units]
+            direct = [
+                item for item in admitted if item.relevance_class is RelevanceClass.DIRECT
+            ]
+            validate_consolidated_units(point, validated_units, direct)
+            return point.code, validated_units
 
         consolidated: dict[str, list[dict]] = {}
         failures = list(state.get("failed_pairs") or [])
@@ -347,19 +383,28 @@ def build_organization_graph(
         points = _points(state)
         points_by_code = {point.code: point for point in points}
         revised = apply_tree_operations(tree, confirmation.operations, allowed_anchor_keys=allowed)
-        active_point_codes = {
-            unit.exam_point_code
-            for topic in revised.topics
-            if topic.status != "excluded"
-            for unit in topic.units
-            if unit.status != "excluded"
+        excluded_codes = set(confirmation.teacher_exclusions)
+        if excluded_codes - set(points_by_code):
+            raise ValueError("teacher exclusion references an unknown exam point")
+        for topic in revised.topics:
+            for unit in topic.units:
+                if unit.exam_point_code in excluded_codes:
+                    unit.status = "excluded"
+                    for card in unit.cards:
+                        card.status = "excluded"
+        coverage_by_code = {item.exam_point_code: item for item in revised.coverage}
+        unresolved = {
+            code
+            for code in points_by_code
+            if code not in excluded_codes
+            and (
+                code not in coverage_by_code
+                or coverage_by_code[code].status != "sufficient"
+            )
         }
-        insufficient_codes = {
-            item.exam_point_code
-            for item in revised.coverage
-            if item.status in {"insufficient", "conflicting"}
-        }
-        required_reviews = active_point_codes - insufficient_codes - set(confirmation.teacher_exclusions)
+        if unresolved:
+            raise ValueError("exam point coverage must be sufficient or explicitly excluded")
+        required_reviews = set(points_by_code) - excluded_codes
         if required_reviews - set(confirmation.reviewed_exam_point_codes):
             raise ValueError("every publishable exam point requires teacher review")
         if revised.topics:
