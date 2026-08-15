@@ -109,6 +109,7 @@ def test_relevance_contracts_expose_stable_classes_and_coverage_counts():
         "command_or_configuration",
         "configuration",
         "installation_step",
+        "installation_or_environment",
         "environment_setup",
         "path",
         "file",

@@ -55,6 +55,7 @@ _CONTENT_KIND_ALIASES = {
     "command_or_configuration": ContentKind.OPERATIONAL_DETAIL,
     "configuration": ContentKind.OPERATIONAL_DETAIL,
     "installation_step": ContentKind.OPERATIONAL_DETAIL,
+    "installation_or_environment": ContentKind.OPERATIONAL_DETAIL,
     "environment_setup": ContentKind.OPERATIONAL_DETAIL,
     "path": ContentKind.OPERATIONAL_DETAIL,
     "file": ContentKind.OPERATIONAL_DETAIL,
