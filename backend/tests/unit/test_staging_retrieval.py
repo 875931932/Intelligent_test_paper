@@ -300,6 +300,42 @@ def test_embedding_gateway_sorts_response_by_index_and_returns_vectors():
     )
 
 
+def test_embedding_gateway_supports_dashscope_text_embedding_contract():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "output": {
+                    "embeddings": [
+                        {"text_index": 1, "embedding": [0.3, 0.4]},
+                        {"text_index": 0, "embedding": [0.1, 0.2]},
+                    ]
+                }
+            },
+        )
+
+    endpoint = "https://embedding.invalid/api/v1/services/embeddings/text-embedding/text-embedding"
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        gateway = OpenAICompatibleEmbeddingGateway(
+            base_url=endpoint,
+            api_key="secret-token",
+            model="qwen3.7-text-embedding",
+            api_format="dashscope",
+            client=client,
+        )
+        result = gateway.embed(["查询", "证据"])
+
+    assert result == [[0.1, 0.2], [0.3, 0.4]]
+    assert requests[0].url == httpx.URL(endpoint)
+    assert (
+        requests[0].read()
+        == b'{"model":"qwen3.7-text-embedding","input":{"texts":["\xe6\x9f\xa5\xe8\xaf\xa2","\xe8\xaf\x81\xe6\x8d\xae"]}}'
+    )
+
+
 def test_embedding_gateway_returns_empty_without_sending_a_request():
     def handler(request: httpx.Request) -> httpx.Response:
         raise AssertionError("empty input must not trigger HTTP")
@@ -384,6 +420,7 @@ def test_organization_retrieval_settings_have_safe_defaults(monkeypatch):
         "EMBEDDING_BASE_URL",
         "EMBEDDING_API_KEY",
         "EMBEDDING_MODEL",
+        "EMBEDDING_API_FORMAT",
         "ORGANIZATION_RETRIEVAL_TOP_K",
         "ORGANIZATION_RETRIEVAL_MIN_SCORE",
         "ORGANIZATION_MAX_WORKERS",
@@ -395,6 +432,7 @@ def test_organization_retrieval_settings_have_safe_defaults(monkeypatch):
     assert settings.embedding_base_url == "https://api.openai.com/v1"
     assert settings.embedding_api_key == ""
     assert settings.embedding_model == "qwen3.7-text-embedding"
+    assert settings.embedding_api_format == "openai"
     assert settings.organization_retrieval_top_k == 24
     assert settings.organization_retrieval_min_score == 0.25
     assert settings.organization_max_workers == 16

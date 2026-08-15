@@ -601,6 +601,7 @@ async def main() -> None:
         api_key=os.environ["EMBEDDING_API_KEY"],
         base_url=os.environ["EMBEDDING_BASE_URL"],
         model=os.environ["EMBEDDING_MODEL"],
+        api_format=os.environ.get("EMBEDDING_API_FORMAT", "openai"),
         timeout=180,
     )
     chunks_by_material: dict[str, list[StagingChunk]] = {}

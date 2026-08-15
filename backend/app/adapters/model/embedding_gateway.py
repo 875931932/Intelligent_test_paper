@@ -19,6 +19,7 @@ class OpenAICompatibleEmbeddingGateway:
         base_url: str,
         api_key: str,
         model: str,
+        api_format: str = "openai",
         timeout: float = 60,
         client: httpx.Client | None = None,
     ) -> None:
@@ -28,11 +29,14 @@ class OpenAICompatibleEmbeddingGateway:
             raise ValueError("embedding API key is required")
         if not model.strip():
             raise ValueError("embedding model is required")
+        if api_format not in {"openai", "dashscope"}:
+            raise ValueError("embedding API format must be openai or dashscope")
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("embedding timeout must be positive and finite")
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
+        self.api_format = api_format
         self.timeout = timeout
         self.client = client
 
@@ -62,7 +66,11 @@ class OpenAICompatibleEmbeddingGateway:
             raise EmbeddingGatewayError(
                 "embedding response was not valid JSON data"
             ) from None
-        return self._parse_embeddings(payload, expected_count=len(texts))
+        return self._parse_embeddings(
+            payload,
+            expected_count=len(texts),
+            api_format=self.api_format,
+        )
 
     def _post(self, texts: list[str]) -> httpx.Response:
         request = {
@@ -70,19 +78,34 @@ class OpenAICompatibleEmbeddingGateway:
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
             },
-            "json": {"model": self.model, "input": texts},
             "timeout": self.timeout,
         }
+        if self.api_format == "dashscope":
+            url = self.base_url
+            request["json"] = {"model": self.model, "input": {"texts": texts}}
+        else:
+            url = f"{self.base_url}/embeddings"
+            request["json"] = {"model": self.model, "input": texts}
         if self.client is not None:
-            return self.client.post(f"{self.base_url}/embeddings", **request)
+            return self.client.post(url, **request)
         with httpx.Client(timeout=self.timeout) as client:
-            return client.post(f"{self.base_url}/embeddings", **request)
+            return client.post(url, **request)
 
     @staticmethod
-    def _parse_embeddings(payload: Any, *, expected_count: int) -> list[list[float]]:
-        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+    def _parse_embeddings(
+        payload: Any,
+        *,
+        expected_count: int,
+        api_format: str,
+    ) -> list[list[float]]:
+        if api_format == "dashscope":
+            data = payload.get("output", {}).get("embeddings") if isinstance(payload, dict) else None
+            index_key = "text_index"
+        else:
+            data = payload.get("data") if isinstance(payload, dict) else None
+            index_key = "index"
+        if not isinstance(data, list):
             raise EmbeddingGatewayError("embedding response is missing the data array")
-        data = payload["data"]
         if len(data) != expected_count:
             raise EmbeddingGatewayError(
                 "embedding response count does not match input count"
@@ -95,7 +118,7 @@ class OpenAICompatibleEmbeddingGateway:
                 raise EmbeddingGatewayError(
                     "embedding response contains an invalid item"
                 )
-            index = item.get("index")
+            index = item.get(index_key)
             if isinstance(index, bool) or not isinstance(index, int):
                 raise EmbeddingGatewayError(
                     "embedding response contains an invalid index"

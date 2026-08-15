@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     embedding_base_url: str = "https://api.openai.com/v1"
     embedding_api_key: str = ""
     embedding_model: str = "qwen3.7-text-embedding"
+    embedding_api_format: str = "openai"
     organization_retrieval_top_k: int = Field(default=24, gt=0)
     organization_retrieval_min_score: float = Field(default=0.25, ge=0, le=1)
     organization_max_workers: int = Field(default=16, gt=0)

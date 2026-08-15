@@ -55,6 +55,7 @@ def get_organization_embedder(request: Request) -> EmbeddingClient:
             api_key=settings.embedding_api_key,
             base_url=settings.embedding_base_url,
             model=settings.embedding_model,
+            api_format=settings.embedding_api_format,
         )
         request.app.state.organization_embedder = embedder
         return embedder
