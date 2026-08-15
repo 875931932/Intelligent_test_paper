@@ -129,6 +129,29 @@ def test_synonymous_cross_file_cards_merge_source_free_prompt_material():
     assert merged.topics[0].units[0].cards[0].prompt_material == ["场景一", "场景二"]
 
 
+def test_same_named_units_from_different_exam_points_are_not_merged():
+    first = _file_candidate(
+        exam_point_code="EP-1",
+        cards=[_card(evidence=("ep1-evidence",))],
+    )
+    second = _file_candidate(
+        exam_point_code="EP-2",
+        cards=[_card(evidence=("ep2-evidence",))],
+    )
+    second.material_version_id = "material-v2"
+
+    merged = merge_file_candidates([first, second], allowed_anchor_keys={"rag"})
+
+    units = merged.topics[0].units
+    assert len(units) == 2
+    assert {
+        unit.exam_point_code: set(unit.cards[0].evidence_chunk_ids) for unit in units
+    } == {
+        "EP-1": {"ep1-evidence"},
+        "EP-2": {"ep2-evidence"},
+    }
+
+
 def test_tree_without_fact_evidence_cannot_be_published():
     tree = KnowledgeTreeCandidate(
         framework_version_id="framework-v1",
@@ -203,6 +226,62 @@ def _strict_tree_with_direct_role(
     )
 
 
+def _direct_decision(
+    *,
+    evidence_chunk_id: str,
+    assessable_content: list[str],
+    exam_point_code: str = "EP-1",
+    unit_code: str = "source-unit-code",
+    card_name: str = "来源候选知识卡",
+    content_kind: str = "fact",
+) -> dict:
+    return {
+        "exam_point_code": exam_point_code,
+        "evidence_chunk_id": evidence_chunk_id,
+        "relevance_class": "direct",
+        "support_claim": "该证据支撑可评分事实",
+        "evidence_role": "fact_or_constraint",
+        "content_kind": content_kind,
+        "candidate_assessment_unit": {
+            "code": unit_code,
+            "title": "来源候选单元",
+            "performance_statement": "能够分析相关事实",
+        },
+        "candidate_card_content": {
+            "name": card_name,
+            "performance_statement": "能够说明并运用相关事实",
+            "assessable_content": assessable_content,
+        },
+        "confidence": 90,
+    }
+
+
+def _strict_tree(
+    *,
+    card_content: list[str],
+    evidence_ids: tuple[str, ...],
+    decisions: list[dict],
+    unit_code: str = "published-renamed-unit",
+    card_name: str = "教师归并后的知识卡",
+) -> KnowledgeTreeCandidate:
+    candidate = _file_candidate(
+        exam_point_code="EP-1",
+        cards=[
+            _card(
+                name=card_name,
+                evidence=evidence_ids,
+                content=card_content,
+            )
+        ],
+    )
+    candidate.topics[0].units[0].code = unit_code
+    return KnowledgeTreeCandidate(
+        framework_version_id="framework-v1",
+        topics=candidate.topics,
+        evidence_decisions=decisions,
+    )
+
+
 def test_publishable_tree_accepts_card_with_valid_direct_evidence_relation():
     tree = _strict_tree_with_direct_role("answer_or_rubric_basis")
 
@@ -224,30 +303,178 @@ def test_publishable_tree_rejects_context_only_raw_direct_relation():
         )
 
 
-@pytest.mark.parametrize(
-    "tree",
-    [
-        _strict_tree_with_direct_role(
-            "fact_or_constraint",
-            candidate_unit_code="another-unit",
-        ),
-        _strict_tree_with_direct_role(
-            "fact_or_constraint",
-            candidate_card_name="另一个知识卡",
-        ),
-        _strict_tree_with_direct_role(
-            "fact_or_constraint",
-            candidate_card_content=["与发布卡片无关的事实"],
-        ),
-    ],
-)
-def test_publishable_tree_rejects_mismatched_unit_or_card_binding(tree):
+def test_publishable_tree_rejects_unrelated_candidate_fact():
+    tree = _strict_tree_with_direct_role(
+        "fact_or_constraint",
+        candidate_card_content=["与发布卡片无关的事实"],
+    )
+
     with pytest.raises(KnowledgeTreeValidationError, match="direct evidence"):
         validate_publishable_tree(
             tree,
             allowed_anchor_keys={"rag"},
             allowed_exam_point_codes={"EP-1"},
         )
+
+
+def test_strict_publish_accepts_teacher_renamed_and_recoded_consolidation():
+    fact = "检索增强生成包括检索、上下文构造和生成三个阶段"
+    tree = _strict_tree(
+        card_content=[fact],
+        evidence_ids=("e1",),
+        decisions=[_direct_decision(evidence_chunk_id="e1", assessable_content=[fact])],
+        unit_code="teacher-recoded-unit",
+        card_name="教师重命名后的知识卡",
+    )
+
+    validate_publishable_tree(
+        tree,
+        allowed_anchor_keys={"rag"},
+        allowed_exam_point_codes={"EP-1"},
+    )
+
+
+def test_strict_publish_rejects_when_any_referenced_evidence_id_is_not_direct():
+    fact = "召回遗漏会削弱回答的事实覆盖"
+    tree = _strict_tree(
+        card_content=[fact],
+        evidence_ids=("valid", "bogus"),
+        decisions=[
+            _direct_decision(evidence_chunk_id="valid", assessable_content=[fact])
+        ],
+    )
+
+    with pytest.raises(KnowledgeTreeValidationError, match="direct evidence"):
+        validate_publishable_tree(
+            tree,
+            allowed_anchor_keys={"rag"},
+            allowed_exam_point_codes={"EP-1"},
+        )
+
+
+def test_strict_publish_rejects_extra_unsubstantiated_fact():
+    valid_fact = "召回遗漏会削弱回答的事实覆盖"
+    tree = _strict_tree(
+        card_content=[valid_fact, "提高温度参数必然提升事实准确率"],
+        evidence_ids=("e1",),
+        decisions=[
+            _direct_decision(
+                evidence_chunk_id="e1",
+                assessable_content=[valid_fact],
+            )
+        ],
+    )
+
+    with pytest.raises(KnowledgeTreeValidationError, match="direct evidence"):
+        validate_publishable_tree(
+            tree,
+            allowed_anchor_keys={"rag"},
+            allowed_exam_point_codes={"EP-1"},
+        )
+
+
+def test_strict_publish_rejects_unsubstantiated_clause_in_one_fact_string():
+    valid_fact = "召回遗漏会削弱回答的事实覆盖"
+    tree = _strict_tree(
+        card_content=[f"{valid_fact}；提高温度参数必然提升事实准确率"],
+        evidence_ids=("e1",),
+        decisions=[
+            _direct_decision(
+                evidence_chunk_id="e1",
+                assessable_content=[valid_fact],
+            )
+        ],
+    )
+
+    with pytest.raises(KnowledgeTreeValidationError, match="direct evidence"):
+        validate_publishable_tree(
+            tree,
+            allowed_anchor_keys={"rag"},
+            allowed_exam_point_codes={"EP-1"},
+        )
+
+
+def test_strict_publish_rejects_direct_evidence_unrelated_to_all_card_facts():
+    valid_fact = "召回遗漏会削弱回答的事实覆盖"
+    tree = _strict_tree(
+        card_content=[valid_fact],
+        evidence_ids=("relevant", "unrelated"),
+        decisions=[
+            _direct_decision(
+                evidence_chunk_id="relevant",
+                assessable_content=[valid_fact],
+            ),
+            _direct_decision(
+                evidence_chunk_id="unrelated",
+                assessable_content=["向量维度由嵌入模型决定"],
+            ),
+        ],
+    )
+
+    with pytest.raises(KnowledgeTreeValidationError, match="direct evidence"):
+        validate_publishable_tree(
+            tree,
+            allowed_anchor_keys={"rag"},
+            allowed_exam_point_codes={"EP-1"},
+        )
+
+
+def test_strict_publish_preserves_comparison_direction_during_fact_matching():
+    tree = _strict_tree(
+        card_content=["a < b"],
+        evidence_ids=("e1",),
+        decisions=[
+            _direct_decision(
+                evidence_chunk_id="e1",
+                assessable_content=["a > b"],
+            )
+        ],
+    )
+
+    with pytest.raises(KnowledgeTreeValidationError, match="direct evidence"):
+        validate_publishable_tree(
+            tree,
+            allowed_anchor_keys={"rag"},
+            allowed_exam_point_codes={"EP-1"},
+        )
+
+
+def test_strict_publish_allows_multiple_direct_facts_to_support_one_merged_card():
+    first_fact = "召回遗漏会削弱回答的事实覆盖"
+    second_fact = "重排可以改善候选上下文的相关性顺序"
+    tree = _strict_tree(
+        card_content=[first_fact, second_fact],
+        evidence_ids=("e1", "e2"),
+        decisions=[
+            _direct_decision(evidence_chunk_id="e1", assessable_content=[first_fact]),
+            _direct_decision(evidence_chunk_id="e2", assessable_content=[second_fact]),
+        ],
+    )
+
+    validate_publishable_tree(
+        tree,
+        allowed_anchor_keys={"rag"},
+        allowed_exam_point_codes={"EP-1"},
+    )
+
+
+def test_strict_publish_allows_supported_facts_joined_by_safe_semicolon_boundary():
+    first_fact = "召回遗漏会削弱回答的事实覆盖"
+    second_fact = "重排可以改善候选上下文的相关性顺序"
+    tree = _strict_tree(
+        card_content=[f"{first_fact}；{second_fact}"],
+        evidence_ids=("e1", "e2"),
+        decisions=[
+            _direct_decision(evidence_chunk_id="e1", assessable_content=[first_fact]),
+            _direct_decision(evidence_chunk_id="e2", assessable_content=[second_fact]),
+        ],
+    )
+
+    validate_publishable_tree(
+        tree,
+        allowed_anchor_keys={"rag"},
+        allowed_exam_point_codes={"EP-1"},
+    )
 
 
 def test_strict_publish_reapplies_supporting_only_operational_policy():

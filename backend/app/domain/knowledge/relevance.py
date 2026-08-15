@@ -262,49 +262,45 @@ def validate_direct_evidence_decision(
         raise ValueError("direct evidence requires a fact or rubric evidence role")
 
 
-def _binding_text(value: str) -> str:
-    return re.sub(r"[^0-9a-z\u3400-\u4dbf\u4e00-\u9fff]+", "", value.casefold())
+_FACT_OPERATOR_TOKENS = (
+    (">=", " operator_greater_or_equal "),
+    ("<=", " operator_less_or_equal "),
+    ("!=", " operator_not_equal "),
+    ("==", " operator_equal "),
+    ("≥", " operator_greater_or_equal "),
+    ("≤", " operator_less_or_equal "),
+    ("≠", " operator_not_equal "),
+    (">", " operator_greater_than "),
+    ("<", " operator_less_than "),
+    ("=", " operator_equal "),
+    ("+", " operator_plus "),
+    ("-", " operator_minus "),
+    ("*", " operator_multiply "),
+    ("×", " operator_multiply "),
+    ("/", " operator_divide "),
+    ("÷", " operator_divide "),
+)
 
 
-def direct_evidence_binds_to(
-    decision: EvidenceDecision,
-    *,
-    exam_point_code: str,
-    evidence_chunk_id: str,
-    assessment_unit_code: str,
-    card_name: str,
-    assessable_content: list[str],
-) -> bool:
-    """Match a direct decision to one explicit consolidated unit/card target."""
+def _fact_key(value: str) -> str:
+    normalized = value.casefold()
+    for operator, token in _FACT_OPERATOR_TOKENS:
+        normalized = normalized.replace(operator, token)
+    return re.sub(
+        r"[^0-9a-z\u3400-\u4dbf\u4e00-\u9fff]+",
+        "",
+        normalized,
+    )
 
-    try:
-        validate_direct_evidence_decision(
-            decision,
-            exam_point_code=exam_point_code,
-        )
-    except ValueError:
-        return False
 
-    unit_candidate = decision.candidate_assessment_unit
-    card_candidate = decision.candidate_card_content
-    if unit_candidate is None or card_candidate is None:
-        return False
-    if decision.evidence_chunk_id != evidence_chunk_id:
-        return False
-    if unit_candidate.code != assessment_unit_code:
-        return False
-    if _binding_text(card_candidate.name) != _binding_text(card_name):
-        return False
+def assessable_fact_keys(values: list[str]) -> frozenset[str]:
+    """Split safe fact boundaries and preserve comparison/math semantics."""
 
-    published_content = [_binding_text(item) for item in assessable_content]
-    return all(
-        any(
-            candidate_fact == published_fact or candidate_fact in published_fact
-            for published_fact in published_content
-        )
-        for candidate_fact in (
-            _binding_text(item) for item in card_candidate.assessable_content
-        )
+    return frozenset(
+        key
+        for value in values
+        for atom in re.split(r"[;；\r\n]+", value)
+        if (key := _fact_key(atom.strip()))
     )
 
 
@@ -337,6 +333,35 @@ def admit_evidence_decision(
     if decision.confidence < MINIMUM_ADMISSION_CONFIDENCE:
         raise ValueError("confidence is below the evidence admission threshold")
 
+    if (
+        decision.content_kind is ContentKind.BACKGROUND
+        and decision.relevance_class is not RelevanceClass.OUT_OF_SCOPE
+    ):
+        return _without_products(
+            decision,
+            relevance_class=RelevanceClass.BACKGROUND,
+            keep_prompt_material=False,
+        )
+
+    if decision.content_kind is ContentKind.OPERATIONAL_DETAIL:
+        if point.operational_detail_policy is OperationalDetailPolicy.FORBIDDEN:
+            return _without_products(
+                decision,
+                relevance_class=RelevanceClass.OUT_OF_SCOPE,
+                keep_prompt_material=False,
+            )
+        if (
+            point.operational_detail_policy
+            is OperationalDetailPolicy.SUPPORTING_ONLY
+            and decision.relevance_class
+            not in {RelevanceClass.BACKGROUND, RelevanceClass.OUT_OF_SCOPE}
+        ):
+            return _without_products(
+                decision,
+                relevance_class=RelevanceClass.SUPPORTING,
+                keep_prompt_material=True,
+            )
+
     if decision.relevance_class in {
         RelevanceClass.BACKGROUND,
         RelevanceClass.OUT_OF_SCOPE,
@@ -353,23 +378,6 @@ def admit_evidence_decision(
             relevance_class=RelevanceClass.SUPPORTING,
             keep_prompt_material=True,
         )
-
-    if decision.content_kind is ContentKind.OPERATIONAL_DETAIL:
-        if point.operational_detail_policy is OperationalDetailPolicy.FORBIDDEN:
-            return _without_products(
-                decision,
-                relevance_class=RelevanceClass.OUT_OF_SCOPE,
-                keep_prompt_material=False,
-            )
-        if (
-            point.operational_detail_policy
-            is OperationalDetailPolicy.SUPPORTING_ONLY
-        ):
-            return _without_products(
-                decision,
-                relevance_class=RelevanceClass.SUPPORTING,
-                keep_prompt_material=True,
-            )
 
     validate_direct_evidence_decision(decision, exam_point_code=point.code)
 

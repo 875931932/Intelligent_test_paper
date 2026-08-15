@@ -232,6 +232,56 @@ def test_forbidden_operational_detail_becomes_out_of_scope_without_products():
     assert admitted.prompt_material is None
 
 
+def test_forbidden_operational_detail_overrides_supporting_class_and_clears_prompt():
+    admitted = admit_evidence_decision(
+        _exam_point(policy=OperationalDetailPolicy.FORBIDDEN),
+        _decision(
+            relevance_class=RelevanceClass.SUPPORTING,
+            content_kind="command",
+            candidate_assessment_unit=None,
+            candidate_card_content=None,
+            prompt_material="运行安装命令",
+        ),
+    )
+
+    assert admitted.relevance_class is RelevanceClass.OUT_OF_SCOPE
+    assert admitted.candidate_assessment_unit is None
+    assert admitted.candidate_card_content is None
+    assert admitted.prompt_material is None
+
+
+def test_background_content_kind_overrides_claimed_direct_class_and_clears_products():
+    admitted = admit_evidence_decision(
+        _exam_point(),
+        _decision(
+            relevance_class=RelevanceClass.DIRECT,
+            content_kind=ContentKind.BACKGROUND,
+            prompt_material="课程发展历史",
+        ),
+    )
+
+    assert admitted.relevance_class is RelevanceClass.BACKGROUND
+    assert admitted.candidate_assessment_unit is None
+    assert admitted.candidate_card_content is None
+    assert admitted.prompt_material is None
+
+
+def test_background_content_kind_does_not_promote_out_of_scope_evidence():
+    admitted = admit_evidence_decision(
+        _exam_point(),
+        _decision(
+            relevance_class=RelevanceClass.OUT_OF_SCOPE,
+            content_kind=ContentKind.BACKGROUND,
+            prompt_material="课程外发展历史",
+        ),
+    )
+
+    assert admitted.relevance_class is RelevanceClass.OUT_OF_SCOPE
+    assert admitted.candidate_assessment_unit is None
+    assert admitted.candidate_card_content is None
+    assert admitted.prompt_material is None
+
+
 @pytest.mark.parametrize(
     "relevance_class",
     [RelevanceClass.BACKGROUND, RelevanceClass.OUT_OF_SCOPE],

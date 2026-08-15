@@ -17,7 +17,7 @@ from app.domain.knowledge.relevance import (
     EvidenceDecision,
     RelevanceClass,
     admit_evidence_decision,
-    direct_evidence_binds_to,
+    assessable_fact_keys,
     validate_direct_evidence_decision,
 )
 
@@ -93,7 +93,16 @@ def merge_file_candidates(
                 topics.append(incoming_topic.model_copy(deep=True))
                 continue
             for incoming_unit in incoming_topic.units:
-                unit = next((existing for existing in topic.units if _canonical(existing.title) == _canonical(incoming_unit.title)), None)
+                unit = next(
+                    (
+                        existing
+                        for existing in topic.units
+                        if existing.exam_point_code == incoming_unit.exam_point_code
+                        and _canonical(existing.title)
+                        == _canonical(incoming_unit.title)
+                    ),
+                    None,
+                )
                 if unit is None:
                     topic.units.append(incoming_unit.model_copy(deep=True))
                     continue
@@ -189,21 +198,32 @@ def validate_publishable_tree(
             for card in active_cards:
                 if not card.evidence_chunk_ids:
                     raise KnowledgeTreeValidationError("knowledge card requires fact evidence")
-                if strict_exam_point_codes is not None and not any(
-                    direct_evidence_binds_to(
-                        decision,
-                        exam_point_code=unit.exam_point_code,
-                        evidence_chunk_id=evidence_id,
-                        assessment_unit_code=unit.code,
-                        card_name=card.name,
-                        assessable_content=card.assessable_content,
-                    )
-                    for decision in admitted_direct_decisions
-                    for evidence_id in card.evidence_chunk_ids
-                ):
-                    raise KnowledgeTreeValidationError(
-                        "knowledge card requires a valid direct evidence relation"
-                    )
+                if strict_exam_point_codes is not None:
+                    published_facts = assessable_fact_keys(card.assessable_content)
+                    supported_facts: set[str] = set()
+                    for evidence_id in card.evidence_chunk_ids:
+                        evidence_facts: set[str] = set()
+                        for decision in admitted_direct_decisions:
+                            if (
+                                decision.exam_point_code != unit.exam_point_code
+                                or decision.evidence_chunk_id != evidence_id
+                                or decision.candidate_card_content is None
+                            ):
+                                continue
+                            evidence_facts.update(
+                                assessable_fact_keys(
+                                    decision.candidate_card_content.assessable_content
+                                )
+                            )
+                        if not evidence_facts or not evidence_facts & published_facts:
+                            raise KnowledgeTreeValidationError(
+                                "knowledge card requires a valid direct evidence relation"
+                            )
+                        supported_facts.update(evidence_facts)
+                    if not published_facts or not published_facts <= supported_facts:
+                        raise KnowledgeTreeValidationError(
+                            "knowledge card requires a valid direct evidence relation"
+                        )
 
 
 def apply_tree_operations(
