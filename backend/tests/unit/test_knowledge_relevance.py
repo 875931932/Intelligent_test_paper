@@ -457,6 +457,11 @@ def test_fact_keys_unify_equivalent_symbolic_and_operators():
         ("①", "1"),
         ("H₂O", "H2O"),
         ("Ⅰ", "I"),
+        ("CO", "Co"),
+        ("M", "m"),
+        ("X", "x"),
+        ("Ａ", "a"),
+        ("RAGFlow", "ragflow"),
     ],
 )
 def test_fact_keys_preserve_semantically_significant_structure(left, right):
@@ -466,14 +471,17 @@ def test_fact_keys_preserve_semantically_significant_structure(left, right):
 @pytest.mark.parametrize(
     ("left", "right"),
     [
-        ("Ａ　∧（Ｂ ≥ 1.2）", "a&&(b>=1.2)"),
-        ("A∨B", "a || b"),
-        ("¬A", "! a"),
-        ("A⇒B", "a -> b"),
-        ("A⇔B", "a <=> b"),
+        ("Ａ　∧（Ｂ ≥ 1.2）", "A&&(B>=1.2)"),
+        ("A∨B", "A || B"),
+        ("¬A", "! A"),
+        ("A⇒B", "A -> B"),
+        ("A⇔B", "A <=> B"),
         ("a < b", "a<b"),
         ("a＜b", "a<b"),
         ("( a )", "(a)"),
+        ("Ａ", "A"),
+        ("检索增强生成", "RAG"),
+        ("rag", "RAG"),
     ],
 )
 def test_fact_keys_unify_whitespace_width_and_explicit_operator_aliases(left, right):

@@ -286,6 +286,10 @@ _SEMANTIC_OPERATOR_PATTERN = re.compile(
     )
 )
 _SEMANTIC_DELIMITERS = frozenset("()[]{}")
+_RAG_TERM_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_])RAG(?![A-Za-z0-9_])",
+    re.IGNORECASE,
+)
 
 
 def _is_semantic_word_character(character: str) -> bool:
@@ -342,8 +346,9 @@ def _normalize_semantic_width(value: str) -> str:
 def semantic_text_key(value: str) -> str:
     """Return a fail-closed key without erasing semantic text structure."""
 
-    normalized = _normalize_semantic_width(value).casefold()
-    normalized = normalized.replace("检索增强生成", "rag")
+    normalized = _normalize_semantic_width(value)
+    normalized = normalized.replace("检索增强生成", "RAG")
+    normalized = _RAG_TERM_PATTERN.sub("RAG", normalized)
     normalized = _SEMANTIC_OPERATOR_PATTERN.sub(
         lambda match: _SEMANTIC_OPERATOR_ALIASES[match.group(0)],
         normalized,

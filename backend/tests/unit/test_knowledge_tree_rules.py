@@ -142,6 +142,37 @@ def test_card_merge_key_preserves_language_name_operators():
 @pytest.mark.parametrize(
     ("left", "right"),
     [
+        ("CO", "Co"),
+        ("M", "m"),
+        ("X", "x"),
+        ("Ａ", "a"),
+    ],
+)
+def test_card_merge_key_preserves_case_sensitive_scientific_semantics(left, right):
+    first = _file_candidate(cards=[_card(name=left, evidence=("e1",))])
+    second = _file_candidate(cards=[_card(name=right, evidence=("e2",))])
+    second.material_version_id = "material-v2"
+
+    merged = merge_file_candidates([first, second], allowed_anchor_keys={"rag"})
+
+    assert [card.name for card in merged.topics[0].units[0].cards] == [left, right]
+
+
+def test_card_merge_key_unifies_fullwidth_ascii_with_same_case():
+    first = _file_candidate(cards=[_card(name="Ａ", evidence=("e1",))])
+    second = _file_candidate(cards=[_card(name="A", evidence=("e2",))])
+    second.material_version_id = "material-v2"
+
+    merged = merge_file_candidates([first, second], allowed_anchor_keys={"rag"})
+
+    cards = merged.topics[0].units[0].cards
+    assert len(cards) == 1
+    assert set(cards[0].evidence_chunk_ids) == {"e1", "e2"}
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
         ("not able", "notable"),
         ("a b", "ab"),
         ("C + +", "C++"),
@@ -189,7 +220,7 @@ def test_merge_keys_unify_width_whitespace_and_explicit_rag_alias():
         cards=[_card(name="检索增强生成的基本流程", evidence=("e1",))],
     )
     second = _file_candidate(
-        unit="a&&b",
+        unit="A&&B",
         exam_point_code="EP-1",
         cards=[_card(name="RAG的基本流程", evidence=("e2",))],
     )
@@ -565,6 +596,56 @@ def test_strict_publish_preserves_scientific_and_enumeration_notation(
             allowed_anchor_keys={"rag"},
             allowed_exam_point_codes={"EP-1"},
         )
+
+
+@pytest.mark.parametrize(
+    ("card_fact", "evidence_fact"),
+    [
+        ("CO", "Co"),
+        ("M", "m"),
+        ("X", "x"),
+        ("Ａ", "a"),
+    ],
+)
+def test_strict_publish_preserves_case_sensitive_scientific_semantics(
+    card_fact, evidence_fact
+):
+    tree = _strict_tree(
+        card_content=[card_fact],
+        evidence_ids=("e1",),
+        decisions=[
+            _direct_decision(
+                evidence_chunk_id="e1",
+                assessable_content=[evidence_fact],
+            )
+        ],
+    )
+
+    with pytest.raises(KnowledgeTreeValidationError, match="direct evidence"):
+        validate_publishable_tree(
+            tree,
+            allowed_anchor_keys={"rag"},
+            allowed_exam_point_codes={"EP-1"},
+        )
+
+
+def test_strict_publish_unifies_fullwidth_ascii_with_same_case():
+    tree = _strict_tree(
+        card_content=["Ａ"],
+        evidence_ids=("e1",),
+        decisions=[
+            _direct_decision(
+                evidence_chunk_id="e1",
+                assessable_content=["A"],
+            )
+        ],
+    )
+
+    validate_publishable_tree(
+        tree,
+        allowed_anchor_keys={"rag"},
+        allowed_exam_point_codes={"EP-1"},
+    )
 
 
 @pytest.mark.parametrize(
