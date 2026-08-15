@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.domain.framework.exam_points import ExamPoint, OperationalDetailPolicy
 from app.domain.model_calls import ModelCallContext
@@ -27,15 +28,123 @@ class RelevanceClass(StrEnum):
     OUT_OF_SCOPE = "out_of_scope"
 
 
+class ContentKind(StrEnum):
+    CONCEPT = "concept"
+    DEFINITION = "definition"
+    PRINCIPLE = "principle"
+    MECHANISM = "mechanism"
+    RULE = "rule"
+    RELATIONSHIP = "relationship"
+    FACT = "fact"
+    CONSTRAINT = "constraint"
+    FORMULA = "formula"
+    DERIVATION = "derivation"
+    COMPARISON = "comparison"
+    CASE = "case"
+    SCENARIO = "scenario"
+    DIAGNOSTIC = "diagnostic"
+    OPERATIONAL_DETAIL = "operational_detail"
+    BACKGROUND = "background"
+
+
+_CONTENT_KIND_ALIASES = {
+    "conceptual": ContentKind.CONCEPT,
+    "conceptual_fact": ContentKind.FACT,
+    "concept_fact": ContentKind.FACT,
+    "command": ContentKind.OPERATIONAL_DETAIL,
+    "command_or_configuration": ContentKind.OPERATIONAL_DETAIL,
+    "configuration": ContentKind.OPERATIONAL_DETAIL,
+    "installation_step": ContentKind.OPERATIONAL_DETAIL,
+    "environment_setup": ContentKind.OPERATIONAL_DETAIL,
+    "path": ContentKind.OPERATIONAL_DETAIL,
+    "file": ContentKind.OPERATIONAL_DETAIL,
+    "filename": ContentKind.OPERATIONAL_DETAIL,
+    "file_or_path": ContentKind.OPERATIONAL_DETAIL,
+    "procedure": ContentKind.OPERATIONAL_DETAIL,
+    "procedural_step": ContentKind.OPERATIONAL_DETAIL,
+    "operation": ContentKind.OPERATIONAL_DETAIL,
+    "概念": ContentKind.CONCEPT,
+    "定义": ContentKind.DEFINITION,
+    "原理": ContentKind.PRINCIPLE,
+    "机制": ContentKind.MECHANISM,
+    "规则": ContentKind.RULE,
+    "关系": ContentKind.RELATIONSHIP,
+    "事实": ContentKind.FACT,
+    "约束": ContentKind.CONSTRAINT,
+    "公式": ContentKind.FORMULA,
+    "推导": ContentKind.DERIVATION,
+    "比较": ContentKind.COMPARISON,
+    "对比": ContentKind.COMPARISON,
+    "案例": ContentKind.CASE,
+    "场景": ContentKind.SCENARIO,
+    "诊断": ContentKind.DIAGNOSTIC,
+    "背景": ContentKind.BACKGROUND,
+    "命令": ContentKind.OPERATIONAL_DETAIL,
+    "配置": ContentKind.OPERATIONAL_DETAIL,
+    "安装步骤": ContentKind.OPERATIONAL_DETAIL,
+    "环境配置": ContentKind.OPERATIONAL_DETAIL,
+    "路径": ContentKind.OPERATIONAL_DETAIL,
+    "文件": ContentKind.OPERATIONAL_DETAIL,
+    "文件名": ContentKind.OPERATIONAL_DETAIL,
+    "操作": ContentKind.OPERATIONAL_DETAIL,
+    "操作步骤": ContentKind.OPERATIONAL_DETAIL,
+    "操作细节": ContentKind.OPERATIONAL_DETAIL,
+}
+
+
+class AssessmentUnitCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    title: str
+    performance_statement: str
+    scope_boundary: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("code", "title", "performance_statement")
+    @classmethod
+    def validate_required_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+
+class KnowledgeCardCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    performance_statement: str
+    assessable_content: list[str]
+    scope_boundary: dict[str, Any] = Field(default_factory=dict)
+    cognitive_targets: list[str] = Field(default_factory=list)
+    allowed_question_types: list[str] = Field(default_factory=list)
+
+    @field_validator("name", "performance_statement")
+    @classmethod
+    def validate_required_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("must not be blank")
+        return value
+
+    @field_validator("assessable_content")
+    @classmethod
+    def validate_assessable_content(cls, values: list[str]) -> list[str]:
+        normalized = [value.strip() for value in values]
+        if not normalized or any(not value for value in normalized):
+            raise ValueError("assessable_content must contain non-blank facts")
+        return normalized
+
+
 class EvidenceDecision(BaseModel):
     exam_point_code: str
     evidence_chunk_id: str
     relevance_class: RelevanceClass
     support_claim: str
     evidence_role: str | None = None
-    content_kind: str
-    candidate_assessment_unit: dict[str, Any] | None = None
-    candidate_card_content: dict[str, Any] | None = None
+    content_kind: ContentKind
+    candidate_assessment_unit: AssessmentUnitCandidate | None = None
+    candidate_card_content: KnowledgeCardCandidate | None = None
     prompt_material: str | None = None
     confidence: int = Field(ge=0, le=100)
 
@@ -43,7 +152,6 @@ class EvidenceDecision(BaseModel):
         "exam_point_code",
         "evidence_chunk_id",
         "support_claim",
-        "content_kind",
     )
     @classmethod
     def validate_required_text(cls, value: str) -> str:
@@ -59,6 +167,16 @@ class EvidenceDecision(BaseModel):
             return None
         value = value.strip()
         return value or None
+
+    @field_validator("content_kind", mode="before")
+    @classmethod
+    def normalize_content_kind(cls, value: object) -> object:
+        if isinstance(value, ContentKind):
+            return value
+        if not isinstance(value, str):
+            return value
+        normalized = re.sub(r"[\s-]+", "_", value.strip().casefold())
+        return _CONTENT_KIND_ALIASES.get(normalized, normalized)
 
 
 class ExamPointFileDecision(BaseModel):
@@ -89,16 +207,6 @@ class ExamPointEvidenceClassifier(Protocol):
 
 
 MINIMUM_ADMISSION_CONFIDENCE = 50
-
-_OPERATIONAL_CONTENT_KINDS = frozenset(
-    {
-        "operational_detail",
-        "procedural_step",
-        "command_or_configuration",
-        "installation_or_environment",
-        "file_or_path",
-    }
-)
 
 DIRECT_EVIDENCE_ROLES = frozenset(
     {
@@ -142,7 +250,7 @@ def validate_direct_evidence_decision(
         raise ValueError("confidence is below the evidence admission threshold")
     if not decision.evidence_chunk_id.strip():
         raise ValueError("direct evidence requires an evidence chunk id")
-    if not decision.support_claim.strip() or not decision.content_kind.strip():
+    if not decision.support_claim.strip():
         raise ValueError("direct evidence requires a support claim and content kind")
     if not decision.candidate_assessment_unit:
         raise ValueError("direct evidence requires an assessment unit candidate")
@@ -151,6 +259,52 @@ def validate_direct_evidence_decision(
     normalized_role = (decision.evidence_role or "").strip().casefold()
     if normalized_role not in DIRECT_EVIDENCE_ROLES:
         raise ValueError("direct evidence requires a fact or rubric evidence role")
+
+
+def _binding_text(value: str) -> str:
+    return re.sub(r"[^0-9a-z\u3400-\u4dbf\u4e00-\u9fff]+", "", value.casefold())
+
+
+def direct_evidence_binds_to(
+    decision: EvidenceDecision,
+    *,
+    exam_point_code: str,
+    evidence_chunk_id: str,
+    assessment_unit_code: str,
+    card_name: str,
+    assessable_content: list[str],
+) -> bool:
+    """Match a direct decision to one explicit consolidated unit/card target."""
+
+    try:
+        validate_direct_evidence_decision(
+            decision,
+            exam_point_code=exam_point_code,
+        )
+    except ValueError:
+        return False
+
+    unit_candidate = decision.candidate_assessment_unit
+    card_candidate = decision.candidate_card_content
+    if unit_candidate is None or card_candidate is None:
+        return False
+    if decision.evidence_chunk_id != evidence_chunk_id:
+        return False
+    if unit_candidate.code != assessment_unit_code:
+        return False
+    if _binding_text(card_candidate.name) != _binding_text(card_name):
+        return False
+
+    published_content = [_binding_text(item) for item in assessable_content]
+    return all(
+        any(
+            candidate_fact == published_fact or candidate_fact in published_fact
+            for published_fact in published_content
+        )
+        for candidate_fact in (
+            _binding_text(item) for item in card_candidate.assessable_content
+        )
+    )
 
 
 def _without_products(
@@ -199,7 +353,7 @@ def admit_evidence_decision(
             keep_prompt_material=True,
         )
 
-    if decision.content_kind.casefold() in _OPERATIONAL_CONTENT_KINDS:
+    if decision.content_kind is ContentKind.OPERATIONAL_DETAIL:
         if point.operational_detail_policy is OperationalDetailPolicy.FORBIDDEN:
             return _without_products(
                 decision,

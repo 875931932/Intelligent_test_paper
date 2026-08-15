@@ -15,8 +15,11 @@ from app.domain.knowledge.models import (
     KnowledgeTreeCandidate,
 )
 from app.domain.knowledge.relevance import (
+    AssessmentUnitCandidate,
+    ContentKind,
     EvidenceDecision,
     ExamPointCoverage,
+    KnowledgeCardCandidate,
     RelevanceClass,
     admit_evidence_decision,
 )
@@ -42,6 +45,26 @@ def _exam_point(
     )
 
 
+def _unit_candidate(**overrides):
+    payload = {
+        "code": "unit-retrieval-quality",
+        "title": "分析检索质量",
+        "performance_statement": "能够根据现象分析检索质量",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _card_candidate(**overrides):
+    payload = {
+        "name": "检索质量的影响",
+        "performance_statement": "能够说明检索质量对事实覆盖的影响",
+        "assessable_content": ["召回遗漏会削弱回答的事实覆盖"],
+    }
+    payload.update(overrides)
+    return payload
+
+
 def _decision(**overrides) -> EvidenceDecision:
     payload = {
         "exam_point_code": "EP-1",
@@ -49,16 +72,9 @@ def _decision(**overrides) -> EvidenceDecision:
         "relevance_class": RelevanceClass.DIRECT,
         "support_claim": "该证据给出了能够评分的检索质量判断依据",
         "evidence_role": "fact_or_constraint",
-        "content_kind": "conceptual_fact",
-        "candidate_assessment_unit": {
-            "code": "unit-retrieval-quality",
-            "title": "分析检索质量",
-            "performance_statement": "能够根据现象分析检索质量",
-        },
-        "candidate_card_content": {
-            "name": "检索质量的影响",
-            "assessable_content": ["召回遗漏会削弱回答的事实覆盖"],
-        },
+        "content_kind": "fact",
+        "candidate_assessment_unit": _unit_candidate(),
+        "candidate_card_content": _card_candidate(),
         "confidence": 90,
     }
     payload.update(overrides)
@@ -82,7 +98,86 @@ def test_relevance_contracts_expose_stable_classes_and_coverage_counts():
         "background",
         "out_of_scope",
     }
+    assert ContentKind.OPERATIONAL_DETAIL.value == "operational_detail"
     assert coverage.direct_count == 2
+
+
+@pytest.mark.parametrize(
+    "content_kind",
+    [
+        "command",
+        "command_or_configuration",
+        "configuration",
+        "installation_step",
+        "environment_setup",
+        "path",
+        "file",
+        "filename",
+        "file_or_path",
+        "procedure",
+        "procedural_step",
+        "operation",
+        "命令",
+        "配置",
+        "安装步骤",
+        "环境配置",
+        "路径",
+        "文件名",
+        "操作步骤",
+    ],
+)
+def test_generic_operational_content_variants_follow_exam_point_policy(content_kind):
+    admitted = admit_evidence_decision(
+        _exam_point(policy=OperationalDetailPolicy.SUPPORTING_ONLY),
+        _decision(content_kind=content_kind),
+    )
+
+    assert admitted.content_kind is ContentKind.OPERATIONAL_DETAIL
+    assert admitted.relevance_class is RelevanceClass.SUPPORTING
+
+
+def test_unknown_content_kind_fails_closed_before_direct_admission():
+    payload = _decision().model_dump()
+    payload["content_kind"] = "vendor_magic_step"
+
+    with pytest.raises(ValidationError, match="content_kind"):
+        EvidenceDecision.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "candidate"),
+    [
+        ("candidate_assessment_unit", {"code": "only-code"}),
+        (
+            "candidate_assessment_unit",
+            _unit_candidate(performance_statement=" "),
+        ),
+        ("candidate_card_content", {"name": "only-name"}),
+        (
+            "candidate_card_content",
+            _card_candidate(assessable_content=[]),
+        ),
+        (
+            "candidate_card_content",
+            _card_candidate(assessable_content=[" "]),
+        ),
+    ],
+)
+def test_malformed_candidate_payload_is_rejected_during_model_validation(
+    field, candidate
+):
+    payload = _decision().model_dump()
+    payload[field] = candidate
+
+    with pytest.raises(ValidationError, match=field):
+        EvidenceDecision.model_validate(payload)
+
+
+def test_candidate_dicts_are_parsed_into_structured_models():
+    decision = _decision()
+
+    assert isinstance(decision.candidate_assessment_unit, AssessmentUnitCandidate)
+    assert isinstance(decision.candidate_card_content, KnowledgeCardCandidate)
 
 
 def test_supporting_only_operational_detail_downgrades_direct_and_clears_products():
@@ -147,8 +242,8 @@ def test_background_and_out_of_scope_decisions_never_keep_generation_products(
         _exam_point(),
         _decision(
             relevance_class=relevance_class,
-            candidate_assessment_unit={"title": "不应保留"},
-            candidate_card_content={"name": "不应保留"},
+            candidate_assessment_unit=_unit_candidate(title="不应保留"),
+            candidate_card_content=_card_candidate(name="不应保留"),
             prompt_material="不应进入生成载荷",
         ),
     )
@@ -164,8 +259,8 @@ def test_supporting_decision_keeps_only_source_free_prompt_material():
         _decision(
             relevance_class=RelevanceClass.SUPPORTING,
             evidence_role=None,
-            candidate_assessment_unit={"title": "不能形成单元"},
-            candidate_card_content={"name": "不能形成知识卡"},
+            candidate_assessment_unit=_unit_candidate(title="不能形成单元"),
+            candidate_card_content=_card_candidate(name="不能形成知识卡"),
             prompt_material="比较两种检索结果在事实覆盖上的差异",
         ),
     )
@@ -179,9 +274,7 @@ def test_supporting_decision_keeps_only_source_free_prompt_material():
     ("overrides", "message"),
     [
         ({"candidate_assessment_unit": None}, "assessment unit"),
-        ({"candidate_assessment_unit": {}}, "assessment unit"),
         ({"candidate_card_content": None}, "card"),
-        ({"candidate_card_content": {}}, "card"),
         ({"evidence_role": None}, "evidence role"),
         ({"evidence_role": "context_only"}, "evidence role"),
         ({"exam_point_code": "EP-OTHER"}, "exam point"),
@@ -222,8 +315,11 @@ def test_config_filename_is_governed_by_operational_policy_not_a_text_blacklist(
         _decision(
             content_kind="operational_detail",
             support_claim="config.json 中的参数可作为场景条件",
-            candidate_assessment_unit={"code": "config.json", "title": "config.json"},
-            candidate_card_content={"name": "config.json"},
+            candidate_assessment_unit=_unit_candidate(
+                code="config.json",
+                title="config.json",
+            ),
+            candidate_card_content=_card_candidate(name="config.json"),
         ),
     )
 

@@ -2,6 +2,11 @@ from __future__ import annotations
 
 import pytest
 
+from app.domain.framework.exam_points import (
+    ExamPoint,
+    OperationalDetailPolicy,
+    WeightSource,
+)
 from app.domain.knowledge.models import (
     AssessmentUnitDraft,
     FileKnowledgeCandidate,
@@ -58,6 +63,20 @@ def _file_candidate(
                 ],
             )
         ],
+    )
+
+
+def _exam_point(policy: OperationalDetailPolicy) -> ExamPoint:
+    return ExamPoint(
+        code="EP-1",
+        anchor_key="rag",
+        title="检索增强生成流程",
+        assessment_requirement="说明并分析检索增强生成流程",
+        weight_value=20,
+        weight_source=WeightSource.ASSESSMENT_SYLLABUS,
+        weight_group_id="rag",
+        operational_detail_policy=policy,
+        retrieval_intent="检索流程、事实依据和应用条件",
     )
 
 
@@ -148,7 +167,14 @@ def test_publishable_tree_requires_direct_evidence_relation_in_strict_exam_point
         )
 
 
-def _strict_tree_with_direct_role(evidence_role: str) -> KnowledgeTreeCandidate:
+def _strict_tree_with_direct_role(
+    evidence_role: str,
+    *,
+    content_kind: str = "fact",
+    candidate_unit_code: str = "rag-flow",
+    candidate_card_name: str = "检索增强生成的基本流程",
+    candidate_card_content: list[str] | None = None,
+) -> KnowledgeTreeCandidate:
     return KnowledgeTreeCandidate(
         framework_version_id="framework-v1",
         topics=_file_candidate(exam_point_code="EP-1").topics,
@@ -159,9 +185,18 @@ def _strict_tree_with_direct_role(evidence_role: str) -> KnowledgeTreeCandidate:
                 "relevance_class": "direct",
                 "support_claim": "该证据支撑知识卡中的可评分事实",
                 "evidence_role": evidence_role,
-                "content_kind": "conceptual_fact",
-                "candidate_assessment_unit": {"code": "rag-flow"},
-                "candidate_card_content": {"name": "检索增强生成的基本流程"},
+                "content_kind": content_kind,
+                "candidate_assessment_unit": {
+                    "code": candidate_unit_code,
+                    "title": "分析RAG流程",
+                    "performance_statement": "能够分析检索增强生成流程",
+                },
+                "candidate_card_content": {
+                    "name": candidate_card_name,
+                    "performance_statement": "能够说明该概念并用于解决问题",
+                    "assessable_content": candidate_card_content
+                    or ["检索增强生成包括检索、上下文构造和生成三个阶段"],
+                },
                 "confidence": 90,
             }
         ],
@@ -189,6 +224,63 @@ def test_publishable_tree_rejects_context_only_raw_direct_relation():
         )
 
 
+@pytest.mark.parametrize(
+    "tree",
+    [
+        _strict_tree_with_direct_role(
+            "fact_or_constraint",
+            candidate_unit_code="another-unit",
+        ),
+        _strict_tree_with_direct_role(
+            "fact_or_constraint",
+            candidate_card_name="另一个知识卡",
+        ),
+        _strict_tree_with_direct_role(
+            "fact_or_constraint",
+            candidate_card_content=["与发布卡片无关的事实"],
+        ),
+    ],
+)
+def test_publishable_tree_rejects_mismatched_unit_or_card_binding(tree):
+    with pytest.raises(KnowledgeTreeValidationError, match="direct evidence"):
+        validate_publishable_tree(
+            tree,
+            allowed_anchor_keys={"rag"},
+            allowed_exam_point_codes={"EP-1"},
+        )
+
+
+def test_strict_publish_reapplies_supporting_only_operational_policy():
+    tree = _strict_tree_with_direct_role(
+        "fact_or_constraint",
+        content_kind="command",
+    )
+
+    with pytest.raises(KnowledgeTreeValidationError, match="direct evidence"):
+        validate_publishable_tree(
+            tree,
+            allowed_anchor_keys={"rag"},
+            exam_points_by_code={
+                "EP-1": _exam_point(OperationalDetailPolicy.SUPPORTING_ONLY)
+            },
+        )
+
+
+def test_strict_publish_allows_directly_assessable_operational_binding():
+    tree = _strict_tree_with_direct_role(
+        "fact_or_constraint",
+        content_kind="command",
+    )
+
+    validate_publishable_tree(
+        tree,
+        allowed_anchor_keys={"rag"},
+        exam_points_by_code={
+            "EP-1": _exam_point(OperationalDetailPolicy.DIRECTLY_ASSESSABLE)
+        },
+    )
+
+
 def test_legacy_publish_validation_does_not_require_exam_point_relevance_metadata():
     tree = KnowledgeTreeCandidate(
         framework_version_id="framework-v1",
@@ -200,9 +292,19 @@ def test_legacy_publish_validation_does_not_require_exam_point_relevance_metadat
                 "relevance_class": "direct",
                 "support_claim": "旧候选尚未进行考点相关性归并",
                 "evidence_role": "context_only",
-                "content_kind": "conceptual_fact",
-                "candidate_assessment_unit": {"code": "rag-flow"},
-                "candidate_card_content": {"name": "检索增强生成的基本流程"},
+                "content_kind": "fact",
+                "candidate_assessment_unit": {
+                    "code": "rag-flow",
+                    "title": "分析RAG流程",
+                    "performance_statement": "能够分析检索增强生成流程",
+                },
+                "candidate_card_content": {
+                    "name": "检索增强生成的基本流程",
+                    "performance_statement": "能够说明该概念并用于解决问题",
+                    "assessable_content": [
+                        "检索增强生成包括检索、上下文构造和生成三个阶段"
+                    ],
+                },
                 "confidence": 90,
             }
         ],

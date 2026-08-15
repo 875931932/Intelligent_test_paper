@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from app.domain.framework.exam_points import ExamPoint
 from app.domain.knowledge.models import (
     FileKnowledgeCandidate,
     KnowledgeCardDraft,
@@ -13,7 +14,10 @@ from app.domain.knowledge.models import (
     UnmatchedCandidate,
 )
 from app.domain.knowledge.relevance import (
+    EvidenceDecision,
     RelevanceClass,
+    admit_evidence_decision,
+    direct_evidence_binds_to,
     validate_direct_evidence_decision,
 )
 
@@ -107,14 +111,44 @@ def validate_publishable_tree(
     *,
     allowed_anchor_keys: set[str],
     allowed_exam_point_codes: set[str] | None = None,
+    exam_points_by_code: dict[str, ExamPoint] | None = None,
 ) -> None:
     if not tree.topics:
         raise KnowledgeTreeValidationError("knowledge tree has no assessable topics")
 
-    valid_direct_relations: set[tuple[str, str]] = set()
-    if allowed_exam_point_codes is not None:
+    strict_exam_point_codes = (
+        set(allowed_exam_point_codes)
+        if allowed_exam_point_codes is not None
+        else None
+    )
+    if exam_points_by_code is not None:
+        for code, point in exam_points_by_code.items():
+            if point.code != code:
+                raise KnowledgeTreeValidationError(
+                    "exam point mapping key does not match exam point code"
+                )
+        mapping_codes = set(exam_points_by_code)
+        strict_exam_point_codes = (
+            mapping_codes
+            if strict_exam_point_codes is None
+            else strict_exam_point_codes & mapping_codes
+        )
+
+    admitted_direct_decisions: list[EvidenceDecision] = []
+    if strict_exam_point_codes is not None:
         for decision in tree.evidence_decisions:
-            if decision.relevance_class is not RelevanceClass.DIRECT:
+            normalized_decision = decision
+            if exam_points_by_code is not None:
+                point = exam_points_by_code.get(decision.exam_point_code)
+                if point is None:
+                    continue
+                try:
+                    normalized_decision = admit_evidence_decision(point, decision)
+                except ValueError:
+                    continue
+                if normalized_decision.relevance_class is not RelevanceClass.DIRECT:
+                    continue
+            elif decision.relevance_class is not RelevanceClass.DIRECT:
                 if (
                     decision.candidate_assessment_unit is not None
                     or decision.candidate_card_content is not None
@@ -123,18 +157,16 @@ def validate_publishable_tree(
                         "non-direct evidence cannot produce a publishable unit or card"
                     )
                 continue
-            if decision.exam_point_code not in allowed_exam_point_codes:
+            if normalized_decision.exam_point_code not in strict_exam_point_codes:
                 continue
             try:
                 validate_direct_evidence_decision(
-                    decision,
-                    exam_point_code=decision.exam_point_code,
+                    normalized_decision,
+                    exam_point_code=normalized_decision.exam_point_code,
                 )
             except ValueError:
                 continue
-            valid_direct_relations.add(
-                (decision.exam_point_code, decision.evidence_chunk_id)
-            )
+            admitted_direct_decisions.append(normalized_decision)
 
     for topic in tree.topics:
         if topic.framework_anchor_key not in allowed_anchor_keys:
@@ -144,9 +176,9 @@ def validate_publishable_tree(
         for unit in topic.units:
             if unit.status == "excluded":
                 continue
-            if allowed_exam_point_codes is not None and (
+            if strict_exam_point_codes is not None and (
                 not unit.exam_point_code
-                or unit.exam_point_code not in allowed_exam_point_codes
+                or unit.exam_point_code not in strict_exam_point_codes
             ):
                 raise KnowledgeTreeValidationError(
                     "active assessment unit requires an allowed exam point"
@@ -157,8 +189,16 @@ def validate_publishable_tree(
             for card in active_cards:
                 if not card.evidence_chunk_ids:
                     raise KnowledgeTreeValidationError("knowledge card requires fact evidence")
-                if allowed_exam_point_codes is not None and not any(
-                    (unit.exam_point_code, evidence_id) in valid_direct_relations
+                if strict_exam_point_codes is not None and not any(
+                    direct_evidence_binds_to(
+                        decision,
+                        exam_point_code=unit.exam_point_code,
+                        evidence_chunk_id=evidence_id,
+                        assessment_unit_code=unit.code,
+                        card_name=card.name,
+                        assessable_content=card.assessable_content,
+                    )
+                    for decision in admitted_direct_decisions
                     for evidence_id in card.evidence_chunk_ids
                 ):
                     raise KnowledgeTreeValidationError(
