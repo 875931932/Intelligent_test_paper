@@ -1176,3 +1176,20 @@ frontend   Vite 开发服务器
 文件名、命令、路径、安装步骤和配置项等操作细节只有在考核大纲明确要求时才能作为独立答案核心；否则只能服务原理解释、案例条件或故障诊断。该规则由考点的 `operational_detail_policy` 表达，不使用课程专属禁词表。
 
 `PlanItem` 新增 `assessment_mode`，用于区分理论识记、概念理解、知识应用、问题解决和实践操作。综合题在生成前由主脑分配 `case_analysis`、`fault_diagnosis`、`comparative_decision`、`solution_design`、`process_optimization`、`critique_correction` 或 `integrated_explanation` 原型；同卷优先使用不同原型、材料形式和认知动作组合，并使用近期已确认试卷的结构签名降低跨卷重复。
+
+### 22.1 当前原型实现状态（2026-08-15）
+
+本轮验证确认 Task 1-10 的核心原型模块和节点已经落在代码中：
+
+- `ExamPoint`、权重来源、操作细节策略和证据相关性准入模型；
+- `FrameworkGraph` 的双大纲并行抽取、考核大纲合并、考点与教学范围/深度对齐、冲突确认和发布节点；
+- `OrganizationGraph` 的冻结资料、按考点检索、文件分类、按考点归并、目录候选、覆盖审计、教师复核和目录/索引发布节点；
+- `build_knowledge_catalog_candidate`、直接/支持/背景/越界证据隔离、考点覆盖状态和严格发布校验；
+- `Blueprint` 的全卷分值权重、题型内难度与 `assessment_mode_distribution` 分配，以及 `plan_whole_paper_coverage`、`compile_source_free_payloads`、题型生成、全卷审查、局部修复和最终确认节点；
+- DeepSeek 语义抽取/整理适配器、重试诊断和安全模型调用记录；
+- 综合题原型合同、结构签名和近期已确认试卷的结构去重；
+- 真实素材演示脚本和当前前端的知识树/蓝图/题目预览页面。
+
+本轮回归已运行：定向 16 项通过，全量 511 项通过（有 3 个依赖弃用警告）。Task 10 真实素材脚本未运行，缺少 `EMBEDDING_BASE_URL`/`EMBEDDING_API_KEY`/`EMBEDDING_MODEL`，不能将其写成通过；前端仍是现有预览，未将 UI 改造写成已完成。
+
+本轮必须保持的回归约束：资料整理模型必须收到 `ExamPoint` 内容；生成模型只收纯净知识点，来源仅在教师查看区；题干出现实验编号或文件名时根因优先查生成输入，不靠堆课程专属过滤词；考纲权重必须落在蓝图，不能按每张知识卡机械生成一题；不同题型共享全卷 coverage 和 answer boundary，避免答案互泄；填空题固定理论模式；综合题使用原型合同并以结构签名去重；所有模型调用错误只记录安全摘要，recorder 不得导致重复请求；合法的大题量不能触发递归或状态爆炸。已知 Task 7 的 DP 在多分值组仍存在状态爆炸风险，真实最终修复留待末尾统一审查，本原型不宣称已解决。

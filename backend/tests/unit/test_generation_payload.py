@@ -2,9 +2,62 @@ from __future__ import annotations
 
 import json
 
+from pydantic import ValidationError
+
 from app.domain.blueprint.models import PlanItem
 from app.domain.generation.coverage import build_coverage_directives
-from app.schemas.generation import compile_question_generation_payload
+from app.schemas.generation import QuestionGenerationPayload, compile_question_generation_payload
+
+
+_GENERATION_PAYLOAD_FIELDS = {
+    "question_type",
+    "score",
+    "difficulty",
+    "cognitive_level",
+    "assessment_mode",
+    "performance_statement",
+    "scope_boundary",
+    "assessable_content",
+    "prompt_material",
+    "coverage_atom",
+    "answer_boundary",
+    "preferred_terms",
+    "novelty_contract",
+    "generation_policy",
+    "comprehensive_archetype",
+    "material_form",
+    "cognitive_sequence",
+    "subquestion_count_range",
+    "subquestion_actions",
+    "answer_boundaries",
+    "expression_policy",
+    "question_template",
+    "output_schema",
+    "teacher_revision_instruction",
+}
+_FORBIDDEN_SOURCE_KEYS = {
+    "filename",
+    "page",
+    "page_index",
+    "evidence",
+    "evidence_ids",
+    "material_version_id",
+    "exam_point_id",
+    "framework_anchor",
+    "source_path",
+}
+
+
+def _mapping_keys(value) -> set[str]:
+    if isinstance(value, dict):
+        return set(value) | {
+            key
+            for nested in value.values()
+            for key in _mapping_keys(nested)
+        }
+    if isinstance(value, list):
+        return {key for nested in value for key in _mapping_keys(nested)}
+    return set()
 
 
 def test_generation_payload_is_source_free():
@@ -19,11 +72,41 @@ def test_generation_payload_is_source_free():
             "allowed_question_types": ["single_choice"],
         },
     )
-    text = json.dumps(payload.model_dump(), ensure_ascii=False)
-    assert "evidence" not in text.lower()
-    assert "filename" not in text.lower()
-    assert "page_index" not in text
-    assert "assessment_unit_id" not in text
+    serialized = payload.model_dump(mode="json")
+
+    assert set(serialized) == _GENERATION_PAYLOAD_FIELDS
+    assert _mapping_keys(serialized).isdisjoint(_FORBIDDEN_SOURCE_KEYS)
+
+
+def test_generation_payload_schema_rejects_source_metadata_even_when_terms_are_allowed():
+    payload = compile_question_generation_payload(
+        PlanItem(
+            item_index=1,
+            question_type="single_choice",
+            score=2,
+            anchor_key="rag",
+            unit_id="u1",
+            card_id="c1",
+        ),
+        {
+            "performance_statement": "能够说明课程中的文件命名概念",
+            "assessable_content": ["文件名可以作为课程概念本身被考查"],
+            "preferred_terms": ["文件名", "证据链"],
+            "scope_boundary": {},
+        },
+    )
+    serialized = payload.model_dump(mode="json")
+
+    assert serialized["preferred_terms"] == ["文件名", "证据链"]
+    assert _mapping_keys(serialized).isdisjoint(_FORBIDDEN_SOURCE_KEYS)
+    try:
+        QuestionGenerationPayload.model_validate(
+            {**serialized, "evidence_ids": ["must-not-enter-generation"]}
+        )
+    except ValidationError as exc:
+        assert "extra_forbidden" in str(exc)
+    else:
+        raise AssertionError("source metadata must be rejected by the payload schema")
 
 
 def test_generation_payload_contains_template_and_pure_content():
