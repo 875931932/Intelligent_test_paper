@@ -439,6 +439,36 @@ def test_strict_publish_preserves_comparison_direction_during_fact_matching():
         )
 
 
+@pytest.mark.parametrize(
+    ("card_fact", "evidence_fact"),
+    [
+        ("A||B", "A&&B"),
+        ("A", "¬A"),
+        ("B→A", "A→B"),
+    ],
+)
+def test_strict_publish_preserves_logical_operators_during_fact_matching(
+    card_fact, evidence_fact
+):
+    tree = _strict_tree(
+        card_content=[card_fact],
+        evidence_ids=("e1",),
+        decisions=[
+            _direct_decision(
+                evidence_chunk_id="e1",
+                assessable_content=[evidence_fact],
+            )
+        ],
+    )
+
+    with pytest.raises(KnowledgeTreeValidationError, match="direct evidence"):
+        validate_publishable_tree(
+            tree,
+            allowed_anchor_keys={"rag"},
+            allowed_exam_point_codes={"EP-1"},
+        )
+
+
 def test_strict_publish_allows_multiple_direct_facts_to_support_one_merged_card():
     first_fact = "召回遗漏会削弱回答的事实覆盖"
     second_fact = "重排可以改善候选上下文的相关性顺序"

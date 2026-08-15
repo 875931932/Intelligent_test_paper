@@ -22,6 +22,7 @@ from app.domain.knowledge.relevance import (
     KnowledgeCardCandidate,
     RelevanceClass,
     admit_evidence_decision,
+    assessable_fact_keys,
 )
 
 
@@ -432,3 +433,7 @@ def test_draft_models_keep_legacy_defaults_and_source_free_prompt_material():
 
 def test_exam_point_knowledge_consolidator_is_a_protocol_contract():
     assert "consolidate" in ExamPointKnowledgeConsolidator.__dict__
+
+
+def test_fact_keys_unify_equivalent_symbolic_and_operators():
+    assert assessable_fact_keys(["A&&B"]) == assessable_fact_keys(["A∧B"])

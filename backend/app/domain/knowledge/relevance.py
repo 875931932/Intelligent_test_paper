@@ -263,6 +263,15 @@ def validate_direct_evidence_decision(
 
 
 _FACT_OPERATOR_TOKENS = (
+    ("<=>", " operator_iff "),
+    ("↔", " operator_iff "),
+    ("=>", " operator_implies "),
+    ("->", " operator_implies "),
+    ("→", " operator_implies "),
+    ("&&", " operator_and "),
+    ("∧", " operator_and "),
+    ("||", " operator_or "),
+    ("∨", " operator_or "),
     (">=", " operator_greater_or_equal "),
     ("<=", " operator_less_or_equal "),
     ("!=", " operator_not_equal "),
@@ -270,6 +279,8 @@ _FACT_OPERATOR_TOKENS = (
     ("≥", " operator_greater_or_equal "),
     ("≤", " operator_less_or_equal "),
     ("≠", " operator_not_equal "),
+    ("!", " operator_not "),
+    ("¬", " operator_not "),
     (">", " operator_greater_than "),
     ("<", " operator_less_than "),
     ("=", " operator_equal "),
