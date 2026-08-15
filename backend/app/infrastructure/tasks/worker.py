@@ -109,7 +109,7 @@ def execute_task(task_id: str, *, worker_id: str | None = None) -> bool:
                 payload=dict(row["payload"] or {}),
             )
             result = handler(context)
-        except Exception as exc:
+        except Exception:
             fail_task(
                 session,
                 course_id=course_id,

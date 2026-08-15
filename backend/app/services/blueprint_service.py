@@ -195,6 +195,18 @@ def _assign_slots_to_anchors(
         )
     ]
 
+    # When every slot has the same eligible anchor set, chapter identities are
+    # interchangeable during search. Solve on sorted residual capacities so
+    # permutations of equal states are collapsed instead of being explored
+    # independently by the general DP below.
+    eligible_sets = {group["anchors"] for group in groups}
+    if len(eligible_sets) == 1:
+        return _assign_uniform_eligible_groups(
+            groups,
+            remaining=remaining,
+            anchor_order=anchor_order,
+        )
+
     anchor_indexes = {anchor: index for index, anchor in enumerate(anchor_order)}
     suffix_available = [tuple(0 for _ in anchor_order) for _ in range(len(groups) + 1)]
     for group_position in range(len(groups) - 1, -1, -1):
@@ -270,6 +282,167 @@ def _assign_slots_to_anchors(
                 assignment[(slot["type_order"], slot["type_index"])] = anchor
             offset += count
     return assignment
+
+
+def _assign_uniform_eligible_groups(
+    groups: list[dict[str, Any]],
+    *,
+    remaining: dict[str, int],
+    anchor_order: tuple[str, ...],
+) -> dict[tuple[int, int], str]:
+    """Assign groups with one shared eligibility set using canonical states."""
+
+    eligible = groups[0]["anchors"]
+    ineligible = [anchor for anchor in anchor_order if anchor not in eligible]
+    if any(remaining[anchor] for anchor in ineligible):
+        raise BlueprintValidationError(
+            "selected question scores and chapter weights cannot be jointly satisfied"
+        )
+
+    ordered_groups = sorted(
+        groups,
+        key=lambda group: (-group["slot_units"], -len(group["slots"]), group["anchors"]),
+    )
+    active = tuple(sorted(eligible, key=lambda anchor: (remaining[anchor], anchor)))
+    initial = tuple(remaining[anchor] for anchor in active)
+
+    if len(ordered_groups) == 1:
+        group = ordered_groups[0]
+        unit = group["slot_units"]
+        if any(capacity % unit for capacity in initial):
+            raise BlueprintValidationError(
+                "selected question scores and chapter weights cannot be jointly satisfied"
+            )
+        counts = tuple(capacity // unit for capacity in initial)
+        if sum(counts) != len(group["slots"]):
+            raise BlueprintValidationError(
+                "selected question scores and chapter weights cannot be jointly satisfied"
+            )
+        allocations = (counts,)
+    else:
+        suffix_units = [0] * (len(ordered_groups) + 1)
+        for position in range(len(ordered_groups) - 1, -1, -1):
+            group = ordered_groups[position]
+            suffix_units[position] = (
+                suffix_units[position + 1]
+                + group["slot_units"] * len(group["slots"])
+            )
+
+        memo: dict[tuple[int, tuple[int, ...]], tuple[tuple[int, ...], ...] | None] = {}
+
+        def solve(
+            position: int,
+            capacities: tuple[int, ...],
+        ) -> tuple[tuple[int, ...], ...] | None:
+            state = (position, capacities)
+            if state in memo:
+                return memo[state]
+            if position == len(ordered_groups):
+                result = () if not any(capacities) else None
+                memo[state] = result
+                return result
+            if sum(capacities) != suffix_units[position]:
+                memo[state] = None
+                return None
+
+            group = ordered_groups[position]
+            item_count = len(group["slots"])
+            unit = group["slot_units"]
+            upper_bounds = tuple(
+                min(item_count, capacity // unit) for capacity in capacities
+            )
+            if sum(upper_bounds) < item_count:
+                memo[state] = None
+                return None
+            future_units = suffix_units[position + 1]
+
+            # Try balanced allocations first. In normal exam blueprints this
+            # finds a solution immediately; the bounded enumeration below keeps
+            # the path exact for awkward half-point combinations.
+            target = item_count / max(1, len(capacities))
+            for allocation in _iter_uniform_allocations(
+                item_count=item_count,
+                unit=unit,
+                capacities=capacities,
+                target=target,
+            ):
+                revised = tuple(
+                    capacity - count * unit
+                    for capacity, count in zip(capacities, allocation, strict=True)
+                )
+                if any(capacity < 0 or capacity > future_units for capacity in revised):
+                    continue
+                canonical = tuple(sorted(revised))
+                result = solve(position + 1, canonical)
+                if result is not None:
+                    memo[state] = (allocation,) + result
+                    return memo[state]
+            memo[state] = None
+            return None
+
+        allocations = solve(0, initial)
+        if allocations is None:
+            raise BlueprintValidationError(
+                "selected question scores and chapter weights cannot be jointly satisfied"
+            )
+
+    assignment: dict[tuple[int, int], str] = {}
+    pairs = [(anchor, remaining[anchor]) for anchor in active]
+    for group, allocation in zip(ordered_groups, allocations, strict=True):
+        pairs.sort(key=lambda pair: (pair[1], pair[0]))
+        offset = 0
+        for (anchor, capacity), count in zip(pairs, allocation, strict=True):
+            revised = capacity - count * group["slot_units"]
+            if revised < 0:
+                raise BlueprintValidationError(
+                    "selected question scores and chapter weights cannot be jointly satisfied"
+                )
+            for slot in group["slots"][offset : offset + count]:
+                assignment[(slot["type_order"], slot["type_index"])] = anchor
+            offset += count
+        pairs = [
+            (anchor, capacity - count * group["slot_units"])
+            for (anchor, capacity), count in zip(pairs, allocation, strict=True)
+        ]
+    if any(capacity for _, capacity in pairs):
+        raise BlueprintValidationError(
+            "selected question scores and chapter weights cannot be jointly satisfied"
+        )
+    return assignment
+
+
+def _iter_uniform_allocations(
+    *,
+    item_count: int,
+    unit: int,
+    capacities: tuple[int, ...],
+    target: float,
+) -> Iterator[tuple[int, ...]]:
+    upper_bounds = tuple(min(item_count, capacity // unit) for capacity in capacities)
+    if sum(upper_bounds) < item_count:
+        return
+
+    # Generate counts nearest the balanced target first, then cover every
+    # bounded composition exactly once if the first candidate is not feasible.
+    choices = [
+        sorted(range(upper + 1), key=lambda count: (abs(count - target), count))
+        for upper in upper_bounds
+    ]
+    seen: set[tuple[int, ...]] = set()
+    stack: list[tuple[int, int, tuple[int, ...]]] = [(0, item_count, ())]
+    while stack:
+        position, left, prefix = stack.pop()
+        if position == len(upper_bounds) - 1:
+            if 0 <= left <= upper_bounds[position]:
+                result = (*prefix, left)
+                if result not in seen:
+                    seen.add(result)
+                    yield result
+            continue
+        remaining_upper = sum(upper_bounds[position + 1 :])
+        for count in reversed(choices[position]):
+            if count <= left and left - count <= remaining_upper:
+                stack.append((position + 1, left - count, (*prefix, count)))
 
 
 def _iter_group_allocations(

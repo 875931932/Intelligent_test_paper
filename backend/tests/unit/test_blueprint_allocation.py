@@ -441,3 +441,38 @@ def test_blueprint_allocates_large_valid_plan_without_recursion_limit():
     plan = allocate_plan_items(request)
 
     assert len(plan.items) == 1000
+
+
+def test_blueprint_collapses_uniform_eligibility_states_for_mixed_scores():
+    request = BlueprintRequest(
+        total_score=75,
+        type_rules={
+            f"type-{index}": {
+                "count": 10,
+                "score": score,
+                "assessment_mode_distribution": {
+                    "theory_recall": 100,
+                    "conceptual": 0,
+                    "application": 0,
+                    "problem_solving": 0,
+                    "practical_operation": 0,
+                },
+            }
+            for index, score in enumerate((0.5, 1, 1.5, 2, 2.5))
+        },
+        chapter_weights={f"chapter-{index}": 20 for index in range(5)},
+        units=[
+            UnitCoverage(
+                unit_id=f"unit-{index}",
+                anchor_key=f"chapter-{index}",
+                card_ids=["card"],
+                allowed_assessment_modes=["theory_recall"],
+            )
+            for index in range(5)
+        ],
+    )
+
+    plan = allocate_plan_items(request)
+
+    assert plan.anchor_counts == {f"chapter-{index}": 10 for index in range(5)}
+    assert len(plan.items) == 50

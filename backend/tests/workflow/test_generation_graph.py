@@ -186,7 +186,13 @@ def test_generation_graph_plans_the_whole_paper_before_question_generation():
     planning_text = json.dumps(gateway.planning_payloads[0].model_dump(), ensure_ascii=False)
     assert "card_id" not in planning_text
     assert "evidence" not in planning_text.lower()
-    assert [payload.coverage_atom for payload in gateway.generation_payloads] == ["向量化的基本定义", "训练数据的基本作用"]
+    assert {
+        payload.question_type: payload.coverage_atom
+        for payload in gateway.generation_payloads
+    } == {
+        "fill_blank": "向量化的基本定义",
+        "true_false": "训练数据的基本作用",
+    }
     assert [question["item_index"] for question in result["questions"]] == [1, 2]
     assert result["conflicts"] == []
     assert result["questions"][0]["quality"]["status"] == "pass"
