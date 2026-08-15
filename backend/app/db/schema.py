@@ -276,6 +276,10 @@ exam_points = _course_table(
         UniqueConstraint("framework_version_id", "code", name="uq_exam_points_version_code"),
         CheckConstraint("weight_value >= 0 AND weight_value <= 100", name="ck_exam_points_weight"),
         CheckConstraint(
+            "weight_source IN ('assessment_syllabus', 'inherited_group', 'teacher_confirmed')",
+            name="ck_exam_points_weight_source",
+        ),
+        CheckConstraint(
             "operational_detail_policy IN ('forbidden', 'supporting_only', 'directly_assessable')",
             name="ck_exam_points_operational_detail_policy",
         ),
@@ -309,7 +313,15 @@ evidence_chunks = _course_table(
     Column("content_hash", String(64), nullable=False),
     Column("locator", JSON),
     Column("embedding", JSON),
-    constraints=(UniqueConstraint("organization_run_id", "chunk_index", name="uq_evidence_chunks_run_index"),),
+    constraints=(
+        UniqueConstraint("organization_run_id", "chunk_index", name="uq_evidence_chunks_run_index"),
+        UniqueConstraint(
+            "id",
+            "organization_run_id",
+            "course_id",
+            name="uq_evidence_chunks_id_run_course",
+        ),
+    ),
 )
 Index("ix_evidence_chunks_course_material_hash", evidence_chunks.c.course_id, evidence_chunks.c.material_version_id, evidence_chunks.c.content_hash)
 
@@ -319,10 +331,10 @@ exam_point_evidence_links = _course_table(
     Column("exam_point_id", String(64), ForeignKey("exam_points.id"), nullable=False),
     Column("evidence_chunk_id", String(64), ForeignKey("evidence_chunks.id"), nullable=False),
     Column("relevance_class", String(40), nullable=False),
-    Column("support_claim", Text),
+    Column("support_claim", Text, nullable=False),
     Column("evidence_role", String(60)),
-    Column("confidence", Float),
-    Column("prompt_material", JSON),
+    Column("confidence", Integer),
+    Column("prompt_material", Text),
     Column("status", String(40), nullable=False, default="candidate", server_default="candidate"),
     constraints=(
         UniqueConstraint(
@@ -331,9 +343,18 @@ exam_point_evidence_links = _course_table(
             "evidence_chunk_id",
             name="uq_exam_point_evidence_links_run_point_chunk",
         ),
+        ForeignKeyConstraint(
+            ["evidence_chunk_id", "organization_run_id", "course_id"],
+            ["evidence_chunks.id", "evidence_chunks.organization_run_id", "evidence_chunks.course_id"],
+            name="fk_exam_point_evidence_links_chunk_run_course",
+        ),
         CheckConstraint(
             "relevance_class IN ('direct', 'supporting', 'background', 'out_of_scope')",
             name="ck_exam_point_evidence_links_relevance_class",
+        ),
+        CheckConstraint(
+            "confidence IS NULL OR (confidence >= 0 AND confidence <= 100)",
+            name="ck_exam_point_evidence_links_confidence",
         ),
     ),
 )

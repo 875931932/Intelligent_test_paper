@@ -2,7 +2,7 @@ import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import CheckConstraint, create_engine, event, inspect
+from sqlalchemy import CheckConstraint, Integer, Text, create_engine, event, inspect
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.schema import CreateIndex, CreateTable
@@ -94,7 +94,11 @@ def test_schema_persists_exam_points_relevance_and_source_free_generation_extens
         "assessment_orientations", "allowed_question_types", "operational_detail_policy",
         "scope_boundary", "required_evidence_roles", "retrieval_intent", "teaching_anchor_keys", "status",
     } <= set(exam_point.c.keys())
-    assert {"ck_exam_points_weight", "ck_exam_points_operational_detail_policy"} <= {
+    assert {
+        "ck_exam_points_weight",
+        "ck_exam_points_weight_source",
+        "ck_exam_points_operational_detail_policy",
+    } <= {
         constraint.name for constraint in exam_point.constraints if isinstance(constraint, CheckConstraint)
     }
 
@@ -103,9 +107,16 @@ def test_schema_persists_exam_points_relevance_and_source_free_generation_extens
         "organization_run_id", "exam_point_id", "evidence_chunk_id", "relevance_class",
         "support_claim", "evidence_role", "confidence", "prompt_material", "status",
     } <= set(relevance_link.c.keys())
-    assert "ck_exam_point_evidence_links_relevance_class" in {
+    assert {
+        "ck_exam_point_evidence_links_relevance_class",
+        "ck_exam_point_evidence_links_confidence",
+    } <= {
         constraint.name for constraint in relevance_link.constraints if isinstance(constraint, CheckConstraint)
     }
+    assert not relevance_link.c.support_claim.nullable
+    assert isinstance(relevance_link.c.support_claim.type, Text)
+    assert isinstance(relevance_link.c.confidence.type, Integer)
+    assert isinstance(relevance_link.c.prompt_material.type, Text)
 
     evidence = Base.metadata.tables["evidence_chunks"]
     assert {"content_block_id", "locator", "embedding"} <= set(evidence.c.keys())
@@ -202,6 +213,16 @@ def test_course_scoped_parent_relationships_use_composite_foreign_keys():
             for constraint in relevance_constraints
         ), parent_name
 
+    assert any(
+        set(constraint.column_keys) == {"evidence_chunk_id", "organization_run_id", "course_id"}
+        and {element.target_fullname for element in constraint.elements} == {
+            "evidence_chunks.id",
+            "evidence_chunks.organization_run_id",
+            "evidence_chunks.course_id",
+        }
+        for constraint in relevance_constraints
+    )
+
     model_call_constraints = Base.metadata.tables["model_calls"].foreign_key_constraints
     for parent_name in ("framework_build_runs", "organization_runs", "generation_attempts"):
         assert any(
@@ -210,6 +231,110 @@ def test_course_scoped_parent_relationships_use_composite_foreign_keys():
             >= {f"{parent_name}.id", f"{parent_name}.course_id"}
             for constraint in model_call_constraints
         ), parent_name
+
+
+def test_exam_point_evidence_link_rejects_chunk_from_another_organization_run(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'exam-point-evidence-run-isolation.db'}")
+    event.listen(engine, "connect", lambda connection, _: connection.execute("PRAGMA foreign_keys=ON"))
+    Base.metadata.create_all(engine)
+    try:
+        with engine.begin() as connection:
+            connection.execute(
+                Base.metadata.tables["users"].insert(),
+                {"id": "owner", "display_name": "Owner", "role": "teacher"},
+            )
+            connection.execute(
+                Base.metadata.tables["courses"].insert(),
+                {"id": "course", "owner_id": "owner", "slug": "course", "name": "Course"},
+            )
+            connection.execute(
+                Base.metadata.tables["framework_versions"].insert(),
+                {
+                    "id": "framework",
+                    "course_id": "course",
+                    "version_no": 1,
+                    "status": "candidate",
+                    "payload": {},
+                },
+            )
+            connection.execute(
+                Base.metadata.tables["exam_points"].insert(),
+                {
+                    "id": "exam-point",
+                    "course_id": "course",
+                    "framework_version_id": "framework",
+                    "anchor_key": "assessment-rag",
+                    "code": "ep-rag",
+                    "title": "RAG quality",
+                    "assessment_requirement": "Explain retrieval quality.",
+                    "weight_source": "assessment_syllabus",
+                    "weight_group_id": "rag",
+                    "retrieval_intent": "Retrieve grounded course evidence.",
+                },
+            )
+            connection.execute(
+                Base.metadata.tables["organization_runs"].insert(),
+                [
+                    {"id": "organization-a", "course_id": "course", "status": "running", "input_snapshot": {}},
+                    {"id": "organization-b", "course_id": "course", "status": "running", "input_snapshot": {}},
+                ],
+            )
+            connection.execute(
+                Base.metadata.tables["materials"].insert(),
+                {
+                    "id": "material",
+                    "course_id": "course",
+                    "logical_name": "material.pdf",
+                    "material_type": "teaching_material",
+                    "status": "staged",
+                },
+            )
+            connection.execute(
+                Base.metadata.tables["material_versions"].insert(),
+                {
+                    "id": "material-version",
+                    "course_id": "course",
+                    "material_id": "material",
+                    "version_no": 1,
+                    "sha256": "a" * 64,
+                    "mime_type": "application/pdf",
+                    "size_bytes": 1,
+                    "status": "staged",
+                    "object_key": "material.pdf",
+                },
+            )
+            connection.execute(
+                Base.metadata.tables["evidence_chunks"].insert(),
+                {
+                    "id": "chunk-a",
+                    "course_id": "course",
+                    "organization_run_id": "organization-a",
+                    "material_version_id": "material-version",
+                    "chunk_index": 0,
+                    "content": "Retrieval quality affects grounding.",
+                    "content_hash": "chunk-hash",
+                },
+            )
+
+        with pytest.raises(IntegrityError):
+            with engine.begin() as connection:
+                connection.execute(
+                    Base.metadata.tables["exam_point_evidence_links"].insert(),
+                    {
+                        "id": "invalid-link",
+                        "course_id": "course",
+                        "organization_run_id": "organization-b",
+                        "exam_point_id": "exam-point",
+                        "evidence_chunk_id": "chunk-a",
+                        "relevance_class": "direct",
+                        "support_claim": "Supports the exam point.",
+                        "confidence": 90,
+                        "prompt_material": "Retrieval quality affects grounding.",
+                        "status": "candidate",
+                    },
+                )
+    finally:
+        engine.dispose()
 
 
 def test_postgresql_bootstrap_uses_transactional_advisory_lock(monkeypatch):
