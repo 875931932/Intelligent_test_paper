@@ -12,23 +12,14 @@ from app.domain.knowledge.models import (
     TreeOperation,
     UnmatchedCandidate,
 )
+from app.domain.knowledge.relevance import (
+    MINIMUM_ADMISSION_CONFIDENCE,
+    RelevanceClass,
+)
 
 
 class KnowledgeTreeValidationError(Exception):
     pass
-
-
-_NON_ASSESSABLE_LABELS = (
-    re.compile(r"封面", re.IGNORECASE),
-    re.compile(r"(?:最终)?提交", re.IGNORECASE),
-    re.compile(r"截图", re.IGNORECASE),
-    re.compile(r"\.(?:json|safetensors|bin|ckpt)$", re.IGNORECASE),
-)
-
-
-def _is_non_assessable_label(value: str) -> bool:
-    label = value.strip()
-    return not label or any(pattern.search(label) for pattern in _NON_ASSESSABLE_LABELS)
 
 
 def _unmatched(material_version_id: str, label: str, reason: str) -> UnmatchedCandidate:
@@ -42,18 +33,18 @@ def sanitize_file_candidate(candidate: FileKnowledgeCandidate, *, allowed_anchor
         if topic.framework_anchor_key not in allowed_anchor_keys:
             unmatched.append(_unmatched(candidate.material_version_id, topic.name, "framework_anchor_not_allowed"))
             continue
-        if _is_non_assessable_label(topic.name):
-            unmatched.append(_unmatched(candidate.material_version_id, topic.name, "non_assessable_document_metadata"))
+        if not topic.name.strip():
+            unmatched.append(_unmatched(candidate.material_version_id, topic.name, "blank_assessable_label"))
             continue
         clean_units = []
         for unit in topic.units:
-            if _is_non_assessable_label(unit.title):
-                unmatched.append(_unmatched(candidate.material_version_id, unit.title, "non_assessable_document_metadata"))
+            if not unit.title.strip():
+                unmatched.append(_unmatched(candidate.material_version_id, unit.title, "blank_assessable_label"))
                 continue
             clean_cards = []
             for card in unit.cards:
-                if _is_non_assessable_label(card.name):
-                    unmatched.append(_unmatched(candidate.material_version_id, card.name, "non_assessable_document_metadata"))
+                if not card.name.strip():
+                    unmatched.append(_unmatched(candidate.material_version_id, card.name, "blank_assessable_label"))
                     continue
                 clean_cards.append(card.model_copy(deep=True))
             if clean_cards:
@@ -71,6 +62,9 @@ def _canonical(value: str) -> str:
 def _merge_card(existing: KnowledgeCardDraft, incoming: KnowledgeCardDraft) -> None:
     existing.evidence_chunk_ids = list(dict.fromkeys([*existing.evidence_chunk_ids, *incoming.evidence_chunk_ids]))
     existing.assessable_content = list(dict.fromkeys([*existing.assessable_content, *incoming.assessable_content]))
+    existing.prompt_material = list(
+        dict.fromkeys([*existing.prompt_material, *incoming.prompt_material])
+    )
 
 
 def merge_file_candidates(
@@ -108,9 +102,38 @@ def merge_file_candidates(
     return KnowledgeTreeCandidate(framework_version_id="", topics=topics, unmatched=unmatched)
 
 
-def validate_publishable_tree(tree: KnowledgeTreeCandidate, *, allowed_anchor_keys: set[str]) -> None:
+def validate_publishable_tree(
+    tree: KnowledgeTreeCandidate,
+    *,
+    allowed_anchor_keys: set[str],
+    allowed_exam_point_codes: set[str] | None = None,
+) -> None:
     if not tree.topics:
         raise KnowledgeTreeValidationError("knowledge tree has no assessable topics")
+
+    valid_direct_relations: set[tuple[str, str]] = set()
+    if allowed_exam_point_codes is not None:
+        for decision in tree.evidence_decisions:
+            if decision.relevance_class is not RelevanceClass.DIRECT:
+                if (
+                    decision.candidate_assessment_unit is not None
+                    or decision.candidate_card_content is not None
+                ):
+                    raise KnowledgeTreeValidationError(
+                        "non-direct evidence cannot produce a publishable unit or card"
+                    )
+                continue
+            if (
+                decision.exam_point_code in allowed_exam_point_codes
+                and decision.evidence_role
+                and decision.confidence >= MINIMUM_ADMISSION_CONFIDENCE
+                and decision.candidate_assessment_unit is not None
+                and decision.candidate_card_content is not None
+            ):
+                valid_direct_relations.add(
+                    (decision.exam_point_code, decision.evidence_chunk_id)
+                )
+
     for topic in tree.topics:
         if topic.framework_anchor_key not in allowed_anchor_keys:
             raise KnowledgeTreeValidationError("topic is outside confirmed framework scope")
@@ -119,12 +142,26 @@ def validate_publishable_tree(tree: KnowledgeTreeCandidate, *, allowed_anchor_ke
         for unit in topic.units:
             if unit.status == "excluded":
                 continue
+            if allowed_exam_point_codes is not None and (
+                not unit.exam_point_code
+                or unit.exam_point_code not in allowed_exam_point_codes
+            ):
+                raise KnowledgeTreeValidationError(
+                    "active assessment unit requires an allowed exam point"
+                )
             active_cards = [card for card in unit.cards if card.status == "active"]
             if not active_cards:
                 raise KnowledgeTreeValidationError("active assessment unit requires a knowledge card")
             for card in active_cards:
                 if not card.evidence_chunk_ids:
                     raise KnowledgeTreeValidationError("knowledge card requires fact evidence")
+                if allowed_exam_point_codes is not None and not any(
+                    (unit.exam_point_code, evidence_id) in valid_direct_relations
+                    for evidence_id in card.evidence_chunk_ids
+                ):
+                    raise KnowledgeTreeValidationError(
+                        "knowledge card requires a valid direct evidence relation"
+                    )
 
 
 def apply_tree_operations(
@@ -140,7 +177,7 @@ def apply_tree_operations(
             if topic is None:
                 raise KnowledgeTreeValidationError("tree operation target was not found")
             if operation.operation == "rename_topic":
-                if not operation.value or _is_non_assessable_label(operation.value):
+                if not operation.value or not operation.value.strip():
                     raise KnowledgeTreeValidationError("topic name is not assessable")
                 topic.name = operation.value
             elif operation.operation == "exclude_topic":

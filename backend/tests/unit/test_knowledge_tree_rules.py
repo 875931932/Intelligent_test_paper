@@ -31,7 +31,14 @@ def _card(name="检索增强生成的基本流程", *, evidence=("e1",), content
     )
 
 
-def _file_candidate(*, anchor="rag", topic="检索增强生成", unit="分析RAG流程", cards=None):
+def _file_candidate(
+    *,
+    anchor="rag",
+    topic="检索增强生成",
+    unit="分析RAG流程",
+    exam_point_code="",
+    cards=None,
+):
     return FileKnowledgeCandidate(
         material_version_id="material-v1",
         topics=[
@@ -45,6 +52,7 @@ def _file_candidate(*, anchor="rag", topic="检索增强生成", unit="分析RAG
                         title=unit,
                         performance_statement="能够分析检索增强生成流程",
                         scope_boundary={},
+                        exam_point_code=exam_point_code,
                         cards=cards or [_card()],
                     )
                 ],
@@ -62,13 +70,14 @@ def test_unknown_framework_anchor_is_quarantined_as_unmatched():
 
 
 @pytest.mark.parametrize("label", ["实验报告封面", "config.json", "model.safetensors", "最终提交截图"])
-def test_document_metadata_and_submission_labels_cannot_become_l3_or_l4(label):
+def test_legacy_sanitizer_does_not_apply_course_specific_text_blacklists(label):
     candidate = _file_candidate(unit=label, cards=[_card(name=label)])
 
     accepted = sanitize_file_candidate(candidate, allowed_anchor_keys={"rag"})
 
-    assert accepted.topics == []
-    assert accepted.unmatched[0].reason == "non_assessable_document_metadata"
+    assert accepted.topics[0].units[0].title == label
+    assert accepted.topics[0].units[0].cards[0].name == label
+    assert accepted.unmatched == []
 
 
 def test_synonymous_cross_file_cards_are_merged_without_losing_evidence():
@@ -83,6 +92,24 @@ def test_synonymous_cross_file_cards_are_merged_without_losing_evidence():
     assert set(cards[0].evidence_chunk_ids) == {"e1", "e2"}
 
 
+def test_synonymous_cross_file_cards_merge_source_free_prompt_material():
+    first = _file_candidate(
+        cards=[_card().model_copy(update={"prompt_material": ["场景一"]})]
+    )
+    second = _file_candidate(
+        cards=[
+            _card(name="RAG的基本流程").model_copy(
+                update={"prompt_material": ["场景二"]}
+            )
+        ]
+    )
+    second.material_version_id = "material-v2"
+
+    merged = merge_file_candidates([first, second], allowed_anchor_keys={"rag"})
+
+    assert merged.topics[0].units[0].cards[0].prompt_material == ["场景一", "场景二"]
+
+
 def test_tree_without_fact_evidence_cannot_be_published():
     tree = KnowledgeTreeCandidate(
         framework_version_id="framework-v1",
@@ -91,6 +118,60 @@ def test_tree_without_fact_evidence_cannot_be_published():
 
     with pytest.raises(KnowledgeTreeValidationError, match="evidence"):
         validate_publishable_tree(tree, allowed_anchor_keys={"rag"})
+
+
+def test_publishable_tree_requires_active_unit_to_reference_allowed_exam_point():
+    tree = KnowledgeTreeCandidate(
+        framework_version_id="framework-v1",
+        topics=_file_candidate(exam_point_code="EP-OUTSIDE").topics,
+    )
+
+    with pytest.raises(KnowledgeTreeValidationError, match="exam point"):
+        validate_publishable_tree(
+            tree,
+            allowed_anchor_keys={"rag"},
+            allowed_exam_point_codes={"EP-1"},
+        )
+
+
+def test_publishable_tree_requires_direct_evidence_relation_in_strict_exam_point_mode():
+    tree = KnowledgeTreeCandidate(
+        framework_version_id="framework-v1",
+        topics=_file_candidate(exam_point_code="EP-1").topics,
+    )
+
+    with pytest.raises(KnowledgeTreeValidationError, match="direct evidence"):
+        validate_publishable_tree(
+            tree,
+            allowed_anchor_keys={"rag"},
+            allowed_exam_point_codes={"EP-1"},
+        )
+
+
+def test_publishable_tree_accepts_card_with_valid_direct_evidence_relation():
+    tree = KnowledgeTreeCandidate(
+        framework_version_id="framework-v1",
+        topics=_file_candidate(exam_point_code="EP-1").topics,
+        evidence_decisions=[
+            {
+                "exam_point_code": "EP-1",
+                "evidence_chunk_id": "e1",
+                "relevance_class": "direct",
+                "support_claim": "该证据支撑知识卡中的可评分事实",
+                "evidence_role": "fact_or_constraint",
+                "content_kind": "conceptual_fact",
+                "candidate_assessment_unit": {"code": "rag-flow"},
+                "candidate_card_content": {"name": "检索增强生成的基本流程"},
+                "confidence": 90,
+            }
+        ],
+    )
+
+    validate_publishable_tree(
+        tree,
+        allowed_anchor_keys={"rag"},
+        allowed_exam_point_codes={"EP-1"},
+    )
 
 
 def test_teacher_cannot_move_topic_outside_confirmed_framework_scope():

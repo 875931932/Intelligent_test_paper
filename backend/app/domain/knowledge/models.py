@@ -6,6 +6,10 @@ from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.domain.framework.exam_points import ExamPoint
+from app.domain.knowledge.relevance import EvidenceDecision, ExamPointCoverage
+from app.domain.model_calls import ModelCallContext
+
 
 class KnowledgeCardDraft(BaseModel):
     name: str
@@ -16,6 +20,7 @@ class KnowledgeCardDraft(BaseModel):
     allowed_question_types: list[str] = Field(default_factory=list)
     importance: int = Field(default=1, ge=1, le=5)
     evidence_chunk_ids: list[str] = Field(default_factory=list)
+    prompt_material: list[str] = Field(default_factory=list)
     status: Literal["active", "excluded", "material_only", "needs_teacher_review"] = "active"
 
 
@@ -23,9 +28,21 @@ class AssessmentUnitDraft(BaseModel):
     code: str
     title: str
     performance_statement: str
+    exam_point_code: str = ""
     scope_boundary: dict = Field(default_factory=dict)
     cards: list[KnowledgeCardDraft] = Field(default_factory=list)
     status: Literal["active", "excluded", "needs_teacher_review"] = "active"
+
+
+class ExamPointKnowledgeConsolidator(Protocol):
+    def consolidate(
+        self,
+        *,
+        exam_point: ExamPoint,
+        admitted_decisions: list[EvidenceDecision],
+        call_context: ModelCallContext | None = None,
+    ) -> list[AssessmentUnitDraft]:
+        raise NotImplementedError
 
 
 class KnowledgeTopicDraft(BaseModel):
@@ -52,6 +69,8 @@ class KnowledgeTreeCandidate(BaseModel):
     framework_version_id: str
     topics: list[KnowledgeTopicDraft]
     unmatched: list[UnmatchedCandidate] = Field(default_factory=list)
+    coverage: list[ExamPointCoverage] = Field(default_factory=list)
+    evidence_decisions: list[EvidenceDecision] = Field(default_factory=list)
 
 
 class TreeOperation(BaseModel):
