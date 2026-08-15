@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from hashlib import sha1
 
-from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, ForeignKey, ForeignKeyConstraint, Index, Integer, JSON, String, Table, Text, UniqueConstraint, false, func
+from sqlalchemy import Boolean, CheckConstraint, Column, DateTime, Float, ForeignKey, ForeignKeyConstraint, Index, Integer, JSON, String, Table, Text, UniqueConstraint, false, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -246,6 +246,43 @@ framework_conflicts = _course_table(
     Column("details", JSON, nullable=False, default=dict),
 )
 
+exam_points = _course_table(
+    "exam_points",
+    Column("framework_version_id", String(64), ForeignKey("framework_versions.id"), nullable=False),
+    Column("anchor_key", String(160), nullable=False),
+    Column("code", String(100), nullable=False),
+    Column("title", String(255), nullable=False),
+    Column("assessment_requirement", Text, nullable=False),
+    Column("weight_value", Float, nullable=False, default=0, server_default="0"),
+    Column("weight_source", String(40), nullable=False),
+    Column("weight_group_id", String(160), nullable=False),
+    Column("priority", String(40), nullable=False, default="normal", server_default="normal"),
+    Column("cognitive_targets", JSON, nullable=False, default=list),
+    Column("assessment_orientations", JSON, nullable=False, default=list),
+    Column("allowed_question_types", JSON, nullable=False, default=list),
+    Column(
+        "operational_detail_policy",
+        String(40),
+        nullable=False,
+        default="supporting_only",
+        server_default="supporting_only",
+    ),
+    Column("scope_boundary", JSON, nullable=False, default=dict),
+    Column("required_evidence_roles", JSON, nullable=False, default=list),
+    Column("retrieval_intent", Text, nullable=False),
+    Column("teaching_anchor_keys", JSON, nullable=False, default=list),
+    Column("status", String(40), nullable=False, default="candidate", server_default="candidate"),
+    constraints=(
+        UniqueConstraint("framework_version_id", "code", name="uq_exam_points_version_code"),
+        CheckConstraint("weight_value >= 0 AND weight_value <= 100", name="ck_exam_points_weight"),
+        CheckConstraint(
+            "operational_detail_policy IN ('forbidden', 'supporting_only', 'directly_assessable')",
+            name="ck_exam_points_operational_detail_policy",
+        ),
+    ),
+)
+Index("ix_exam_points_course_framework_status", exam_points.c.course_id, exam_points.c.framework_version_id, exam_points.c.status)
+
 # Organization and evidence
 organization_runs = _course_table(
     "organization_runs",
@@ -266,12 +303,46 @@ evidence_chunks = _course_table(
     "evidence_chunks",
     Column("organization_run_id", String(64), ForeignKey("organization_runs.id"), nullable=False),
     Column("material_version_id", String(64), ForeignKey("material_versions.id"), nullable=False),
+    Column("content_block_id", String(64), ForeignKey("content_blocks.id")),
     Column("chunk_index", Integer, nullable=False),
     Column("content", Text, nullable=False),
     Column("content_hash", String(64), nullable=False),
+    Column("locator", JSON),
+    Column("embedding", JSON),
     constraints=(UniqueConstraint("organization_run_id", "chunk_index", name="uq_evidence_chunks_run_index"),),
 )
 Index("ix_evidence_chunks_course_material_hash", evidence_chunks.c.course_id, evidence_chunks.c.material_version_id, evidence_chunks.c.content_hash)
+
+exam_point_evidence_links = _course_table(
+    "exam_point_evidence_links",
+    Column("organization_run_id", String(64), ForeignKey("organization_runs.id"), nullable=False),
+    Column("exam_point_id", String(64), ForeignKey("exam_points.id"), nullable=False),
+    Column("evidence_chunk_id", String(64), ForeignKey("evidence_chunks.id"), nullable=False),
+    Column("relevance_class", String(40), nullable=False),
+    Column("support_claim", Text),
+    Column("evidence_role", String(60)),
+    Column("confidence", Float),
+    Column("prompt_material", JSON),
+    Column("status", String(40), nullable=False, default="candidate", server_default="candidate"),
+    constraints=(
+        UniqueConstraint(
+            "organization_run_id",
+            "exam_point_id",
+            "evidence_chunk_id",
+            name="uq_exam_point_evidence_links_run_point_chunk",
+        ),
+        CheckConstraint(
+            "relevance_class IN ('direct', 'supporting', 'background', 'out_of_scope')",
+            name="ck_exam_point_evidence_links_relevance_class",
+        ),
+    ),
+)
+Index(
+    "ix_exam_point_evidence_links_course_point_relevance",
+    exam_point_evidence_links.c.course_id,
+    exam_point_evidence_links.c.exam_point_id,
+    exam_point_evidence_links.c.relevance_class,
+)
 
 # Knowledge catalogue and the source-free KnowledgeCard boundary
 knowledge_catalog_versions = _course_table(
@@ -311,6 +382,7 @@ assessment_units = _course_table(
     "assessment_units",
     Column("catalog_version_id", String(64), ForeignKey("knowledge_catalog_versions.id"), nullable=False),
     Column("content_domain_id", String(64), ForeignKey("content_domains.id")),
+    Column("exam_point_id", String(64), ForeignKey("exam_points.id")),
     Column("code", String(100), nullable=False),
     Column("title", String(255), nullable=False),
     Column("performance_statement", Text, nullable=False),
@@ -398,6 +470,7 @@ plan_items = _course_table(
     Column("blueprint_section_id", String(64), ForeignKey("blueprint_sections.id")),
     Column("assessment_unit_id", String(64), ForeignKey("assessment_units.id"), nullable=False),
     Column("question_type", String(60), nullable=False),
+    Column("assessment_mode", String(60), nullable=False, default="conceptual", server_default="conceptual"),
     Column("item_index", Integer, nullable=False),
     Column("score", Integer, nullable=False),
     constraints=(UniqueConstraint("blueprint_version_id", "item_index", name="uq_plan_items_version_index"),),
@@ -466,10 +539,21 @@ paper_items = _course_table(
 model_calls = _course_table(
     "model_calls",
     Column("generation_attempt_id", String(64), ForeignKey("generation_attempts.id")),
+    Column("framework_build_run_id", String(64), ForeignKey("framework_build_runs.id")),
+    Column("organization_run_id", String(64), ForeignKey("organization_runs.id")),
+    Column("stage", String(80), nullable=False),
     Column("provider", String(80), nullable=False),
     Column("model", String(120), nullable=False),
     Column("status", String(40), nullable=False),
     Column("request_id", String(160)),
+    Column("prompt_hash", String(64)),
+    Column("input_tokens", Integer),
+    Column("output_tokens", Integer),
+    Column("duration_ms", Integer),
+    Column("error_code", String(120)),
+    Column("error_message", Text),
+    Column("details", JSON, nullable=False, default=dict),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
 )
 
 task_runs = _course_table(
@@ -564,15 +648,21 @@ for _child, _column, _parent in (
     ("framework_versions", "framework_build_run_id", "framework_build_runs"),
     ("framework_anchors", "framework_version_id", "framework_versions"),
     ("framework_conflicts", "framework_version_id", "framework_versions"),
+    ("exam_points", "framework_version_id", "framework_versions"),
     ("organization_runs", "framework_version_id", "framework_versions"),
     ("knowledge_catalog_versions", "organization_run_id", "organization_runs"),
     ("evidence_chunks", "organization_run_id", "organization_runs"),
     ("evidence_chunks", "material_version_id", "material_versions"),
+    ("evidence_chunks", "content_block_id", "content_blocks"),
+    ("exam_point_evidence_links", "organization_run_id", "organization_runs"),
+    ("exam_point_evidence_links", "exam_point_id", "exam_points"),
+    ("exam_point_evidence_links", "evidence_chunk_id", "evidence_chunks"),
     ("knowledge_catalog_versions", "framework_version_id", "framework_versions"),
     ("content_domains", "catalog_version_id", "knowledge_catalog_versions"),
     ("content_domains", "parent_domain_id", "content_domains"),
     ("assessment_units", "catalog_version_id", "knowledge_catalog_versions"),
     ("assessment_units", "content_domain_id", "content_domains"),
+    ("assessment_units", "exam_point_id", "exam_points"),
     ("knowledge_cards", "catalog_version_id", "knowledge_catalog_versions"),
     ("knowledge_cards", "assessment_unit_id", "assessment_units"),
     ("knowledge_evidence_links", "knowledge_card_id", "knowledge_cards"),
@@ -602,6 +692,8 @@ for _child, _column, _parent in (
     ("paper_items", "paper_version_id", "paper_versions"),
     ("paper_items", "generated_question_id", "generated_questions"),
     ("model_calls", "generation_attempt_id", "generation_attempts"),
+    ("model_calls", "framework_build_run_id", "framework_build_runs"),
+    ("model_calls", "organization_run_id", "organization_runs"),
     ("outbox_events", "task_run_id", "task_runs"),
 ):
     _same_course_fk(_child, _column, _parent)

@@ -14,8 +14,8 @@ from app.db.schema import Base, CORE_TABLE_NAMES
 EXPECTED_CORE_TABLES = {
     "users", "courses", "materials", "material_versions", "upload_sessions",
     "parser_profiles", "document_parse_runs", "document_artifacts", "content_blocks",
-    "framework_build_runs", "framework_versions", "framework_anchors", "framework_conflicts",
-    "organization_runs", "evidence_chunks", "knowledge_catalog_versions", "content_domains",
+    "framework_build_runs", "framework_versions", "framework_anchors", "framework_conflicts", "exam_points",
+    "organization_runs", "evidence_chunks", "exam_point_evidence_links", "knowledge_catalog_versions", "content_domains",
     "assessment_units", "knowledge_cards", "knowledge_evidence_links", "index_versions",
     "index_memberships", "exam_projects", "blueprint_versions", "blueprint_sections", "plan_items",
     "generation_runs", "generation_attempts", "generated_questions", "quality_checks", "paper_versions",
@@ -86,6 +86,47 @@ def test_schema_models_knowledge_card_boundary_and_generation_version_freeze():
     assert any(len(index.columns) > 1 for index in generation_run.indexes)
 
 
+def test_schema_persists_exam_points_relevance_and_source_free_generation_extensions():
+    exam_point = Base.metadata.tables["exam_points"]
+    assert {
+        "framework_version_id", "anchor_key", "code", "title", "assessment_requirement",
+        "weight_value", "weight_source", "weight_group_id", "priority", "cognitive_targets",
+        "assessment_orientations", "allowed_question_types", "operational_detail_policy",
+        "scope_boundary", "required_evidence_roles", "retrieval_intent", "teaching_anchor_keys", "status",
+    } <= set(exam_point.c.keys())
+    assert {"ck_exam_points_weight", "ck_exam_points_operational_detail_policy"} <= {
+        constraint.name for constraint in exam_point.constraints if isinstance(constraint, CheckConstraint)
+    }
+
+    relevance_link = Base.metadata.tables["exam_point_evidence_links"]
+    assert {
+        "organization_run_id", "exam_point_id", "evidence_chunk_id", "relevance_class",
+        "support_claim", "evidence_role", "confidence", "prompt_material", "status",
+    } <= set(relevance_link.c.keys())
+    assert "ck_exam_point_evidence_links_relevance_class" in {
+        constraint.name for constraint in relevance_link.constraints if isinstance(constraint, CheckConstraint)
+    }
+
+    evidence = Base.metadata.tables["evidence_chunks"]
+    assert {"content_block_id", "locator", "embedding"} <= set(evidence.c.keys())
+    assert all(evidence.c[name].nullable for name in ("content_block_id", "locator", "embedding"))
+    assert Base.metadata.tables["assessment_units"].c.exam_point_id.nullable
+
+    assessment_mode = Base.metadata.tables["plan_items"].c.assessment_mode
+    assert not assessment_mode.nullable
+    assert str(assessment_mode.server_default.arg) == "conceptual"
+
+
+def test_model_call_schema_records_redacted_diagnostics_for_all_workflow_stages():
+    model_call = Base.metadata.tables["model_calls"]
+    assert {
+        "generation_attempt_id", "framework_build_run_id", "organization_run_id", "stage",
+        "provider", "model", "status", "request_id", "prompt_hash", "input_tokens",
+        "output_tokens", "duration_ms", "error_code", "error_message", "details", "created_at",
+    } <= set(model_call.c.keys())
+    assert not {"prompt", "response", "request_payload", "response_payload"} & set(model_call.c.keys())
+
+
 def test_main_uses_seed_environment_when_seed_flag_is_omitted(monkeypatch, tmp_path):
     database_url = f"sqlite:///{tmp_path / 'seed-from-env.db'}"
     monkeypatch.setenv("DATABASE_URL", database_url)
@@ -131,6 +172,7 @@ def test_course_scoped_parent_relationships_use_composite_foreign_keys():
         "document_parse_runs": "material_versions",
         "document_artifacts": "document_parse_runs",
         "framework_versions": "framework_build_runs",
+        "exam_points": "framework_versions",
         "knowledge_catalog_versions": "framework_versions",
         "knowledge_evidence_links": "knowledge_cards",
         "index_memberships": "index_versions",
@@ -150,6 +192,24 @@ def test_course_scoped_parent_relationships_use_composite_foreign_keys():
             and {element.target_fullname for element in constraint.elements} >= {f"{parent_name}.id", f"{parent_name}.course_id"}
             for constraint in constraints
         ), child_name
+
+    relevance_constraints = Base.metadata.tables["exam_point_evidence_links"].foreign_key_constraints
+    for parent_name in ("organization_runs", "exam_points", "evidence_chunks"):
+        assert any(
+            set(constraint.column_keys) >= {"course_id"}
+            and {element.target_fullname for element in constraint.elements}
+            >= {f"{parent_name}.id", f"{parent_name}.course_id"}
+            for constraint in relevance_constraints
+        ), parent_name
+
+    model_call_constraints = Base.metadata.tables["model_calls"].foreign_key_constraints
+    for parent_name in ("framework_build_runs", "organization_runs", "generation_attempts"):
+        assert any(
+            set(constraint.column_keys) >= {"course_id"}
+            and {element.target_fullname for element in constraint.elements}
+            >= {f"{parent_name}.id", f"{parent_name}.course_id"}
+            for constraint in model_call_constraints
+        ), parent_name
 
 
 def test_postgresql_bootstrap_uses_transactional_advisory_lock(monkeypatch):
