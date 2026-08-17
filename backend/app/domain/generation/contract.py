@@ -9,7 +9,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.domain.generation.archetypes import ComprehensiveArchetype, MaterialForm
 from app.domain.generation.coverage import _normalized, _validate_comprehensive_contract
 
-DEFAULT_CENTRALITY_THRESHOLD = 0.35
+# 原子核心度阈值：打分基准 0.5、唯一扣分项 -0.05（含括号），
+# 非核心卡且无任何核心信号（定义类关键词 / 绩效强调 / 术语偏好 / 关联边）的原子
+# 得分落在 0.45~0.5，视为偏门剔除；核心卡（+0.25 → 0.75+）或含定义类关键词、
+# performance_statement 强调（+0.15 → 0.65）的原子可通过。
+DEFAULT_CENTRALITY_THRESHOLD = 0.6
 
 
 def compute_atom_centrality(card: dict, atom_text: str) -> float:

@@ -34,6 +34,24 @@ def test_centrality_obscure_atom_scores_lower():
     assert obscure < core
 
 
+def test_obscure_atom_falls_below_threshold():
+    """非核心卡且无任何核心信号的原子（0.45~0.5）应低于阈值，被过滤。"""
+    score = compute_atom_centrality(
+        _card(is_core=False, performance_statement="了解即可"),
+        "某实验附注（第3页脚注）",
+    )
+    assert score < DEFAULT_CENTRALITY_THRESHOLD
+
+
+def test_definition_keyword_atom_passes_threshold():
+    """非核心卡但原子含定义类关键词（+0.15 → 0.65）应通过阈值。"""
+    score = compute_atom_centrality(
+        _card(is_core=False, performance_statement="了解即可"),
+        "提示词的定义与构成要素",
+    )
+    assert score >= DEFAULT_CENTRALITY_THRESHOLD
+
+
 def test_boundaries_overlap_detects_containment_and_equality():
     assert boundaries_overlap("SFTTrainer需要SFTConfig", "SFTTrainer需要SFTConfig")
     assert boundaries_overlap("SFTConfig", "构建SFTTrainer需要SFTConfig")
