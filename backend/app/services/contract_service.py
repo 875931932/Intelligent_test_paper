@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.domain.blueprint.models import BlueprintRequest, PlanItem
+from app.domain.blueprint.models import BlueprintRequest, PlanItem, UnitCoverage
 from app.domain.generation.archetypes import ARCHETYPE_CONTRACTS
 from app.domain.generation.contract import (
     DEFAULT_CENTRALITY_THRESHOLD,
@@ -14,6 +14,7 @@ from app.domain.generation.contract import (
     ForbiddenContext,
     PaperContract,
     assign_atoms_to_items,
+    boundaries_overlap,
     build_exam_point_pools,
     cluster_pool_atoms,
 )
@@ -180,3 +181,57 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract:
         },
     )
     return PaperContract(total_score=total, slots=final_slots, conflicts=conflicts, audit_summary=summary)
+
+
+class ContractRevisionError(ValueError):
+    """教师修订违反合同构造性保证时抛出。"""
+
+
+def apply_slot_revisions(
+    contract: PaperContract,
+    revisions: list[dict],
+    *,
+    units: list[UnitCoverage],
+    knowledge_cards: dict[str, dict],
+) -> PaperContract:
+    """教师换单题原子：只接受同考点池内原子，且修订后全卷互斥仍成立。"""
+    pools = build_exam_point_pools(units, knowledge_cards)
+    updated = {s.item_index: s.model_copy(deep=True) for s in contract.slots}
+    for revision in revisions:
+        item_index = int(revision["item_index"])
+        atom_text = str(revision["coverage_atom"]).strip()
+        slot = updated.get(item_index)
+        if slot is None:
+            raise ContractRevisionError(f"题位 {item_index} 不存在于合同")
+        pool = pools.get(slot.exam_point_id, [])
+        match = next((a for a in pool if a.atom_text == atom_text), None)
+        if match is None:
+            raise ContractRevisionError(
+                f"原子不在考点 {slot.exam_point_id} 的可用池中：{atom_text}"
+            )
+        slot.coverage_atom = match.atom_text
+        slot.card_id = match.card_id
+        slot.unit_id = match.unit_id
+        slot.answer_boundary = match.boundary
+
+    slots = list(updated.values())
+    # 修订后全卷重验互斥（同考点两两）
+    for point in {s.exam_point_id for s in slots}:
+        group = [s for s in slots if s.exam_point_id == point]
+        for i, left in enumerate(group):
+            for right in group[i + 1:]:
+                if boundaries_overlap(left.answer_boundary, right.answer_boundary):
+                    raise ContractRevisionError(
+                        f"修订后题位 {left.item_index} 与 {right.item_index} 答案域重叠"
+                    )
+
+    final = []
+    for slot in slots:
+        siblings = [s for s in slots
+                    if s.exam_point_id == slot.exam_point_id and s.item_index != slot.item_index]
+        final.append(slot.model_copy(update={"forbidden_context": ForbiddenContext(
+            atoms=[s.coverage_atom for s in siblings],
+            answer_cores=[s.answer_boundary for s in siblings if s.answer_boundary],
+        )}))
+    final.sort(key=lambda s: s.item_index)
+    return contract.model_copy(update={"slots": final})
