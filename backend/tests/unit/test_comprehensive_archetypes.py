@@ -58,8 +58,9 @@ def _row(
     }
 
 
-def test_archetype_catalog_contains_all_seven_strict_contracts():
+def test_archetype_catalog_contains_all_eight_strict_contracts():
     assert set(ARCHETYPE_CONTRACTS) == {
+        "code_completion_scenario",
         "case_analysis",
         "fault_diagnosis",
         "comparative_decision",
@@ -70,7 +71,27 @@ def test_archetype_catalog_contains_all_seven_strict_contracts():
     }
     assert ARCHETYPE_CONTRACTS["fault_diagnosis"].allowed_modes == {"problem_solving", "practical_operation"}
     assert ARCHETYPE_CONTRACTS["comparative_decision"].material_forms == {"constraint_table", "option_matrix"}
-    assert len({contract.question_template for contract in ARCHETYPE_CONTRACTS.values()}) == 7
+    assert ARCHETYPE_CONTRACTS["code_completion_scenario"].material_forms == {"code_skeleton", "config_template", "command_script"}
+    assert len({contract.question_template for contract in ARCHETYPE_CONTRACTS.values()}) == 8
+
+
+def test_code_completion_scenario_normalizes_two_fixed_subquestions():
+    raw = {
+        "directives": [
+            _row(
+                1,
+                archetype="code_completion_scenario",
+                material_form="code_skeleton",
+                cognitive_sequence=["understand", "apply"],
+                subquestion_count_range=[2, 4],
+            )
+        ]
+    }
+
+    directives = build_coverage_directives(_items(assessment_mode="application")[:1], _cards(), raw)
+
+    assert directives[0].subquestion_count_range == [2, 2]
+    assert directives[0].subquestion_actions == ["补全代码", "结合场景分析问题并给出改进方向"]
 
 
 def test_three_comprehensive_slots_require_distinct_structure_contracts():

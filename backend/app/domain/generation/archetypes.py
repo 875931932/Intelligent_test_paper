@@ -8,6 +8,7 @@ from app.domain.blueprint.models import AssessmentMode
 
 
 ComprehensiveArchetype: TypeAlias = Literal[
+    "code_completion_scenario",
     "case_analysis",
     "fault_diagnosis",
     "comparative_decision",
@@ -17,6 +18,9 @@ ComprehensiveArchetype: TypeAlias = Literal[
     "integrated_explanation",
 ]
 MaterialForm: TypeAlias = Literal[
+    "code_skeleton",
+    "config_template",
+    "command_script",
     "case_text",
     "data_summary",
     "symptom_list",
@@ -44,6 +48,24 @@ class ArchetypeContract(BaseModel):
 
 
 ARCHETYPE_CONTRACTS: dict[ComprehensiveArchetype, ArchetypeContract] = {
+    "code_completion_scenario": ArchetypeContract(
+        allowed_modes={"application", "problem_solving", "practical_operation"},
+        material_forms={"code_skeleton", "config_template", "command_script"},
+        question_template=(
+            "依据课程讲授的真实工具链给出一个具体的工程应用场景（如搭建检索问答、微调训练、服务部署等），"
+            "先以通俗文字交代任务目标与关键参数取值，再给出一段结构完整的代码框架或配置脚本，"
+            "在关键方法名、参数值、路径或命令选项处挖出带编号的空（形如 ____________(1)__________，共 4 至 6 处）。"
+            "全题固定两个分问：（1）在不改变整体结构的前提下补全代码（占本题约六成分值）；"
+            "（2）针对该场景的一个真实运行或优化问题分析原因并给出改进方向（占本题约四成分值）。"
+            "代码与参数只能来自 prompt_material，不得虚构课程未涉及的 API。"
+        ),
+        structure_requirements=(
+            "场景文字先说明任务目标和已给定的关键参数",
+            "代码框架保持完整可读，挖空处为关键 API 名、参数值或配置项",
+            "分问（1）为补全代码，分问（2）为结合场景的原因分析与改进",
+            "挖空处答案唯一且可从课程内容直接判定",
+        ),
+    ),
     "case_analysis": ArchetypeContract(
         allowed_modes={"application", "problem_solving"},
         material_forms={"case_text", "data_summary"},
