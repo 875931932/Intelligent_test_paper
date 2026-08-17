@@ -65,7 +65,7 @@ def test_batch_instruction_mentions_complementarity_and_forbidden():
     payload = compile_batch_generation_payload(batch, {})
     assert "互补" in payload.batch_instruction
     assert "forbidden_atoms" in payload.batch_instruction
-    assert payload.output_schema["type"] == "array"
+    assert payload.output_schema["type"] == "object"
 
 
 def test_comprehensive_slot_carries_template_and_contract_fields():

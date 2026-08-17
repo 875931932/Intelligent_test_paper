@@ -445,12 +445,13 @@ class DeepSeekGateway:
         expected = [spec.item_index for spec in payload.questions]
 
         def validate_batch(result) -> None:
-            if not isinstance(result, list):
+            questions = result.get("questions") if isinstance(result, dict) else None
+            if not isinstance(questions, list):
                 raise DeepSeekModelError(
-                    "model_output_schema_violation", "批式生成必须返回 JSON 数组"
+                    "model_output_schema_violation", "批式生成必须返回包含 questions 数组的 JSON 对象"
                 )
-            indexes = [item.get("item_index") for item in result if isinstance(item, dict)]
-            if any(i is None for i in indexes) or len(indexes) != len(result):
+            indexes = [item.get("item_index") for item in questions if isinstance(item, dict)]
+            if any(i is None for i in indexes) or len(indexes) != len(questions):
                 raise DeepSeekModelError(
                     "model_output_schema_violation",
                     "批式生成每个元素必须包含 item_index",
@@ -465,8 +466,8 @@ class DeepSeekGateway:
             payload,
             temperature=0.2,
             system_prompt=(
-                "你是高校期末考试命题教师，一次为本批所有题位命题，必须返回 JSON 数组，"
-                "每个元素包含 item_index 及该题 output_schema 要求的全部字段。"
+                "你是高校期末考试命题教师，一次为本批所有题位命题，必须返回 JSON 对象，"
+                "顶层字段 questions 为数组，数组每个元素包含 item_index 及该题 output_schema 要求的全部字段。"
                 "只能依据各题给定的纯净知识内容与指定考查原子出题，严格遵守答案边界和题型任务，"
                 "不延伸考查其他知识原子。同批各题视角互补，不得互相提示或重复。"
                 "forbidden_atoms 与 forbidden_answer_cores 中的内容不得出现在任何题干、选项或答案中。"
@@ -479,7 +480,8 @@ class DeepSeekGateway:
             ),
             response_validator=validate_batch,
         )
-        return [item for item in response if isinstance(item, dict)]
+        questions = response["questions"]
+        return [item for item in questions if isinstance(item, dict)]
 
 
 def _optional_text(value: Any) -> str | None:

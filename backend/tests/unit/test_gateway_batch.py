@@ -33,15 +33,17 @@ def _payload(question_count=2):
 
 
 def test_generate_batch_returns_validated_list():
-    client = FakeJsonClient([
-        {"item_index": 1, "stem": "题一", "options": ["A", "B", "C", "D"], "answer": "A"},
-        {"item_index": 2, "stem": "题二", "options": ["A", "B", "C", "D"], "answer": "B"},
-    ])
+    client = FakeJsonClient({
+        "questions": [
+            {"item_index": 1, "stem": "题一", "options": ["A", "B", "C", "D"], "answer": "A"},
+            {"item_index": 2, "stem": "题二", "options": ["A", "B", "C", "D"], "answer": "B"},
+        ]
+    })
     gateway = DeepSeekGateway(api_key="k", json_client=client)
     questions = gateway.generate_batch(_payload())
     assert [q["item_index"] for q in questions] == [1, 2]
     assert len(client.calls) == 1
-    assert "JSON 数组" in client.calls[0]["system_prompt"]
+    assert "questions" in client.calls[0]["system_prompt"]
 
 
 def test_generate_batch_rejects_non_list_response():
@@ -51,28 +53,39 @@ def test_generate_batch_rejects_non_list_response():
         gateway.generate_batch(_payload(question_count=1))
 
 
+def test_generate_batch_rejects_questions_not_list():
+    client = FakeJsonClient({"questions": "不是数组"})
+    gateway = DeepSeekGateway(api_key="k", json_client=client)
+    with pytest.raises(DeepSeekModelError):
+        gateway.generate_batch(_payload(question_count=1))
+
+
 def test_generate_batch_rejects_missing_item_index():
-    client = FakeJsonClient([{"stem": "缺编号", "answer": "A"}])
+    client = FakeJsonClient({"questions": [{"stem": "缺编号", "answer": "A"}]})
     gateway = DeepSeekGateway(api_key="k", json_client=client)
     with pytest.raises(DeepSeekModelError):
         gateway.generate_batch(_payload(question_count=1))
 
 
 def test_generate_batch_rejects_index_set_mismatch():
-    client = FakeJsonClient([
-        {"item_index": 1, "stem": "题一", "answer": "A"},
-        {"item_index": 99, "stem": "多余题", "answer": "B"},
-    ])
+    client = FakeJsonClient({
+        "questions": [
+            {"item_index": 1, "stem": "题一", "answer": "A"},
+            {"item_index": 99, "stem": "多余题", "answer": "B"},
+        ]
+    })
     gateway = DeepSeekGateway(api_key="k", json_client=client)
     with pytest.raises(DeepSeekModelError):
         gateway.generate_batch(_payload(question_count=1))
 
 
 def test_generate_batch_rejects_duplicate_indexes():
-    client = FakeJsonClient([
-        {"item_index": 1, "stem": "题一", "answer": "A"},
-        {"item_index": 1, "stem": "重复", "answer": "B"},
-    ])
+    client = FakeJsonClient({
+        "questions": [
+            {"item_index": 1, "stem": "题一", "answer": "A"},
+            {"item_index": 1, "stem": "重复", "answer": "B"},
+        ]
+    })
     gateway = DeepSeekGateway(api_key="k", json_client=client)
     with pytest.raises(DeepSeekModelError):
         gateway.generate_batch(_payload(question_count=2))

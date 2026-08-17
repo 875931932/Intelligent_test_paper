@@ -281,7 +281,7 @@ def compile_batch_generation_payload(
             output_schema=output_schema,
         ))
     instruction = (
-        f"为本批 {len(specs)} 道题目一次性命题，返回 JSON 数组，每个元素必须含 item_index 字段及对应 output_schema 要求的全部字段。"
+        f"为本批 {len(specs)} 道题目一次性命题，返回 JSON 对象（顶层字段 questions 为数组），数组每个元素必须含 item_index 字段及对应 output_schema 要求的全部字段。"
         "同批各题考查视角必须互补：题型与认知层级已指定，不得从同一角度重复考查同一内容。"
         "forbidden_atoms 与 forbidden_answer_cores 是同考点其他题目已使用的原子与答案核心，"
         "它们不得出现在本批任何题干、选项或答案文本中。"
@@ -295,5 +295,5 @@ def compile_batch_generation_payload(
         forbidden_atoms=list(batch.forbidden_context.atoms),
         forbidden_answer_cores=list(batch.forbidden_context.answer_cores),
         batch_instruction=instruction,
-        output_schema={"type": "array", "items": "每个元素为单题对象，须含 item_index 与该题 output_schema 字段"},
+        output_schema={"type": "object", "questions": "array — 每个元素为单题对象，须含 item_index 与该题 output_schema 字段"},
     )
