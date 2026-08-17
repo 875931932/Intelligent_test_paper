@@ -162,3 +162,20 @@ def test_gateway_exception_falls_back_to_missing_review():
     for q in result["questions"]:
         assert q["needs_review"] is True
     assert result["final_check"]["passed"] is False
+
+
+def test_true_false_boolean_answer_passes_boundary_check():
+    # 判断题答案是对原子的真伪判断，不以答案域文本承载：
+    # 布尔答案跳过边界命中检查，布尔校验与防泄漏检查仍生效
+    slot = _slot(1, question_type="true_false", answer_boundary="某中文答案边界文本")
+    true_false = _question(
+        1, question_type="true_false",
+        stem="判断：下列关于原子1的陈述成立",
+        options=[], answer=True,
+    )
+    gateway = FakeBatchGateway(scenarios={1: [true_false]})
+    result = build_generation_graph(gateway).invoke(_state([slot, _slot(2)]))
+    question = next(q for q in result["questions"] if q["item_index"] == 1)
+    assert question["quality"]["status"] == "pass"
+    assert question["needs_review"] is not True
+    assert gateway.retry_payloads == []

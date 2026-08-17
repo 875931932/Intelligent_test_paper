@@ -83,7 +83,9 @@ def _check_question(question: dict, slot: ContractSlot) -> dict:
         core = _normalized(core_raw)
         if len(core) >= 6 and core in surface:
             reasons.append(f"题干泄漏同考点其他题答案核心：{core_raw[:24]}…")
-    if not _answer_hits_boundary(question, slot.answer_boundary):
+    # 判断题答案是对原子的真伪判断，不以答案域文本承载：
+    # 跳过答案边界命中检查，其质量由布尔校验 + 禁用上下文泄漏检查保障
+    if slot.question_type != "true_false" and not _answer_hits_boundary(question, slot.answer_boundary):
         reasons.append("答案未命中答案域")
     if not reasons:
         return {"status": "pass", "message": "通过合同校验"}

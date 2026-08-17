@@ -102,9 +102,15 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract:
 
     slots: list[ContractSlot] = []
     comp_counter = 0
+    # 全卷共享互斥状态：跨考点原子唯一 + 答案边界互斥（终检为全卷两两比较）
+    used_keys: set[str] = set()
+    used_boundaries: list[str] = []
     for point in sorted(items_by_point):
         clusters = cluster_pool_atoms(pools.get(point, []))
-        assignments, point_conflicts = assign_atoms_to_items(items_by_point[point], clusters)
+        assignments, point_conflicts = assign_atoms_to_items(
+            items_by_point[point], clusters,
+            shared_used_keys=used_keys, shared_used_boundaries=used_boundaries,
+        )
         conflicts.extend(point_conflicts)
         for item, atom in assignments:
             card = request.knowledge_cards.get(atom.card_id, {})
@@ -225,15 +231,13 @@ def apply_slot_revisions(
                 f"修订后题位 {seen_atoms[atom_key]} 与 {slot.item_index} 考查同一原子"
             )
         seen_atoms[atom_key] = slot.item_index
-    # 修订后全卷重验互斥（同考点两两）
-    for point in {s.exam_point_id for s in slots}:
-        group = [s for s in slots if s.exam_point_id == point]
-        for i, left in enumerate(group):
-            for right in group[i + 1:]:
-                if boundaries_overlap(left.answer_boundary, right.answer_boundary):
-                    raise ContractRevisionError(
-                        f"修订后题位 {left.item_index} 与 {right.item_index} 答案域重叠"
-                    )
+    # 修订后全卷重验互斥（全卷两两，与终检口径一致）
+    for i, left in enumerate(slots):
+        for right in slots[i + 1:]:
+            if boundaries_overlap(left.answer_boundary, right.answer_boundary):
+                raise ContractRevisionError(
+                    f"修订后题位 {left.item_index} 与 {right.item_index} 答案域重叠"
+                )
 
     final = []
     for slot in slots:

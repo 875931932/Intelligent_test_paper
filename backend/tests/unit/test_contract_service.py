@@ -162,3 +162,38 @@ def test_allocate_is_deterministic_for_identical_requests():
     first = allocate_paper_contract(_request())
     second = allocate_paper_contract(_request())
     assert first.model_dump() == second.model_dump()
+
+
+def test_cross_point_boundary_collision_reports_conflict():
+    # 两考点各 1 题，考点2 唯一原子边界与考点1 已选边界相同：
+    # 池子充足（各考点 1 原子对 1 题），是全卷互斥耗尽 →
+    # 报 cluster_exhausted 而非 atom_pool_insufficient
+    units = [
+        UnitCoverage(unit_id="U1a", exam_point_id="EP1", anchor_key="A1", card_ids=["C1a"]),
+        UnitCoverage(unit_id="U2a", exam_point_id="EP2", anchor_key="A2", card_ids=["C2a"]),
+    ]
+    cards = {
+        "C1a": {
+            "is_core": True, "performance_statement": "掌握量化格式",
+            "assessable_content": ["QLoRA使用NF4量化格式压缩"],
+            "preferred_terms": [], "answer_boundary": "量化格式NF4",
+        },
+        "C2a": {
+            "is_core": True, "performance_statement": "掌握量化格式应用",
+            "assessable_content": ["NF4量化格式只保留四位精度"],
+            "preferred_terms": [], "answer_boundary": "量化格式NF4",
+        },
+    }
+    contract = allocate_paper_contract(ContractRequest(
+        blueprint=BlueprintRequest(
+            total_score=4,
+            type_rules={"single_choice": {"count": 2, "score": 2}},
+            chapter_weights={"A1": 50, "A2": 50},
+            units=units,
+        ),
+        knowledge_cards=cards,
+    ))
+    assert not any(c.code == "atom_pool_insufficient" for c in contract.conflicts)
+    exhausted = [c for c in contract.conflicts if c.code == "cluster_exhausted"]
+    assert exhausted and exhausted[0].exam_point_id == "EP2"
+    assert [s.exam_point_id for s in contract.slots] == ["EP1"]

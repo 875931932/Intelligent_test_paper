@@ -80,3 +80,28 @@ def test_rotation_spreads_three_items_over_two_clusters():
     assert not conflicts
     texts = [a[1].atom_text for a in assignments]
     assert texts == ["甲簇第一原子文本样本", "乙簇唯一原子文本样例", "甲簇第二原子文本示例"]
+
+
+def test_shared_state_enforces_cross_caller_mutex():
+    # 模拟两个考点（两次调用共享同一 used 集）：第二考点必须跳过
+    # 与第一考点已选边界重叠的原子，实现全卷边界互斥
+    shared_keys: set[str] = set()
+    shared_boundaries: list[str] = []
+    ep1_clusters = [[_atom("SFTTrainer需要SFTConfig配置参数", "量化格式NF4")]]
+    ep2_clusters = [
+        [_atom("QLoRA使用NF4量化压缩技术", "量化格式NF4")],
+        [_atom("模型评估衡量泛化能力表现", "泛化能力")],
+    ]
+    first, first_conflicts = assign_atoms_to_items(
+        [_item(1)], ep1_clusters,
+        shared_used_keys=shared_keys, shared_used_boundaries=shared_boundaries,
+    )
+    assert not first_conflicts
+    second, conflicts = assign_atoms_to_items(
+        [_item(2)], ep2_clusters,
+        shared_used_keys=shared_keys, shared_used_boundaries=shared_boundaries,
+    )
+    assert not conflicts
+    assert second[0][1].boundary == "泛化能力"  # 跳过与考点1重叠的“量化格式NF4”
+    assert shared_keys == {first[0][1].atom_key, second[0][1].atom_key}
+    assert shared_boundaries == ["量化格式NF4", "泛化能力"]

@@ -261,15 +261,23 @@ def _pick_atom(
 def assign_atoms_to_items(
     items: list[PlanItem],
     clusters: list[list[PoolAtom]],
+    *,
+    shared_used_keys: set[str] | None = None,
+    shared_used_boundaries: list[str] | None = None,
 ) -> tuple[list[tuple[PlanItem, PoolAtom]], list[ContractConflict]]:
     """同考点题位按 item_index 顺序，簇轮转 + 答案域互斥地取原子。
 
-    构造性保证：跨簇优先（子主题不重复）、atom_key 全卷唯一、
-    答案边界互斥（同考点任何两题答案不可互相包含）。
-    簇数不足题数时轮转绕回同簇取下一个可用原子；耗尽则报冲突。
+    构造性保证：跨簇优先（子主题不重复）、atom_key 唯一、
+    答案边界互斥（任何两题答案不可互相包含）。
+    传入 shared_used_keys/shared_used_boundaries 时直接读写共享集，
+    使多个考点调用间互斥状态全卷贯通（与终检全卷两两比较口径一致）；
+    不传则每次调用独立维护局部集。簇数不足题数时轮转绕回同簇取下一个
+    可用原子；耗尽则报冲突。
     """
-    used_keys: set[str] = set()
-    used_boundaries: list[str] = []
+    used_keys: set[str] = shared_used_keys if shared_used_keys is not None else set()
+    used_boundaries: list[str] = (
+        shared_used_boundaries if shared_used_boundaries is not None else []
+    )
     assignments: list[tuple[PlanItem, PoolAtom]] = []
     conflicts: list[ContractConflict] = []
     cursor = 0
