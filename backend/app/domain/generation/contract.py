@@ -4,8 +4,11 @@
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.domain.blueprint.models import UnitCoverage
 from app.domain.generation.archetypes import ComprehensiveArchetype, MaterialForm
 from app.domain.generation.coverage import _normalized, _validate_comprehensive_contract
 
@@ -142,3 +145,63 @@ class PaperContract(BaseModel):
     slots: list[ContractSlot]
     conflicts: list[ContractConflict] = Field(default_factory=list)
     audit_summary: ContractAuditSummary = Field(default_factory=ContractAuditSummary)
+
+
+@dataclass(frozen=True)
+class PoolAtom:
+    """考点原子池中的一条候选原子。"""
+    card_id: str
+    unit_id: str
+    exam_point_id: str
+    atom_text: str
+    boundary: str
+    centrality: float
+    features: frozenset[str]
+
+    @property
+    def atom_key(self) -> str:
+        return _normalized(self.atom_text)
+
+
+def build_exam_point_pools(
+    units: list[UnitCoverage],
+    knowledge_cards: dict[str, dict],
+    *,
+    threshold: float = DEFAULT_CENTRALITY_THRESHOLD,
+) -> dict[str, list[PoolAtom]]:
+    """按考点聚合全部单元知识卡的原子，核心度门槛预过滤后按核心度降序。
+
+    过滤后池子不足的冲突检测由上层合同分配器负责，本函数只产出池子。
+    """
+    pools: dict[str, list[PoolAtom]] = {}
+    for unit in units:
+        if not unit.exam_point_id:
+            continue
+        pool = pools.setdefault(unit.exam_point_id, [])
+        for card_id in unit.card_ids:
+            card = knowledge_cards.get(card_id)
+            if not card:
+                continue
+            boundary = str(card.get("answer_boundary") or card.get("answer_proposition") or "")
+            for raw in card.get("assessable_content", []):
+                atom_text = str(raw or "").strip()
+                if not atom_text:
+                    continue
+                centrality = compute_atom_centrality(card, atom_text)
+                if centrality < threshold:
+                    continue
+                pool.append(
+                    PoolAtom(
+                        card_id=card_id,
+                        unit_id=unit.unit_id,
+                        exam_point_id=unit.exam_point_id,
+                        atom_text=atom_text,
+                        boundary=boundary,
+                        centrality=centrality,
+                        features=atom_bigram_features(atom_text),
+                    )
+                )
+    for pool in pools.values():
+        pool.sort(key=lambda a: -a.centrality)
+    pools = {k: v for k, v in pools.items() if v}
+    return pools
