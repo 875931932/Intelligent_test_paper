@@ -76,7 +76,20 @@ def test_contract_slots_follow_chapter_quota_proportions():
     ep1 = sum(1 for s in contract.slots if s.exam_point_id == "EP1")
     ep2 = sum(1 for s in contract.slots if s.exam_point_id == "EP2")
     assert ep1 + ep2 == 5
-    assert abs(ep1 - 2) <= 1 and abs(ep2 - 3) <= 1  # 40/60 配额
+    assert ep1 == 2 and ep2 == 3  # 40/60 配额：最大余数法必产 2/3
+
+
+def test_quota_reflects_weight_direction():
+    request = _request(blueprint=BlueprintRequest(
+        total_score=10,
+        type_rules={"single_choice": {"count": 5, "score": 2}},
+        chapter_weights={"A1": 60, "A2": 40},
+        units=_units(),
+    ))
+    contract = allocate_paper_contract(request)
+    ep1 = sum(1 for s in contract.slots if s.exam_point_id == "EP1")
+    ep2 = sum(1 for s in contract.slots if s.exam_point_id == "EP2")
+    assert ep1 >= 3 and ep2 <= 2  # 60/40 权重方向：EP1 占多数
 
 
 def test_atoms_unique_across_paper_and_mutex_within_point():
