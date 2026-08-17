@@ -135,6 +135,8 @@ def _validate_comprehensive_contract(
         or not 2 <= subquestion_count_range[0] <= subquestion_count_range[1] <= 4
     ):
         raise CoveragePlanError("综合题分问范围上下界必须在 2 至 4 之间且下界不大于上界")
+    if comprehensive_archetype == "code_completion_scenario" and list(subquestion_count_range) != [2, 2]:
+        raise CoveragePlanError("code_completion_scenario 原型固定两个分问：补全代码与问题分析")
     if not subquestion_actions or not answer_boundaries or len(subquestion_actions) != len(answer_boundaries):
         raise CoveragePlanError("综合题必须规划数量一致的分问动作和答案边界")
     if not subquestion_count_range[0] <= len(subquestion_actions) <= subquestion_count_range[1]:
@@ -313,7 +315,12 @@ def build_coverage_directives(
         material_form = row.get("material_form")
         cognitive_sequence = row.get("cognitive_sequence")
         subquestion_count_range = row.get("subquestion_count_range")
-        subquestion_actions = list(row.get("subquestion_actions") or cognitive_sequence or [])
+        subquestion_actions = list(row.get("subquestion_actions") or [])
+        if not subquestion_actions and comprehensive_archetype == "code_completion_scenario":
+            subquestion_actions = ["补全代码", "结合场景分析问题并给出改进方向"]
+        subquestion_actions = list(subquestion_actions or cognitive_sequence or [])
+        if comprehensive_archetype == "code_completion_scenario":
+            subquestion_count_range = [2, 2]
         answer_boundaries = list(row.get("answer_boundaries") or [answer_boundary] * len(subquestion_actions))
         _validate_comprehensive_contract(
             question_type=item.question_type,
