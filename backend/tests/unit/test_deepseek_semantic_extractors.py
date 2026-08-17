@@ -868,9 +868,19 @@ def test_database_model_call_recorder_does_not_commit_callers_pending_transactio
     engine.dispose()
 
 
-def test_material_classifier_sends_one_exam_point_and_one_file_with_locators():
+def test_material_classifier_sends_exam_points_and_one_file_with_locators():
     client = RecordingJsonClient(
-        [{"exam_point_code": "rag-diagnosis", "material_version_id": "material-v1", "decisions": [_decision()]}]
+        [
+            {
+                "file_decisions": [
+                    {
+                        "exam_point_code": "rag-diagnosis",
+                        "material_version_id": "material-v1",
+                        "decisions": [_decision()],
+                    }
+                ]
+            }
+        ]
     )
     classifier = DeepSeekExamPointEvidenceClassifier(client)
     chunk = StagingChunk(
@@ -880,53 +890,57 @@ def test_material_classifier_sends_one_exam_point_and_one_file_with_locators():
         locator={"page": 3, "heading_path": ["检索"]},
     )
 
-    result = classifier.classify(
-        exam_point=_point(),
+    result = classifier.classify_file(
+        exam_points=[_point()],
         material_version_id="material-v1",
         chunks=[chunk],
         call_context=ModelCallContext(course_id="course", organization_run_id="run", stage="classification"),
     )
 
     request = client.recorded_payloads[-1]["user"]
-    assert request["exam_point"]["code"] == "rag-diagnosis"
+    assert [item["code"] for item in request["exam_points"]] == ["rag-diagnosis"]
     assert request["material_version_id"] == "material-v1"
     assert {item["material_version_id"] for item in request["chunks"]} == {"material-v1"}
     assert request["chunks"][0]["locator"]["page"] == 3
-    assert "all_exam_points" not in request
-    assert result.decisions[0].evidence_chunk_id == "e1"
-    assert "相关背景" in client.recorded_payloads[-1]["system"]
-    assert "考点边界之外" in client.recorded_payloads[-1]["system"]
+    assert "exam_point" not in request
+    assert result[0].decisions[0].evidence_chunk_id == "e1"
+    assert "file_decisions" in client.recorded_payloads[-1]["system"]
+    assert "out_of_scope" in client.recorded_payloads[-1]["system"]
 
 
 def test_material_classifier_normalizes_provider_aliases_for_non_direct_evidence():
     client = RecordingJsonClient(
         [
             {
-                "exam_point_code": "rag-diagnosis",
-                "material_version_id": "material-v1",
-                "decisions": [
+                "file_decisions": [
                     {
                         "exam_point_code": "rag-diagnosis",
-                        "chunk_id": "e1",
-                        "relevance_class": "out_of_scope",
-                        "support_claim": "封面元数据与当前考点无关",
-                        "content_kind": "text",
-                        "confidence": 0.95,
+                        "material_version_id": "material-v1",
+                        "decisions": [
+                            {
+                                "exam_point_code": "rag-diagnosis",
+                                "chunk_id": "e1",
+                                "relevance_class": "out_of_scope",
+                                "support_claim": "封面元数据与当前考点无关",
+                                "content_kind": "text",
+                                "confidence": 0.95,
+                            }
+                        ],
                     }
-                ],
+                ]
             }
         ]
     )
 
-    result = DeepSeekExamPointEvidenceClassifier(client).classify(
-        exam_point=_point(),
+    result = DeepSeekExamPointEvidenceClassifier(client).classify_file(
+        exam_points=[_point()],
         material_version_id="material-v1",
         chunks=[StagingChunk(id="e1", material_version_id="material-v1", content="封面")],
     )
 
-    assert result.decisions[0].evidence_chunk_id == "e1"
-    assert result.decisions[0].content_kind.value == "background"
-    assert result.decisions[0].confidence == 95
+    assert result[0].decisions[0].evidence_chunk_id == "e1"
+    assert result[0].decisions[0].content_kind.value == "background"
+    assert result[0].decisions[0].confidence == 95
 
 
 def test_classifier_rejects_evidence_from_another_pair():
@@ -934,13 +948,23 @@ def test_classifier_rejects_evidence_from_another_pair():
     bad["evidence_chunk_id"] = "outside"
     classifier = DeepSeekExamPointEvidenceClassifier(
         RecordingJsonClient(
-            [{"exam_point_code": "rag-diagnosis", "material_version_id": "material-v1", "decisions": [bad]}]
+            [
+                {
+                    "file_decisions": [
+                        {
+                            "exam_point_code": "rag-diagnosis",
+                            "material_version_id": "material-v1",
+                            "decisions": [bad],
+                        }
+                    ]
+                }
+            ]
         )
     )
 
     with pytest.raises(DeepSeekModelError) as caught:
-        classifier.classify(
-            exam_point=_point(),
+        classifier.classify_file(
+            exam_points=[_point()],
             material_version_id="material-v1",
             chunks=[StagingChunk(id="e1", material_version_id="material-v1", content="content")],
         )

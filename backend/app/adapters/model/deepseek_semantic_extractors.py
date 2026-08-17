@@ -183,6 +183,28 @@ def _normalize_classification_response(raw: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _normalize_file_classification_response(raw: dict[str, Any]) -> dict[str, Any]:
+    """Normalize the file-level wrapper without weakening per-point evidence checks."""
+
+    normalized = dict(raw)
+    file_decisions = None
+    for key in ("file_decisions", "fileDecisions", "FileDecisions"):
+        if isinstance(normalized.get(key), list):
+            file_decisions = normalized.pop(key)
+            break
+    if file_decisions is None and isinstance(normalized.get("decisions"), list):
+        legacy_item = {key: value for key, value in normalized.items() if key != "decisions"}
+        legacy_item["decisions"] = normalized["decisions"]
+        file_decisions = [legacy_item]
+    if file_decisions is None:
+        return normalized
+    normalized["file_decisions"] = [
+        _normalize_classification_response(item) if isinstance(item, dict) else item
+        for item in file_decisions
+    ]
+    return normalized
+
+
 def _normalize_consolidation_response(
     raw: dict[str, Any], exam_point: ExamPoint, admitted: list[EvidenceDecision]
 ) -> dict[str, Any]:
@@ -375,10 +397,17 @@ class _EvidenceDecisionResponse(EvidenceDecision):
 
 class _ClassificationResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
     exam_point_code: _Text
     material_version_id: _Text
     decisions: list[_EvidenceDecisionResponse]
     source_locations: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class _FileClassificationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    file_decisions: list[_ClassificationResponse]
 
 
 class _ConsolidationResponse(BaseModel):
@@ -482,74 +511,84 @@ class DeepSeekExamPointEvidenceClassifier:
     def __init__(self, client: JsonRequester) -> None:
         self.client = client
 
-    def classify(
+    def classify_file(
         self,
         *,
-        exam_point: ExamPoint,
+        exam_points: list[ExamPoint],
         material_version_id: str,
         chunks: list[StagingChunk],
         call_context: ModelCallContext | None = None,
-    ) -> ExamPointFileDecision:
+    ) -> list[ExamPointFileDecision]:
+        """一个资料文件 × 全部相关考点，一次调用完成分类。"""
         if any(chunk.material_version_id != material_version_id for chunk in chunks):
             raise DeepSeekModelError(
                 "model_input_scope_violation",
                 "classification input contains another material version",
             )
-        parsed: list[ExamPointFileDecision] = []
+        expected_pairs = {
+            (point.code, chunk.id) for point in exam_points for chunk in chunks
+        }
+        collected: dict[str, ExamPointFileDecision] = {}
 
         def validate_response(result: dict) -> None:
             try:
-                response = _ClassificationResponse.model_validate(
-                    _normalize_classification_response(result)
-                )
-                decision = ExamPointFileDecision(
-                    exam_point_code=response.exam_point_code,
-                    material_version_id=response.material_version_id,
-                    decisions=[
-                        EvidenceDecision.model_validate(
-                            item.model_dump(exclude={"source_locator"})
-                        )
-                        for item in response.decisions
-                    ],
+                response = _FileClassificationResponse.model_validate(
+                    _normalize_file_classification_response(result)
                 )
             except ValidationError as exc:
                 raise _schema_error(exc) from None
-            expected_ids = {chunk.id for chunk in chunks}
-            actual_ids = [item.evidence_chunk_id for item in decision.decisions]
-            if (
-                decision.exam_point_code != exam_point.code
-                or decision.material_version_id != material_version_id
-                or len(actual_ids) != len(set(actual_ids))
-                or set(actual_ids) != expected_ids
-                or any(
-                    item.exam_point_code != exam_point.code
-                    for item in decision.decisions
+            seen: list[tuple[str, str]] = []
+            for item in response.file_decisions:
+                if item.material_version_id != material_version_id:
+                    raise DeepSeekModelError(
+                        "model_output_scope_violation",
+                        "classification response belongs to another material version",
+                    )
+                if item.exam_point_code not in {point.code for point in exam_points}:
+                    raise DeepSeekModelError(
+                        "model_output_scope_violation",
+                        "classification response references unknown exam point",
+                    )
+                for decision in item.decisions:
+                    if decision.exam_point_code != item.exam_point_code:
+                        raise DeepSeekModelError(
+                            "model_output_scope_violation",
+                            "classification decision belongs to another exam point",
+                        )
+                    seen.append((item.exam_point_code, decision.evidence_chunk_id))
+                collected[item.exam_point_code] = ExamPointFileDecision(
+                    exam_point_code=item.exam_point_code,
+                    material_version_id=item.material_version_id,
+                    decisions=[
+                        EvidenceDecision.model_validate(
+                            d.model_dump(exclude={"source_locator"})
+                        )
+                        for d in item.decisions
+                    ],
                 )
-            ):
+            if len(seen) != len(set(seen)) or set(seen) != expected_pairs:
                 raise DeepSeekModelError(
                     "model_output_scope_violation",
-                    "classification output does not match the requested exam-point file pair",
+                    "classification output must cover every (exam_point, chunk) pair exactly once",
                 )
-            parsed.append(decision)
 
         self.client.request_json(
             system_prompt=(
-                "你只判断一个考试考点与一个教学资料文件中的证据关系。必须逐条返回输入 chunks 的判定，"
-                "relevance_class 仅允许 direct、supporting、background、out_of_scope。direct 必须能直接支撑"
-                "可评分事实、答案或评分点；supporting 只用于设问语境；background 表示与主题相关但既不支撑"
-                "评分答案也不支撑设问的相关背景；out_of_scope 表示位于当前考点边界之外。background 和 "
-                "out_of_scope 均不得生成知识卡。"
-                "遵守 exam_point.operational_detail_policy，不使用任何课程专属黑名单。来源页码和标题仅用于教师追溯，"
-                "不得写入 candidate_card_content 的正文。返回严格 JSON 对象，包含 exam_point_code、"
-                "material_version_id、decisions。每条 decisions 必须一一对应输入的 evidence_chunk_id，且必须包含"
-                "exam_point_code、evidence_chunk_id、relevance_class、support_claim、content_kind、confidence。"
-                "direct 还必须提供 candidate_assessment_unit 与 candidate_card_content；supporting 可提供"
-                "prompt_material；background 与 out_of_scope 不得提供候选知识卡。若无法同时写出完整的"
-                "candidate_assessment_unit（可评分表现）和 candidate_card_content（至少一条可考事实），"
-                "必须将该条降为 supporting 或 background，绝不能输出缺少候选字段的 direct。"
+                "你判断一份教学资料文件与多个考试考点的证据关系。输入包含 exam_points 数组与该文件全部召回的 chunks。"
+                "必须返回 JSON 对象，顶层字段 file_decisions 为数组；每个元素对应一个考点，"
+                "包含 exam_point_code、material_version_id、decisions。"
+                "每个考点必须对其与该文件相关的全部输入 chunks 逐一判定，不得遗漏；"
+                "每条 decisions 必须一一对应输入的 evidence_chunk_id，且必须包含 exam_point_code、"
+                "evidence_chunk_id、relevance_class、support_claim、content_kind、confidence。"
+                "relevance_class 仅允许 direct、supporting、background、out_of_scope；"
+                "direct 必须能直接支撑可评分事实、答案或评分点，且必须提供 candidate_assessment_unit 与 "
+                "candidate_card_content，否则降级为 supporting 或 background；"
+                "supporting 只用于设问语境；background/out_of_scope 不得生成知识卡。"
+                "遵守各考点 operational_detail_policy，不使用任何课程专属黑名单。"
+                "来源页码和标题仅用于教师追溯，不得写入 candidate_card_content 的正文。返回严格 JSON。"
             ),
             payload={
-                "exam_point": exam_point.model_dump(mode="json"),
+                "exam_points": [point.model_dump(mode="json") for point in exam_points],
                 "material_version_id": material_version_id,
                 "chunks": [
                     {
@@ -565,7 +604,7 @@ class DeepSeekExamPointEvidenceClassifier:
             call_context=call_context,
             response_validator=validate_response,
         )
-        return parsed[0]
+        return list(collected.values())
 
 
 class DeepSeekExamPointKnowledgeConsolidator:

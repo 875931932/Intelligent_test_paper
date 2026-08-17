@@ -1574,11 +1574,11 @@ async def main() -> None:
                 "candidate_chunk_hashes": [hashlib.sha256(chunk.content.encode()).hexdigest() for chunk in recalled],
             },
         )
-        return DeepSeekExamPointEvidenceClassifier(requester).classify(
-            exam_point=point,
+        return DeepSeekExamPointEvidenceClassifier(requester).classify_file(
+            exam_points=[point],
             material_version_id=material_hash,
             chunks=recalled,
-        )
+        )[0]
 
     decisions: list[ExamPointFileDecision] = []
     with ThreadPoolExecutor(max_workers=DEMO_CLASSIFIER_MAX_WORKERS) as executor:

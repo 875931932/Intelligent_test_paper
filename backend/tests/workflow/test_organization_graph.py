@@ -79,25 +79,34 @@ class PairSelectingRetriever:
 
 
 class RecordingClassifier:
-    def __init__(self, *, fail_pair: tuple[str, str] | None = None):
-        self.calls: list[tuple[str, str, list[str]]] = []
-        self.fail_pair = fail_pair
+    def __init__(self, *, fail_material: str | None = None):
+        self.calls: list[tuple[tuple[str, ...], str, tuple[str, ...]]] = []
+        self.fail_material = fail_material
 
-    def classify(self, *, exam_point, material_version_id, chunks, call_context=None):
-        self.calls.append((exam_point.code, material_version_id, [chunk.id for chunk in chunks]))
+    def classify_file(self, *, exam_points, material_version_id, chunks, call_context=None):
+        self.calls.append(
+            (
+                tuple(point.code for point in exam_points),
+                material_version_id,
+                tuple(chunk.id for chunk in chunks),
+            )
+        )
         assert all(chunk.material_version_id == material_version_id for chunk in chunks)
         assert call_context.course_id == "course-1"
         assert call_context.organization_run_id == "organization-run-1"
         assert call_context.stage == "classify_exam_point_file_pair"
-        if self.fail_pair == (exam_point.code, material_version_id):
+        if self.fail_material == material_version_id:
             raise RuntimeError("Bearer secret-token must not leak")
         if material_version_id == "material-1":
             sleep(0.01)
-        return ExamPointFileDecision(
-            exam_point_code=exam_point.code,
-            material_version_id=material_version_id,
-            decisions=[_decision(exam_point, chunk) for chunk in chunks],
-        )
+        return [
+            ExamPointFileDecision(
+                exam_point_code=point.code,
+                material_version_id=material_version_id,
+                decisions=[_decision(point, chunk) for chunk in chunks],
+            )
+            for point in exam_points
+        ]
 
 
 class RecordingConsolidator:
@@ -214,12 +223,10 @@ def test_organization_graph_classifies_only_recalled_exam_point_file_pairs():
         len({repository.chunks[chunk_id].material_version_id for chunk_id in chunk_ids}) == 1
         for _, chunk_ids in retriever.calls
     )
-    assert sorted((point, material) for point, material, _ in classifier.calls) == [
-        ("EP-1", "material-1"),
-        ("EP-1", "material-2"),
-        ("EP-2", "material-2"),
+    assert sorted(classifier.calls) == [
+        (("EP-1",), "material-1", ("chunk-1",)),
+        (("EP-1", "EP-2"), "material-2", ("chunk-2", "chunk-3")),
     ]
-    assert all(len(chunk_ids) == 1 for _, _, chunk_ids in classifier.calls)
     assert sorted(consolidator.calls) == [
         ("EP-1", ["chunk-1", "chunk-2"]),
         ("EP-2", ["chunk-3"]),
@@ -246,25 +253,26 @@ def test_no_recall_marks_exam_point_insufficient_without_classifier_call():
 
     graph.invoke(_state(), config={"configurable": {"thread_id": "no-recall"}})
 
-    assert all(call[0] != "EP-2" for call in classifier.calls)
+    assert all("EP-2" not in point_codes for point_codes, _, _ in classifier.calls)
     coverage = {item.exam_point_code: item for item in repository.candidate.coverage}
     assert coverage["EP-2"].status == "insufficient"
     assert "no_recalled_evidence" in coverage["EP-2"].reasons
 
 
-def test_one_pair_failure_is_redacted_and_does_not_repeat_or_block_other_pairs():
-    classifier = RecordingClassifier(fail_pair=("EP-1", "material-1"))
+def test_one_material_failure_is_redacted_and_does_not_block_other_materials():
+    classifier = RecordingClassifier(fail_material="material-1")
     graph, _, _, _, repository = _graph(classifier=classifier)
 
     graph.invoke(_state(), config={"configurable": {"thread_id": "pair-failure"}})
 
-    assert sorted((point, material) for point, material, _ in classifier.calls) == [
-        ("EP-1", "material-1"),
-        ("EP-1", "material-2"),
-        ("EP-2", "material-2"),
+    assert sorted(material for _, material, _ in classifier.calls) == [
+        "material-1",
+        "material-2",
     ]
     assert len(repository.persisted_state["failed_pairs"]) == 1
     failure = repository.persisted_state["failed_pairs"][0]
+    assert failure["exam_point_code"] == "EP-1"
+    assert failure["material_version_id"] == "material-1"
     assert failure["error_code"] == "classification_failed"
     assert "secret-token" not in failure["error_message"]
     assert {item.exam_point_code for item in repository.candidate.coverage} == {"EP-1", "EP-2"}
@@ -296,9 +304,9 @@ def test_each_exam_point_material_pair_gets_its_own_top_k_budget(monkeypatch):
         _state(chunks), config={"configurable": {"thread_id": "pair-top-k"}}
     )
 
-    assert sorted((point, material, ids) for point, material, ids in classifier.calls) == [
-        ("EP-1", "material-1", ["m1-a"]),
-        ("EP-1", "material-2", ["m2-a"]),
+    assert sorted(classifier.calls) == [
+        (("EP-1",), "material-1", ("m1-a",)),
+        (("EP-1",), "material-2", ("m2-a",)),
     ]
     assert sorted((point, ids) for point, ids in retriever.calls) == [
         ("EP-1", ["m1-a", "m1-b"]),
@@ -349,11 +357,9 @@ def test_graph_embeds_each_exam_point_query_once_and_reuses_frozen_chunk_vectors
         [_point("EP-1", "rag").retrieval_intent],
         [_point("EP-2", "agent").retrieval_intent],
     ]
-    assert sorted((point, material) for point, material, _ in classifier.calls) == [
-        ("EP-1", "material-1"),
-        ("EP-1", "material-2"),
-        ("EP-2", "material-1"),
-        ("EP-2", "material-2"),
+    assert sorted(classifier.calls) == [
+        (("EP-1", "EP-2"), "material-1", ("m1",)),
+        (("EP-1", "EP-2"), "material-2", ("m2",)),
     ]
 
 
@@ -369,11 +375,11 @@ class AdapterOutputError(RuntimeError):
 )
 def test_classifier_failure_preserves_safe_adapter_error_code(error_code):
     class FailingClassifier(RecordingClassifier):
-        def classify(self, *, exam_point, material_version_id, chunks, call_context=None):
-            if (exam_point.code, material_version_id) == ("EP-1", "material-1"):
+        def classify_file(self, *, exam_points, material_version_id, chunks, call_context=None):
+            if material_version_id == "material-1":
                 raise AdapterOutputError(error_code)
-            return super().classify(
-                exam_point=exam_point,
+            return super().classify_file(
+                exam_points=exam_points,
                 material_version_id=material_version_id,
                 chunks=chunks,
                 call_context=call_context,
@@ -498,11 +504,11 @@ def test_classifier_failure_preserves_safe_adapter_error_code(error_code):
 )
 def test_failed_pair_message_redacts_credentials_before_truncation(message, secrets):
     class FailingClassifier(RecordingClassifier):
-        def classify(self, *, exam_point, material_version_id, chunks, call_context=None):
-            if (exam_point.code, material_version_id) == ("EP-1", "material-1"):
+        def classify_file(self, *, exam_points, material_version_id, chunks, call_context=None):
+            if material_version_id == "material-1":
                 raise AdapterOutputError("model_output_invalid", message)
-            return super().classify(
-                exam_point=exam_point,
+            return super().classify_file(
+                exam_points=exam_points,
                 material_version_id=material_version_id,
                 chunks=chunks,
                 call_context=call_context,
@@ -528,10 +534,10 @@ def test_failed_pair_message_redacts_credentials_before_truncation(message, secr
 @pytest.mark.parametrize("bad_output", ["cross_point", "duplicate"])
 def test_bad_classifier_output_isolated_to_its_exam_point_file_pair(bad_output):
     class BadClassifier(RecordingClassifier):
-        def classify(self, *, exam_point, material_version_id, chunks, call_context=None):
-            if (exam_point.code, material_version_id) != ("EP-1", "material-1"):
-                return super().classify(
-                    exam_point=exam_point,
+        def classify_file(self, *, exam_points, material_version_id, chunks, call_context=None):
+            if material_version_id != "material-1":
+                return super().classify_file(
+                    exam_points=exam_points,
                     material_version_id=material_version_id,
                     chunks=chunks,
                     call_context=call_context,
@@ -539,13 +545,15 @@ def test_bad_classifier_output_isolated_to_its_exam_point_file_pair(bad_output):
             if bad_output == "cross_point":
                 decisions = [_decision(_point("EP-2", "agent"), chunks[0])]
             else:
-                decision = _decision(exam_point, chunks[0])
+                decision = _decision(exam_points[0], chunks[0])
                 decisions = [decision, decision]
-            return ExamPointFileDecision(
-                exam_point_code=exam_point.code,
-                material_version_id=material_version_id,
-                decisions=decisions,
-            )
+            return [
+                ExamPointFileDecision(
+                    exam_point_code=exam_points[0].code,
+                    material_version_id=material_version_id,
+                    decisions=decisions,
+                )
+            ]
 
     graph, _, _, _, repository = _graph(classifier=BadClassifier())
 
@@ -577,23 +585,33 @@ def test_incomplete_classifier_response_isolated_to_its_pair(response_kind):
             return super().retrieve(exam_point, chunks)
 
     class IncompleteClassifier(RecordingClassifier):
-        def classify(self, *, exam_point, material_version_id, chunks, call_context=None):
-            if (exam_point.code, material_version_id) != ("EP-1", "material-1"):
-                return super().classify(
-                    exam_point=exam_point,
+        def classify_file(self, *, exam_points, material_version_id, chunks, call_context=None):
+            if material_version_id != "material-1":
+                return super().classify_file(
+                    exam_points=exam_points,
                     material_version_id=material_version_id,
                     chunks=chunks,
                     call_context=call_context,
                 )
             self.calls.append(
-                (exam_point.code, material_version_id, [chunk.id for chunk in chunks])
+                (
+                    tuple(point.code for point in exam_points),
+                    material_version_id,
+                    tuple(chunk.id for chunk in chunks),
+                )
             )
-            decisions = [] if response_kind == "empty" else [_decision(exam_point, chunks[0])]
-            return ExamPointFileDecision(
-                exam_point_code=exam_point.code,
-                material_version_id=material_version_id,
-                decisions=decisions,
+            decisions = (
+                []
+                if response_kind == "empty"
+                else [_decision(exam_points[0], chunks[0])]
             )
+            return [
+                ExamPointFileDecision(
+                    exam_point_code=exam_points[0].code,
+                    material_version_id=material_version_id,
+                    decisions=decisions,
+                )
+            ]
 
     graph, _, classifier, _, repository = _graph(
         retriever=MultiChunkRetriever(), classifier=IncompleteClassifier()
@@ -604,7 +622,7 @@ def test_incomplete_classifier_response_isolated_to_its_pair(response_kind):
         config={"configurable": {"thread_id": f"incomplete-{response_kind}"}},
     )
 
-    assert ("EP-1", "material-1", ["chunk-1", "chunk-4"]) in classifier.calls
+    assert (("EP-1",), "material-1", ("chunk-1", "chunk-4")) in classifier.calls
     failures = repository.persisted_state["failed_pairs"]
     assert len(failures) == 1
     assert failures[0]["exam_point_code"] == "EP-1"
@@ -762,7 +780,7 @@ def test_graph_resume_reviews_only_topics_left_active_after_exclusions():
 
 
 def test_graph_blocks_unresolved_coverage_until_exam_point_is_excluded():
-    classifier = RecordingClassifier(fail_pair=("EP-1", "material-1"))
+    classifier = RecordingClassifier(fail_material="material-1")
     graph, _, _, _, _ = _graph(classifier=classifier)
     config = {"configurable": {"thread_id": "unresolved-coverage"}}
     graph.invoke(_state(), config=config)
@@ -782,7 +800,7 @@ def test_graph_blocks_unresolved_coverage_until_exam_point_is_excluded():
 
 
 def test_graph_teacher_exclusion_marks_every_unit_for_exam_point_excluded():
-    classifier = RecordingClassifier(fail_pair=("EP-1", "material-1"))
+    classifier = RecordingClassifier(fail_material="material-1")
     graph, _, _, _, repository = _graph(classifier=classifier)
     config = {"configurable": {"thread_id": "exclude-unresolved"}}
     graph.invoke(_state(), config=config)

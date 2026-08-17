@@ -199,14 +199,14 @@ class ExamPointCoverage(BaseModel):
 
 
 class ExamPointEvidenceClassifier(Protocol):
-    def classify(
+    def classify_file(
         self,
         *,
-        exam_point: ExamPoint,
+        exam_points: list[ExamPoint],
         material_version_id: str,
         chunks: list[StagingChunk],
         call_context: ModelCallContext | None = None,
-    ) -> ExamPointFileDecision: ...
+    ) -> list[ExamPointFileDecision]: ...
 
 
 MINIMUM_ADMISSION_CONFIDENCE = 50

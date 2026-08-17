@@ -273,19 +273,31 @@ def build_organization_graph(
             }
         )
         chunks_by_id = {chunk.id: chunk for chunk in _chunks(state, chunk_ids)}
-        pairs = sorted(
+        pairs_by_material: dict[str, list[dict]] = defaultdict(list)
+        for pair in sorted(
             state.get("retrieval_pairs", []),
             key=lambda item: (item["exam_point_code"], item["material_version_id"]),
-        )
+        ):
+            pairs_by_material[pair["material_version_id"]].append(pair)
 
-        def classify_pair(pair: dict) -> ExamPointFileDecision:
-            point = points[pair["exam_point_code"]]
-            chunks = [chunks_by_id[chunk_id] for chunk_id in pair["evidence_chunk_ids"]]
-            if any(chunk.material_version_id != pair["material_version_id"] for chunk in chunks):
+        def classify_material(
+            material_version_id: str, material_pairs: list[dict]
+        ) -> list[ExamPointFileDecision]:
+            point_codes = sorted({pair["exam_point_code"] for pair in material_pairs})
+            material_points = [points[code] for code in point_codes]
+            union_ids = sorted(
+                {
+                    chunk_id
+                    for pair in material_pairs
+                    for chunk_id in pair["evidence_chunk_ids"]
+                }
+            )
+            chunks = [chunks_by_id[chunk_id] for chunk_id in union_ids]
+            if any(chunk.material_version_id != material_version_id for chunk in chunks):
                 raise ValueError("classification pair contains chunks from another material")
-            decision = classifier.classify(
-                exam_point=point,
-                material_version_id=pair["material_version_id"],
+            file_decisions = classifier.classify_file(
+                exam_points=material_points,
+                material_version_id=material_version_id,
                 chunks=chunks,
                 call_context=ModelCallContext(
                     course_id=state["course_id"],
@@ -293,24 +305,38 @@ def build_organization_graph(
                     stage="classify_exam_point_file_pair",
                 ),
             )
-            validated = ExamPointFileDecision.model_validate(decision)
-            if (
-                validated.exam_point_code != point.code
-                or validated.material_version_id != pair["material_version_id"]
-            ):
-                raise ValueError("classification response does not match its pair")
-            admitted = [admit_evidence_decision(point, item) for item in validated.decisions]
-            allowed_ids = set(pair["evidence_chunk_ids"])
-            if any(item.evidence_chunk_id not in allowed_ids for item in admitted):
-                raise ValueError("classification response references evidence outside its pair")
-            decision_ids = [item.evidence_chunk_id for item in admitted]
-            if len(decision_ids) != len(set(decision_ids)):
-                raise ValueError("classification response contains duplicate evidence decisions")
-            if set(decision_ids) != allowed_ids:
-                raise ValueError(
-                    "classification response must cover every recalled evidence chunk"
+            by_point = {
+                item.exam_point_code: ExamPointFileDecision.model_validate(item)
+                for item in file_decisions
+            }
+            if set(by_point) != set(point_codes):
+                raise ValueError("classification response does not match its material points")
+            scoped_decisions: list[ExamPointFileDecision] = []
+            for pair in material_pairs:
+                point = points[pair["exam_point_code"]]
+                validated = by_point[pair["exam_point_code"]]
+                if validated.material_version_id != material_version_id:
+                    raise ValueError("classification response does not match its pair")
+                allowed_ids = set(pair["evidence_chunk_ids"])
+                scoped = [
+                    item
+                    for item in validated.decisions
+                    if item.evidence_chunk_id in allowed_ids
+                ]
+                admitted = [admit_evidence_decision(point, item) for item in scoped]
+                decision_ids = [item.evidence_chunk_id for item in scoped]
+                if len(decision_ids) != len(set(decision_ids)):
+                    raise ValueError(
+                        "classification response contains duplicate evidence decisions"
+                    )
+                if set(decision_ids) != allowed_ids:
+                    raise ValueError(
+                        "classification response must cover every recalled evidence chunk"
+                    )
+                scoped_decisions.append(
+                    validated.model_copy(update={"decisions": admitted})
                 )
-            return validated.model_copy(update={"decisions": admitted})
+            return scoped_decisions
 
         decisions: list[ExamPointFileDecision] = []
         failures: list[dict] = list(state.get("failed_pairs") or [])
@@ -319,23 +345,30 @@ def build_organization_graph(
             for code, values in (state.get("coverage_reasons") or {}).items()
         }
         with ThreadPoolExecutor(max_workers=settings.organization_max_workers) as executor:
-            future_pairs = {executor.submit(classify_pair, pair): pair for pair in pairs}
-            for future in as_completed(future_pairs):
-                pair = future_pairs[future]
+            future_materials = {
+                executor.submit(classify_material, material_version_id, material_pairs): (
+                    material_version_id,
+                    material_pairs,
+                )
+                for material_version_id, material_pairs in sorted(pairs_by_material.items())
+            }
+            for future in as_completed(future_materials):
+                material_version_id, material_pairs = future_materials[future]
                 try:
-                    decisions.append(future.result())
+                    decisions.extend(future.result())
                 except Exception as exc:
-                    failures.append(
-                        _failure(
-                            stage="classification",
-                            point_code=pair["exam_point_code"],
-                            material_version_id=pair["material_version_id"],
-                            exc=exc,
+                    for pair in material_pairs:
+                        failures.append(
+                            _failure(
+                                stage="classification",
+                                point_code=pair["exam_point_code"],
+                                material_version_id=material_version_id,
+                                exc=exc,
+                            )
                         )
-                    )
-                    coverage_reasons.setdefault(pair["exam_point_code"], []).append(
-                        "classification_failed"
-                    )
+                        coverage_reasons.setdefault(
+                            pair["exam_point_code"], []
+                        ).append("classification_failed")
         decisions.sort(key=lambda item: (item.exam_point_code, item.material_version_id))
         failures.sort(
             key=lambda item: (
