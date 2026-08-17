@@ -41,7 +41,6 @@ from app.adapters.model.deepseek_semantic_extractors import (
 from app.domain.blueprint.models import BlueprintRequest, UnitCoverage
 from app.domain.framework.exam_points import ExamPoint, OperationalDetailPolicy
 from app.domain.framework.models import AssessmentOutline, TeachingTopic
-from app.domain.generation.structure_signature import QuestionStructureSignature
 from app.domain.generation.semantic_diversity import (
     AnswerRelation,
     CardSemanticProfile,
@@ -61,6 +60,11 @@ from app.domain.knowledge.relevance import (
     StagingChunk,
 )
 from app.services.blueprint_service import allocate_plan_items
+from app.services.contract_service import (
+    ContractRequest,
+    allocate_paper_contract,
+    apply_slot_revisions,
+)
 from app.services.document_processing_service import read_mineru_zip
 from app.services.staging_retrieval_service import lexical_overlap
 from app.workflows.generation_graph import build_generation_graph
@@ -1262,43 +1266,6 @@ def assert_source_free(value: Any, *, path: str = "payload") -> None:
         raise ValueError(f"source-free serialization rejected source locator text: {path}")
 
 
-def signature_dto(signature: dict[str, Any] | QuestionStructureSignature) -> dict[str, Any]:
-    raw = signature.model_dump(mode="json") if hasattr(signature, "model_dump") else dict(signature)
-    return {
-        "archetype": raw.get("archetype", ""),
-        "material_form": raw.get("material_form", ""),
-        "cognitive_sequence": list(raw.get("cognitive_sequence") or []),
-        "subquestion_actions": list(raw.get("subquestion_actions") or []),
-        "answer_boundaries": list(raw.get("answer_boundaries") or []),
-        "structure_key": raw.get("structure_key", ""),
-        "signature_hash": raw.get("signature_hash", ""),
-    }
-
-
-def read_signature_history() -> list[dict[str, Any]]:
-    if not OUTPUT_FILE.exists():
-        return []
-    try:
-        previous = json.loads(OUTPUT_FILE.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError):
-        return []
-    rows = previous.get("signature_history") if isinstance(previous, dict) else None
-    if not isinstance(rows, list):
-        rows = []
-        paper = previous.get("paper", {}) if isinstance(previous, dict) else {}
-        questions = paper.get("questions", []) if isinstance(paper, dict) else []
-        for question in questions:
-            if isinstance(question, dict) and question.get("question_type") == "comprehensive" and isinstance(question.get("structure_signature"), dict):
-                rows.append(question["structure_signature"])
-    result = []
-    for row in rows:
-        try:
-            result.append(signature_dto(row))
-        except (TypeError, ValueError):
-            continue
-    return result[:5]
-
-
 def required_environment_missing() -> list[str]:
     required = [
         "MINERU_API_TOKEN", "DEEPSEEK_API_KEY", "EMBEDDING_BASE_URL",
@@ -1354,16 +1321,55 @@ async def generate_paper_from_blueprint(
     *,
     blueprint: dict[str, Any],
     cards: dict[str, dict[str, Any]],
-    recent_signatures: list[dict[str, Any]],
 ) -> None:
     assert_source_free(cards, path="knowledge_cards")
     snapshot["blueprint"] = blueprint
     snapshot["status"] = "generating"
     write_snapshot(snapshot)
-    log(
-        "Generating paper from cached knowledge tree: "
-        f"{len(blueprint['plan']['items'])} item slots, planning batches of 4"
+
+    request = ContractRequest(
+        blueprint=BlueprintRequest.model_validate(blueprint["request"]),
+        knowledge_cards=cards,
     )
+    contract = allocate_paper_contract(request)
+    centrality_threshold = request.centrality_threshold
+    if contract.conflicts:
+        for conflict in contract.conflicts:
+            log(f"Contract conflict [{conflict.code}]: {conflict.message}")
+        log("Retrying contract allocation with relaxed centrality threshold 0.5")
+        centrality_threshold = 0.5
+        contract = allocate_paper_contract(
+            request.model_copy(update={"centrality_threshold": centrality_threshold})
+        )
+        if contract.conflicts:
+            for conflict in contract.conflicts:
+                log(f"Contract conflict [{conflict.code}]: {conflict.message}")
+            raise RuntimeError(
+                "contract allocation still reports conflicts after relaxation"
+            )
+    log(
+        f"Paper contract allocated: {len(contract.slots)} slots, "
+        f"total score {contract.total_score}, threshold {centrality_threshold}"
+    )
+    confirmed = apply_slot_revisions(
+        contract,
+        [],
+        units=request.blueprint.units,
+        knowledge_cards=cards,
+    )
+    slots_json = [slot.model_dump(mode="json") for slot in confirmed.slots]
+    assert_source_free(slots_json, path="paper_contract")
+    snapshot["contract"] = {
+        "total_score": confirmed.total_score,
+        "slots": slots_json,
+        "conflicts": [
+            conflict.model_dump(mode="json") for conflict in confirmed.conflicts
+        ],
+        "audit_summary": confirmed.audit_summary.model_dump(mode="json"),
+        "centrality_threshold": centrality_threshold,
+        "slot_revisions": [],
+    }
+    write_snapshot(snapshot)
 
     gateway = DeepSeekGateway(
         api_key=os.environ["DEEPSEEK_API_KEY"],
@@ -1372,44 +1378,44 @@ async def generate_paper_from_blueprint(
         timeout=90,
         max_attempts=2,
     )
-    result = await asyncio.to_thread(
-        build_generation_graph(
-            gateway,
-            max_workers=4,
-        ).invoke,
-        {
-            "plan_items": blueprint["plan"]["items"],
-            "knowledge_cards": cards,
-            "recent_structure_signatures": recent_signatures[:5],
-        },
+    log(
+        "Generating paper from confirmed contract: "
+        f"{len(slots_json)} slots in parallel exam-point batches"
     )
-    payload_snapshots = {
-        str(index): payload.model_dump(mode="json")
-        if hasattr(payload, "model_dump")
-        else payload
-        for index, payload in (result.get("payloads") or {}).items()
-    }
-    assert_source_free(payload_snapshots, path="source_free_generation_payloads")
+    result = await asyncio.to_thread(
+        build_generation_graph(gateway).invoke,
+        {"contract": slots_json, "knowledge_cards": cards},
+    )
     questions = result.get("questions", [])
-    signatures = [
-        signature_dto(question["structure_signature"])
-        for question in questions
-        if question.get("question_type") == "comprehensive"
-        and isinstance(question.get("structure_signature"), dict)
-    ]
+    final_check = result.get("final_check", {})
+    model_call_count = result.get("model_call_count", 0)
+    for question in questions:
+        if question.get("needs_review"):
+            log(
+                f"Question needs review: item {question.get('item_index')} — "
+                f"{question.get('quality', {}).get('message', '')}"
+            )
+    for check in final_check.get("checks", []):
+        if not check.get("passed"):
+            log(
+                f"Final check failed [{check.get('code')}]: {check.get('detail')}"
+            )
+    log(
+        f"Generation finished: {len(questions)} questions, "
+        f"{model_call_count} model calls, final_check passed={final_check.get('passed')}"
+    )
     snapshot.update(
         {
             "status": "complete",
             "completed_at": datetime.now().isoformat(),
-            "source_free_generation_payloads": payload_snapshots,
+            "final_check": final_check,
+            "model_call_count": model_call_count,
             "paper": {
                 "questions": questions,
-                "total_score": 100,
+                "total_score": confirmed.total_score,
                 "question_count": len(questions),
-                "comprehensive_signatures": signatures,
                 "weight_audit": build_weight_audit(blueprint, questions),
             },
-            "signature_history": (signatures + recent_signatures)[:5],
         }
     )
     write_snapshot(snapshot)
@@ -1428,7 +1434,6 @@ async def resume_from_cached_knowledge_tree() -> None:
     if not points:
         raise RuntimeError("cached pipeline snapshot has no exam points")
     tree = KnowledgeTreeCandidate.model_validate(snapshot.get("knowledge_tree") or {})
-    recent_signatures = read_signature_history()
     core_injection = inject_core_concept_units(tree, points)
     if core_injection["units"]:
         log(
@@ -1443,7 +1448,6 @@ async def resume_from_cached_knowledge_tree() -> None:
         snapshot,
         blueprint=blueprint,
         cards=cards,
-        recent_signatures=recent_signatures,
     )
 
 
@@ -1461,7 +1465,6 @@ async def main() -> None:
     if not files:
         raise RuntimeError(f"no supported files under {SOURCE_DIR}")
 
-    recent_signatures = read_signature_history()
     snapshot: dict[str, Any] = {
         "status": "parsing",
         "started_at": datetime.now().isoformat(),
@@ -1469,7 +1472,6 @@ async def main() -> None:
         "files_total": len(files),
         "model": os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
         "curation_schema_version": CURATION_SCHEMA_VERSION,
-        "signature_history": recent_signatures,
     }
     write_snapshot(snapshot)
 
@@ -1880,7 +1882,6 @@ async def main() -> None:
         snapshot,
         blueprint=blueprint,
         cards=cards,
-        recent_signatures=recent_signatures,
     )
 
 
