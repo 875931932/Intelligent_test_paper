@@ -139,6 +139,44 @@ def test_allocate_api_returns_contract_shape(units, cards):
     assert all("coverage_atom" in s and "forbidden_context" in s for s in payload["slots"])
 
 
+def test_revision_rejects_duplicate_atom_with_empty_boundaries(contract, units, cards):
+    # C1e 边界为空，其原子与题位2相同：空边界可绕过 boundaries_overlap，但原子去重必须拒绝
+    duplicate_atom = contract.slots[1].coverage_atom
+    empty_boundary_cards = dict(cards)
+    empty_boundary_cards["C1e"] = {
+        "is_core": True, "performance_statement": "掌握空边界表述",
+        "assessable_content": [duplicate_atom],
+        "preferred_terms": [], "answer_boundary": "",
+    }
+    empty_boundary_units = units + [UnitCoverage(unit_id="U1e", exam_point_id="EP1", anchor_key="A1", card_ids=["C1e"])]
+    with pytest.raises(ContractRevisionError):
+        apply_slot_revisions(
+            contract,
+            revisions=[{"item_index": contract.slots[0].item_index,
+                        "coverage_atom": duplicate_atom}],
+            units=empty_boundary_units, knowledge_cards=empty_boundary_cards,
+        )
+
+
+def test_confirm_malformed_revision_returns_422(contract, units, cards):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+
+    client = TestClient(app)
+    for malformed in (
+        [{"item_index": "abc", "coverage_atom": "x"}],  # item_index 非整数
+        [{"coverage_atom": "x"}],  # 缺 item_index
+    ):
+        response = client.post("/api/v1/courses/course-1/blueprints/confirm", json={
+            "contract": contract.model_dump(mode="json"),
+            "slot_revisions": malformed,
+            "units": [u.model_dump() for u in units],
+            "knowledge_cards": cards,
+        })
+        assert response.status_code == 422
+
+
 def test_confirm_endpoint_validates_and_applies(contract, units, cards):
     from fastapi.testclient import TestClient
 

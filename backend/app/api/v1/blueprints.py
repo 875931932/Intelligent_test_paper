@@ -44,3 +44,5 @@ def confirm_contract(course_id: str, request: ContractConfirmation) -> dict:
         return revised.model_dump(mode="json")
     except ContractRevisionError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+    except (KeyError, ValueError, TypeError) as exc:  # slot_revisions 畸形结构
+        raise HTTPException(status_code=422, detail=f"slot_revisions invalid: {exc}")

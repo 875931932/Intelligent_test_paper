@@ -13,6 +13,7 @@ from app.domain.generation.contract import (
     ExamPointProportion,
     ForbiddenContext,
     PaperContract,
+    _normalized,
     assign_atoms_to_items,
     boundaries_overlap,
     build_exam_point_pools,
@@ -215,6 +216,15 @@ def apply_slot_revisions(
         slot.answer_boundary = match.boundary
 
     slots = list(updated.values())
+    # 修订后全卷原子唯一性（空 answer_boundary 可绕过边界互斥，需显式去重）
+    seen_atoms: dict[str, int] = {}
+    for slot in slots:
+        atom_key = _normalized(slot.coverage_atom)
+        if atom_key in seen_atoms:
+            raise ContractRevisionError(
+                f"修订后题位 {seen_atoms[atom_key]} 与 {slot.item_index} 考查同一原子"
+            )
+        seen_atoms[atom_key] = slot.item_index
     # 修订后全卷重验互斥（同考点两两）
     for point in {s.exam_point_id for s in slots}:
         group = [s for s in slots if s.exam_point_id == point]
