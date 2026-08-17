@@ -219,6 +219,7 @@ class DeepSeekJsonClient:
             except DeepSeekModelError as exc:
                 last_error = exc
                 persisted_error_code, _ = _persistence_error(exc)
+                should_retry = True
                 last_retry_error_code = persisted_error_code
                 attempts.append(
                     {
@@ -345,9 +346,10 @@ class DeepSeekGateway:
         timeout: float = 90.0,
         max_attempts: int = 4,
         client: httpx.Client | None = None,
+        json_client: DeepSeekJsonClient | None = None,
         recorder: ModelCallRecorder | None = None,
     ) -> None:
-        self.json_client = DeepSeekJsonClient(
+        self.json_client = json_client or DeepSeekJsonClient(
             api_key=api_key,
             base_url=base_url,
             model=model,
@@ -364,12 +366,14 @@ class DeepSeekGateway:
         system_prompt: str,
         temperature: float,
         call_context: ModelCallContext | None = None,
+        response_validator: Callable[[Any], None] | None = None,
     ) -> dict:
         return self.json_client.request_json(
             system_prompt=system_prompt,
             payload=payload,
             temperature=temperature,
             call_context=call_context,
+            response_validator=response_validator,
         )
 
     def plan_coverage(self, payload) -> dict:
@@ -378,12 +382,30 @@ class DeepSeekGateway:
             temperature=0.1,
             system_prompt=(
                 "你是高校期末考试的全卷命题规划主脑。只能依据给定的纯净知识内容和题位蓝图，"
-                "为每个题位分配唯一、最小且可评分的考查原子和答案边界。同一知识卡可以复用，"
-                "但考查原子、认知层次和答案核心不得重叠；任何题目的答案核心都不得成为另一题的提示。"
-                "填空题只分配术语、定义、条件或核心结论等理论任务。优先采用课程材料中的常用术语，"
-                "避免不必要的括号解释。遇到综合题时，必须先从合同目录选择与 assessment_mode 兼容的原型和材料形式，"
-                "再分配合法认知序列与 2 至 4 个分问范围；同卷不得重复‘原型 + 材料形式 + 认知序列’结构键，"
-                "禁止固定套用‘某公司/某团队 + 三问’模板。必须返回 JSON 对象，顶层字段为 directives。"
+                "每个题位已经绑定唯一原子知识卡，不得跨题复用知识卡，也不得更换题位的答案核心。"
+                "为每个题位分配唯一、最小且可评分的考查原子和答案边界；任何题目的答案核心都不得成为另一题的提示。"
+                "填空题只分配术语、定义、条件或核心结论等理论任务，且每题只规划 1 个空的答案。"
+                "遇到综合题时，默认选择 code_completion_scenario 原型（具体工程场景 + 代码框架挖空 + "
+                "补全代码/问题分析两个分问），多道综合题通过轮换 material_form 形成不同结构键；"
+                "仅当知识卡确实不含代码、命令或配置类内容时才选择其他原型，并从合同目录选择与 "
+                "assessment_mode 兼容的原型和材料形式，再分配合法认知序列与 2 至 4 个分问范围；"
+                "同卷不得重复‘原型 + 材料形式 + 认知序列’结构键，禁止固定套用‘某公司/某团队 + 三问’模板。"
+                "必须返回 JSON 对象，顶层字段为 directives。"
+            ),
+        )
+
+    def refine_atom(self, payload) -> dict:
+        return self._request_json(
+            payload,
+            temperature=0.1,
+            system_prompt=(
+                "你是高校期末考试的全卷命题精排员。每个题位已经绑定了唯一知识卡和 top-3 候选考查原子，"
+                "候选原子已经过确定性筛选保证不重复和不冷门。你的任务是为每个题位从候选中选择最优的一个，"
+                "可以微调 coverage_atom 的表述使其更精确，但考查范围不得偏离候选原子。"
+                "为每个题位生成 answer_boundary（答案核心语义边界）、novelty_contract（该题与其他题的区别说明）。"
+                "综合题必须保持已分配的 archetype/material_form/cognitive_sequence 不变。"
+                "必须返回 JSON 对象，顶层字段为 directives，每个 directive 包含 "
+                "item_index、selected_candidate_index、coverage_atom、answer_boundary、novelty_contract、preferred_terms。"
             ),
         )
 
@@ -394,8 +416,14 @@ class DeepSeekGateway:
             system_prompt=(
                 "你是高校期末考试命题教师，只能依据给定纯净知识内容和指定考查原子出题，必须返回JSON。"
                 "严格遵守答案边界和题型任务，不延伸考查其他知识原子。优先使用 preferred_terms 中的常用术语，"
-                "表达直接清楚；除符号、缩写或必要消歧外不要使用括号解释。综合题必须逐项执行已分配的原型、"
-                "材料形式、认知序列和 2 至 4 个分问范围，不能退回‘某公司/某团队 + 三问’等通用模板。"
+                "表达直接清楚；除符号、缩写或必要消歧外不要使用括号解释。"
+                "填空题题干中恰好包含 1 个空（用连续下划线表示），空内答案简短唯一，严禁出现多个空。"
+                "综合题必须逐项执行已分配的原型、材料形式、认知序列和分问范围："
+                "code_completion_scenario 原型必须先给出具体工程场景说明（交代任务目标与关键参数取值），"
+                "再给出结构完整的代码框架或配置脚本，在关键 API 名、参数值、路径或命令选项处挖出"
+                "形如 ____________(1)__________ 的编号空（4 至 6 处），分问固定为"
+                "（1）补全代码、（2）结合场景分析问题并给出改进方向；代码与参数只能来自给定材料，"
+                "不得虚构课程未涉及的 API，不得退回纯理论阐述。"
                 "若有修订指令，必须针对该问题局部改写。"
             ),
         )
@@ -412,6 +440,46 @@ class DeepSeekGateway:
                 "没有冲突时返回空数组。"
             ),
         )
+
+    def generate_batch(self, payload) -> list[dict]:
+        expected = [spec.item_index for spec in payload.questions]
+
+        def validate_batch(result) -> None:
+            if not isinstance(result, list):
+                raise DeepSeekModelError(
+                    "model_output_schema_violation", "批式生成必须返回 JSON 数组"
+                )
+            indexes = [item.get("item_index") for item in result if isinstance(item, dict)]
+            if any(i is None for i in indexes) or len(indexes) != len(result):
+                raise DeepSeekModelError(
+                    "model_output_schema_violation",
+                    "批式生成每个元素必须包含 item_index",
+                )
+            if sorted(indexes) != sorted(expected):
+                raise DeepSeekModelError(
+                    "model_output_scope_violation",
+                    f"批式生成 item_index 集合不符：期望 {sorted(expected)}，实际 {sorted(indexes)}",
+                )
+
+        response = self._request_json(
+            payload,
+            temperature=0.2,
+            system_prompt=(
+                "你是高校期末考试命题教师，一次为本批所有题位命题，必须返回 JSON 数组，"
+                "每个元素包含 item_index 及该题 output_schema 要求的全部字段。"
+                "只能依据各题给定的纯净知识内容与指定考查原子出题，严格遵守答案边界和题型任务，"
+                "不延伸考查其他知识原子。同批各题视角互补，不得互相提示或重复。"
+                "forbidden_atoms 与 forbidden_answer_cores 中的内容不得出现在任何题干、选项或答案中。"
+                "优先使用 preferred_terms 中的常用术语；除符号、缩写或必要消歧外不要使用括号解释。"
+                "填空题题干恰好 1 个空（连续下划线表示），空内答案简短唯一。"
+                "综合题逐项执行已分配的原型、材料形式、认知序列与分问范围："
+                "code_completion_scenario 先给工程场景说明再给代码框架，"
+                "关键处挖 ____________(编号)__________ 空（4至6处），分问固定为补全代码与问题分析，"
+                "代码与参数只能来自给定材料。若有 teacher_revision_instruction，只针对其涉及的题目局部改写。"
+            ),
+            response_validator=validate_batch,
+        )
+        return [item for item in response if isinstance(item, dict)]
 
 
 def _optional_text(value: Any) -> str | None:
@@ -433,7 +501,16 @@ def _persistence_error(error: DeepSeekModelError) -> tuple[str, str]:
     return error.error_code, message
 
 
-def _sanitized_validation_details(error: DeepSeekModelError) -> dict[str, list[str]] | None:
+def _sanitize_validation_path(parts: list[object]) -> str:
+    safe_parts = [
+        text if text.isdigit() or text in _PERSISTED_VALIDATION_FIELDS else "unexpected_field"
+        for part in parts[:8]
+        for text in [str(part)]
+    ]
+    return ".".join(safe_parts)
+
+
+def _sanitized_validation_details(error: DeepSeekModelError) -> dict[str, object] | None:
     if error.error_code != "model_schema_validation_failed":
         return None
     invalid_fields = error.details.get("invalid_fields")
@@ -443,11 +520,24 @@ def _sanitized_validation_details(error: DeepSeekModelError) -> dict[str, list[s
     for field in invalid_fields:
         if not isinstance(field, str) or not field:
             continue
-        safe_parts = [
-            part if part.isdigit() or part in _PERSISTED_VALIDATION_FIELDS else "unexpected_field"
-            for part in field.split(".")[:8]
-        ]
-        safe_fields.append(".".join(safe_parts))
+        safe_fields.append(_sanitize_validation_path(field.split(".")))
         if len(safe_fields) == 20:
             break
-    return {"invalid_fields": safe_fields}
+    details: dict[str, object] = {"invalid_fields": safe_fields}
+    invalid_inputs = error.details.get("invalid_inputs")
+    if isinstance(invalid_inputs, dict):
+        details["invalid_input_types"] = {
+            _sanitize_validation_path(str(field).split(".")): str(
+                value.get("type", "unknown")
+            )
+            for field, value in list(invalid_inputs.items())[:20]
+            if isinstance(value, dict)
+        }
+    details["validation_messages"] = {
+        _sanitize_validation_path(
+            item.get("loc", []) if isinstance(item.get("loc"), list) else []
+        ): str(item.get("msg", ""))[:160]
+        for item in error.details.get("validation_errors", [])[:20]
+        if isinstance(item, dict)
+    }
+    return details
