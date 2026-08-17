@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.domain.blueprint.models import UnitCoverage
+from app.domain.blueprint.models import PlanItem, UnitCoverage
 from app.domain.generation.archetypes import ComprehensiveArchetype, MaterialForm
 from app.domain.generation.coverage import _normalized, _validate_comprehensive_contract
 
@@ -237,3 +237,59 @@ def cluster_pool_atoms(
         (sorted(group, key=lambda a: -a.centrality) for group in groups.values()),
         key=lambda group: -max(a.centrality for a in group),
     )
+
+
+def _pick_atom(
+    clusters: list[list[PoolAtom]],
+    cursor: int,
+    used_keys: set[str],
+    used_boundaries: list[str],
+) -> tuple[PoolAtom | None, int]:
+    """从 cursor 所在簇开始轮转，找第一个未用且边界互斥的原子。"""
+    n = len(clusters)
+    for step in range(n):
+        idx = (cursor + step) % n
+        for atom in clusters[idx]:  # 簇内已按核心度降序
+            if atom.atom_key in used_keys:
+                continue
+            if any(b and boundaries_overlap(atom.boundary, b) for b in used_boundaries):
+                continue
+            return atom, (idx + 1) % n
+    return None, cursor
+
+
+def assign_atoms_to_items(
+    items: list[PlanItem],
+    clusters: list[list[PoolAtom]],
+) -> tuple[list[tuple[PlanItem, PoolAtom]], list[ContractConflict]]:
+    """同考点题位按 item_index 顺序，簇轮转 + 答案域互斥地取原子。
+
+    构造性保证：跨簇优先（子主题不重复）、atom_key 全卷唯一、
+    答案边界互斥（同考点任何两题答案不可互相包含）。
+    簇数不足题数时轮转绕回同簇取下一个可用原子；耗尽则报冲突。
+    """
+    used_keys: set[str] = set()
+    used_boundaries: list[str] = []
+    assignments: list[tuple[PlanItem, PoolAtom]] = []
+    conflicts: list[ContractConflict] = []
+    cursor = 0
+    for item in items:
+        if not clusters:
+            conflicts.append(ContractConflict(
+                code="cluster_exhausted", exam_point_id=item.exam_point_id or "",
+                message=f"题位 {item.item_index} 无可用原子簇",
+                detail={"item_index": item.item_index},
+            ))
+            continue
+        atom, cursor = _pick_atom(clusters, cursor, used_keys, used_boundaries)
+        if atom is None:
+            conflicts.append(ContractConflict(
+                code="cluster_exhausted", exam_point_id=item.exam_point_id or "",
+                message=f"题位 {item.item_index} 的原子池已耗尽（互斥或去重后无候选）",
+                detail={"item_index": item.item_index},
+            ))
+            continue
+        used_keys.add(atom.atom_key)
+        used_boundaries.append(atom.boundary)
+        assignments.append((item, atom))
+    return assignments, conflicts
