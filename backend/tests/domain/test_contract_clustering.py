@@ -1,4 +1,9 @@
-from app.domain.generation.contract import PoolAtom, atom_bigram_features, cluster_pool_atoms
+from app.domain.generation.contract import (
+    PoolAtom,
+    atom_bigram_features,
+    cluster_pool_atoms,
+    jaccard_similarity,
+)
 
 
 def _atom(text: str, centrality: float = 0.8) -> PoolAtom:
@@ -56,3 +61,20 @@ def test_empty_pool_returns_empty_list():
 def test_single_atom_returns_single_cluster():
     clusters = cluster_pool_atoms([_atom("孤立原子")])
     assert len(clusters) == 1 and clusters[0][0].atom_text == "孤立原子"
+
+
+def test_term_anchor_forces_same_cluster():
+    # 字面 bigram Jaccard < 0.5（措辞完全不同）但都含 "QLoRA" → 强制同簇
+    a = _atom("QLoRA通过NF4量化压缩模型权重")
+    b = _atom("消费级显卡部署大模型时启用QLoRA")
+    assert jaccard_similarity(a.features, b.features) < 0.5  # 前置：字面不相似
+    clusters = cluster_pool_atoms([a, b])
+    assert len(clusters) == 1
+
+
+def test_term_anchor_stopwords_do_not_force_cluster():
+    # 停用词不产生锚：两句各含 "api"/"use" 等高频词仍各归各簇
+    a = _atom("调用api接口获取模型输出")
+    b = _atom("正确use提示词可以提升效果")
+    clusters = cluster_pool_atoms([a, b])
+    assert len(clusters) == 2

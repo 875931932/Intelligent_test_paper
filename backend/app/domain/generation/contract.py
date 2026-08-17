@@ -4,6 +4,8 @@
 """
 from __future__ import annotations
 
+import re
+
 from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -43,6 +45,31 @@ def compute_atom_centrality(card: dict, atom_text: str) -> float:
 def atom_bigram_features(atom_text: str) -> frozenset[str]:
     cleaned = _normalized(atom_text)
     return frozenset(cleaned[i : i + 2] for i in range(len(cleaned) - 1))
+
+
+# 同一概念簇最多供给的题数（防“同概念扎堆”：如同一术语出 6 题）
+MAX_QUESTIONS_PER_CLUSTER = 2
+
+# 术语锚停用词：高频非概念英文词不参与强制同簇
+_TERM_ANCHOR_STOPWORDS = frozenset({
+    "the", "and", "for", "with", "api", "use", "using", "not", "can", "llm", "ai",
+})
+
+_TERM_ANCHOR_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_.\-]{2,}")
+
+
+def _term_anchors(text: str) -> set[str]:
+    """提取原子文本中的英文技术术语锚（小写、滤停用词）。
+
+    "QLoRA 使用 NF4 量化" → {"qlora", "nf4"}；中文与停用词不产生锚。
+    bigram 相似度看不见“术语锚”（英文术语只占全句几个字符被稀释），
+    共享术语锚的原子必为同一概念，由聚类阶段强制同簇。
+    """
+    return {
+        token.lower()
+        for token in _TERM_ANCHOR_PATTERN.findall(text)
+        if token.lower() not in _TERM_ANCHOR_STOPWORDS
+    }
 
 
 def jaccard_similarity(left: frozenset[str], right: frozenset[str]) -> float:
@@ -210,8 +237,11 @@ def build_exam_point_pools(
 def cluster_pool_atoms(
     pool: list[PoolAtom], *, similarity_threshold: float = 0.5
 ) -> list[list[PoolAtom]]:
-    """并查集聚类：bigram Jaccard > 阈值的原子归入同簇。
+    """并查集聚类：bigram Jaccard > 阈值的原子归入同簇；共享术语锚的原子强制同簇。
 
+    术语锚强制同簇堵住 bigram 的盲区：同一概念的不同表述
+    （如围绕 QLoRA 的多张知识卡）字面相似度可能低于阈值，
+    但共享的英文术语锚暴露了它们是同一概念。
     簇按最高核心度降序；簇内原子按核心度降序。O(n²) 对比对
     每考点 <100 原子的规模足够快。
     """
@@ -230,6 +260,14 @@ def cluster_pool_atoms(
                 if ri != rj:
                     parent[rj] = ri
 
+    anchors = [_term_anchors(atom.atom_text) for atom in pool]
+    for i in range(len(pool)):
+        for j in range(i + 1, len(pool)):
+            if anchors[i] & anchors[j]:
+                ri, rj = find(i), find(j)
+                if ri != rj:
+                    parent[rj] = ri
+
     groups: dict[int, list[PoolAtom]] = {}
     for idx, atom in enumerate(pool):
         groups.setdefault(find(idx), []).append(atom)
@@ -244,18 +282,31 @@ def _pick_atom(
     cursor: int,
     used_keys: set[str],
     used_boundaries: list[str],
-) -> tuple[PoolAtom | None, int]:
-    """从 cursor 所在簇开始轮转，找第一个未用且边界互斥的原子。"""
+    cluster_supply: dict[int, int],
+    cluster_first_type: dict[int, str],
+    item_type: str,
+) -> tuple[PoolAtom | None, int, int]:
+    """从 cursor 所在簇开始轮转，找第一个未用且边界互斥的原子。
+
+    簇配额：每簇最多供给 MAX_QUESTIONS_PER_CLUSTER 题，满员跳过；
+    同簇第 2 题必须与该簇第 1 题题型不同，题型撞车跳过该簇。
+    返回 (原子, 下一个 cursor, 命中簇下标)；无候选返回 (None, cursor, -1)。
+    """
     n = len(clusters)
     for step in range(n):
         idx = (cursor + step) % n
+        supplied = cluster_supply.get(idx, 0)
+        if supplied >= MAX_QUESTIONS_PER_CLUSTER:
+            continue  # 该簇配额已满
+        if supplied == 1 and cluster_first_type.get(idx) == item_type:
+            continue  # 同簇第 2 题题型互斥
         for atom in clusters[idx]:  # 簇内已按核心度降序
             if atom.atom_key in used_keys:
                 continue
             if any(b and boundaries_overlap(atom.boundary, b) for b in used_boundaries):
                 continue
-            return atom, (idx + 1) % n
-    return None, cursor
+            return atom, (idx + 1) % n, idx
+    return None, cursor, -1
 
 
 def assign_atoms_to_items(
@@ -268,11 +319,12 @@ def assign_atoms_to_items(
     """同考点题位按 item_index 顺序，簇轮转 + 答案域互斥地取原子。
 
     构造性保证：跨簇优先（子主题不重复）、atom_key 唯一、
-    答案边界互斥（任何两题答案不可互相包含）。
+    答案边界互斥（任何两题答案不可互相包含）、
+    同簇最多 MAX_QUESTIONS_PER_CLUSTER 题且两题题型不同（同概念不扎堆）。
     传入 shared_used_keys/shared_used_boundaries 时直接读写共享集，
     使多个考点调用间互斥状态全卷贯通（与终检全卷两两比较口径一致）；
     不传则每次调用独立维护局部集。簇数不足题数时轮转绕回同簇取下一个
-    可用原子；耗尽则报冲突。
+    可用原子（受簇配额与题型互斥约束）；耗尽则报冲突，不静默降级。
     """
     used_keys: set[str] = shared_used_keys if shared_used_keys is not None else set()
     used_boundaries: list[str] = (
@@ -280,6 +332,8 @@ def assign_atoms_to_items(
     )
     assignments: list[tuple[PlanItem, PoolAtom]] = []
     conflicts: list[ContractConflict] = []
+    cluster_supply: dict[int, int] = {}
+    cluster_first_type: dict[int, str] = {}
     cursor = 0
     for item in items:
         if not clusters:
@@ -289,15 +343,21 @@ def assign_atoms_to_items(
                 detail={"item_index": item.item_index},
             ))
             continue
-        atom, cursor = _pick_atom(clusters, cursor, used_keys, used_boundaries)
+        atom, cursor, cluster_idx = _pick_atom(
+            clusters, cursor, used_keys, used_boundaries,
+            cluster_supply, cluster_first_type, item.question_type,
+        )
         if atom is None:
             conflicts.append(ContractConflict(
                 code="cluster_exhausted", exam_point_id=item.exam_point_id or "",
-                message=f"题位 {item.item_index} 的原子池已耗尽（互斥或去重后无候选）",
+                message=f"题位 {item.item_index} 的原子池已耗尽（互斥、去重或簇配额后无候选）",
                 detail={"item_index": item.item_index},
             ))
             continue
         used_keys.add(atom.atom_key)
         used_boundaries.append(atom.boundary)
+        cluster_supply[cluster_idx] = cluster_supply.get(cluster_idx, 0) + 1
+        if cluster_supply[cluster_idx] == 1:
+            cluster_first_type[cluster_idx] = item.question_type
         assignments.append((item, atom))
     return assignments, conflicts
