@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 
 from pydantic import BaseModel, ConfigDict
@@ -62,26 +60,3 @@ class QuestionStructureSignature(BaseModel):
     answer_boundaries: list[str]
     structure_key: str
     signature_hash: str
-
-
-def build_structure_signature(
-    *,
-    archetype: str,
-    material_form: str,
-    cognitive_sequence: list[str],
-    subquestion_actions: list[str],
-    answer_boundaries: list[str],
-) -> QuestionStructureSignature:
-    normalized = {
-        "archetype": _compact(archetype),
-        "material_form": _compact(material_form),
-        "cognitive_sequence": [_compact(action) for action in cognitive_sequence],
-        "subquestion_actions": [normalize_action(action) for action in subquestion_actions],
-        "answer_boundaries": [normalize_answer_boundary(boundary) for boundary in answer_boundaries],
-    }
-    stable_json = json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return QuestionStructureSignature(
-        **normalized,
-        structure_key=stable_json,
-        signature_hash=hashlib.sha256(stable_json.encode("utf-8")).hexdigest(),
-    )

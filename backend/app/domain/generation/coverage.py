@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-from typing import Any
 
 from app.domain.generation.archetypes import ARCHETYPE_CONTRACTS
 
@@ -14,11 +13,6 @@ class CoveragePlanError(ValueError):
 
 
 _COGNITIVE_ACTIONS = {"remember", "understand", "apply", "analyze", "evaluate", "create"}
-
-
-def _normalize_prompt_material(value: Any) -> list[str]:
-    values = [value] if isinstance(value, str) else value if isinstance(value, (list, tuple)) else []
-    return list(dict.fromkeys(text for item in values if (text := str(item).strip())))
 
 
 def _validate_comprehensive_contract(
