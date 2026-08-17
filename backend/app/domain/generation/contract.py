@@ -205,3 +205,35 @@ def build_exam_point_pools(
         pool.sort(key=lambda a: -a.centrality)
     pools = {k: v for k, v in pools.items() if v}
     return pools
+
+
+def cluster_pool_atoms(
+    pool: list[PoolAtom], *, similarity_threshold: float = 0.5
+) -> list[list[PoolAtom]]:
+    """并查集聚类：bigram Jaccard > 阈值的原子归入同簇。
+
+    簇按最高核心度降序；簇内原子按核心度降序。O(n²) 对比对
+    每考点 <100 原子的规模足够快。
+    """
+    parent = list(range(len(pool)))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]  # 路径减半
+            i = parent[i]
+        return i
+
+    for i in range(len(pool)):
+        for j in range(i + 1, len(pool)):
+            if jaccard_similarity(pool[i].features, pool[j].features) > similarity_threshold:
+                ri, rj = find(i), find(j)
+                if ri != rj:
+                    parent[rj] = ri
+
+    groups: dict[int, list[PoolAtom]] = {}
+    for idx, atom in enumerate(pool):
+        groups.setdefault(find(idx), []).append(atom)
+    return sorted(
+        (sorted(group, key=lambda a: -a.centrality) for group in groups.values()),
+        key=lambda group: -max(a.centrality for a in group),
+    )
