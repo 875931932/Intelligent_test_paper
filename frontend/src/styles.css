@@ -40,6 +40,16 @@ main { width: min(1480px, calc(100% - 48px)); margin: 0 auto; padding: 28px 0 52
 .framework-strip { display:grid; grid-template-columns:1fr 1fr; gap:28px; margin-top:22px; padding-top:18px; border-top:1px solid #4b554e; }.framework-strip strong { display:block; margin-bottom:8px; color:#dbc180; font-size:12px; }.framework-strip span { display:inline-block; margin:3px 5px 3px 0; padding:5px 7px; color:#bcc5be; background:#2c3730; font-size:9px; }.framework-strip span b { color:#fff; }
 .tree-strip { margin-top:22px; padding-top:18px; border-top:1px solid #4b554e; }.tree-strip > div { display:grid; grid-template-columns:220px 1fr; gap:12px; padding:7px 0; border-bottom:1px dotted #455048; }.tree-strip div span { font-size:11px; }.tree-strip div small { color:#9eaaa2; font-size:10px; }
 
+.weight-audit { margin-top:22px; padding-top:18px; border-top:1px solid #4b554e; }
+.weight-audit-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+.weight-audit-head strong { color:#dbc180; font-size:12px; }
+.weight-audit table { width:100%; border-collapse:collapse; font-size:11px; }
+.weight-audit th, .weight-audit td { padding:7px 9px; text-align:left; border-bottom:1px solid #3c463f; color:#c6cfc8; }
+.weight-audit th { color:#8f9a92; font-weight:600; font-size:10px; }
+.weight-audit td b { color:#fff; }
+.audit-ok { color:#8fd6a4; } .audit-warn { color:#e8b46a; }
+.exam-point-chip { display:inline-block; margin-left:8px; padding:2px 7px; color:#7a837c; background:#f0ede4; border:1px solid #d8d3c4; border-radius:9px; font:9px 'Microsoft YaHei',sans-serif; font-style:normal; vertical-align:1px; }
+
 .workflow { display: grid; grid-template-columns: .85fr 1.15fr 1.15fr; background: var(--line); border: 1px solid #aaa499; gap: 1px; box-shadow: 0 20px 55px rgba(35,35,29,.08); }
 .panel { min-width: 0; min-height: 640px; padding: 28px; background: var(--paper); }
 .panel:nth-child(2) { background: #f4f0e7; }
@@ -78,6 +88,20 @@ th { position: sticky; top: 0; color: #eae7df; background: var(--ink); text-alig
 th,td { padding: 13px 15px; border-bottom: 1px solid #d6d1c7; } tbody tr:hover { background: #f0ebe1; }
 
 .quality-badge { display: flex; align-items: center; gap: 7px; padding: 8px 12px; color: var(--green); background: #e0ebe3; border: 1px solid #b7c9bc; font: 600 11px 'Microsoft YaHei',sans-serif; }
+.toolbar-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.badge-fail { color: var(--red); background: #f4e2dc; border-color: #dcbcb0; }
+.plan-summary.contract-warn { color: var(--red); border-color: #d8b3a8; background: #f6e6de; }
+.conflict-strip { align-items: flex-start; }
+.conflict-strip strong { display: block; margin-bottom: 4px; }
+.conflict-strip p { margin: 2px 0; font-size: 12px; }
+.audit-table { margin-bottom: 14px; max-height: 220px; }
+.mono-cell { font: 11px ui-monospace, monospace; color: #6b6c66; }
+.confirm-row { width: auto; min-width: 220px; }
+.final-check { margin-top: 22px; }
+.final-check-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.final-check-head strong { font-size: 14px; }
+.status-ok { color: var(--green); font-weight: 600; } .status-fail { color: var(--red); font-weight: 600; }
+.review-chip { display: inline-block; margin-left: 8px; padding: 2px 7px; color: #8a4a2b; background: #f6e3d4; border: 1px solid #e0c2ab; border-radius: 9px; font: 9px 'Microsoft YaHei', sans-serif; font-style: normal; vertical-align: 1px; }
 .paper { max-width: 1040px; margin: 0 auto; padding: 66px 72px; background: #fffdf8; border: 1px solid #c7c0b4; box-shadow: 0 18px 60px rgba(31,32,28,.1); }
 .paper-header { text-align: center; padding-bottom: 27px; border-bottom: 3px double #4f514d; }.paper-header p { margin: 0 0 13px; font-size: 14px; letter-spacing: .1em; }.paper-header h2 { margin: 0 0 20px; font-size: 28px; }.paper-header div { display:flex; justify-content: center; gap: 38px; color: #555; font-size: 11px; }
 .question-group { margin-top: 34px; }.question-group > h3 { padding-bottom: 9px; border-bottom: 1px solid #9a9992; font-size: 17px; }.question-group h3 small { color: #777; font-size: 11px; font-weight: 500; }

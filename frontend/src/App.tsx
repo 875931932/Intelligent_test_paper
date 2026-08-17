@@ -25,7 +25,69 @@ type PlanItem = {
   cognitive_level: string
 }
 type Plan = { total_score: number; items: PlanItem[]; type_counts: Record<string, number>; difficulty_counts: Record<string, Record<string, number>>; anchor_counts: Record<string, number> }
+
+/** 合同题位：考哪个原子、答案域、禁用上下文（对应后端 ContractSlot）。 */
+type ContractSlot = {
+  item_index: number
+  question_type: string
+  score: number
+  difficulty: string
+  cognitive_level: string
+  assessment_mode: string
+  exam_point_id: string
+  anchor_key: string
+  unit_id: string
+  card_id: string
+  coverage_atom: string
+  answer_boundary: string
+  performance_statement: string
+  prompt_material: string[]
+  scope_boundary: Record<string, unknown>
+  preferred_terms: string[]
+  forbidden_context: { atoms: string[]; answer_cores: string[] }
+  comprehensive_archetype?: string | null
+  material_form?: string | null
+  cognitive_sequence: string[]
+  subquestion_count_range?: number[] | null
+  subquestion_actions: string[]
+  answer_boundaries: string[]
+}
+type ContractConflict = {
+  code: string
+  exam_point_id: string
+  message: string
+  detail: Record<string, unknown>
+}
+type ExamPointProportion = {
+  exam_point_id: string
+  weight: number
+  question_count: number
+  proportion: number
+}
+type ContractAuditSummary = {
+  exam_points: ExamPointProportion[]
+  type_counts: Record<string, number>
+  difficulty_counts: Record<string, number>
+}
+type PaperContract = {
+  total_score: number
+  slots: ContractSlot[]
+  conflicts: ContractConflict[]
+  audit_summary: ContractAuditSummary
+}
+type FinalCheck = {
+  passed?: boolean
+  checks?: Array<{ code: string; passed: boolean; detail?: Record<string, unknown> }>
+}
+type GenerationRunResult = {
+  status: string
+  questions: Question[]
+  final_check: FinalCheck
+  model_call_count: number
+  model: string
+}
 type Question = {
+  item_index?: number
   question_type: string
   score: number
   stem?: string
@@ -34,7 +96,20 @@ type Question = {
   explanation?: string
   rubric?: Array<{ point?: string; score?: number }>
   subquestions?: Array<string | { id?: string; question?: string }>
-  quality?: { status?: string; issues?: string[] }
+  quality?: { status?: string; code?: string; message?: string; issues?: string[] }
+  needs_review?: boolean
+  exam_point_id?: string
+  unit_id?: string
+  card_id?: string
+  coverage_atom?: string
+  answer_boundary?: string
+}
+type WeightAuditRow = {
+  exam_point_id: string
+  syllabus_weight_percent: number
+  planned_score: number
+  actual_score: number
+  question_count: number
 }
 type DemoPipeline = {
   status: string
@@ -42,10 +117,10 @@ type DemoPipeline = {
   source_directory?: string
   model?: string
   extraction?: Array<{ filename: string; material_type: string; block_count: number; content_preview?: Array<{ page?: number; type?: string; text: string }> }>
-  framework?: { teaching_topics?: Array<{ title: string; depth: string }>; anchors?: Array<{ title: string; exam_weight: number }>; final_exam_rules?: Record<string, unknown> }
+  framework?: { teaching_topics?: Array<{ title: string; depth: string }>; anchors?: Array<{ title: string; exam_weight: number }>; final_exam_rules?: Record<string, unknown>; exam_points?: Array<{ code: string; title: string; weight_value: number }> }
   knowledge_tree?: { topics?: Array<{ name: string; framework_anchor_key: string; units?: Array<{ title: string; cards?: Array<{ name: string; assessable_content?: string[] }> }> }>; excluded_summary?: string[] }
   blueprint?: { plan?: Plan; allocation_basis?: string }
-  paper?: { questions?: Question[]; total_score?: number; question_count?: number }
+  paper?: { questions?: Question[]; total_score?: number; question_count?: number; weight_audit?: { rows?: WeightAuditRow[]; total_actual_score?: number } }
   error?: string
 }
 
@@ -57,6 +132,22 @@ const QUESTION_LABELS: Record<string, string> = {
   comprehensive: '综合题',
 }
 
+const DIFFICULTY_LABELS: Record<string, string> = { low: '低', medium: '中', high: '高' }
+
+const FINAL_CHECK_LABELS: Record<string, string> = {
+  quota_match: '配额一致',
+  atom_uniqueness: '原子唯一',
+  answer_mutex: '答案域互斥',
+  traceability: '溯源完整',
+  needs_review: '复核清零',
+}
+
+const CONFLICT_LABELS: Record<string, string> = {
+  atom_pool_insufficient: '原子池不足',
+  cluster_exhausted: '原子簇耗尽',
+  missing_exam_point: '未关联考点',
+}
+
 const initialBlueprint = {
   total_score: 100,
   type_rules: {
@@ -66,24 +157,64 @@ const initialBlueprint = {
   },
   chapter_weights: { foundation: 40, application: 60 },
   units: [
-    { unit_id: 'unit-foundation', anchor_key: 'foundation', card_ids: ['card-rag'] },
-    { unit_id: 'unit-application', anchor_key: 'application', card_ids: ['card-lora'] },
+    { unit_id: 'unit-foundation', exam_point_id: 'EP-rag', anchor_key: 'foundation', card_ids: ['card-rag'] },
+    { unit_id: 'unit-application', exam_point_id: 'EP-lora', anchor_key: 'application', card_ids: ['card-lora'] },
   ],
 }
 
 const initialCards = {
   'card-rag': {
+    is_core: true,
     name: '检索增强生成基本原理',
-    performance_statement: '能够解释检索增强生成的完整流程，并分析检索结果质量对生成答案的影响。',
-    assessable_content: ['文本切分、向量化、相似度检索与上下文生成的作用及先后关系', '召回质量、上下文相关性与最终答案可靠性的关系'],
+    performance_statement: '必须掌握检索增强生成的完整流程，并分析检索结果质量对生成答案的影响。',
+    assessable_content: [
+      '文本切分的基本作用与常见粒度权衡',
+      '向量化嵌入表示文本语义的原理',
+      '相似度检索匹配查询与文档的方法',
+      '上下文生成阶段对检索结果的依赖关系',
+      '检索召回质量对最终答案可靠性的影响',
+      '混合检索结合关键词与语义匹配的优势',
+      '重排序模型精排候选文档的作用',
+      '检索增强生成整体流程的先后顺序',
+      '上下文窗口长度对注入文档数量的限制',
+      '查询改写提升检索命中率的手段',
+      '分块重叠设计对语义完整性的意义',
+      '嵌入模型选型对检索效果的影响',
+      '检索失败时的兜底生成策略',
+      '评估检索增强系统质量的常用指标',
+    ],
+    preferred_terms: ['检索增强'],
     scope_boundary: { exclude: ['软件安装命令', '具体文件名和实验编号'] },
     cognitive_targets: ['understand', 'apply'],
     allowed_question_types: ['single_choice', 'true_false', 'short_answer'],
   },
   'card-lora': {
+    is_core: true,
     name: '参数高效微调原理与应用',
-    performance_statement: '能够说明LoRA的核心思想，并根据任务约束分析参数高效微调方案。',
-    assessable_content: ['低秩矩阵分解对可训练参数量和显存占用的影响', '秩、缩放系数与目标模块选择的基本原则', '训练资源与模型效果之间的权衡'],
+    performance_statement: '必须掌握LoRA的核心思想，并根据任务约束分析参数高效微调方案。',
+    assessable_content: [
+      'LoRA低秩矩阵分解的核心思想',
+      '秩的大小对可训练参数量的影响',
+      '缩放系数调节增量权重的作用',
+      '目标模块选择的基本原则',
+      '参数高效微调减少显存占用的机制',
+      'QLoRA量化与低秩适配的结合方式',
+      '训练资源与模型效果之间的权衡',
+      '冻结基座参数防止灾难性遗忘',
+      '适配器权重合并回基座的部署优势',
+      '全参微调与高效微调的成本对比',
+      'NF4量化格式压缩权重的原理',
+      '批大小与学习率对微调稳定性的影响',
+      '过拟合在小数据微调中的表现',
+      '训练数据质量对微调效果的决定作用',
+      '领域语料继续预训练的适用场景',
+      '指令微调对齐模型行为的流程',
+      '验证集损失监控微调停止时机',
+      '梯度检查点换取显存节约的代价',
+      '多适配器切换服务不同任务的架构',
+      '微调评估基准选择的方法',
+    ],
+    preferred_terms: ['LoRA'],
     scope_boundary: { exclude: ['固定版本号', '安装命令', '照抄某次实验参数'] },
     cognitive_targets: ['understand', 'apply', 'analyze'],
     allowed_question_types: ['single_choice', 'true_false', 'short_answer'],
@@ -98,15 +229,20 @@ function App() {
   const [courseSlug, setCourseSlug] = useState(`llm-exam-${Date.now().toString().slice(-6)}`)
   const [blueprintText, setBlueprintText] = useState(JSON.stringify(initialBlueprint, null, 2))
   const [cardsText, setCardsText] = useState(JSON.stringify(initialCards, null, 2))
-  const [plan, setPlan] = useState<Plan | null>(null)
+  const [contract, setContract] = useState<PaperContract | null>(null)
+  const [confirmed, setConfirmed] = useState<PaperContract | null>(null)
   const [questions, setQuestions] = useState<Question[]>([])
-  const [busy, setBusy] = useState<'course' | 'plan' | 'paper' | null>(null)
+  const [finalCheck, setFinalCheck] = useState<FinalCheck | null>(null)
+  const [modelCallCount, setModelCallCount] = useState(0)
+  const [model, setModel] = useState('')
+  const [busy, setBusy] = useState<'course' | 'allocate' | 'confirm' | 'paper' | null>(null)
   const [notice, setNotice] = useState('')
   const [demo, setDemo] = useState<DemoPipeline | null>(null)
 
   const selectedCourse = courses.find((course) => course.id === courseId)
-  const totalItems = plan?.items.length ?? 0
-  const qualityPassed = useMemo(() => questions.filter((q) => q.quality?.status === 'pass').length, [questions])
+  const hasConflicts = (contract?.conflicts.length ?? 0) > 0
+  const reviewCount = useMemo(() => questions.filter((q) => q.needs_review).length, [questions])
+  const qualityPassed = useMemo(() => questions.filter((q) => q.quality?.status === 'pass' && !q.needs_review).length, [questions])
 
   useEffect(() => {
     Promise.all([api<Health>('/api/v1/health'), api<Course[]>('/api/v1/courses')])
@@ -136,7 +272,7 @@ function App() {
       })
       setCourses((current) => [course, ...current])
       setCourseId(course.id)
-      setNotice('课程空间已建立，可以开始分配蓝图。')
+      setNotice('课程空间已建立，可以开始分配命题合同。')
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '创建失败')
     } finally {
@@ -144,38 +280,74 @@ function App() {
     }
   }
 
-  async function allocateBlueprint() {
+  async function allocateContract() {
     if (!courseId) return setNotice('请先选择或创建课程。')
-    setBusy('plan')
+    setBusy('allocate')
     setNotice('')
+    setConfirmed(null)
     setQuestions([])
+    setFinalCheck(null)
     try {
       const blueprint = JSON.parse(blueprintText)
-      const data = await api<Plan>(`/api/v1/courses/${courseId}/blueprints/allocate`, {
+      const knowledgeCards = JSON.parse(cardsText)
+      if (!knowledgeCards || Object.keys(knowledgeCards).length === 0) {
+        setNotice('知识目录为空：请先发布知识卡（knowledge_cards），再分配命题合同。')
+        return
+      }
+      const data = await api<PaperContract>(`/api/v1/courses/${courseId}/blueprints/allocate`, {
         method: 'POST',
-        body: JSON.stringify(blueprint),
+        body: JSON.stringify({ blueprint, knowledge_cards: knowledgeCards }),
       })
-      setPlan(data)
-      setNotice(`蓝图已构建，共 ${data.items.length} 道题，等待人工确认。`)
+      setContract(data)
+      if (data.conflicts.length > 0) {
+        setNotice(`命题合同存在 ${data.conflicts.length} 处冲突，请先调整知识卡或蓝图再重新分配。`)
+      } else {
+        setNotice(`命题合同已分配：${data.slots.length} 个题位、总分 ${data.total_score} 分，等待人工确认。`)
+      }
     } catch (error) {
-      setNotice(error instanceof Error ? error.message : '蓝图构建失败')
+      setNotice(error instanceof Error ? error.message : '合同分配失败')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function confirmContract() {
+    if (!courseId || !contract) return setNotice('请先分配命题合同。')
+    if (contract.conflicts.length > 0) return setNotice('合同存在冲突，处理冲突前无法确认。')
+    setBusy('confirm')
+    setNotice('')
+    try {
+      const knowledgeCards = JSON.parse(cardsText)
+      const units = JSON.parse(blueprintText).units ?? []
+      const data = await api<PaperContract>(`/api/v1/courses/${courseId}/blueprints/confirm`, {
+        method: 'POST',
+        body: JSON.stringify({ contract, slot_revisions: [], units, knowledge_cards: knowledgeCards }),
+      })
+      setContract(data)
+      setConfirmed(data)
+      setNotice('合同已确认（无修订）。合同锁定后可开始逐题命题。')
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : '合同确认失败')
     } finally {
       setBusy(null)
     }
   }
 
   async function generatePaper() {
-    if (!courseId || !plan) return setNotice('请先构建并确认蓝图。')
+    if (!courseId || !confirmed) return setNotice('请先确认命题合同，再开始命题。')
     setBusy('paper')
-    setNotice('模型正在逐题命题并进行质量检查，请稍候……')
+    setNotice('模型正在按合同逐题命题并执行合同终检，请稍候……')
     try {
       const knowledgeCards = JSON.parse(cardsText)
-      const data = await api<{ status: string; questions: Question[]; model: string }>(`/api/v1/courses/${courseId}/generation-runs`, {
+      const data = await api<GenerationRunResult>(`/api/v1/courses/${courseId}/generation-runs`, {
         method: 'POST',
-        body: JSON.stringify({ plan_items: plan.items, knowledge_cards: knowledgeCards }),
+        body: JSON.stringify({ contract: confirmed.slots, knowledge_cards: knowledgeCards }),
       })
       setQuestions(data.questions)
-      setNotice(`候选试卷生成完成，使用模型 ${data.model}。`)
+      setFinalCheck(data.final_check ?? null)
+      setModelCallCount(data.model_call_count ?? 0)
+      setModel(data.model ?? '')
+      setNotice(`候选试卷生成完成（${data.status}），使用模型 ${data.model}，共 ${data.model_call_count} 次模型调用。`)
     } catch (error) {
       setNotice(error instanceof Error ? error.message : '试卷生成失败')
     } finally {
@@ -203,9 +375,9 @@ function App() {
       <section className="intro-grid">
         <div>
           <p className="section-index">命题流程 / 01—03</p>
-          <h2>先定范围，再定结构，<br />最后让模型逐题落笔。</h2>
+          <h2>先算死题位，再锁定合同，<br />最后让模型逐题落笔。</h2>
         </div>
-        <p className="lede">当前为核心链路验证版。它将知识卡与来源信息隔离，只向模型提供可考核内容；蓝图经人工确认后，才进入逐题生成与质量检查。</p>
+        <p className="lede">当前为合同链路验证版。分配阶段构造性保证不重复、不抄袭、比例对；合同经人工确认锁定后，才进入逐题生成与合同终检。</p>
       </section>
 
       {notice && <div className="notice"><CircleAlert size={17} /><span>{notice}</span></div>}
@@ -232,37 +404,44 @@ function App() {
         </article>
 
         <article className="panel blueprint-panel">
-          <PanelHead number="02" title="构建并确认蓝图" icon={<ScrollText size={20} />} />
-          <p className="panel-copy">每种题型分别设置低/中/高难度占比，三者合计 100%。同一题型会按低 → 中 → 高排序生成；难度不再使用全卷统一值。</p>
+          <PanelHead number="02" title="分配命题合同" icon={<ScrollText size={20} />} />
+          <p className="panel-copy">每种题型分别设置低/中/高难度占比，三者合计 100%。系统按考点原子池分配题位：原子唯一、答案域互斥、考点比例对齐，冲突会显式报告。</p>
           <label>蓝图参数</label>
           <textarea className="code-editor blueprint-editor" value={blueprintText} onChange={(event) => setBlueprintText(event.target.value)} spellCheck={false} />
-          <button onClick={allocateBlueprint} disabled={busy !== null || !courseId}>
-            {busy === 'plan' ? <LoaderCircle className="spin" size={17} /> : <Sparkles size={17} />} 构建命题蓝图
+          <button onClick={allocateContract} disabled={busy !== null || !courseId}>
+            {busy === 'allocate' ? <LoaderCircle className="spin" size={17} /> : <Sparkles size={17} />} 分配命题合同
           </button>
-          {plan && (
-            <div className="plan-summary">
-              <div><b>{plan.total_score}</b><span>总分</span></div>
-              <div><b>{totalItems}</b><span>题目</span></div>
-              <div><b>{Object.keys(plan.anchor_counts).length}</b><span>考核单元</span></div>
-              <CheckCircle2 size={23} />
+          {contract && (
+            <div className={hasConflicts ? 'plan-summary contract-warn' : 'plan-summary'}>
+              <div><b>{contract.total_score}</b><span>总分</span></div>
+              <div><b>{contract.slots.length}</b><span>题位</span></div>
+              <div><b>{hasConflicts ? contract.conflicts.length : contract.audit_summary.exam_points.length}</b><span>{hasConflicts ? '冲突' : '考点'}</span></div>
+              {hasConflicts ? <CircleAlert size={23} /> : <CheckCircle2 size={23} />}
             </div>
           )}
         </article>
 
         <article className="panel generate-panel">
-          <PanelHead number="03" title="生成候选试卷" icon={<Sparkles size={20} />} />
-          <p className="panel-copy">这里只放入纯净知识卡，不传递文件名、页码、章节编号和证据 ID。</p>
+          <PanelHead number="03" title="确认合同并命题" icon={<Sparkles size={20} />} />
+          <p className="panel-copy">这里只放入纯净知识卡，不传递文件名、页码、章节编号和证据 ID。合同确认锁定后，模型按合同逐题落笔并自动终检。</p>
           <label>纯净知识卡</label>
           <textarea className="code-editor card-editor" value={cardsText} onChange={(event) => setCardsText(event.target.value)} spellCheck={false} />
-          <button className="primary-dark" onClick={generatePaper} disabled={busy !== null || !plan}>
-            {busy === 'paper' ? <LoaderCircle className="spin" size={17} /> : <ChevronRight size={17} />} 确认蓝图并开始命题
+          <button className="secondary" onClick={confirmContract} disabled={busy !== null || !contract || hasConflicts}>
+            {busy === 'confirm' ? <LoaderCircle className="spin" size={17} /> : <CheckCircle2 size={17} />} 确认合同（无修订）
           </button>
-          <p className="fineprint">逐题生成 · 自动质检 · 最多局部重试 2 次</p>
+          <button className="primary-dark" onClick={generatePaper} disabled={busy !== null || !confirmed || hasConflicts}>
+            {busy === 'paper' ? <LoaderCircle className="spin" size={17} /> : <ChevronRight size={17} />} 按合同逐题命题
+          </button>
+          <p className="fineprint">逐题生成 · 合同终检 · 最多局部重试 2 次</p>
         </article>
       </section>
 
-      {demo?.blueprint?.plan ? <PlanTable plan={demo.blueprint.plan} /> : plan && <PlanTable plan={plan} />}
-      {demo?.paper?.questions?.length ? <Paper questions={demo.paper.questions} qualityPassed={demo.paper.questions.filter((q) => q.quality?.status === 'pass').length} /> : questions.length > 0 && <Paper questions={questions} qualityPassed={qualityPassed} />}
+      {demo?.blueprint?.plan
+        ? <PlanTable plan={demo.blueprint.plan} />
+        : contract && <ContractSection contract={contract} confirmedContract={confirmed} onConfirm={confirmContract} busy={busy} />}
+      {demo?.paper?.questions?.length
+        ? <Paper questions={demo.paper.questions} qualityPassed={demo.paper.questions.filter((q) => q.quality?.status === 'pass').length} />
+        : questions.length > 0 && <Paper questions={questions} qualityPassed={qualityPassed} finalCheck={finalCheck} modelCallCount={modelCallCount} model={model} reviewCount={reviewCount} />}
 
       <footer>砚卷 · CORE PREVIEW / 2026</footer>
     </main>
@@ -281,12 +460,45 @@ function DemoProgress({ demo }: { demo: DemoPipeline }) {
     <div className="demo-metrics"><div><b>{demo.files_total ?? extraction.length}</b><span>素材文件</span></div><div><b>{extraction.reduce((sum, item) => sum + (item.block_count ?? 0), 0)}</b><span>MinerU 内容块</span></div><div><b>{demo.knowledge_tree?.topics?.length ?? 0}</b><span>知识主题</span></div><div><b>{demo.blueprint?.plan?.items.length ?? 0}</b><span>蓝图题目</span></div></div>
     {extraction.length > 0 && <div className="evidence-grid"><EvidenceColumn title="考核输入" items={[...teaching, ...assessment]} /><EvidenceColumn title="教学材料" items={materials.slice(0, 8)} /></div>}
     {demo.framework && <div className="framework-strip"><div><strong>考核大纲权重</strong>{(demo.framework.anchors ?? []).map((anchor) => <span key={anchor.title}>{anchor.title.replace(/^第\d+章\s*/, '')} <b>{anchor.exam_weight}%</b></span>)}</div><div><strong>教学主题</strong>{(demo.framework.teaching_topics ?? []).slice(0, 9).map((topic) => <span key={topic.title}>{topic.title}</span>)}</div></div>}
+    {demo.paper?.weight_audit?.rows?.length ? <WeightAuditTable rows={demo.paper.weight_audit.rows} pointTitles={pointTitles(demo)} /> : null}
     {demo.knowledge_tree?.topics && demo.knowledge_tree.topics.length > 0 && <div className="tree-strip"><strong>归并后的纯净知识卡</strong>{demo.knowledge_tree.topics.slice(0, 12).map((topic) => <div key={topic.name}><span>{topic.name}</span><small>{topic.units?.flatMap((unit) => unit.cards ?? []).slice(0, 3).map((card) => card.name).join(' · ')}</small></div>)}</div>}
   </section>
 }
 
 function EvidenceColumn({ title, items }: { title: string; items: Array<{ filename: string; block_count: number; content_preview?: Array<{ page?: number; text: string }> }> }) {
   return <div className="evidence-column"><strong>{title}</strong>{items.map((item) => <details key={item.filename}><summary>{item.filename} <small>{item.block_count} blocks</small></summary><div>{(item.content_preview ?? []).slice(0, 4).map((block, index) => <p key={index}><i>p.{(block.page ?? 0) + 1}</i>{block.text}</p>)}</div></details>)}</div>
+}
+
+function pointTitles(demo: DemoPipeline): Record<string, string> {
+  const titles: Record<string, string> = {}
+  for (const point of demo.framework?.exam_points ?? []) {
+    titles[point.code] = point.title.replace(/^第\d+章\s*/, '')
+  }
+  return titles
+}
+
+function WeightAuditTable({ rows, pointTitles }: { rows: WeightAuditRow[]; pointTitles: Record<string, string> }) {
+  const matched = rows.every((row) => Math.abs(row.actual_score - row.syllabus_weight_percent) < 0.01)
+  return <div className="weight-audit">
+    <div className="weight-audit-head">
+      <strong>考纲占比审计</strong>
+      <span className={matched ? 'audit-ok' : 'audit-warn'}>{matched ? '全部考点分值与考纲占比一致' : '存在偏差，需教师复核'}</span>
+    </div>
+    <table>
+      <thead><tr><th>考点</th><th>考纲占比</th><th>计划分值</th><th>实际分值</th><th>题数</th><th>状态</th></tr></thead>
+      <tbody>{rows.map((row) => {
+        const ok = Math.abs(row.actual_score - row.syllabus_weight_percent) < 0.01
+        return <tr key={row.exam_point_id}>
+          <td title={pointTitles[row.exam_point_id] ?? ''}>{row.exam_point_id}</td>
+          <td>{row.syllabus_weight_percent}%</td>
+          <td>{row.planned_score}</td>
+          <td><b>{row.actual_score}</b></td>
+          <td>{row.question_count}</td>
+          <td className={ok ? 'audit-ok' : 'audit-warn'}>{ok ? '一致' : '偏差'}</td>
+        </tr>
+      })}</tbody>
+    </table>
+  </div>
 }
 
 function PanelHead({ number, title, icon }: { number: string; title: string; icon: React.ReactNode }) {
@@ -308,12 +520,99 @@ function PlanTable({ plan }: { plan: Plan }) {
   )
 }
 
-function Paper({ questions, qualityPassed }: { questions: Question[]; qualityPassed: number }) {
+function ContractSection({ contract, confirmedContract, onConfirm, busy }: {
+  contract: PaperContract
+  confirmedContract: PaperContract | null
+  onConfirm: () => void
+  busy: 'course' | 'allocate' | 'confirm' | 'paper' | null
+}) {
+  const hasConflicts = contract.conflicts.length > 0
+  const summary = contract.audit_summary
+  const confirmedNow = confirmedContract !== null
+  return (
+    <section className="result-section">
+      <div className="result-head">
+        <div><p className="section-index">人工确认点 A</p><h2>命题合同</h2></div>
+        <p>{hasConflicts ? '合同存在冲突：请调整知识卡或蓝图参数后重新分配，冲突清零前无法确认与生成。' : '每个题位已锁定考点、知识原子与答案域。确认合同后题位锁定，方可逐题命题。'}</p>
+      </div>
+
+      {hasConflicts && (
+        <div className="notice conflict-strip">
+          <CircleAlert size={17} />
+          <div>
+            <strong>合同冲突 {contract.conflicts.length} 处 — 需教师处理</strong>
+            {contract.conflicts.map((conflict, index) => (
+              <p key={`${conflict.code}-${conflict.exam_point_id}-${index}`}>
+                [{conflict.exam_point_id || '全卷'}] {conflict.message}（{CONFLICT_LABELS[conflict.code] ?? conflict.code}）
+              </p>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="difficulty-strip">
+        {Object.entries(summary.type_counts).map(([type, count]) => <span key={type}><b>{QUESTION_LABELS[type] ?? type}</b>{count} 题</span>)}
+        {Object.entries(summary.difficulty_counts).map(([level, count]) => <span key={level}><b>{DIFFICULTY_LABELS[level] ?? level}难度</b>{count} 题</span>)}
+      </div>
+
+      <div className="table-wrap audit-table">
+        <table>
+          <thead><tr><th>考点</th><th>章节权重</th><th>题数</th><th>题位占比</th></tr></thead>
+          <tbody>{summary.exam_points.map((point) => (
+            <tr key={point.exam_point_id}>
+              <td>{point.exam_point_id}</td>
+              <td>{point.weight}%</td>
+              <td><b>{point.question_count}</b></td>
+              <td>{Math.round(point.proportion * 100)}%</td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>题号</th><th>题型</th><th>分值</th><th>考点</th><th>知识原子</th><th>答案域</th></tr></thead>
+          <tbody>{contract.slots.map((slot) => (
+            <tr key={slot.item_index}>
+              <td>{String(slot.item_index).padStart(2, '0')}</td>
+              <td>{QUESTION_LABELS[slot.question_type] ?? slot.question_type}</td>
+              <td>{slot.score}</td>
+              <td>{slot.exam_point_id}</td>
+              <td title={slot.coverage_atom}>{slot.coverage_atom}</td>
+              <td className="mono-cell">{slot.answer_boundary || '—'}</td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+
+      <button className="secondary confirm-row" onClick={onConfirm} disabled={busy !== null || hasConflicts || confirmedNow}>
+        {busy === 'confirm' ? <LoaderCircle className="spin" size={17} /> : <CheckCircle2 size={17} />}
+        {confirmedNow ? '合同已确认锁定' : '确认合同（无修订）'}
+      </button>
+    </section>
+  )
+}
+
+function Paper({ questions, qualityPassed, finalCheck, modelCallCount, model, reviewCount }: {
+  questions: Question[]
+  qualityPassed: number
+  finalCheck?: FinalCheck | null
+  modelCallCount?: number
+  model?: string
+  reviewCount?: number
+}) {
   let number = 0
   const groups = Object.entries(QUESTION_LABELS).map(([type, label]) => ({ type, label, questions: questions.filter((q) => q.question_type === type) })).filter((group) => group.questions.length)
   return (
     <section className="paper-shell">
-      <div className="paper-toolbar"><div><p className="section-index">人工确认点 B</p><h2>候选试卷</h2></div><div className="quality-badge"><CheckCircle2 size={17} /> 质检通过 {qualityPassed}/{questions.length}</div></div>
+      <div className="paper-toolbar">
+        <div><p className="section-index">人工确认点 B</p><h2>候选试卷</h2></div>
+        <div className="toolbar-badges">
+          {(modelCallCount ?? 0) > 0 && <span className="quality-badge"><Sparkles size={15} /> {model || 'model'} · {modelCallCount} 次调用</span>}
+          {finalCheck && <span className={`quality-badge ${finalCheck.passed ? '' : 'badge-fail'}`}><CheckCircle2 size={17} /> 合同终检{finalCheck.passed ? '通过' : '未通过'}</span>}
+          <span className={`quality-badge ${(reviewCount ?? 0) > 0 ? 'badge-fail' : ''}`}><CheckCircle2 size={17} /> 质检通过 {qualityPassed}/{questions.length}{(reviewCount ?? 0) > 0 ? ` · ${reviewCount} 题待复核` : ''}</span>
+        </div>
+      </div>
       <div className="paper">
         <header className="paper-header"><p>2025—2026 学年第二学期期末考试</p><h2>课程试卷（候选稿）</h2><div><span>考试形式：闭卷</span><span>满分：100 分</span><span>命题方式：AI 辅助</span></div></header>
         {groups.map((group, groupIndex) => (
@@ -326,18 +625,48 @@ function Paper({ questions, qualityPassed }: { questions: Question[]; qualityPas
           </section>
         ))}
       </div>
+      {finalCheck && <FinalCheckTable finalCheck={finalCheck} />}
     </section>
+  )
+}
+
+function FinalCheckTable({ finalCheck }: { finalCheck: FinalCheck }) {
+  const checks = finalCheck.checks ?? []
+  return (
+    <div className="final-check">
+      <div className="final-check-head">
+        <strong>合同终检（final_check）</strong>
+        <span className={finalCheck.passed ? 'status-ok' : 'status-fail'}>{finalCheck.passed ? '全部通过' : '存在未通过项'}</span>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>检查项</th><th>结果</th><th>明细</th></tr></thead>
+          <tbody>{checks.map((check) => (
+            <tr key={check.code}>
+              <td>{FINAL_CHECK_LABELS[check.code] ?? check.code}</td>
+              <td className={check.passed ? 'status-ok' : 'status-fail'}>{check.passed ? '通过' : '未通过'}</td>
+              <td className="mono-cell">{JSON.stringify(check.detail ?? {})}</td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+    </div>
   )
 }
 
 function QuestionView({ number, question }: { number: number; question: Question }) {
   const options = Array.isArray(question.options) ? question.options : question.options ? Object.entries(question.options).map(([key, value]) => `${key}. ${value}`) : []
+  const qualityText = [question.quality?.status ? `状态 ${question.quality.status}` : '', question.quality?.message ?? '', ...(question.quality?.issues ?? [])].filter(Boolean).join(' · ')
   return (
     <div className="question">
-      <div className="stem"><b>{number}.</b><span>{question.stem || '（模型未返回题干）'}</span><em>{question.score} 分</em></div>
+      <div className="stem">
+        <b>{number}.</b>
+        <span>{question.stem || '（模型未返回题干）'}{question.needs_review && <i className="review-chip">需人工复核</i>}{question.exam_point_id && <i className="exam-point-chip">{question.exam_point_id}</i>}</span>
+        <em>{question.score} 分</em>
+      </div>
       {options.length > 0 && <div className="options">{options.map((option, index) => <span key={index}>{/^[A-D][.、]/.test(option) ? option : `${String.fromCharCode(65 + index)}. ${option}`}</span>)}</div>}
       {question.subquestions?.length ? <ol className="subquestions">{question.subquestions.map((item, index) => <li key={index}>{typeof item === 'string' ? item : item.question ?? JSON.stringify(item)}</li>)}</ol> : null}
-      <details><summary>查看答案、解析与评分细则</summary><div className="answer"><p><strong>参考答案：</strong>{typeof question.answer === 'boolean' ? (question.answer ? '正确' : '错误') : String(question.answer ?? '—')}</p>{question.explanation && <p><strong>解析：</strong>{question.explanation}</p>}{question.rubric && <div><strong>评分细则：</strong><ul>{question.rubric.map((row, index) => <li key={index}>{row.point ?? JSON.stringify(row)}{row.score != null ? `（${row.score} 分）` : ''}</li>)}</ul></div>}<p className={`quality ${question.quality?.status === 'pass' ? 'pass' : 'fail'}`}>质量检查：{question.quality?.status ?? 'unknown'}{question.quality?.issues?.length ? ` · ${question.quality.issues.join('；')}` : ''}</p></div></details>
+      <details><summary>查看答案、解析与评分细则</summary><div className="answer"><p><strong>参考答案：</strong>{typeof question.answer === 'boolean' ? (question.answer ? '正确' : '错误') : String(question.answer ?? '—')}</p>{question.explanation && <p><strong>解析：</strong>{question.explanation}</p>}{question.rubric && <div><strong>评分细则：</strong><ul>{question.rubric.map((row, index) => <li key={index}>{row.point ?? JSON.stringify(row)}{row.score != null ? `（${row.score} 分）` : ''}</li>)}</ul></div>}{question.coverage_atom && <p><strong>合同原子：</strong>{question.coverage_atom}</p>}{qualityText && <p className={`quality ${question.quality?.status === 'pass' && !question.needs_review ? 'pass' : 'fail'}`}>质量检查：{qualityText}</p>}</div></details>
     </div>
   )
 }

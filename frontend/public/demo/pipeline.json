@@ -1,0 +1,1741 @@
+{
+  "status": "knowledge_organization",
+  "started_at": "2026-08-17T15:38:07.108535",
+  "source_directory": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材",
+  "files_total": 19,
+  "model": "deepseek-v4-flash",
+  "curation_schema_version": "manual-recurate-20260817-01",
+  "signature_history": [
+    {
+      "archetype": "integrated_explanation",
+      "material_form": "causal_chain",
+      "cognitive_sequence": [
+        "understand",
+        "apply",
+        "analyze"
+      ],
+      "subquestion_actions": [
+        "other",
+        "other",
+        "other"
+      ],
+      "answer_boundaries": [
+        "explain",
+        "explain",
+        "bounded_answer"
+      ],
+      "structure_key": "{\"answer_boundaries\":[\"explain\",\"explain\",\"bounded_answer\"],\"archetype\":\"integrated_explanation\",\"cognitive_sequence\":[\"understand\",\"apply\",\"analyze\"],\"material_form\":\"causal_chain\",\"subquestion_actions\":[\"other\",\"other\",\"other\"]}",
+      "signature_hash": "24bc0036a5f873ce598e207c037d27acafcaecab7d11bbcbd358859b692dcbb8"
+    },
+    {
+      "archetype": "comparative_decision",
+      "material_form": "constraint_table",
+      "cognitive_sequence": [
+        "understand",
+        "apply",
+        "analyze"
+      ],
+      "subquestion_actions": [
+        "other",
+        "other",
+        "other"
+      ],
+      "answer_boundaries": [
+        "bounded_answer",
+        "design",
+        "repair"
+      ],
+      "structure_key": "{\"answer_boundaries\":[\"bounded_answer\",\"design\",\"repair\"],\"archetype\":\"comparative_decision\",\"cognitive_sequence\":[\"understand\",\"apply\",\"analyze\"],\"material_form\":\"constraint_table\",\"subquestion_actions\":[\"other\",\"other\",\"other\"]}",
+      "signature_hash": "2120159def7119f11359fb0abd2381db52bb3b7aff2fca971fbe2d2e7c0078bb"
+    },
+    {
+      "archetype": "fault_diagnosis",
+      "material_form": "error_process",
+      "cognitive_sequence": [
+        "understand",
+        "apply",
+        "analyze"
+      ],
+      "subquestion_actions": [
+        "other",
+        "other",
+        "other"
+      ],
+      "answer_boundaries": [
+        "explain",
+        "design",
+        "diagnose"
+      ],
+      "structure_key": "{\"answer_boundaries\":[\"explain\",\"design\",\"diagnose\"],\"archetype\":\"fault_diagnosis\",\"cognitive_sequence\":[\"understand\",\"apply\",\"analyze\"],\"material_form\":\"error_process\",\"subquestion_actions\":[\"other\",\"other\",\"other\"]}",
+      "signature_hash": "1e7a83de9d9f1dcf02327de45cf24e0ad781fe2d2155f9c8862f1eab7d28a87d"
+    },
+    {
+      "archetype": "code_completion_scenario",
+      "material_form": "config_template",
+      "cognitive_sequence": [
+        "apply",
+        "understand"
+      ],
+      "subquestion_actions": [
+        "other",
+        "other"
+      ],
+      "answer_boundaries": [
+        "bounded_answer",
+        "repair"
+      ],
+      "structure_key": "{\"answer_boundaries\":[\"bounded_answer\",\"repair\"],\"archetype\":\"code_completion_scenario\",\"cognitive_sequence\":[\"apply\",\"understand\"],\"material_form\":\"config_template\",\"subquestion_actions\":[\"other\",\"other\"]}",
+      "signature_hash": "a79e0976d4d400bdec095315cab5f01b3c764b774f02a42cbb432b58a9ff41de"
+    },
+    {
+      "archetype": "critique_correction",
+      "material_form": "incorrect_answer",
+      "cognitive_sequence": [
+        "understand",
+        "apply"
+      ],
+      "subquestion_actions": [
+        "other",
+        "other"
+      ],
+      "answer_boundaries": [
+        "design",
+        "explain"
+      ],
+      "structure_key": "{\"answer_boundaries\":[\"design\",\"explain\"],\"archetype\":\"critique_correction\",\"cognitive_sequence\":[\"understand\",\"apply\"],\"material_form\":\"incorrect_answer\",\"subquestion_actions\":[\"other\",\"other\"]}",
+      "signature_hash": "d775043d4ab0b0658b18c02e619f285d749bef793786ead2cbc2917f62d3bba3"
+    }
+  ],
+  "extraction": [
+    {
+      "filename": "2025-2026II-SK3020-大模型调优与部署技术-课程教学大纲-李剑锋.pdf",
+      "source_path": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材\\2025-2026II-SK3020-大模型调优与部署技术-课程教学大纲-李剑锋.pdf",
+      "material_type": "teaching_syllabus",
+      "sha256": "2f431c6c5a190a09a4ad79b2688629d42272d09a04aa4dac7e5d2235d33c0516",
+      "provider_batch_id": "23dc1334-e169-4178-8b7c-2083cb0f0e11",
+      "block_count": 519,
+      "content_preview": [
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "《大模型调优与部署技术》课程教学大纲"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "课程代码：SK3020"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学 分：2"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学 时：36（理论学时：18，实践学时：18）"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "先修课程：无"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "适用专业：数据科学与大数据技术（专升本）专业、数据科学与大数据技术专业、人工智能专业"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "课程性质：必修"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "开课单位：软件与人工智能学院"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "一、课程的性质和地位"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "本课程是数据科学与大数据技术（专升本）专业的必修课，是数据科学与大数据技术（专升本）专业的专业必修课。本课程也是数据科学与大数据技术专业、人工智能专业的选修课，是数据科学与大数据技术专业的专业任选课，同时也是人工智能专业的专业限选课。此外，本课程也可作为其他专业的选修课。"
+        }
+      ]
+    },
+    {
+      "filename": "2025-2026II-SK3020-大模型调优与部署技术-课程考核大纲-李剑锋.pdf",
+      "source_path": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材\\2025-2026II-SK3020-大模型调优与部署技术-课程考核大纲-李剑锋.pdf",
+      "material_type": "assessment_syllabus",
+      "sha256": "1aa4fefe7a1b6bd872059393fe2bed8c9c3d85f054579aabd27c5e39444afc51",
+      "provider_batch_id": "a08139ca-57e0-4e2e-8de8-77b22f62c477",
+      "block_count": 217,
+      "content_preview": [
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "《大模型调优与部署技术》课程考核大纲"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "课程代码：SK3020"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学 分：2"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学 时：36（理论学时：18，实践学时：18）"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "考核方式：考试"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "一、考核对象"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "数据科学与大数据技术（专升本）、数据科学与大数据技术、人工智能专业的本科学生以及选修本课程的学生。"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "二、考核内容与要求"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "第1章 开源大模型运行原理与量化部署"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "考核内容："
+        }
+      ]
+    },
+    {
+      "filename": "2520148207-张新彦-实验01-开源大模型本地部署_转自DOC.docx",
+      "source_path": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材\\实验报告\\2520148207-张新彦-实验01-开源大模型本地部署_转自DOC.docx",
+      "material_type": "teaching_material",
+      "sha256": "4f2334dae7aacbaa0c92ca48c00a071d5924f892f5a9d7fb9f8f7f845d5eedec",
+      "provider_batch_id": "72c75bfb-cb94-43b6-aa4b-c4ab55d550d8",
+      "block_count": 48,
+      "content_preview": [
+        {
+          "page": 0,
+          "type": "image",
+          "text": ""
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "**实验报告封面**"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>课程名称：</strong> <strong><u>__大模型调优与部署技术__</u></strong>   <strong>课程代码：<u>_SK3020__</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>任课老师：</strong>_________  <strong>实验指导老师:</strong>__________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>实验报告名称：<u>实验1 开源大模型本地部署______________________________________________________</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学生姓名：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学号：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "教学班：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "递交日期：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "签收人：_____________________"
+        }
+      ]
+    },
+    {
+      "filename": "2520148207-张新彦-实验02-大模型原理分析_转自DOC.docx",
+      "source_path": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材\\实验报告\\2520148207-张新彦-实验02-大模型原理分析_转自DOC.docx",
+      "material_type": "teaching_material",
+      "sha256": "2b2cc5694ecb213460f2b012d41fc6a5a2e1b50176ade9aebe8ecf82ba0847c3",
+      "provider_batch_id": "59f77397-599f-4407-842c-9e8be509b46a",
+      "block_count": 50,
+      "content_preview": [
+        {
+          "page": 0,
+          "type": "image",
+          "text": ""
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "**实验报告封面**"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>课程名称：</strong> <strong><u>__大模型调优与部署技术__</u></strong>   <strong>课程代码：<u>_SK3020__</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>任课老师：</strong>_________  <strong>实验指导老师:</strong>__________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>实验报告名称：<u>实验2 大模型原理分析______________________________________________________</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学生姓名：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学号：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "教学班：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "递交日期：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "签收人：_____________________"
+        }
+      ]
+    },
+    {
+      "filename": "2520148207-张新彦-实验03-大模型量化部署_转自DOC.docx",
+      "source_path": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材\\实验报告\\2520148207-张新彦-实验03-大模型量化部署_转自DOC.docx",
+      "material_type": "teaching_material",
+      "sha256": "175dfe709395ef5e0fa617333b45f12e82b8f1602500250f9f2f094fde88f63a",
+      "provider_batch_id": "c2044252-46d0-4382-a869-cc1c5829ace4",
+      "block_count": 46,
+      "content_preview": [
+        {
+          "page": 0,
+          "type": "image",
+          "text": ""
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "**实验报告封面**"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>课程名称：</strong> <strong><u>__大模型调优与部署技术__</u></strong>   <strong>课程代码：<u>_SK3020__</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>任课老师：</strong>_________  <strong>实验指导老师:</strong>__________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>实验报告名称：<u>实验3 大模型量化部署______________________________________________________</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学生姓名：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学号：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "教学班：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "递交日期：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "签收人：_____________________"
+        }
+      ]
+    },
+    {
+      "filename": "2520148207-张新彦-实验04-提示词工程应用实战_转自DOC.docx",
+      "source_path": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材\\实验报告\\2520148207-张新彦-实验04-提示词工程应用实战_转自DOC.docx",
+      "material_type": "teaching_material",
+      "sha256": "766b8d1ab9dcc420e4ae471b68b98377500a9d8e4a8d28584d9f7958b5de58df",
+      "provider_batch_id": "d018acab-fb2c-46b9-ac2c-6e8cc219d70c",
+      "block_count": 124,
+      "content_preview": [
+        {
+          "page": 0,
+          "type": "image",
+          "text": ""
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "**实验报告封面**"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>课程名称：</strong> <strong><u>__大模型调优与部署技术__</u></strong>   <strong>课程代码：<u>_SK3020__</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>任课老师：</strong>_________  <strong>实验指导老师:</strong>__________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>实验报告名称：<u>实验4 提示词工程应用实战______________________________________________________</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学生姓名：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学号：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "教学班：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "递交日期：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "签收人：_____________________"
+        }
+      ]
+    },
+    {
+      "filename": "2520148207-张新彦-实验05-RAG应用实战_转自DOC.docx",
+      "source_path": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材\\实验报告\\2520148207-张新彦-实验05-RAG应用实战_转自DOC.docx",
+      "material_type": "teaching_material",
+      "sha256": "d292d8826c88c229d5e996b899f9f69d1aac3e3683892c6e7d122eae17ee0e1a",
+      "provider_batch_id": "199df6f7-5478-4390-a848-cb6e4e273315",
+      "block_count": 58,
+      "content_preview": [
+        {
+          "page": 0,
+          "type": "image",
+          "text": ""
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "**实验报告封面**"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>课程名称：</strong> <strong><u>__大模型调优与部署技术__</u></strong>   <strong>课程代码：<u>_SK3020__</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>任课老师：</strong>_________  <strong>实验指导老师:</strong>__________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>实验报告名称：<u>实验5 RAG应用实战______________________________________________________</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学生姓名：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学号：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "教学班：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "递交日期：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "签收人：_____________________"
+        }
+      ]
+    },
+    {
+      "filename": "2520148207-张新彦-实验06-RAG进阶实战_转自DOC.docx",
+      "source_path": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材\\实验报告\\2520148207-张新彦-实验06-RAG进阶实战_转自DOC.docx",
+      "material_type": "teaching_material",
+      "sha256": "43d701202298029b3901e93c5d4f2e6e8f7845c206662ea7c4cd966d7d882385",
+      "provider_batch_id": "c3d8fa1c-4786-46de-b172-eb02f5df9215",
+      "block_count": 65,
+      "content_preview": [
+        {
+          "page": 0,
+          "type": "image",
+          "text": ""
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "**实验报告封面**"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>课程名称：</strong> <strong><u>__大模型调优与部署技术__</u></strong>   <strong>课程代码：<u>_SK3020__</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>任课老师：</strong>_________  <strong>实验指导老师:</strong>__________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>实验报告名称：<u>实验6 RAG进阶实战______________________________________________________</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学生姓名：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学号：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "教学班：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "递交日期：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "签收人：_____________________"
+        }
+      ]
+    },
+    {
+      "filename": "2520148207-张新彦-实验07-AgenticRAG应用实战_转自DOC.docx",
+      "source_path": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材\\实验报告\\2520148207-张新彦-实验07-AgenticRAG应用实战_转自DOC.docx",
+      "material_type": "teaching_material",
+      "sha256": "89049699e131641ff738582a13e443c896754ba4b8eeba3773486c7faba24dc3",
+      "provider_batch_id": "75fb0687-9447-441f-8fa1-e9c1c4720523",
+      "block_count": 147,
+      "content_preview": [
+        {
+          "page": 0,
+          "type": "image",
+          "text": ""
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "**实验报告封面**"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>课程名称：</strong> <strong><u>__大模型调优与部署技术__</u></strong>   <strong>课程代码：<u>_SK3020__</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>任课老师：</strong>_________  <strong>实验指导老师:</strong>__________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>实验报告名称：<u>实验7 Agentic RAG 应用实战______________________________________________________</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学生姓名：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学号：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "教学班：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "递交日期：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "签收人：_____________________"
+        }
+      ]
+    },
+    {
+      "filename": "2520148207-张新彦-实验08-SFT全量微调_转自DOC.docx",
+      "source_path": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材\\实验报告\\2520148207-张新彦-实验08-SFT全量微调_转自DOC.docx",
+      "material_type": "teaching_material",
+      "sha256": "df34c4e916c14d995c93f76ea992dce75d55f2c00c5f764603d342f9ce625c93",
+      "provider_batch_id": "0aad1438-28e7-41a0-bdac-dd011d86d267",
+      "block_count": 91,
+      "content_preview": [
+        {
+          "page": 0,
+          "type": "image",
+          "text": ""
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "**实验报告封面**"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>课程名称：</strong> <strong><u>__大模型调优与部署技术__</u></strong>   <strong>课程代码：<u>_SK3020__</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>任课老师：</strong>_________  <strong>实验指导老师:</strong>__________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>实验报告名称：<u>实验8 SFT全量微调______________________________________________________</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学生姓名：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学号：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "教学班：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "递交日期：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "签收人：_____________________"
+        }
+      ]
+    },
+    {
+      "filename": "2520148207-张新彦-实验09-LoRA参数高效微调_转自DOC.docx",
+      "source_path": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材\\实验报告\\2520148207-张新彦-实验09-LoRA参数高效微调_转自DOC.docx",
+      "material_type": "teaching_material",
+      "sha256": "102d7efa2736a7ede4e9255d435b29c6b26ff6d865b62c822ae8cb61a65bc5ea",
+      "provider_batch_id": "ee2e16ad-edfc-4686-ab1c-88e4d43acfd2",
+      "block_count": 130,
+      "content_preview": [
+        {
+          "page": 0,
+          "type": "image",
+          "text": ""
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "**实验报告封面**"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>课程名称：</strong> <strong><u>__大模型调优与部署技术__</u></strong>   <strong>课程代码：<u>_SK3020__</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>任课老师：</strong>_________  <strong>实验指导老师:</strong>__________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>实验报告名称：<u>实验9 LoRA 参数高效微调______________________________________________________</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学生姓名：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学号：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "教学班：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "递交日期：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "签收人：_____________________"
+        }
+      ]
+    },
+    {
+      "filename": "2520148207-张新彦-实验10-QLoRA量化微调_转自DOC.docx",
+      "source_path": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材\\实验报告\\2520148207-张新彦-实验10-QLoRA量化微调_转自DOC.docx",
+      "material_type": "teaching_material",
+      "sha256": "848399517674e6098a5469b7ac7be386e1ced26478fe6e95bc5b9d0212df7d6f",
+      "provider_batch_id": "40ff428b-06a4-4f60-b203-255604ee4022",
+      "block_count": 132,
+      "content_preview": [
+        {
+          "page": 0,
+          "type": "image",
+          "text": ""
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "**实验报告封面**"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>课程名称：</strong> <strong><u>__大模型调优与部署技术__</u></strong>   <strong>课程代码：<u>_SK3020__</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>任课老师：</strong>_________  <strong>实验指导老师:</strong>__________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>实验报告名称：<u>实验10 QLoRA 量化微调______________________________________________________</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学生姓名：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学号：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "教学班：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "递交日期：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "签收人：_____________________"
+        }
+      ]
+    },
+    {
+      "filename": "2520148207-张新彦-实验11-AI数据生成实战_转自DOC.docx",
+      "source_path": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材\\实验报告\\2520148207-张新彦-实验11-AI数据生成实战_转自DOC.docx",
+      "material_type": "teaching_material",
+      "sha256": "66230b3a9984f1ccbb8f2eb7d3ef086a1b311b5d6c7c057b0f5e3a9b26604eb0",
+      "provider_batch_id": "d5607510-e2d1-4ed5-9608-184403acf277",
+      "block_count": 137,
+      "content_preview": [
+        {
+          "page": 0,
+          "type": "image",
+          "text": ""
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "**实验报告封面**"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>课程名称：</strong> <strong><u>__大模型调优与部署技术__</u></strong>   <strong>课程代码：<u>_SK3020__</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>任课老师：</strong>_________  <strong>实验指导老师:</strong>__________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>实验报告名称：<u>实验11 AI数据生成实战______________________________________________________</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学生姓名：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学号：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "教学班：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "递交日期：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "签收人：_____________________"
+        }
+      ]
+    },
+    {
+      "filename": "2520148207-张新彦-实验12-继续预训练微调_转自DOC.docx",
+      "source_path": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材\\实验报告\\2520148207-张新彦-实验12-继续预训练微调_转自DOC.docx",
+      "material_type": "teaching_material",
+      "sha256": "8fa2ab68b25a5fe8255dbb28509399bd59403fd64537355598be7a380aa7ca9e",
+      "provider_batch_id": "41975a47-36e4-4d1a-88df-c90a2bc6e0fd",
+      "block_count": 180,
+      "content_preview": [
+        {
+          "page": 0,
+          "type": "image",
+          "text": ""
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "**实验报告封面**"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>课程名称：</strong> <strong><u>__大模型调优与部署技术__</u></strong>   <strong>课程代码：<u>_SK3020__</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>任课老师：</strong>_________  <strong>实验指导老师:</strong>__________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>实验报告名称：<u>实验12 继续预训练微调______________________________________________________</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学生姓名：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学号：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "教学班：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "递交日期：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "签收人：_____________________"
+        }
+      ]
+    },
+    {
+      "filename": "2520148207-张新彦-实验13-基于人类反馈的强化学习_转自DOC.docx",
+      "source_path": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材\\实验报告\\2520148207-张新彦-实验13-基于人类反馈的强化学习_转自DOC.docx",
+      "material_type": "teaching_material",
+      "sha256": "2dd0aa81e908dab072350b7c4167dda670cc4210c9aec3ab6ff758d2df9a3c86",
+      "provider_batch_id": "8a240a6b-252e-437a-880e-9b33bba88eaf",
+      "block_count": 123,
+      "content_preview": [
+        {
+          "page": 0,
+          "type": "image",
+          "text": ""
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "**实验报告封面**"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>课程名称：</strong> <strong><u>__大模型调优与部署技术__</u></strong>   <strong>课程代码：<u>_SK3020__</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>任课老师：</strong>_________  <strong>实验指导老师:</strong>__________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>实验报告名称：<u>实验13 基于人类反馈的强化学习______________________________________________________</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学生姓名：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学号：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "教学班：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "递交日期：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "签收人：_____________________"
+        }
+      ]
+    },
+    {
+      "filename": "2520148207-张新彦-实验14-模型评估_转自DOC.docx",
+      "source_path": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材\\实验报告\\2520148207-张新彦-实验14-模型评估_转自DOC.docx",
+      "material_type": "teaching_material",
+      "sha256": "fafdfa1f54e820903d68a7b177630c8caa6a252487bad8fdde361b42c131bb47",
+      "provider_batch_id": "ec56b261-c637-4301-aff7-e5797f559c0a",
+      "block_count": 181,
+      "content_preview": [
+        {
+          "page": 0,
+          "type": "image",
+          "text": ""
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "**实验报告封面**"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>课程名称：</strong> <strong><u>__大模型调优与部署技术__</u></strong>   <strong>课程代码：<u>_SK3020__</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>任课老师：</strong>_________  <strong>实验指导老师:</strong>__________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>实验报告名称：<u>实验14 模型评估______________________________________________________</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学生姓名：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学号：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "教学班：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "递交日期：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "签收人：_____________________"
+        }
+      ]
+    },
+    {
+      "filename": "2520148207-张新彦-实验15-Ollama模型部署_转自DOC.docx",
+      "source_path": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材\\实验报告\\2520148207-张新彦-实验15-Ollama模型部署_转自DOC.docx",
+      "material_type": "teaching_material",
+      "sha256": "c8d5cea228f4c584b61dc90a8a4173105525d430fad524f55b3c3bd8930fae6d",
+      "provider_batch_id": "e61c1e5c-a1e9-4d26-83ad-fd99acf40e3c",
+      "block_count": 135,
+      "content_preview": [
+        {
+          "page": 0,
+          "type": "image",
+          "text": ""
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "**实验报告封面**"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>课程名称：</strong> <strong><u>__大模型调优与部署技术__</u></strong>   <strong>课程代码：<u>_SK3020__</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>任课老师：</strong>_________  <strong>实验指导老师:</strong>__________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>实验报告名称：<u>实验15 Ollama模型部署______________________________________________________</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学生姓名：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学号：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "教学班：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "递交日期：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "签收人：_____________________"
+        }
+      ]
+    },
+    {
+      "filename": "2520148207-张新彦-实验16-LMDeploy模型部署_转自DOC.docx",
+      "source_path": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材\\实验报告\\2520148207-张新彦-实验16-LMDeploy模型部署_转自DOC.docx",
+      "material_type": "teaching_material",
+      "sha256": "40ec58e49a92131441237ef9332ff971a26ddeed7b05ec997cdc3c4cb321107d",
+      "provider_batch_id": "c8e35a98-8790-47dd-959a-d1f2efca5ac4",
+      "block_count": 165,
+      "content_preview": [
+        {
+          "page": 0,
+          "type": "image",
+          "text": ""
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "**实验报告封面**"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>课程名称：</strong> <strong><u>__大模型调优与部署技术__</u></strong>   <strong>课程代码：<u>_SK3020__</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>任课老师：</strong>_________  <strong>实验指导老师:</strong>__________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>实验报告名称：<u>实验16 LMDeploy模型部署______________________________________________________</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学生姓名：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学号：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "教学班：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "递交日期：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "签收人：_____________________"
+        }
+      ]
+    },
+    {
+      "filename": "2520148207-张新彦-实验17-基于ms-swift的视觉大模型应用及微调实战_转自DOC.docx",
+      "source_path": "F:\\比赛项目\\阅卷出题功能\\.worktrees\\core-implementation\\docs\\素材\\实验报告\\2520148207-张新彦-实验17-基于ms-swift的视觉大模型应用及微调实战_转自DOC.docx",
+      "material_type": "teaching_material",
+      "sha256": "41dc8eb6365e6d952fc20bbfaeb2c6d34879d243aa125897509d8d6571ef6b7f",
+      "provider_batch_id": "dec13b5d-f494-46fc-8ec3-343a62e79008",
+      "block_count": 159,
+      "content_preview": [
+        {
+          "page": 0,
+          "type": "image",
+          "text": ""
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "**实验报告封面**"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>课程名称：</strong> <strong><u>__大模型调优与部署技术__</u></strong>   <strong>课程代码：<u>_SK3020__</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>任课老师：</strong>_________  <strong>实验指导老师:</strong>__________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "<strong>实验报告名称：<u>实验17 基于ms-swift的视觉大模型应用及微调实战______________________________________________________</u></strong>"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学生姓名：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "学号：_____________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "教学班：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "递交日期：______________________"
+        },
+        {
+          "page": 0,
+          "type": "paragraph",
+          "text": "签收人：_____________________"
+        }
+      ]
+    }
+  ],
+  "framework": {
+    "teaching_topics": [
+      {
+        "key": "chapter1",
+        "title": "第1章 开源大模型运行原理与量化部署",
+        "depth": "理解开源大模型的文件组成、本地推理调用链、Tokenizer与Chat Template的作用，理解自回归生成、数值精度与低比特量化的基本原理；掌握开源大模型、本地推理与量化部署的概念及应用场景，模型文件结构，Anaconda、VSCode、CUDA、PyTorch、Transformers环境配置及模型下载管理，Tokenizer、Chat Template与自回归生成流程及主要生成参数，pipeline与AutoTokenizer、AutoModelForCausalLM两类推理方式，FP32、FP16、BF16、8bit、4bit方案及bitsandbytes关键配置，不同精度方案的显存、稳定性和输出质量对比。",
+        "requirements": [
+          "能够配置本地推理环境，下载并加载开源模型，使用pipeline及底层接口完成推理；能够比较FP32、FP16、BF16、8bit与4bit方案的显存占用和输出效果；形成自主可控、规范使用开源模型和节约算力资源的意识，能够基于运行数据客观分析部署方案的适用条件与局限；结合国产开源大模型生态和量化部署实践，认识自主创新与开源协作的价值，在模型下载、许可证遵循和算力使用中坚持规范、安全与绿色计算。"
+        ]
+      },
+      {
+        "key": "chapter2",
+        "title": "第2章 提示词工程与RAG应用开发",
+        "depth": "理解提示词结构与常用提示技术，说明RAG从文档载入、切分、向量化、检索到生成的完整流程，了解Advanced RAG与Agentic RAG的优化机制；掌握提示词结构、消息角色及零样本、少样本和思维链方法，提示词测试、错误分析、版本对比与迭代优化，RAG流程及多类型文档载入、清洗、切分和元数据管理，Embedding、Chroma向量数据库、相似度检索与上下文组织，Naive、Advanced、Modular RAG及查询改写、重排序和上下文压缩，Agent、ReAct、Function Calling与LangChain工具机制，知识库工具封装、Agentic RAG构建及多场景测试。",
+        "requirements": [
+          "能够围绕任务设计并迭代提示词，构建本地向量知识库，配置查询改写、重排序与上下文压缩，并将检索能力封装为工具完成Agentic RAG应用原型；形成尊重知识来源、保护数据与知识产权、核验生成结果和控制工具权限的责任意识，能够审慎评价检索证据与模型回答的一致性；结合知识库建设和智能体工具调用，坚持实事求是、来源可追溯和数据合规，认识模型能力扩展与责任边界同步增长，树立技术向善的应用观。"
+        ]
+      },
+      {
+        "key": "chapter3",
+        "title": "第3章 大模型监督微调与训练数据构建",
+        "depth": "理解SFT、PEFT、LoRA与QLoRA的基本原理和差异，说明训练数据格式、关键训练参数、adapter与基座模型的关系，以及AI数据生成在训练数据优化中的作用；掌握SFT的定位及text、messages、prompt/completion等训练数据格式，数据划分、Chat Template、思考/非思考样本与训练参数管理，基于Transformers、TRL和SFTTrainer的全参数微调流程，LoRA的低秩适配原理、关键参数及adapter保存、加载与合并，QLoRA的4bit基座、k-bit训练准备、梯度检查点和显存优化，多来源数据的转换、比例控制、合并与Token长度分析，基于结构化输出生成训练数据并进行过滤、去重、抽检和效果验证。",
+        "requirements": [
+          "能够构建和检查prompt/completion或messages数据，完成SFT、LoRA和QLoRA训练链路，处理adapter保存与合并，并利用结构化输出生成、合并和抽检训练数据；形成数据质量优先、训练过程可复现、生成数据需审查和模型能力需验证的工程意识，遵守数据安全、版权与学术诚信规范；通过训练数据构建与模型微调，认识高质量数据、规范实验和自主实践对技术创新的基础作用，坚持数据合规、尊重知识产权，反对以生成结果替代独立思考。"
+        ]
+      },
+      {
+        "key": "chapter4",
+        "title": "第4章 继续预训练与偏好对齐",
+        "depth": "理解继续预训练、SFT、RLHF与DPO在大模型训练阶段中的不同作用，说明连续语料语言建模、偏好数据和参考模型的基本原理；掌握继续预训练与SFT的目标差异及基座模型选择，领域语料清洗、JSONL整理、通用域回放与固定长度语言建模样本构造，全量及4bit LoRA继续预训练流程，强化学习、RLHF的关键要素与训练流程，DPO的偏好优化思想及prompt、chosen、rejected数据处理，参考模型、beta、DPO损失及全量/低显存训练指标分析。",
+        "requirements": [
+          "能够将领域文本整理为继续预训练语料，完成token拼接、固定长度分块与训练；能够构建prompt/chosen/rejected偏好数据并使用DPOTrainer完成偏好优化与指标分析；形成以事实数据、科学实验和人类价值为依据开展模型优化的意识，关注领域语料合规、模型行为安全、公平性与能力漂移风险；结合领域知识注入与人类偏好对齐，理解技术能力必须接受安全、伦理和社会价值约束，在数据选择、反馈设计和结果评价中坚持正确价值导向。"
+        ]
+      },
+      {
+        "key": "chapter5",
+        "title": "第5章 大模型评估与效果分析",
+        "depth": "理解模型评估在训练—测评—分析—再优化闭环中的作用，区分人工测试、Benchmark、规则指标和LLM-as-a-Judge等评测方式；掌握模型评估的任务、数据集、指标、版本和报告要素，人工测试、Benchmark、规则指标与LLM-as-a-Judge的适用场景，EvalScope的模型适配、数据适配、任务配置与结果输出，本地模型、OpenAI兼容API和微调模型接入，标准任务及自定义选择题、参考/无参考问答评测，准确率、ROUGE、BLEU、LLM评审的局限及多维结果分析。",
+        "requirements": [
+          "能够使用EvalScope接入本地模型、API模型和微调模型，完成标准任务及自定义选择题、问答任务评测，并根据指标和样例分析模型差异；形成客观、可复现、不过度解读单一分数的科学评价意识，能够说明数据集、指标、样本规模和评审模型带来的局限；通过规范测评和结果分析，坚持实事求是、公开透明和可复现原则，反对选择性报告结果，以科学证据评价技术效果。"
+        ]
+      },
+      {
+        "key": "chapter6",
+        "title": "第6章 大模型推理服务与部署",
+        "depth": "理解模型部署的服务化目标，说明Ollama与LMDeploy的定位、接口、推理后端、量化优化和应用接入方式；掌握模型训练、评估与服务化部署的关系及资源、接口要求，Ollama安装、模型下载运行、缓存和资源管理，Ollama Python与OpenAI兼容接口的非流式、流式调用，Modelfile参数、模板与GGUF模型导入，LMDeploy离线推理、TurboMind/PyTorch Engine及关键参数，AWQ、KV Cache量化与OpenAI兼容API服务部署，部署服务接入测评、工具调用和Gradio并比较不同部署方案。",
+        "requirements": [
+          "能够使用Ollama管理和调用本地模型，使用LMDeploy完成离线推理、量化和OpenAI兼容API部署，并对显存、加载耗时和生成速度进行比较；形成关注系统稳定性、接口规范、资源效率、安全边界和运行可观测性的工程责任意识；结合模型服务化部署，遵守软件许可、接口规范和网络安全要求，重视资源节约、服务稳定和用户数据保护，以可靠工程服务真实需求。"
+        ]
+      },
+      {
+        "key": "chapter7",
+        "title": "第7章 视觉大模型应用与微调",
+        "depth": "理解视觉大模型的视觉编码器、跨模态连接器与大语言模型协同机制，说明多模态数据、LoRA微调、合并、量化、部署和评估的完整流程；掌握视觉大模型的任务特点及视觉编码器、连接器和语言模型结构，Qwen-VL系列能力演进与ms-swift统一工具链，图片、视频及命令行多模态推理，多模态JSONL数据结构与公开、自定义数据集准备，视觉大模型LoRA微调、adapter推理和基座模型合并，量化、vLLM OpenAI兼容服务部署与调用，不同模型形态的效果评估、模型发布及资源影响因素。",
+        "requirements": [
+          "能够使用ms-swift完成图片与视频推理，构建多模态JSONL数据，实施视觉大模型LoRA微调、adapter推理、模型合并、量化和vLLM服务部署；形成保护图像与视频隐私、尊重数据版权、核验多模态输出和控制资源消耗的责任意识，提升持续学习多模态前沿技术的能力；结合国产视觉大模型与OCR应用，认识多模态技术服务教育和产业的价值，同时关注肖像隐私、数据版权、生成内容安全与无障碍应用，践行负责任的人工智能。"
+        ]
+      }
+    ],
+    "anchors": [
+      {
+        "key": "chapter1",
+        "title": "第1章 开源大模型运行原理与量化部署",
+        "exam_weight": 5.0,
+        "ability_requirements": [],
+        "allowed_question_types": [],
+        "excluded_content": [],
+        "alignment_keys": []
+      },
+      {
+        "key": "chapter2",
+        "title": "第2章 提示词工程与RAG应用开发",
+        "exam_weight": 25.0,
+        "ability_requirements": [],
+        "allowed_question_types": [],
+        "excluded_content": [],
+        "alignment_keys": []
+      },
+      {
+        "key": "chapter3",
+        "title": "第3章 大模型监督微调与训练数据构建",
+        "exam_weight": 35.0,
+        "ability_requirements": [],
+        "allowed_question_types": [],
+        "excluded_content": [],
+        "alignment_keys": []
+      },
+      {
+        "key": "chapter4",
+        "title": "第4章 继续预训练与偏好对齐",
+        "exam_weight": 5.0,
+        "ability_requirements": [],
+        "allowed_question_types": [],
+        "excluded_content": [],
+        "alignment_keys": []
+      },
+      {
+        "key": "chapter5",
+        "title": "第5章 大模型评估与效果分析",
+        "exam_weight": 10.0,
+        "ability_requirements": [],
+        "allowed_question_types": [],
+        "excluded_content": [],
+        "alignment_keys": []
+      },
+      {
+        "key": "chapter6",
+        "title": "第6章 大模型推理服务与部署",
+        "exam_weight": 15.0,
+        "ability_requirements": [],
+        "allowed_question_types": [],
+        "excluded_content": [],
+        "alignment_keys": []
+      },
+      {
+        "key": "chapter7",
+        "title": "第7章 视觉大模型应用与微调",
+        "exam_weight": 5.0,
+        "ability_requirements": [],
+        "allowed_question_types": [],
+        "excluded_content": [],
+        "alignment_keys": []
+      }
+    ],
+    "exam_points": [
+      {
+        "code": "EP1",
+        "anchor_key": "chapter1",
+        "title": "第1章 开源大模型运行原理与量化部署",
+        "assessment_requirement": "能够说明本地运行环境（硬件、驱动、CUDA、Python/Conda、推理框架）与模型文件之间的关系，并检查硬件、驱动、CUDA、Python环境和依赖是否满足要求；了解常见加载与推理故障。",
+        "weight_value": 5.0,
+        "weight_source": "assessment_syllabus",
+        "weight_group_id": "chapter1",
+        "priority": "normal",
+        "cognitive_targets": [
+          "理解",
+          "应用"
+        ],
+        "assessment_orientations": [
+          "知识理解",
+          "环境配置"
+        ],
+        "allowed_question_types": [],
+        "operational_detail_policy": "supporting_only",
+        "scope_boundary": {},
+        "required_evidence_roles": [],
+        "retrieval_intent": "解释环境依赖关系",
+        "assessment_anchor_keys": [
+          "chapter1"
+        ],
+        "teaching_anchor_keys": [
+          "chapter1"
+        ],
+        "status": "candidate"
+      },
+      {
+        "code": "EP2",
+        "anchor_key": "chapter2",
+        "title": "第2章 提示词工程与RAG应用开发",
+        "assessment_requirement": "能够按任务要求组织提示词要素（角色设定、任务说明、背景信息、输出格式、限制条件），正确使用system、user、assistant角色约束模型身份、输入和输出，并理解工具调用。",
+        "weight_value": 25.0,
+        "weight_source": "assessment_syllabus",
+        "weight_group_id": "chapter2",
+        "priority": "normal",
+        "cognitive_targets": [
+          "应用",
+          "理解"
+        ],
+        "assessment_orientations": [
+          "提示词设计",
+          "角色应用"
+        ],
+        "allowed_question_types": [],
+        "operational_detail_policy": "supporting_only",
+        "scope_boundary": {},
+        "required_evidence_roles": [],
+        "retrieval_intent": "设计提示词",
+        "assessment_anchor_keys": [
+          "chapter2"
+        ],
+        "teaching_anchor_keys": [
+          "chapter2"
+        ],
+        "status": "candidate"
+      },
+      {
+        "code": "EP3",
+        "anchor_key": "chapter3",
+        "title": "第3章 大模型监督微调与训练数据构建",
+        "assessment_requirement": "能够解释SFT中监督信号的含义、典型数据形态与适用场景，区分SFT与提示词工程、RAG、继续预训练，并判断具体任务是否适合微调；理解QLoRA的4bit基座模型、NF4/FP4、二次量化、计算精度、k-bit训练准备和分页优化器等机制。",
+        "weight_value": 35.0,
+        "weight_source": "assessment_syllabus",
+        "weight_group_id": "chapter3",
+        "priority": "normal",
+        "cognitive_targets": [
+          "理解",
+          "分析",
+          "判断"
+        ],
+        "assessment_orientations": [
+          "监督学习概念",
+          "微调技术比较"
+        ],
+        "allowed_question_types": [],
+        "operational_detail_policy": "supporting_only",
+        "scope_boundary": {},
+        "required_evidence_roles": [],
+        "retrieval_intent": "区分微调相关概念",
+        "assessment_anchor_keys": [
+          "chapter3"
+        ],
+        "teaching_anchor_keys": [
+          "chapter3"
+        ],
+        "status": "candidate"
+      },
+      {
+        "code": "EP4",
+        "anchor_key": "chapter4",
+        "title": "第4章 继续预训练与偏好对齐",
+        "assessment_requirement": "能够比较继续预训练与SFT的目标和数据形态差异，说明Base Model与Instruct Model的选择和助手能力退化风险；理解偏好数据质量、DPO训练流程、reward accuracy/margin等指标，以及能力漂移、公平性和安全风险。",
+        "weight_value": 5.0,
+        "weight_source": "assessment_syllabus",
+        "weight_group_id": "chapter4",
+        "priority": "normal",
+        "cognitive_targets": [
+          "分析",
+          "理解"
+        ],
+        "assessment_orientations": [
+          "继续预训练",
+          "偏好对齐"
+        ],
+        "allowed_question_types": [],
+        "operational_detail_policy": "supporting_only",
+        "scope_boundary": {},
+        "required_evidence_roles": [],
+        "retrieval_intent": "比较训练策略",
+        "assessment_anchor_keys": [
+          "chapter4"
+        ],
+        "teaching_anchor_keys": [
+          "chapter4"
+        ],
+        "status": "candidate"
+      },
+      {
+        "code": "EP5",
+        "anchor_key": "chapter5",
+        "title": "第5章 大模型评估与效果分析",
+        "assessment_requirement": "能够说明模型评估的必要性，以及训练loss、训练集拟合、测试集表现和真实场景泛化之间的关系；理解评测报告中的模型版本、参数、环境、数据、指标、误差分析、可复现性及评审偏差。",
+        "weight_value": 10.0,
+        "weight_source": "assessment_syllabus",
+        "weight_group_id": "chapter5",
+        "priority": "normal",
+        "cognitive_targets": [
+          "理解",
+          "分析"
+        ],
+        "assessment_orientations": [
+          "评估方法",
+          "指标分析"
+        ],
+        "allowed_question_types": [],
+        "operational_detail_policy": "supporting_only",
+        "scope_boundary": {},
+        "required_evidence_roles": [],
+        "retrieval_intent": "解释评估必要性",
+        "assessment_anchor_keys": [
+          "chapter5"
+        ],
+        "teaching_anchor_keys": [
+          "chapter5"
+        ],
+        "status": "candidate"
+      },
+      {
+        "code": "EP6",
+        "anchor_key": "chapter6",
+        "title": "第6章 大模型推理服务与部署",
+        "assessment_requirement": "能够说明一次性脚本推理与稳定服务化部署的区别，区分实际加载模型与对外服务名，解释客户端、接口和服务端的关系；了解OpenAI兼容接口、模型服务名和应用接入关系，以及稳定性评估。",
+        "weight_value": 15.0,
+        "weight_source": "assessment_syllabus",
+        "weight_group_id": "chapter6",
+        "priority": "normal",
+        "cognitive_targets": [
+          "理解",
+          "分析"
+        ],
+        "assessment_orientations": [
+          "服务架构",
+          "部署原理"
+        ],
+        "allowed_question_types": [],
+        "operational_detail_policy": "supporting_only",
+        "scope_boundary": {},
+        "required_evidence_roles": [],
+        "retrieval_intent": "解释服务化部署",
+        "assessment_anchor_keys": [
+          "chapter6"
+        ],
+        "teaching_anchor_keys": [
+          "chapter6"
+        ],
+        "status": "candidate"
+      },
+      {
+        "code": "EP7",
+        "anchor_key": "chapter7",
+        "title": "第7章 视觉大模型应用与微调",
+        "assessment_requirement": "能够比较视觉大模型、文本大模型与传统视觉模型在输入、输出、任务形式和开放式生成能力方面的区别，判断分类任务和开放式图文问答的适用方式；了解视觉模型原始版、微调版、合并版或量化版的效果与资源评估，以及图像视频隐私、版权和输出安全。",
+        "weight_value": 5.0,
+        "weight_source": "assessment_syllabus",
+        "weight_group_id": "chapter7",
+        "priority": "normal",
+        "cognitive_targets": [
+          "分析",
+          "应用"
+        ],
+        "assessment_orientations": [
+          "视觉模型比较",
+          "适用性判断"
+        ],
+        "allowed_question_types": [],
+        "operational_detail_policy": "supporting_only",
+        "scope_boundary": {},
+        "required_evidence_roles": [],
+        "retrieval_intent": "比较视觉模型类型",
+        "assessment_anchor_keys": [
+          "chapter7"
+        ],
+        "teaching_anchor_keys": [
+          "chapter7"
+        ],
+        "status": "candidate"
+      }
+    ],
+    "final_exam_rules": {
+      "exam_format": "闭卷笔试",
+      "question_types": [
+        "选择题",
+        "判断题",
+        "填空题",
+        "简答题",
+        "综合题"
+      ],
+      "question_type_ratios": {
+        "综合题": "30%"
+      },
+      "chapter_weights": [
+        {
+          "chapter": "第1章",
+          "weight_percent": 5
+        },
+        {
+          "chapter": "第2章",
+          "weight_percent": 25
+        },
+        {
+          "chapter": "第3章",
+          "weight_percent": 35
+        },
+        {
+          "chapter": "第4章",
+          "weight_percent": 5
+        },
+        {
+          "chapter": "第5章",
+          "weight_percent": 10
+        },
+        {
+          "chapter": "第6章",
+          "weight_percent": 15
+        },
+        {
+          "chapter": "第7章",
+          "weight_percent": 5
+        }
+      ],
+      "total_exam_percentage": 50,
+      "assessment_policy": "要求不死记硬背，灵活运用课程知识，在理解的基础上答题"
+    },
+    "weight_source": "assessment_syllabus",
+    "scope_depth_alignment": {
+      "EP1": [
+        {
+          "key": "chapter1",
+          "title": "第1章 开源大模型运行原理与量化部署",
+          "depth": "理解开源大模型的文件组成、本地推理调用链、Tokenizer与Chat Template的作用，理解自回归生成、数值精度与低比特量化的基本原理；掌握开源大模型、本地推理与量化部署的概念及应用场景，模型文件结构，Anaconda、VSCode、CUDA、PyTorch、Transformers环境配置及模型下载管理，Tokenizer、Chat Template与自回归生成流程及主要生成参数，pipeline与AutoTokenizer、AutoModelForCausalLM两类推理方式，FP32、FP16、BF16、8bit、4bit方案及bitsandbytes关键配置，不同精度方案的显存、稳定性和输出质量对比。",
+          "requirements": [
+            "能够配置本地推理环境，下载并加载开源模型，使用pipeline及底层接口完成推理；能够比较FP32、FP16、BF16、8bit与4bit方案的显存占用和输出效果；形成自主可控、规范使用开源模型和节约算力资源的意识，能够基于运行数据客观分析部署方案的适用条件与局限；结合国产开源大模型生态和量化部署实践，认识自主创新与开源协作的价值，在模型下载、许可证遵循和算力使用中坚持规范、安全与绿色计算。"
+          ]
+        }
+      ],
+      "EP2": [
+        {
+          "key": "chapter2",
+          "title": "第2章 提示词工程与RAG应用开发",
+          "depth": "理解提示词结构与常用提示技术，说明RAG从文档载入、切分、向量化、检索到生成的完整流程，了解Advanced RAG与Agentic RAG的优化机制；掌握提示词结构、消息角色及零样本、少样本和思维链方法，提示词测试、错误分析、版本对比与迭代优化，RAG流程及多类型文档载入、清洗、切分和元数据管理，Embedding、Chroma向量数据库、相似度检索与上下文组织，Naive、Advanced、Modular RAG及查询改写、重排序和上下文压缩，Agent、ReAct、Function Calling与LangChain工具机制，知识库工具封装、Agentic RAG构建及多场景测试。",
+          "requirements": [
+            "能够围绕任务设计并迭代提示词，构建本地向量知识库，配置查询改写、重排序与上下文压缩，并将检索能力封装为工具完成Agentic RAG应用原型；形成尊重知识来源、保护数据与知识产权、核验生成结果和控制工具权限的责任意识，能够审慎评价检索证据与模型回答的一致性；结合知识库建设和智能体工具调用，坚持实事求是、来源可追溯和数据合规，认识模型能力扩展与责任边界同步增长，树立技术向善的应用观。"
+          ]
+        }
+      ],
+      "EP3": [
+        {
+          "key": "chapter3",
+          "title": "第3章 大模型监督微调与训练数据构建",
+          "depth": "理解SFT、PEFT、LoRA与QLoRA的基本原理和差异，说明训练数据格式、关键训练参数、adapter与基座模型的关系，以及AI数据生成在训练数据优化中的作用；掌握SFT的定位及text、messages、prompt/completion等训练数据格式，数据划分、Chat Template、思考/非思考样本与训练参数管理，基于Transformers、TRL和SFTTrainer的全参数微调流程，LoRA的低秩适配原理、关键参数及adapter保存、加载与合并，QLoRA的4bit基座、k-bit训练准备、梯度检查点和显存优化，多来源数据的转换、比例控制、合并与Token长度分析，基于结构化输出生成训练数据并进行过滤、去重、抽检和效果验证。",
+          "requirements": [
+            "能够构建和检查prompt/completion或messages数据，完成SFT、LoRA和QLoRA训练链路，处理adapter保存与合并，并利用结构化输出生成、合并和抽检训练数据；形成数据质量优先、训练过程可复现、生成数据需审查和模型能力需验证的工程意识，遵守数据安全、版权与学术诚信规范；通过训练数据构建与模型微调，认识高质量数据、规范实验和自主实践对技术创新的基础作用，坚持数据合规、尊重知识产权，反对以生成结果替代独立思考。"
+          ]
+        }
+      ],
+      "EP4": [
+        {
+          "key": "chapter4",
+          "title": "第4章 继续预训练与偏好对齐",
+          "depth": "理解继续预训练、SFT、RLHF与DPO在大模型训练阶段中的不同作用，说明连续语料语言建模、偏好数据和参考模型的基本原理；掌握继续预训练与SFT的目标差异及基座模型选择，领域语料清洗、JSONL整理、通用域回放与固定长度语言建模样本构造，全量及4bit LoRA继续预训练流程，强化学习、RLHF的关键要素与训练流程，DPO的偏好优化思想及prompt、chosen、rejected数据处理，参考模型、beta、DPO损失及全量/低显存训练指标分析。",
+          "requirements": [
+            "能够将领域文本整理为继续预训练语料，完成token拼接、固定长度分块与训练；能够构建prompt/chosen/rejected偏好数据并使用DPOTrainer完成偏好优化与指标分析；形成以事实数据、科学实验和人类价值为依据开展模型优化的意识，关注领域语料合规、模型行为安全、公平性与能力漂移风险；结合领域知识注入与人类偏好对齐，理解技术能力必须接受安全、伦理和社会价值约束，在数据选择、反馈设计和结果评价中坚持正确价值导向。"
+          ]
+        }
+      ],
+      "EP5": [
+        {
+          "key": "chapter5",
+          "title": "第5章 大模型评估与效果分析",
+          "depth": "理解模型评估在训练—测评—分析—再优化闭环中的作用，区分人工测试、Benchmark、规则指标和LLM-as-a-Judge等评测方式；掌握模型评估的任务、数据集、指标、版本和报告要素，人工测试、Benchmark、规则指标与LLM-as-a-Judge的适用场景，EvalScope的模型适配、数据适配、任务配置与结果输出，本地模型、OpenAI兼容API和微调模型接入，标准任务及自定义选择题、参考/无参考问答评测，准确率、ROUGE、BLEU、LLM评审的局限及多维结果分析。",
+          "requirements": [
+            "能够使用EvalScope接入本地模型、API模型和微调模型，完成标准任务及自定义选择题、问答任务评测，并根据指标和样例分析模型差异；形成客观、可复现、不过度解读单一分数的科学评价意识，能够说明数据集、指标、样本规模和评审模型带来的局限；通过规范测评和结果分析，坚持实事求是、公开透明和可复现原则，反对选择性报告结果，以科学证据评价技术效果。"
+          ]
+        }
+      ],
+      "EP6": [
+        {
+          "key": "chapter6",
+          "title": "第6章 大模型推理服务与部署",
+          "depth": "理解模型部署的服务化目标，说明Ollama与LMDeploy的定位、接口、推理后端、量化优化和应用接入方式；掌握模型训练、评估与服务化部署的关系及资源、接口要求，Ollama安装、模型下载运行、缓存和资源管理，Ollama Python与OpenAI兼容接口的非流式、流式调用，Modelfile参数、模板与GGUF模型导入，LMDeploy离线推理、TurboMind/PyTorch Engine及关键参数，AWQ、KV Cache量化与OpenAI兼容API服务部署，部署服务接入测评、工具调用和Gradio并比较不同部署方案。",
+          "requirements": [
+            "能够使用Ollama管理和调用本地模型，使用LMDeploy完成离线推理、量化和OpenAI兼容API部署，并对显存、加载耗时和生成速度进行比较；形成关注系统稳定性、接口规范、资源效率、安全边界和运行可观测性的工程责任意识；结合模型服务化部署，遵守软件许可、接口规范和网络安全要求，重视资源节约、服务稳定和用户数据保护，以可靠工程服务真实需求。"
+          ]
+        }
+      ],
+      "EP7": [
+        {
+          "key": "chapter7",
+          "title": "第7章 视觉大模型应用与微调",
+          "depth": "理解视觉大模型的视觉编码器、跨模态连接器与大语言模型协同机制，说明多模态数据、LoRA微调、合并、量化、部署和评估的完整流程；掌握视觉大模型的任务特点及视觉编码器、连接器和语言模型结构，Qwen-VL系列能力演进与ms-swift统一工具链，图片、视频及命令行多模态推理，多模态JSONL数据结构与公开、自定义数据集准备，视觉大模型LoRA微调、adapter推理和基座模型合并，量化、vLLM OpenAI兼容服务部署与调用，不同模型形态的效果评估、模型发布及资源影响因素。",
+          "requirements": [
+            "能够使用ms-swift完成图片与视频推理，构建多模态JSONL数据，实施视觉大模型LoRA微调、adapter推理、模型合并、量化和vLLM服务部署；形成保护图像与视频隐私、尊重数据版权、核验多模态输出和控制资源消耗的责任意识，提升持续学习多模态前沿技术的能力；结合国产视觉大模型与OCR应用，认识多模态技术服务教育和产业的价值，同时关注肖像隐私、数据版权、生成内容安全与无障碍应用，践行负责任的人工智能。"
+          ]
+        }
+      ]
+    }
+  },
+  "staging": {
+    "material_files": 17,
+    "chunk_count": 1774,
+    "retrieval_mode": "lexical_preselection",
+    "lexical_candidate_limit": 3
+  },
+  "knowledge_organization": {
+    "pair_count": 21,
+    "pair_total": 21,
+    "classifier_max_workers": 2,
+    "retrieval_mode": "lexical_preselection",
+    "lexical_candidate_limit": 3,
+    "candidate_files_per_exam_point": 3,
+    "consolidation_error": {
+      "type": "DeepSeekGatewayError",
+      "message": "DeepSeek request failed",
+      "details": {
+        "attempt_count": 2,
+        "retry_count": 1,
+        "final_http_status": null,
+        "last_error_code": "deepseek_transport_error",
+        "attempts": [
+          {
+            "attempt": 1,
+            "error_code": "deepseek_transport_error"
+          },
+          {
+            "attempt": 2,
+            "error_code": "deepseek_transport_error"
+          }
+        ]
+      }
+    }
+  }
+}
