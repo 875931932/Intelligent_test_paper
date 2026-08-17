@@ -7,6 +7,7 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.framework.exam_points import ExamPoint
+from app.domain.generation.semantic_diversity import AnswerRelation, InstanceCarrier
 from app.domain.knowledge.relevance import EvidenceDecision, ExamPointCoverage
 from app.domain.model_calls import ModelCallContext
 
@@ -25,6 +26,11 @@ class KnowledgeCardDraft(BaseModel):
     importance: int = Field(default=1, ge=1, le=5)
     evidence_chunk_ids: list[str] = Field(default_factory=list)
     prompt_material: list[str] = Field(default_factory=list)
+    concept_cluster: str = ""
+    answer_proposition: str = ""
+    required_propositions: list[str] = Field(default_factory=list)
+    relation_edges: list[AnswerRelation] = Field(default_factory=list)
+    instance_carriers: list[InstanceCarrier] = Field(default_factory=list)
     status: Literal["active", "excluded", "material_only", "needs_teacher_review"] = "active"
 
 
@@ -36,6 +42,9 @@ class AssessmentUnitDraft(BaseModel):
     scope_boundary: dict = Field(default_factory=dict)
     cards: list[KnowledgeCardDraft] = Field(default_factory=list)
     status: Literal["active", "excluded", "needs_teacher_review"] = "active"
+    # syllabus_core: 单元直接源自考核大纲的考核要求（章节核心概念层），
+    # material_evidence: 单元源自教学材料的证据事实（含实验操作细节）。
+    origin: Literal["syllabus_core", "material_evidence"] = "material_evidence"
 
 
 class ExamPointKnowledgeConsolidator(Protocol):

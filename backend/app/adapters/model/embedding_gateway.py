@@ -20,6 +20,7 @@ class OpenAICompatibleEmbeddingGateway:
         api_key: str,
         model: str,
         api_format: str = "openai",
+        max_batch_size: int | None = None,
         timeout: float = 60,
         client: httpx.Client | None = None,
     ) -> None:
@@ -31,18 +32,30 @@ class OpenAICompatibleEmbeddingGateway:
             raise ValueError("embedding model is required")
         if api_format not in {"openai", "dashscope"}:
             raise ValueError("embedding API format must be openai or dashscope")
+        if max_batch_size is not None and max_batch_size <= 0:
+            raise ValueError("embedding max batch size must be positive")
         if not math.isfinite(timeout) or timeout <= 0:
             raise ValueError("embedding timeout must be positive and finite")
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
         self.model = model
         self.api_format = api_format
+        self.max_batch_size = max_batch_size or (
+            20 if api_format == "dashscope" else 64
+        )
         self.timeout = timeout
         self.client = client
 
     def embed(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+
+        result: list[list[float]] = []
+        for start in range(0, len(texts), self.max_batch_size):
+            result.extend(self._embed_batch(texts[start : start + self.max_batch_size]))
+        return result
+
+    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
 
         request_error: str | None = None
         try:

@@ -4,6 +4,8 @@ from typing import Any, Literal, TypeAlias
 
 from pydantic import BaseModel, Field
 
+from app.domain.generation.semantic_diversity import AnswerRelation, CardSemanticProfile
+
 
 ASSESSMENT_MODES = (
     "theory_recall",
@@ -41,6 +43,9 @@ class UnitCoverage(BaseModel):
         ]
     )
     operational_detail_policy: OperationalDetailPolicy = "supporting_only"
+    # 核心概念单元（源自考纲考核要求）在选题时优先于材料证据单元，
+    # 避免整卷被实验操作细节占满。
+    core: bool = False
 
 
 class BlueprintRequest(BaseModel):
@@ -49,6 +54,7 @@ class BlueprintRequest(BaseModel):
     chapter_weights: dict[str, float]
     units: list[UnitCoverage] = Field(min_length=1)
     card_question_types: dict[str, list[str]] = Field(default_factory=dict)
+    card_semantic_profiles: dict[str, CardSemanticProfile] = Field(default_factory=dict)
 
 
 class PlanItem(BaseModel):
@@ -62,6 +68,11 @@ class PlanItem(BaseModel):
     difficulty: str = "medium"
     cognitive_level: str = "understand"
     assessment_mode: AssessmentMode = "conceptual"
+    concept_cluster: str = ""
+    answer_proposition: str = ""
+    required_propositions: list[str] = Field(default_factory=list)
+    relation_edges: list[AnswerRelation] = Field(default_factory=list)
+    instance_carriers: list[str] = Field(default_factory=list)
 
 
 class BlueprintPlan(BaseModel):
@@ -71,3 +82,4 @@ class BlueprintPlan(BaseModel):
     difficulty_counts: dict[str, dict[str, int]]
     anchor_counts: dict[str, int]
     assessment_mode_counts: dict[str, dict[str, int]] = Field(default_factory=dict)
+    cognitive_level_counts: dict[str, dict[str, int]] = Field(default_factory=dict)

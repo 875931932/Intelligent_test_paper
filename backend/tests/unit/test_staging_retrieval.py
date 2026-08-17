@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import math
 
 import httpx
@@ -334,6 +335,38 @@ def test_embedding_gateway_supports_dashscope_text_embedding_contract():
         requests[0].read()
         == b'{"model":"qwen3.7-text-embedding","input":{"texts":["\xe6\x9f\xa5\xe8\xaf\xa2","\xe8\xaf\x81\xe6\x8d\xae"]}}'
     )
+
+
+def test_dashscope_embedding_gateway_splits_requests_at_provider_limit():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        texts = json.loads(request.content)["input"]["texts"]
+        return httpx.Response(
+            200,
+            json={
+                "output": {
+                    "embeddings": [
+                        {"text_index": index, "embedding": [float(index + 1)]}
+                        for index in range(len(texts))
+                    ]
+                }
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        gateway = OpenAICompatibleEmbeddingGateway(
+            base_url="https://embedding.invalid/dashscope",
+            api_key="secret-token",
+            model="qwen3.7-text-embedding",
+            api_format="dashscope",
+            client=client,
+        )
+        result = gateway.embed([f"text-{index}" for index in range(21)])
+
+    assert [len(json.loads(request.content)["input"]["texts"]) for request in requests] == [20, 1]
+    assert len(result) == 21
 
 
 def test_embedding_gateway_returns_empty_without_sending_a_request():

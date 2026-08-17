@@ -2,10 +2,9 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.domain.blueprint.models import AssessmentMode, PlanItem
+from app.domain.blueprint.models import AssessmentMode
 from app.domain.generation.archetypes import ARCHETYPE_CONTRACTS, ComprehensiveArchetype, MaterialForm
 from app.domain.generation.batching import QuestionBatch
-from app.domain.generation.coverage import CoverageDirective
 
 _QUESTION_TEMPLATES = {
     "single_choice": (
@@ -103,106 +102,6 @@ def _comprehensive_template_and_schema(
         "rubric": "array",
     }
     return question_template, output_schema
-
-
-class EvidenceTracePack(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    course_id: str
-    knowledge_card_id: str
-    evidence_ids: list[str]
-
-
-class QuestionGenerationPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    question_type: str
-    score: float
-    difficulty: str
-    cognitive_level: str
-    assessment_mode: AssessmentMode = "conceptual"
-    performance_statement: str
-    scope_boundary: dict
-    assessable_content: list[str]
-    prompt_material: list[str] = Field(default_factory=list)
-    coverage_atom: str = ""
-    answer_boundary: str = ""
-    preferred_terms: list[str] = Field(default_factory=list)
-    novelty_contract: str = ""
-    generation_policy: dict = Field(default_factory=dict)
-    comprehensive_archetype: ComprehensiveArchetype | None = None
-    material_form: MaterialForm | None = None
-    cognitive_sequence: list[str] = Field(default_factory=list)
-    subquestion_count_range: list[int] | None = None
-    subquestion_actions: list[str] = Field(default_factory=list)
-    answer_boundaries: list[str] = Field(default_factory=list)
-    expression_policy: dict = Field(default_factory=lambda: {
-        "prefer_direct_common_terms": True,
-        "max_parenthetical_pairs": 1,
-        "difficulty_guidance": {
-            "low": "使用课程常用术语，直接提问，不设置场景干扰",
-            "medium": "可以使用简单场景包装，但核心考查点应清晰可辨",
-            "high": "可以使用复杂场景或多步骤推理，需要学生综合运用多个知识点",
-        },
-    })
-    question_template: str
-    output_schema: dict
-    teacher_revision_instruction: str = ""
-
-
-def compile_question_generation_payload(plan_item: PlanItem | CoverageDirective, knowledge_card: dict | None = None) -> QuestionGenerationPayload:
-    if isinstance(plan_item, CoverageDirective):
-        if plan_item.question_type == "comprehensive":
-            question_template, output_schema = _comprehensive_template_and_schema(
-                plan_item.comprehensive_archetype, plan_item.subquestion_count_range,
-            )
-        else:
-            question_template = _QUESTION_TEMPLATES[plan_item.question_type]
-            output_schema = _QUESTION_SCHEMAS[plan_item.question_type]
-        return QuestionGenerationPayload(
-            question_type=plan_item.question_type,
-            score=plan_item.score,
-            difficulty=plan_item.difficulty,
-            cognitive_level=plan_item.cognitive_level,
-            assessment_mode=plan_item.assessment_mode,
-            performance_statement=plan_item.performance_statement,
-            scope_boundary=plan_item.scope_boundary,
-            assessable_content=plan_item.assessable_content,
-            prompt_material=plan_item.prompt_material,
-            coverage_atom=plan_item.coverage_atom,
-            answer_boundary=plan_item.answer_boundary,
-            preferred_terms=plan_item.preferred_terms,
-            novelty_contract=plan_item.novelty_contract,
-            generation_policy=plan_item.generation_policy,
-            comprehensive_archetype=plan_item.comprehensive_archetype,
-            material_form=plan_item.material_form,
-            cognitive_sequence=plan_item.cognitive_sequence,
-            subquestion_count_range=plan_item.subquestion_count_range,
-            subquestion_actions=plan_item.subquestion_actions,
-            answer_boundaries=plan_item.answer_boundaries,
-            question_template=question_template,
-            output_schema=output_schema,
-        )
-    if knowledge_card is None:
-        raise TypeError("knowledge_card is required for a PlanItem")
-    if plan_item.question_type == "comprehensive":
-        raise TypeError("comprehensive questions require a planned CoverageDirective")
-    raw_prompt_material = knowledge_card.get("prompt_material", [])
-    prompt_material = [raw_prompt_material] if isinstance(raw_prompt_material, str) else list(raw_prompt_material or [])
-    return QuestionGenerationPayload(
-        question_type=plan_item.question_type,
-        score=plan_item.score,
-        difficulty=plan_item.difficulty,
-        cognitive_level=plan_item.cognitive_level,
-        assessment_mode=plan_item.assessment_mode,
-        performance_statement=knowledge_card["performance_statement"],
-        scope_boundary=knowledge_card.get("scope_boundary", {}),
-        assessable_content=knowledge_card["assessable_content"],
-        prompt_material=prompt_material,
-        preferred_terms=knowledge_card.get("preferred_terms", []),
-        question_template=_QUESTION_TEMPLATES[plan_item.question_type],
-        output_schema=_QUESTION_SCHEMAS[plan_item.question_type],
-    )
 
 
 class BatchQuestionSpec(BaseModel):

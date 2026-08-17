@@ -14,6 +14,7 @@ from app.adapters.model.deepseek_semantic_extractors import (
     DeepSeekModelError,
     DeepSeekSyllabusExtractor,
 )
+from app.adapters.model.deepseek_gateway import _sanitized_validation_details
 from app.domain.framework.exam_points import ExamPoint, OperationalDetailPolicy, WeightSource
 from app.domain.knowledge.relevance import EvidenceDecision, StagingChunk
 from app.domain.model_calls import ModelCallContext
@@ -266,6 +267,35 @@ def test_json_client_preserves_safe_failure_code(payload, error_code):
     assert "material body" not in repr(recorder.calls[0])
 
 
+def test_json_client_retries_transient_non_json_model_output(monkeypatch):
+    responses = iter(
+        [
+            httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "not-json"}}]},
+            ),
+            httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": '{"ok":true}'}}]},
+            ),
+        ]
+    )
+    monkeypatch.setattr("app.adapters.model.deepseek_gateway.time.sleep", lambda _: None)
+    client = DeepSeekJsonClient(
+        api_key="test-key",
+        max_attempts=2,
+        client=httpx.Client(transport=httpx.MockTransport(lambda _: next(responses))),
+    )
+
+    result = client.request_json(
+        system_prompt="system",
+        payload={"blocks": ["material"]},
+        temperature=0,
+    )
+
+    assert result == {"ok": True}
+
+
 def test_json_client_records_terminal_http_status_in_safe_details():
     recorder = RecordingModelCalls()
     client = DeepSeekJsonClient(
@@ -465,6 +495,39 @@ def test_json_client_redacts_arbitrary_validator_failure_from_persisted_metadata
     assert "SECRET" not in repr(recorded)
 
 
+def test_schema_validation_details_sanitize_every_field_path():
+    details = _sanitized_validation_details(
+        DeepSeekModelError(
+            "model_schema_validation_failed",
+            "schema failed",
+            details={
+                "invalid_fields": ["cards.0.assessable_content"],
+                "invalid_inputs": {
+                    "SECRET.path": {"type": "string"},
+                    "cards.0.name": {"type": "integer"},
+                },
+                "validation_errors": [
+                    {"loc": ["SECRET", "path"], "msg": "invalid value"},
+                    {"loc": ["cards", 0, "name"], "msg": "wrong type"},
+                ],
+            },
+        )
+    )
+
+    assert details == {
+        "invalid_fields": ["cards.0.assessable_content"],
+        "invalid_input_types": {
+            "unexpected_field.unexpected_field": "string",
+            "cards.0.name": "integer",
+        },
+        "validation_messages": {
+            "unexpected_field.unexpected_field": "invalid value",
+            "cards.0.name": "wrong type",
+        },
+    }
+    assert "SECRET" not in repr(details)
+
+
 def test_syllabus_extractor_requires_final_exam_points_and_sends_only_supplied_outline():
     client = RecordingJsonClient(
         [
@@ -525,6 +588,111 @@ def test_syllabus_extractor_validates_teaching_topic_schema():
 
     assert topics[0].key == "rag-teaching"
     assert "行政内容" in client.recorded_payloads[0]["system"]
+
+
+def test_syllabus_extractor_normalizes_single_requirement_and_compact_anchor():
+    client = RecordingJsonClient(
+        [
+            {
+                "anchors": [
+                    {"key": "rag", "description": "检索增强生成与效果诊断"}
+                ],
+                "exam_points": [
+                    {
+                        "code": "rag-diagnosis",
+                        "anchor_key": "rag",
+                        "title": "检索效果诊断",
+                        "assessment_requirement": "能够诊断召回偏差",
+                        "weight_value": 100,
+                        "weight_source": "assessment_syllabus",
+                        "weight_group_id": "rag",
+                        "cognitive_targets": "analyze",
+                        "assessment_orientations": "diagnostic",
+                        "operational_detail_policy": "supporting_only",
+                        "retrieval_intent": "检索偏差及诊断依据",
+                        "teaching_anchor_keys": "rag-teaching",
+                    }
+                ],
+                "final_exam_rules": {},
+            },
+            {
+                "teaching_topics": [
+                    {
+                        "key": "rag-teaching",
+                        "title": "检索增强生成",
+                        "depth": "analyze",
+                        "requirements": "分析检索偏差",
+                    }
+                ]
+            },
+        ]
+    )
+    extractor = DeepSeekSyllabusExtractor(client)
+
+    assessment = extractor.extract_assessment(["期末考试"])
+    teaching = extractor.extract_teaching(["教学内容与要求"])
+
+    assert assessment.anchors[0].title == "检索增强生成与效果诊断"
+    assert assessment.anchors[0].exam_weight == 100
+    assert assessment.exam_points[0].cognitive_targets == ["analyze"]
+    assert teaching[0].requirements == ["分析检索偏差"]
+
+
+def test_syllabus_extractor_normalizes_percent_weight_and_drops_extra_anchor_fields():
+    client = RecordingJsonClient(
+        [
+            {
+                "anchors": [
+                    {
+                        "key": "rag",
+                        "title": "检索增强生成",
+                        "exam_weight": "5%",
+                        "alignment_keys": ["rag-teaching"],
+                        "source_heading": "期末考试",
+                    }
+                ],
+                "exam_points": [
+                    {
+                        "code": "rag-diagnosis",
+                        "anchor_key": "rag",
+                        "title": "检索效果诊断",
+                        "assessment_requirement": "能够诊断召回偏差",
+                        "weight_value": 5,
+                        "weight_source": "assessment_syllabus",
+                        "weight_group_id": "rag",
+                        "cognitive_targets": ["analyze"],
+                        "assessment_orientations": ["diagnostic"],
+                        "operational_detail_policy": "supporting_only",
+                        "retrieval_intent": "检索偏差及诊断依据",
+                        "teaching_anchor_keys": ["rag-teaching"],
+                    }
+                ],
+                "final_exam_rules": {},
+            }
+        ]
+    )
+
+    result = DeepSeekSyllabusExtractor(client).extract_assessment(["期末考试"])
+
+    assert result.anchors[0].exam_weight == 5
+    assert "source_heading" not in result.anchors[0].model_dump()
+
+
+def test_syllabus_extractor_still_rejects_anchor_missing_required_key():
+    client = RecordingJsonClient(
+        [
+            {
+                "anchors": [{"title": "检索增强生成", "exam_weight": "5%"}],
+                "exam_points": [_point().model_dump(mode="json")],
+                "final_exam_rules": {},
+            }
+        ]
+    )
+
+    with pytest.raises(DeepSeekModelError) as caught:
+        DeepSeekSyllabusExtractor(client).extract_assessment(["期末考试"])
+
+    assert caught.value.error_code == "model_schema_validation_failed"
 
 
 def test_syllabus_extractor_rejects_unknown_teaching_topic_fields():
@@ -730,6 +898,37 @@ def test_material_classifier_sends_one_exam_point_and_one_file_with_locators():
     assert "考点边界之外" in client.recorded_payloads[-1]["system"]
 
 
+def test_material_classifier_normalizes_provider_aliases_for_non_direct_evidence():
+    client = RecordingJsonClient(
+        [
+            {
+                "exam_point_code": "rag-diagnosis",
+                "material_version_id": "material-v1",
+                "decisions": [
+                    {
+                        "exam_point_code": "rag-diagnosis",
+                        "chunk_id": "e1",
+                        "relevance_class": "out_of_scope",
+                        "support_claim": "封面元数据与当前考点无关",
+                        "content_kind": "text",
+                        "confidence": 0.95,
+                    }
+                ],
+            }
+        ]
+    )
+
+    result = DeepSeekExamPointEvidenceClassifier(client).classify(
+        exam_point=_point(),
+        material_version_id="material-v1",
+        chunks=[StagingChunk(id="e1", material_version_id="material-v1", content="封面")],
+    )
+
+    assert result.decisions[0].evidence_chunk_id == "e1"
+    assert result.decisions[0].content_kind.value == "background"
+    assert result.decisions[0].confidence == 95
+
+
 def test_classifier_rejects_evidence_from_another_pair():
     bad = _decision()
     bad["evidence_chunk_id"] = "outside"
@@ -765,6 +964,19 @@ def test_consolidator_receives_only_one_point_admitted_decisions_and_keeps_sourc
                                 "name": "切分粒度影响",
                                 "performance_statement": "说明切分粒度如何影响召回",
                                 "assessable_content": ["切分粒度会影响召回"],
+                                "concept_cluster": "检索质量影响因素",
+                                "answer_proposition": "切分粒度会影响召回",
+                                "required_propositions": [],
+                                "relation_edges": [],
+                                "instance_carriers": [
+                                    {
+                                        "normalized_name": "ExampleVectorStore",
+                                        "carrier_type": "software",
+                                        "role": "illustrative_context",
+                                        "authorized_by_syllabus": False,
+                                        "replaceable": True,
+                                    }
+                                ],
                                 "evidence_chunk_ids": ["e1"],
                                 "prompt_material": ["可结合检索场景设问"],
                             }
@@ -786,6 +998,9 @@ def test_consolidator_receives_only_one_point_admitted_decisions_and_keeps_sourc
     assert request["admitted_decisions"][0]["evidence_chunk_id"] == "e1"
     card = units[0].cards[0]
     assert card.evidence_chunk_ids == ["e1"]
+    assert card.concept_cluster == "检索质量影响因素"
+    assert card.answer_proposition == "切分粒度会影响召回"
+    assert card.instance_carriers[0].normalized_name == "ExampleVectorStore"
     assert "source_locator" not in card.model_dump(mode="json")
 
 

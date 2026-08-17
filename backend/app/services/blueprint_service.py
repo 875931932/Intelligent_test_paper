@@ -11,6 +11,10 @@ from app.domain.blueprint.models import (
     PlanItem,
     UnitCoverage,
 )
+from app.domain.generation.semantic_diversity import (
+    CardSemanticProfile,
+    build_information_conflicts,
+)
 
 
 class BlueprintValidationError(Exception):
@@ -42,6 +46,22 @@ def _largest_remainder(total: int, weights: dict[str, float]) -> dict[str, int]:
 
 
 _DIFFICULTY_ORDER = ("low", "medium", "high")
+
+_COGNITIVE_LEVELS = ("remember", "understand", "apply", "analyze", "evaluate", "create")
+
+_TYPE_COGNITIVE_LEVELS: dict[str, tuple[str, ...]] = {
+    "single_choice": _COGNITIVE_LEVELS,
+    "true_false": ("remember", "understand", "apply"),
+    "fill_blank": ("remember", "understand"),
+    "short_answer": ("understand", "apply", "analyze", "evaluate"),
+    "comprehensive": ("apply", "analyze", "evaluate", "create"),
+}
+
+_DIFFICULTY_COGNITIVE_WEIGHTS: dict[str, dict[str, float]] = {
+    "low": {"remember": 60, "understand": 40},
+    "medium": {"understand": 30, "apply": 40, "analyze": 30},
+    "high": {"apply": 20, "analyze": 40, "evaluate": 25, "create": 15},
+}
 
 _DEFAULT_MODE_DISTRIBUTIONS = {
     "single_choice": {"theory_recall": 50, "conceptual": 50},
@@ -86,6 +106,24 @@ def _difficulty_distribution(rule: dict) -> dict[str, float]:
     )
 
 
+def _cognitive_level_distribution(
+    question_type: str,
+    difficulty: str,
+    count: int,
+) -> dict[str, int]:
+    """Distribute cognitive levels for a given question type, difficulty and count."""
+    allowed = _TYPE_COGNITIVE_LEVELS.get(question_type, _COGNITIVE_LEVELS)
+    weights = _DIFFICULTY_COGNITIVE_WEIGHTS.get(difficulty, {"understand": 100})
+    filtered = {
+        level: weights.get(level, 0)
+        for level in allowed
+        if level in weights
+    }
+    if not filtered or sum(filtered.values()) <= 0:
+        return {"understand": count}
+    return _largest_remainder(count, filtered)
+
+
 def _assessment_mode_distribution(
     question_type: str,
     rule: dict,
@@ -108,12 +146,37 @@ def _eligible_cards(
     unit: UnitCoverage,
     question_type: str,
 ) -> list[str]:
-    return sorted(
+    # Preserve the teacher/curation order.  The allocator uses this order as
+    # the final deterministic tie-breaker after semantic diversity scores;
+    # sorting by card id would make an arbitrary identifier decide which
+    # equivalent card is selected.
+    return [
         card_id
         for card_id in unit.card_ids
         if not request.card_question_types.get(card_id)
         or question_type in request.card_question_types[card_id]
+    ]
+
+
+def _semantic_profile(request: BlueprintRequest, card_id: str) -> CardSemanticProfile:
+    return request.card_semantic_profiles.get(card_id) or CardSemanticProfile(
+        concept_cluster=card_id,
+        answer_proposition=card_id,
     )
+
+
+def _replaceable_carrier_names(profile: CardSemanticProfile) -> list[str]:
+    return [
+        "".join(character.casefold() for character in carrier.normalized_name if character.isalnum())
+        for carrier in profile.instance_carriers
+        if carrier.role == "illustrative_context"
+        and carrier.replaceable
+        and not carrier.authorized_by_syllabus
+    ]
+
+
+def _cluster_key(profile: CardSemanticProfile) -> str:
+    return "".join(character.casefold() for character in profile.concept_cluster if character.isalnum())
 
 
 def _eligible_units(
@@ -201,10 +264,32 @@ def _assign_slots_to_anchors(
     # independently by the general DP below.
     eligible_sets = {group["anchors"] for group in groups}
     if len(eligible_sets) == 1:
+        anchor_card_counts = {
+            anchor: len(
+                {
+                    card_id
+                    for unit in by_anchor[anchor]
+                    for card_id in unit.card_ids
+                }
+            )
+            for anchor in anchor_order
+        }
+        anchor_capability_counts = {
+            anchor: len(
+                {
+                    _cluster_key(_semantic_profile(request, card_id))
+                    for unit in by_anchor[anchor]
+                    for card_id in unit.card_ids
+                }
+            )
+            for anchor in anchor_order
+        }
         return _assign_uniform_eligible_groups(
             groups,
             remaining=remaining,
             anchor_order=anchor_order,
+            anchor_card_counts=anchor_card_counts,
+            anchor_capability_counts=anchor_capability_counts,
         )
 
     anchor_indexes = {anchor: index for index, anchor in enumerate(anchor_order)}
@@ -289,6 +374,8 @@ def _assign_uniform_eligible_groups(
     *,
     remaining: dict[str, int],
     anchor_order: tuple[str, ...],
+    anchor_card_counts: dict[str, int],
+    anchor_capability_counts: dict[str, int],
 ) -> dict[tuple[int, int], str]:
     """Assign groups with one shared eligibility set using canonical states."""
 
@@ -303,8 +390,21 @@ def _assign_uniform_eligible_groups(
         groups,
         key=lambda group: (-group["slot_units"], -len(group["slots"]), group["anchors"]),
     )
-    active = tuple(sorted(eligible, key=lambda anchor: (remaining[anchor], anchor)))
+    active = tuple(
+        sorted(
+            eligible,
+            key=lambda anchor: (
+                remaining[anchor],
+                anchor_card_counts.get(anchor, 0),
+                anchor,
+            ),
+        )
+    )
     initial = tuple(remaining[anchor] for anchor in active)
+    initial_pressures = tuple(
+        remaining[anchor] / max(1, anchor_capability_counts.get(anchor, 0))
+        for anchor in active
+    )
 
     if len(ordered_groups) == 1:
         group = ordered_groups[0]
@@ -328,7 +428,10 @@ def _assign_uniform_eligible_groups(
                 + group["slot_units"] * len(group["slots"])
             )
 
-        memo: dict[tuple[int, tuple[int, ...]], tuple[tuple[int, ...], ...] | None] = {}
+        memo: dict[
+            tuple[int, tuple[int, ...]],
+            tuple[tuple[int, ...], ...] | None,
+        ] = {}
 
         def solve(
             position: int,
@@ -365,6 +468,7 @@ def _assign_uniform_eligible_groups(
                 unit=unit,
                 capacities=capacities,
                 target=target,
+                priorities=initial_pressures if position == 0 else None,
             ):
                 revised = tuple(
                     capacity - count * unit
@@ -387,11 +491,18 @@ def _assign_uniform_eligible_groups(
             )
 
     assignment: dict[tuple[int, int], str] = {}
-    pairs = [(anchor, remaining[anchor]) for anchor in active]
+    pairs = [
+        (anchor, remaining[anchor], anchor_card_counts.get(anchor, 0))
+        for anchor in active
+    ]
     for group, allocation in zip(ordered_groups, allocations, strict=True):
-        pairs.sort(key=lambda pair: (pair[1], pair[0]))
+        # 卡片数只作为并列时的排序偏好；题位分配只受章节权重约束，
+        # 同一章节的卡片复用由后续选卡轮换（簇/载体/卡片计数）控制。
+        pairs.sort(key=lambda pair: (pair[1], pair[2], pair[0]))
         offset = 0
-        for (anchor, capacity), count in zip(pairs, allocation, strict=True):
+        for (anchor, capacity, _card_count), count in zip(
+            pairs, allocation, strict=True
+        ):
             revised = capacity - count * group["slot_units"]
             if revised < 0:
                 raise BlueprintValidationError(
@@ -401,10 +512,12 @@ def _assign_uniform_eligible_groups(
                 assignment[(slot["type_order"], slot["type_index"])] = anchor
             offset += count
         pairs = [
-            (anchor, capacity - count * group["slot_units"])
-            for (anchor, capacity), count in zip(pairs, allocation, strict=True)
+            (anchor, capacity - count * group["slot_units"], card_count)
+            for (anchor, capacity, card_count), count in zip(
+                pairs, allocation, strict=True
+            )
         ]
-    if any(capacity for _, capacity in pairs):
+    if any(capacity for _, capacity, _ in pairs):
         raise BlueprintValidationError(
             "selected question scores and chapter weights cannot be jointly satisfied"
         )
@@ -417,18 +530,46 @@ def _iter_uniform_allocations(
     unit: int,
     capacities: tuple[int, ...],
     target: float,
+    priorities: tuple[float, ...] | None = None,
 ) -> Iterator[tuple[int, ...]]:
-    upper_bounds = tuple(min(item_count, capacity // unit) for capacity in capacities)
+    upper_bounds = tuple(
+        min(item_count, capacity // unit) for capacity in capacities
+    )
     if sum(upper_bounds) < item_count:
         return
 
+    seen: set[tuple[int, ...]] = set()
+    if priorities is not None and len(priorities) == len(capacities):
+        preferred = [0] * len(capacities)
+        for _ in range(item_count):
+            candidates = [
+                index
+                for index, capacity in enumerate(capacities)
+                if (preferred[index] + 1) * unit <= capacity
+            ]
+            if not candidates:
+                break
+            selected = max(
+                candidates,
+                key=lambda index: (
+                    -preferred[index],
+                    priorities[index],
+                    capacities[index],
+                    index,
+                ),
+            )
+            preferred[selected] += 1
+        preferred_tuple = tuple(preferred)
+        if sum(preferred_tuple) == item_count:
+            seen.add(preferred_tuple)
+            yield preferred_tuple
+
     # Generate counts nearest the balanced target first, then cover every
-    # bounded composition exactly once if the first candidate is not feasible.
+    # bounded composition exactly once if the preferred candidate is not feasible.
     choices = [
         sorted(range(upper + 1), key=lambda count: (abs(count - target), count))
         for upper in upper_bounds
     ]
-    seen: set[tuple[int, ...]] = set()
     stack: list[tuple[int, int, tuple[int, ...]]] = [(0, item_count, ())]
     while stack:
         position, left, prefix = stack.pop()
@@ -504,6 +645,7 @@ def allocate_plan_items(request: BlueprintRequest) -> BlueprintPlan:
     total_score = 0.0
     difficulty_counts: dict[str, dict[str, int]] = {}
     assessment_mode_counts: dict[str, dict[str, int]] = {}
+    cognitive_level_counts: dict[str, dict[str, int]] = {}
     for question_type, rule in request.type_rules.items():
         try:
             raw_count = float(rule.get("count", 0))
@@ -555,8 +697,36 @@ def allocate_plan_items(request: BlueprintRequest) -> BlueprintPlan:
             for mode in ASSESSMENT_MODES
             for _ in range(assessment_mode_counts[question_type][mode])
         ]
-        for type_index, (difficulty, assessment_mode) in enumerate(
-            zip(difficulties, modes, strict=True)
+        # 按题型×难度规划认知层次分布
+        cognitive_by_difficulty: dict[str, dict[str, int]] = {}
+        for difficulty in _DIFFICULTY_ORDER:
+            diff_count = difficulty_counts[question_type].get(difficulty, 0)
+            if diff_count > 0:
+                cognitive_by_difficulty[difficulty] = _cognitive_level_distribution(
+                    question_type, difficulty, diff_count
+                )
+        # 汇总全部认知层次计数
+        type_cognitive: dict[str, int] = {}
+        for dist in cognitive_by_difficulty.values():
+            for level, cnt in dist.items():
+                type_cognitive[level] = type_cognitive.get(level, 0) + cnt
+        cognitive_level_counts[question_type] = type_cognitive
+        # ``difficulties`` is already ordered low → medium → high.  Build one
+        # cognitive-level sequence per difficulty band, rather than expanding
+        # the whole band once for every item in that band.
+        cognitive_levels = [
+            level
+            for difficulty in _DIFFICULTY_ORDER
+            for level in sorted(
+                cognitive_by_difficulty.get(difficulty, {}),
+                key=lambda lv: _COGNITIVE_LEVELS.index(lv)
+                if lv in _COGNITIVE_LEVELS
+                else 99,
+            )
+            for _ in range(cognitive_by_difficulty.get(difficulty, {}).get(level, 0))
+        ]
+        for type_index, (difficulty, assessment_mode, cognitive_level) in enumerate(
+            zip(difficulties, modes, cognitive_levels, strict=True)
         ):
             slots.append(
                 {
@@ -564,11 +734,12 @@ def allocate_plan_items(request: BlueprintRequest) -> BlueprintPlan:
                     "score": float(rule["score"]),
                     "difficulty": difficulty,
                     "assessment_mode": assessment_mode,
+                    "cognitive_level": cognitive_level,
                     "type_order": type_order,
                     "type_index": type_index,
                 }
             )
-        if len(difficulties) != count or len(modes) != count:
+        if len(difficulties) != count or len(modes) != count or len(cognitive_levels) != count:
             raise BlueprintValidationError("question quota allocation did not close")
 
     remaining = _largest_remainder(
@@ -586,8 +757,11 @@ def allocate_plan_items(request: BlueprintRequest) -> BlueprintPlan:
     }
 
     point_counts: dict[tuple[str, str, str], int] = {}
-    unit_cursors: dict[tuple[str, str, str, str], int] = {}
-    card_cursors: dict[tuple[str, str, str, str], int] = {}
+    card_use_counts: dict[str, int] = {}
+    cluster_use_counts: dict[str, int] = {}
+    carrier_use_counts: dict[str, int] = {}
+    unit_use_counts: dict[str, int] = {}
+    selected_semantic_profiles: dict[int, CardSemanticProfile] = {}
     items: list[PlanItem] = []
     index = 1
     for type_order, (question_type, rule) in enumerate(request.type_rules.items()):
@@ -618,16 +792,74 @@ def allocate_plan_items(request: BlueprintRequest) -> BlueprintPlan:
             point_counts[point_count_key] = point_counts.get(point_count_key, 0) + 1
 
             point_units = sorted(by_point[exam_point_id], key=lambda unit: unit.unit_id)
-            unit_cursor_key = (anchor, question_type, mode, exam_point_id)
-            unit_cursor = unit_cursors.get(unit_cursor_key, 0)
-            unit = point_units[unit_cursor % len(point_units)]
-            unit_cursors[unit_cursor_key] = unit_cursor + 1
-
-            cards = _eligible_cards(request, unit, question_type)
-            card_cursor_key = (anchor, question_type, mode, unit.unit_id)
-            card_cursor = card_cursors.get(card_cursor_key, 0)
-            card_id = cards[card_cursor % len(cards)]
-            card_cursors[card_cursor_key] = card_cursor + 1
+            card_candidates = [
+                (unit, card_id, card_position)
+                for unit in point_units
+                for card_position, card_id in enumerate(
+                    _eligible_cards(request, unit, question_type)
+                )
+            ]
+            unused_candidates = [
+                candidate
+                for candidate in card_candidates
+                if card_use_counts.get(candidate[1], 0) == 0
+            ]
+            # 候选池先用未使用过的卡；卡池用尽后允许复用同卡（题位已由
+            # 考纲权重锁定，认知层次/难度由槽位区分）。
+            candidate_pool = unused_candidates or card_candidates
+            if not candidate_pool:
+                raise BlueprintValidationError(
+                    "no eligible knowledge card "
+                    f"at item {index} ({question_type}, {exam_point_id})"
+                )
+            # 信息独立性只作为优先级：优先选择与已选题不冲突的卡；
+            # 当所有卡都与已选卡同簇/同载体（小知识库场景）时接受复用，
+            # 由后续排序键（簇/载体/卡片使用计数）保证轮换，而不是硬拒绝。
+            safe_candidates = [
+                candidate
+                for candidate in candidate_pool
+                if not build_information_conflicts(
+                    {
+                        **selected_semantic_profiles,
+                        index: _semantic_profile(request, candidate[1]),
+                    }
+                )
+            ] or candidate_pool
+            unit, card_id, _card_position = min(
+                safe_candidates,
+                key=lambda pair: (
+                    # 核心概念单元优先：操作细节卡片只能在核心卡用尽后补位。
+                    not pair[0].core,
+                    cluster_use_counts.get(
+                        _cluster_key(_semantic_profile(request, pair[1])),
+                        0,
+                    ),
+                    max(
+                        (
+                            carrier_use_counts.get(name, 0)
+                            for name in _replaceable_carrier_names(
+                                _semantic_profile(request, pair[1])
+                            )
+                        ),
+                        default=0,
+                    ),
+                    card_use_counts.get(pair[1], 0),
+                    unit_use_counts.get(pair[0].unit_id, 0),
+                    pair[0].unit_id,
+                    pair[2],
+                    pair[1],
+                ),
+            )
+            profile = _semantic_profile(request, card_id)
+            selected_semantic_profiles[index] = profile
+            card_use_counts[card_id] = card_use_counts.get(card_id, 0) + 1
+            cluster_key = _cluster_key(profile)
+            cluster_use_counts[cluster_key] = (
+                cluster_use_counts.get(cluster_key, 0) + 1
+            )
+            for carrier_name in _replaceable_carrier_names(profile):
+                carrier_use_counts[carrier_name] = carrier_use_counts.get(carrier_name, 0) + 1
+            unit_use_counts[unit.unit_id] = unit_use_counts.get(unit.unit_id, 0) + 1
 
             items.append(
                 PlanItem(
@@ -639,7 +871,15 @@ def allocate_plan_items(request: BlueprintRequest) -> BlueprintPlan:
                     unit_id=unit.unit_id,
                     card_id=card_id,
                     difficulty=slot["difficulty"],
+                    cognitive_level=slot["cognitive_level"],
                     assessment_mode=mode,
+                    concept_cluster=profile.concept_cluster,
+                    answer_proposition=profile.answer_proposition,
+                    required_propositions=profile.required_propositions,
+                    relation_edges=profile.relation_edges,
+                    instance_carriers=[
+                        carrier.normalized_name for carrier in profile.instance_carriers
+                    ],
                 )
             )
             index += 1
@@ -657,4 +897,5 @@ def allocate_plan_items(request: BlueprintRequest) -> BlueprintPlan:
             for anchor in request.chapter_weights
         },
         assessment_mode_counts=assessment_mode_counts,
+        cognitive_level_counts=cognitive_level_counts,
     )

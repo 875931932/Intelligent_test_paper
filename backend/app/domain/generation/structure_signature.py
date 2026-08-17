@@ -5,10 +5,6 @@ import json
 import re
 
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
-from app.db.schema import generated_questions, generation_runs, paper_items, paper_versions
 
 
 ACTION_ALIASES = {
@@ -89,54 +85,3 @@ def build_structure_signature(
         structure_key=stable_json,
         signature_hash=hashlib.sha256(stable_json.encode("utf-8")).hexdigest(),
     )
-
-
-def load_recent_structure_signatures(
-    session: Session,
-    course_id: str,
-    paper_limit: int = 5,
-) -> list[QuestionStructureSignature]:
-    if paper_limit <= 0:
-        return []
-    recent_papers = (
-        select(
-            paper_versions.c.id.label("paper_version_id"),
-            generation_runs.c.created_at.label("created_at"),
-            generation_runs.c.id.label("generation_run_id"),
-        )
-        .join(generation_runs, generation_runs.c.id == paper_versions.c.generation_run_id)
-        .where(
-            paper_versions.c.course_id == course_id,
-            generation_runs.c.course_id == course_id,
-            paper_versions.c.status.in_(("confirmed", "exported")),
-        )
-        .order_by(generation_runs.c.created_at.desc(), generation_runs.c.id.desc(), paper_versions.c.id.desc())
-        .limit(paper_limit)
-        .subquery()
-    )
-    rows = session.execute(
-        select(generated_questions.c.payload)
-        .join(paper_items, paper_items.c.generated_question_id == generated_questions.c.id)
-        .join(recent_papers, recent_papers.c.paper_version_id == paper_items.c.paper_version_id)
-        .where(
-            paper_items.c.course_id == course_id,
-            generated_questions.c.course_id == course_id,
-        )
-        .order_by(
-            recent_papers.c.created_at.desc(),
-            recent_papers.c.generation_run_id.desc(),
-            recent_papers.c.paper_version_id.desc(),
-            paper_items.c.display_order.asc(),
-            generated_questions.c.id.asc(),
-        )
-    ).scalars()
-
-    signatures: list[QuestionStructureSignature] = []
-    for payload in rows:
-        if not isinstance(payload, dict) or payload.get("question_type") != "comprehensive":
-            continue
-        try:
-            signatures.append(QuestionStructureSignature.model_validate(payload.get("structure_signature")))
-        except (TypeError, ValueError):
-            continue
-    return signatures

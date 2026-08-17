@@ -22,6 +22,7 @@ def test_submit_uploads_without_authorization_and_uses_material_version_as_data_
             return httpx.Response(200, json={"code": 0, "data": {"batch_id": "batch-1", "file_urls": ["https://upload.invalid/file"]}})
         assert request.url.host == "upload.invalid"
         assert "authorization" not in request.headers
+        assert "content-type" not in request.headers
         return httpx.Response(200)
 
     async def run():

@@ -128,7 +128,10 @@ class MineruClient:
                 response = await self.client.put(
                     url,
                     content=request.content_factory(),
-                    headers={"Content-Type": request.content_type},
+                    # MinerU signs the OSS URL without Content-Type. Adding it
+                    # changes Aliyun OSS' canonical request and returns 403
+                    # SignatureDoesNotMatch.
+                    headers={},
                 )
                 response.raise_for_status()
                 return

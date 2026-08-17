@@ -4,6 +4,11 @@ import pytest
 from pydantic import ValidationError
 
 from app.domain.blueprint.models import BlueprintRequest, PlanItem, UnitCoverage
+from app.domain.generation.semantic_diversity import (
+    AnswerRelation,
+    CardSemanticProfile,
+    InstanceCarrier,
+)
 from app.services.blueprint_service import (
     BlueprintValidationError,
     _largest_remainder,
@@ -32,6 +37,32 @@ def test_blueprint_allocates_type_quota_and_chapter_weight_without_one_item_per_
     assert sum(item.score for item in plan.items if item.anchor_key == "rag") == 24
     assert sum(item.score for item in plan.items if item.anchor_key == "agent") == 16
     assert len({item.unit_id for item in plan.items}) == 2
+
+
+def test_blueprint_prefers_core_units_over_operational_evidence():
+    """核心概念单元先用，操作细节卡片只能在核心卡用尽后补位。"""
+    request = BlueprintRequest(
+        total_score=20,
+        type_rules={"single_choice": {"count": 10, "score": 2}},
+        chapter_weights={"ch1": 100},
+        units=[
+            UnitCoverage(unit_id="ev-1", anchor_key="ch1", card_ids=["ev-card-1"]),
+            UnitCoverage(unit_id="ev-2", anchor_key="ch1", card_ids=["ev-card-2"]),
+            UnitCoverage(unit_id="core-1", anchor_key="ch1", card_ids=["core-card-1"], core=True),
+        ],
+    )
+
+    plan = allocate_plan_items(request)
+
+    assert len(plan.items) == 10
+    core_slots = sum(1 for item in plan.items if item.unit_id == "core-1")
+    # 核心单元只有一张卡且同卡认知层次受限，但核心卡必须优先占用题位，
+    # 剩余题位才轮到操作细节单元。
+    first = plan.items[0]
+    assert first.unit_id == "core-1"
+    assert core_slots >= 1
+    evidence_ids = {item.unit_id for item in plan.items if item.unit_id.startswith("ev-")}
+    assert evidence_ids <= {"ev-1", "ev-2"}
 
 
 def test_blueprint_rejects_non_half_point_scores_and_weight_mismatch():
@@ -70,6 +101,89 @@ def test_blueprint_matches_weighted_scores_across_mixed_question_values():
     plan = allocate_plan_items(request)
     scores = {anchor: sum(item.score for item in plan.items if item.anchor_key == anchor) for anchor in anchors}
     assert scores == {anchor: float(weight) for anchor, weight in anchors.items()}
+
+
+def test_blueprint_spreads_high_value_questions_when_exact_weight_solution_allows_it():
+    anchors = {"ch1": 5, "ch2": 25, "ch3": 35, "ch4": 5, "ch5": 10, "ch6": 15, "ch7": 5}
+    card_counts = {"ch1": 4, "ch2": 12, "ch3": 8, "ch4": 6, "ch5": 4, "ch6": 10, "ch7": 6}
+    request = BlueprintRequest(
+        total_score=100,
+        type_rules={
+            "single_choice": {"count": 10, "score": 2},
+            "true_false": {"count": 10, "score": 2},
+            "fill_blank": {"count": 10, "score": 1},
+            "short_answer": {"count": 4, "score": 5},
+            "comprehensive": {"count": 3, "score": 10},
+        },
+        chapter_weights=anchors,
+        units=[
+            UnitCoverage(
+                unit_id=f"unit-{key}",
+                anchor_key=key,
+                card_ids=[f"card-{key}-{index}" for index in range(card_counts[key])],
+            )
+            for key in anchors
+        ],
+    )
+
+    plan = allocate_plan_items(request)
+    comprehensive_anchors = {
+        item.anchor_key for item in plan.items if item.question_type == "comprehensive"
+    }
+
+    assert comprehensive_anchors == {"ch2", "ch3", "ch5"}
+
+
+def test_blueprint_uses_capability_family_capacity_instead_of_raw_card_count():
+    request = BlueprintRequest(
+        total_score=12,
+        type_rules={
+            "single_choice": {"count": 3, "score": 2},
+            "comprehensive": {"count": 1, "score": 6},
+        },
+        chapter_weights={"concentrated": 50, "diverse": 50},
+        units=[
+            UnitCoverage(
+                unit_id="concentrated-unit",
+                anchor_key="concentrated",
+                card_ids=["same-1", "same-2", "same-3", "same-4"],
+            ),
+            UnitCoverage(
+                unit_id="diverse-unit",
+                anchor_key="diverse",
+                card_ids=["different-1", "different-2", "different-3"],
+            ),
+        ],
+        card_semantic_profiles={
+            **{
+                f"same-{index}": _semantic_profile(
+                    "one-capability-family",
+                    f"closely related proposition {index}",
+                )
+                for index in range(1, 5)
+            },
+            **{
+                f"different-{index}": _semantic_profile(
+                    f"capability-family-{index}",
+                    f"independent proposition {index}",
+                )
+                for index in range(1, 4)
+            },
+        },
+    )
+
+    plan = allocate_plan_items(request)
+
+    assert [
+        item.anchor_key
+        for item in plan.items
+        if item.question_type == "comprehensive"
+    ] == ["concentrated"]
+    assert {
+        item.anchor_key
+        for item in plan.items
+        if item.question_type == "single_choice"
+    } == {"diverse"}
 
 
 def test_blueprint_selects_only_cards_allowed_for_question_type():
@@ -376,6 +490,56 @@ def test_blueprint_rotates_exam_points_before_cards(reverse_units):
     assert counts == {"ep-small": 5, "ep-large": 5}
 
 
+def test_blueprint_uses_unused_compatible_cards_before_reusing_across_question_types():
+    request = BlueprintRequest(
+        total_score=8,
+        type_rules={
+            "single_choice": {"count": 2, "score": 2},
+            "true_false": {"count": 2, "score": 2},
+        },
+        chapter_weights={"chapter": 100},
+        units=[
+            UnitCoverage(
+                unit_id=f"unit-{index}",
+                exam_point_id="ep",
+                anchor_key="chapter",
+                card_ids=[f"card-{index}"],
+            )
+            for index in range(4)
+        ],
+    )
+
+    plan = allocate_plan_items(request)
+
+    assert len({item.card_id for item in plan.items}) == 4
+
+
+def test_blueprint_keeps_card_uniqueness_ahead_of_cluster_balance():
+    request = BlueprintRequest(
+        total_score=8,
+        type_rules={"single_choice": {"count": 4, "score": 2}},
+        chapter_weights={"chapter": 100},
+        units=[
+            UnitCoverage(
+                unit_id="unit",
+                exam_point_id="ep",
+                anchor_key="chapter",
+                card_ids=["a-one", "b-one", "b-two", "b-three"],
+            )
+        ],
+        card_semantic_profiles={
+            "a-one": _semantic_profile("cluster-a", "answer-a"),
+            "b-one": _semantic_profile("cluster-b", "answer-b1"),
+            "b-two": _semantic_profile("cluster-b", "answer-b2"),
+            "b-three": _semantic_profile("cluster-b", "answer-b3"),
+        },
+    )
+
+    plan = allocate_plan_items(request)
+
+    assert len({item.card_id for item in plan.items}) == 4
+
+
 def test_blueprint_allocates_practical_mode_only_to_directly_assessable_unit():
     request = BlueprintRequest(
         total_score=2,
@@ -476,3 +640,223 @@ def test_blueprint_collapses_uniform_eligibility_states_for_mixed_scores():
 
     assert plan.anchor_counts == {f"chapter-{index}": 10 for index in range(5)}
     assert len(plan.items) == 50
+
+
+def _semantic_profile(
+    cluster: str,
+    proposition: str,
+    *,
+    carrier: str | None = None,
+    required: bool = False,
+    authorized: bool = False,
+) -> CardSemanticProfile:
+    return CardSemanticProfile(
+        concept_cluster=cluster,
+        answer_proposition=proposition,
+        instance_carriers=(
+            [
+                InstanceCarrier(
+                    normalized_name=carrier,
+                    role="required_subject" if required else "illustrative_context",
+                    authorized_by_syllabus=authorized,
+                    replaceable=not required,
+                )
+            ]
+            if carrier
+            else []
+        ),
+    )
+
+
+def test_blueprint_prefers_unused_concept_cluster_over_distinct_cards_in_one_cluster():
+    request = BlueprintRequest(
+        total_score=4,
+        type_rules={"single_choice": {"count": 2, "score": 2}},
+        chapter_weights={"chapter": 100},
+        units=[
+            UnitCoverage(
+                unit_id="unit",
+                exam_point_id="ep",
+                anchor_key="chapter",
+                card_ids=["a-path", "b-path", "auth"],
+            )
+        ],
+        card_semantic_profiles={
+            "a-path": _semantic_profile("interface-paths", "A uses path A"),
+            "b-path": _semantic_profile("interface-paths", "B uses path B"),
+            "auth": _semantic_profile("authentication", "tokens authenticate requests"),
+        },
+    )
+
+    plan = allocate_plan_items(request)
+
+    assert {item.concept_cluster for item in plan.items} == {
+        "interface-paths",
+        "authentication",
+    }
+
+
+def test_blueprint_normalizes_equivalent_concept_cluster_labels():
+    request = BlueprintRequest(
+        total_score=4,
+        type_rules={"single_choice": {"count": 2, "score": 2}},
+        chapter_weights={"chapter": 100},
+        units=[
+            UnitCoverage(
+                unit_id="unit",
+                exam_point_id="ep",
+                anchor_key="chapter",
+                card_ids=["path-a", "b-path", "z-auth"],
+            )
+        ],
+        card_semantic_profiles={
+            "path-a": _semantic_profile("interface paths", "A uses path A"),
+            "b-path": _semantic_profile("interface-paths", "B uses path B"),
+            "z-auth": _semantic_profile("authentication", "tokens authenticate requests"),
+        },
+    )
+
+    plan = allocate_plan_items(request)
+
+    assert {item.card_id for item in plan.items} == {"path-a", "z-auth"}
+
+
+def test_blueprint_avoids_candidate_that_would_create_combined_answer_leak():
+    request = BlueprintRequest(
+        total_score=6,
+        type_rules={"single_choice": {"count": 3, "score": 2}},
+        chapter_weights={"chapter": 100},
+        units=[
+            UnitCoverage(
+                unit_id="unit",
+                exam_point_id="ep",
+                anchor_key="chapter",
+                card_ids=["component-a", "component-b", "summary", "alternative"],
+            )
+        ],
+        card_semantic_profiles={
+            "component-a": CardSemanticProfile(
+                concept_cluster="interface",
+                answer_proposition="interface A uses path A",
+                relation_edges=[
+                    AnswerRelation(
+                        kind="component_of",
+                        target="the two interfaces use different paths",
+                    )
+                ],
+            ),
+            "component-b": CardSemanticProfile(
+                concept_cluster="interface",
+                answer_proposition="interface B uses path B",
+                relation_edges=[
+                    AnswerRelation(
+                        kind="component_of",
+                        target="the two interfaces use different paths",
+                    )
+                ],
+            ),
+            "summary": _semantic_profile(
+                "interface",
+                "the two interfaces use different paths",
+            ),
+            "alternative": _semantic_profile(
+                "interface",
+                "tokens authenticate requests",
+            ),
+        },
+    )
+
+    plan = allocate_plan_items(request)
+
+    assert "summary" not in {item.card_id for item in plan.items}
+
+
+def test_blueprint_avoids_reusing_replaceable_instance_when_alternative_exists():
+    request = BlueprintRequest(
+        total_score=4,
+        type_rules={"single_choice": {"count": 2, "score": 2}},
+        chapter_weights={"chapter": 100},
+        units=[
+            UnitCoverage(
+                unit_id="unit",
+                exam_point_id="ep",
+                anchor_key="chapter",
+                card_ids=["tool-one", "tool-two", "neutral"],
+            )
+        ],
+        card_semantic_profiles={
+            "tool-one": _semantic_profile(
+                "workflow-one", "first workflow principle", carrier="ExampleTool"
+            ),
+            "tool-two": _semantic_profile(
+                "workflow-two", "second workflow principle", carrier="ExampleTool"
+            ),
+            "neutral": _semantic_profile("workflow-three", "third workflow principle"),
+        },
+    )
+
+    plan = allocate_plan_items(request)
+
+    assert sum("ExampleTool" in item.instance_carriers for item in plan.items) == 1
+
+
+def test_blueprint_normalizes_equivalent_instance_names_for_exposure_accounting():
+    request = BlueprintRequest(
+        total_score=6,
+        type_rules={"single_choice": {"count": 3, "score": 2}},
+        chapter_weights={"chapter": 100},
+        units=[
+            UnitCoverage(
+                unit_id="unit",
+                exam_point_id="ep",
+                anchor_key="chapter",
+                card_ids=["a-tool", "b-tool", "c-neutral", "d-neutral"],
+            )
+        ],
+        card_semantic_profiles={
+            "a-tool": _semantic_profile(
+                "workflow-one", "first principle", carrier="Example Tool"
+            ),
+            "b-tool": _semantic_profile(
+                "workflow-two", "second principle", carrier="example-tool"
+            ),
+            "c-neutral": _semantic_profile("workflow-three", "third principle"),
+            "d-neutral": _semantic_profile("workflow-four", "fourth principle"),
+        },
+    )
+
+    plan = allocate_plan_items(request)
+
+    selected_tool_cards = {"a-tool", "b-tool"}.intersection(
+        item.card_id for item in plan.items
+    )
+    assert len(selected_tool_cards) == 1
+
+
+def test_blueprint_allows_repeated_syllabus_authorized_required_subject():
+    request = BlueprintRequest(
+        total_score=4,
+        type_rules={"single_choice": {"count": 2, "score": 2}},
+        chapter_weights={"chapter": 100},
+        units=[
+            UnitCoverage(
+                unit_id="unit",
+                exam_point_id="ep",
+                anchor_key="chapter",
+                card_ids=["work-theme", "work-form"],
+            )
+        ],
+        card_semantic_profiles={
+            "work-theme": _semantic_profile(
+                "theme", "the work develops theme A", carrier="NamedWork", required=True, authorized=True
+            ),
+            "work-form": _semantic_profile(
+                "form", "the work uses form B", carrier="NamedWork", required=True, authorized=True
+            ),
+        },
+    )
+
+    plan = allocate_plan_items(request)
+
+    assert len(plan.items) == 2
+    assert all("NamedWork" in item.instance_carriers for item in plan.items)
