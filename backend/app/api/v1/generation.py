@@ -3,13 +3,11 @@ from __future__ import annotations
 from threading import Lock
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict
-from sqlalchemy.orm import Session
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.adapters.model.deepseek_gateway import DeepSeekGateway
 from app.config import settings
-from app.db.session import get_session
-from app.domain.generation.structure_signature import load_recent_structure_signatures
+from app.domain.generation.contract import ContractSlot
 from app.workflows.generation_graph import build_generation_graph
 
 router = APIRouter(prefix="/api/v1/courses/{course_id}", tags=["generation"])
@@ -18,8 +16,9 @@ _gateway_lock = Lock()
 
 class GenerationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    plan_items: list[dict]
-    knowledge_cards: dict[str, dict]
+
+    contract: list[dict] = Field(min_length=1)
+    knowledge_cards: dict[str, dict] = Field(default_factory=dict)
 
 
 def get_gateway(request: Request):
@@ -53,13 +52,24 @@ def generate_paper(
     course_id: str,
     request: GenerationRequest,
     gateway=Depends(get_gateway),
-    session: Session = Depends(get_session),
 ) -> dict:
+    # 合同在入口校验：非法 slot 直接 422，不进图
     try:
-        recent_signatures = load_recent_structure_signatures(session, course_id, paper_limit=5)
-        initial_state = request.model_dump()
-        initial_state["recent_structure_signatures"] = [signature.model_dump() for signature in recent_signatures]
-        result = build_generation_graph(gateway).invoke(initial_state)
-        return {"status": "candidate", "questions": result["questions"], "model": settings.deepseek_model}
+        slots = [ContractSlot.model_validate(raw) for raw in request.contract]
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"contract invalid: {exc}")
+    try:
+        result = build_generation_graph(gateway).invoke({
+            "contract": [s.model_dump(mode="json") for s in slots],
+            "knowledge_cards": request.knowledge_cards,
+        })
+        questions = sorted(result.get("questions", []), key=lambda q: q.get("item_index", 0))
+        return {
+            "status": "candidate",
+            "questions": questions,
+            "final_check": result.get("final_check", {}),
+            "model_call_count": result.get("model_call_count", 0),
+            "model": settings.deepseek_model,
+        }
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"question generation failed: {exc}")
