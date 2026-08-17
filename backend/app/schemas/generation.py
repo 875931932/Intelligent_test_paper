@@ -5,7 +5,6 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.domain.blueprint.models import AssessmentMode, PlanItem
 from app.domain.generation.archetypes import ARCHETYPE_CONTRACTS, ComprehensiveArchetype, MaterialForm
 from app.domain.generation.batching import QuestionBatch
-from app.domain.generation.contract import ContractSlot
 from app.domain.generation.coverage import CoverageDirective
 
 _QUESTION_TEMPLATES = {
@@ -266,7 +265,7 @@ def compile_batch_generation_payload(
             difficulty=slot.difficulty,
             cognitive_level=slot.cognitive_level,
             assessment_mode=slot.assessment_mode,
-            performance_statement=slot.performance_statement or str(card.get("performance_statement", "")),
+            performance_statement=slot.performance_statement or (card.get("performance_statement") or ""),
             scope_boundary=slot.scope_boundary or card.get("scope_boundary", {}) or {},
             prompt_material=slot.prompt_material or list(card.get("prompt_material", []) or []),
             coverage_atom=slot.coverage_atom,

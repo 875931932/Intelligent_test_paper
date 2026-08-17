@@ -210,6 +210,7 @@ def test_comprehensive_payloads_use_distinct_archetype_templates_and_source_free
         "answer_boundary",
         "answer",
         "rubric",
+        "score",
     ]
     for forbidden in ("card_id", "exam_point_id", "filename", "page", "evidence", "material_version_id"):
         assert forbidden not in serialized.lower()
