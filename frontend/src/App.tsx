@@ -86,6 +86,19 @@ type GenerationRunResult = {
   model_call_count: number
   model: string
 }
+type Subquestion =
+  | string
+  | {
+      id?: string
+      question?: string
+      action?: string
+      prompt?: string
+      answer_boundary?: string
+      answer?: string
+      rubric?: string[]
+      score?: number
+    }
+
 type Question = {
   item_index?: number
   question_type: string
@@ -95,7 +108,10 @@ type Question = {
   answer?: unknown
   explanation?: string
   rubric?: Array<{ point?: string; score?: number }>
-  subquestions?: Array<string | { id?: string; question?: string }>
+  subquestions?: Subquestion[]
+  comprehensive_archetype?: string | null
+  material_form?: string | null
+  subquestion_actions?: string[]
   quality?: { status?: string; code?: string; message?: string; issues?: string[] }
   needs_review?: boolean
   exam_point_id?: string
@@ -103,6 +119,163 @@ type Question = {
   card_id?: string
   coverage_atom?: string
   answer_boundary?: string
+}
+
+const ARCHETYPE_LABELS: Record<string, { title: string; tag: string }> = {
+  fault_diagnosis: { title: '故障诊断', tag: '症状→原因→修复' },
+  code_completion_scenario: { title: '代码补全', tag: '工程场景·代码填空' },
+  comparative_decision: { title: '对比决策', tag: '多方案权衡选择' },
+  experiment_analysis: { title: '实验分析', tag: '现象·数据·结论' },
+  scenario_design: { title: '方案设计', tag: '从需求到设计' },
+}
+
+function formatMaterialStem(stem: string) {
+  if (!stem) return null
+  // 识别代码块 ```…```
+  if (/```/.test(stem)) {
+    const parts: Array<{ kind: 'text' | 'code'; content: string; lang?: string }> = []
+    let rest = stem
+    const re = /```([\w+-]*)\n([\s\S]*?)```/g
+    let last = 0
+    let m: RegExpExecArray | null
+    while ((m = re.exec(rest))) {
+      if (m.index > last) parts.push({ kind: 'text', content: rest.slice(last, m.index) })
+      parts.push({ kind: 'code', content: m[2], lang: m[1] || 'text' })
+      last = m.index + m[0].length
+    }
+    if (last < rest.length) parts.push({ kind: 'text', content: rest.slice(last) })
+    return parts.map((p, i) =>
+      p.kind === 'code' ? (
+        <pre key={i} className="material-code"><code className={p.lang}>{p.content}</code></pre>
+      ) : (
+        <div key={i} className="material-prose">{formatTableOrBullets(p.content)}</div>
+      ),
+    )
+  }
+  return <div className="material-prose">{formatTableOrBullets(stem)}</div>
+}
+
+function formatTableOrBullets(text: string) {
+  // 先尝试 Markdown 表格：|---|
+  const tableMatch = text.match(/(\|[^\n]+\|\n\|[-\s:]+\|[^\n]*\n(?:\|[^\n]+\|\n?)+)/)
+  if (tableMatch) {
+    const prefix = text.slice(0, tableMatch.index!)
+    const raw = tableMatch[0]
+    const suffix = text.slice((tableMatch.index || 0) + tableMatch[0].length)
+    const rows = raw.split(/\n/).map((r) => r.trim()).filter(Boolean)
+    const header = rows[0].split('|').map((c) => c.trim()).filter((c) => c.length > 0)
+    const body = rows.slice(2).map((r) => r.split('|').map((c) => c.trim()).filter((c) => c.length > 0))
+    return (
+      <>
+        <MaterialText text={prefix} />
+        <table className="material-table">
+          <thead>
+            <tr>{header.map((h, i) => <th key={i}>{h}</th>)}</tr>
+          </thead>
+          <tbody>
+            {body.map((row, r) => <tr key={r}>{row.map((cell, c) => <td key={c}>{cell}</td>)}</tr>)}
+          </tbody>
+        </table>
+        <MaterialText text={suffix} />
+      </>
+    )
+  }
+  return <MaterialText text={text} />
+}
+
+function MaterialText({ text }: { text: string }) {
+  if (!text) return null
+  const lines = text.split(/\n/)
+  // 检测 (1)(2)(3) 或 1. 2. 3. 等编号列表
+  const enumRe = /^\s*\(?(\d+)\)|^\s*[-*·]|^\s*\d+[.、\)]/
+  if (lines.some((l) => enumRe.test(l))) {
+    return (
+      <ul className="material-enum">
+        {lines.map((line, i) => {
+          const cleaned = line.replace(/^\s*\(?\d+\)|^\s*[-*·]|^\s*\d+[.、\)]/, '').trim()
+          if (!cleaned) return null
+          const m = line.match(/^\s*\(?(\d+)\)|^\s*(\d+)[.、\)]/)
+          const num = m ? (m[1] || m[2]) : null
+          return <li key={i}>{num ? <b className="enum-no">{num}.</b> : null}{cleaned}</li>
+        })}
+      </ul>
+    )
+  }
+  return <>{lines.filter(Boolean).map((line, i) => <p key={i}>{line}</p>)}</>
+}
+
+function SubquestionItem({ index, item }: { index: number; item: Subquestion }) {
+  const obj: Record<string, string | number | string[] | undefined> =
+    typeof item === 'string' ? { prompt: item } : (item as Record<string, string | number | string[] | undefined>)
+  const rubricArr = Array.isArray(obj.rubric) ? obj.rubric : typeof obj.rubric === 'string' ? [obj.rubric] : []
+  const score = typeof obj.score === 'number' ? obj.score : null
+  const action = typeof obj.action === 'string' ? obj.action : null
+  const boundary = typeof obj.answer_boundary === 'string' ? obj.answer_boundary : null
+  const prompt = typeof obj.prompt === 'string' ? obj.prompt : typeof obj.question === 'string' ? obj.question : String(item)
+  const answer = typeof obj.answer === 'string' ? obj.answer : null
+  const actionLabel: Record<string, string> = {
+    fill_blank: '填空',
+    short_answer: '简答',
+    analysis: '分析',
+    judgement: '判断',
+    calculation: '计算',
+  }
+  return (
+    <li className="sub-item">
+      <div className="sub-item-head">
+        <span className="sub-index">（{toChinese(index + 1)}）</span>
+        {action && <span className="sub-action">{actionLabel[action] || action}</span>}
+        {score != null && <span className="sub-score">{score} 分</span>}
+      </div>
+      <div className="sub-item-prompt">{formatTableOrBullets(prompt)}</div>
+      {answer && (
+        <details className="sub-answer">
+          <summary>本问答案与评分点</summary>
+          <div>
+            {answer.split(/\n/).filter(Boolean).map((line, i) => <p key={i}>{line}</p>)}
+            {boundary && <p className="muted"><strong>答题域：</strong>{boundary}</p>}
+            {rubricArr.length > 0 && (
+              <ol>
+                {rubricArr.map((r, i) => {
+                  const text = typeof r === 'string' ? r : (r as { point?: string }).point ?? JSON.stringify(r)
+                  const sc = typeof r === 'object' && r != null ? (r as { score?: number }).score : null
+                  return <li key={i}>{text}{sc != null ? <span className="rubric-score">（{sc} 分）</span> : ''}</li>
+                })}
+              </ol>
+            )}
+          </div>
+        </details>
+      )}
+    </li>
+  )
+}
+
+function formatAnswerBlock(answer: unknown) {
+  if (answer == null) return <span>—</span>
+  if (typeof answer === 'boolean') return <span>{answer ? '正确' : '错误'}</span>
+  const s = String(answer)
+  if (s.includes('\n')) {
+    return (
+      <div className="answer-block">
+        {s.split(/\n/).filter(Boolean).map((line, i) => {
+          const m = line.match(/^分问\((\d+)\)(.+?[:：])?(.*)$/) || line.match(/^(\d+)[.、)](.+?[:：])?(.*)$/)
+          if (m) {
+            const num = m[1]
+            const head = m[2] || '：'
+            const rest = m[3]
+            return (
+              <div key={i} className="answer-sub-item">
+                <b>（{toChinese(Number(num))}）</b>
+                {rest || head}
+              </div>
+            )
+          }
+          return <p key={i}>{line}</p>
+        })}
+      </div>
+    )
+  }
+  return <span>{s}</span>
 }
 type WeightAuditRow = {
   exam_point_id: string
@@ -657,18 +830,71 @@ function FinalCheckTable({ finalCheck }: { finalCheck: FinalCheck }) {
 function QuestionView({ number, question }: { number: number; question: Question }) {
   const options = Array.isArray(question.options) ? question.options : question.options ? Object.entries(question.options).map(([key, value]) => `${key}. ${value}`) : []
   const qualityText = [question.quality?.status ? `状态 ${question.quality.status}` : '', question.quality?.message ?? '', ...(question.quality?.issues ?? [])].filter(Boolean).join(' · ')
+  const isComp = question.question_type === 'comprehensive'
+  const archetype = isComp && question.comprehensive_archetype ? ARCHETYPE_LABELS[question.comprehensive_archetype] : null
   return (
-    <div className="question">
+    <div className={`question ${isComp ? 'question-comprehensive' : ''}`}>
       <div className="stem">
         <b>{number}.</b>
-        <span>{question.stem || '（模型未返回题干）'}{question.needs_review && <i className="review-chip">需人工复核</i>}{question.exam_point_id && <i className="exam-point-chip">{question.exam_point_id}</i>}</span>
+        <span className="stem-col">
+          <span className="stem-main">
+            {isComp ? (
+              <div className="comp-head">
+                {archetype && (
+                  <span className="archetype-tag" title={archetype.tag}>
+                    <i className="archetype-pip" />{archetype.title}
+                    <em className="archetype-tag-hint">{archetype.tag}</em>
+                  </span>
+                )}
+                {question.material_form && <span className="material-form-tag">材料：{materialFormLabel(question.material_form)}</span>}
+              </div>
+            ) : null}
+            {isComp ? formatMaterialStem(question.stem || '') : (question.stem || '（模型未返回题干）')}
+            {question.needs_review && <i className="review-chip">需人工复核</i>}
+            {question.exam_point_id && <i className="exam-point-chip">{question.exam_point_id}</i>}
+          </span>
+        </span>
         <em>{question.score} 分</em>
       </div>
       {options.length > 0 && <div className="options">{options.map((option, index) => <span key={index}>{/^[A-D][.、]/.test(option) ? option : `${String.fromCharCode(65 + index)}. ${option}`}</span>)}</div>}
-      {question.subquestions?.length ? <ol className="subquestions">{question.subquestions.map((item, index) => <li key={index}>{typeof item === 'string' ? item : item.question ?? JSON.stringify(item)}</li>)}</ol> : null}
-      <details><summary>查看答案、解析与评分细则</summary><div className="answer"><p><strong>参考答案：</strong>{typeof question.answer === 'boolean' ? (question.answer ? '正确' : '错误') : String(question.answer ?? '—')}</p>{question.explanation && <p><strong>解析：</strong>{question.explanation}</p>}{question.rubric && <div><strong>评分细则：</strong><ul>{question.rubric.map((row, index) => <li key={index}>{row.point ?? JSON.stringify(row)}{row.score != null ? `（${row.score} 分）` : ''}</li>)}</ul></div>}{question.coverage_atom && <p><strong>合同原子：</strong>{question.coverage_atom}</p>}{qualityText && <p className={`quality ${question.quality?.status === 'pass' && !question.needs_review ? 'pass' : 'fail'}`}>质量检查：{qualityText}</p>}</div></details>
+      {question.subquestions?.length ? (
+        isComp ? (
+          <ol className="subquestions subquestions-rich">
+            {question.subquestions.map((item, index) => <SubquestionItem key={index} index={index} item={item} />)}
+          </ol>
+        ) : (
+          <ol className="subquestions">{question.subquestions.map((item, index) => <li key={index}>{typeof item === 'string' ? item : item.question ?? JSON.stringify(item)}</li>)}</ol>
+        )
+      ) : null}
+      <details>
+        <summary>查看答案、解析与评分细则</summary>
+        <div className="answer">
+          <p><strong>参考答案：</strong>{formatAnswerBlock(question.answer)}</p>
+          {question.explanation && <p><strong>解析：</strong>{question.explanation}</p>}
+          {question.rubric && question.rubric.length > 0 && (
+            <div className="rubric-section">
+              <strong>评分细则：</strong>
+              <ul>{question.rubric.map((row, index) => <li key={index}>{row.point ?? JSON.stringify(row)}{row.score != null ? <span className="rubric-score">（{row.score} 分）</span> : ''}</li>)}</ul>
+            </div>
+          )}
+          {question.coverage_atom && <p><strong>合同原子：</strong>{question.coverage_atom}</p>}
+          {qualityText && <p className={`quality ${question.quality?.status === 'pass' && !question.needs_review ? 'pass' : 'fail'}`}>质量检查：{qualityText}</p>}
+        </div>
+      </details>
     </div>
   )
+}
+
+function materialFormLabel(form: string) {
+  const map: Record<string, string> = {
+    code_skeleton: '代码骨架',
+    symptom_list: '症状列表',
+    constraint_table: '约束对比表',
+    case_story: '案例描述',
+    data_panel: '数据面板',
+    scenario_text: '场景文字',
+  }
+  return map[form] || form
 }
 
 function toChinese(value: number) {
