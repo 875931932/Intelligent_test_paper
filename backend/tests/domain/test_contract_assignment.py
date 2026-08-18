@@ -114,27 +114,63 @@ def test_shared_state_enforces_cross_caller_mutex():
 
 
 def test_cluster_quota_caps_at_two():
-    # 6 题位，某簇（术语锚合并后）有 6 个原子、其他簇原子充足：
-    # 该簇最多供 2 题；两簇配额耗尽后报 cluster_exhausted，不静默降级
+    # 池充足（3 簇 phase1 容量 6 ≥ 6 题位）时优先跨簇多样性：
+    # 每簇 ≤2，大簇不超配，全部题位无冲突满足
     qlora_cluster = [
         _atom(f"QLoRA降低显存占用量化方案{t}", f"甲边界{t}") for t in "一二三四五六"
     ]
-    other_cluster = [
+    other_a = [
         _atom("提示词包含角色设定要素", "乙边界一"),
         _atom("模型评估衡量泛化能力表现", "乙边界二"),
         _atom("训练数据集需要格式化处理", "乙边界三"),
-        _atom("梯度累积技巧缓解显存压力", "乙边界四"),
-        _atom("学习率调度策略影响收敛", "乙边界五"),
-        _atom("领域语料继续预训练适配", "乙边界六"),
+    ]
+    other_b = [
+        _atom("领域语料继续预训练适配", "丙边界一"),
+        _atom("梯度累积技巧缓解显存压力", "丙边界二"),
+        _atom("学习率调度策略影响收敛", "丙边界三"),
     ]
     types = ["single_choice", "true_false", "single_choice",
              "true_false", "true_false", "single_choice"]
     items = [_item(i + 1, t) for i, t in enumerate(types)]
-    assignments, conflicts = assign_atoms_to_items(items, [qlora_cluster, other_cluster])
+    assignments, conflicts = assign_atoms_to_items(items, [qlora_cluster, other_a, other_b])
+    assert not conflicts
     qlora_count = sum(1 for _, atom in assignments if "QLoRA" in atom.atom_text)
-    assert qlora_count == 2  # 6 原子的大簇被配额封顶在 2 题
+    assert qlora_count == 2  # phase1 容量充足时大簇封顶 2 题，不超配
+
+
+def test_phase2_allows_overquota_with_distinct_types():
+    # phase1 容量 6，但小簇原子耗尽 → 填空题位进入 phase2：
+    # 剩余原子最多的大簇超配供给第 3 题，簇内题型互异（判断/选择/填空）
+    qlora_cluster = [
+        _atom(f"QLoRA降低显存占用量化方案{t}", f"甲边界{t}") for t in "一二三四五六七"
+    ]
+    other_a = [
+        _atom("提示词包含角色设定要素", "乙边界一"),
+        _atom("模型评估衡量泛化能力表现", "乙边界二"),
+        _atom("训练数据集需要格式化处理", "乙边界三"),
+    ]
+    other_b = [_atom("领域语料继续预训练适配", "丙边界一")]
+    types = ["true_false", "true_false", "true_false",
+             "single_choice", "single_choice", "fill_blank"]
+    items = [_item(i + 1, t) for i, t in enumerate(types)]
+    assignments, conflicts = assign_atoms_to_items(items, [qlora_cluster, other_a, other_b])
+    assert not conflicts
+    qlora_types = [item.question_type for item, atom in assignments
+                   if "QLoRA" in atom.atom_text]
+    assert qlora_types == ["true_false", "single_choice", "fill_blank"]  # 超配到 3 题且题型互异
+
+
+def test_phase2_type_exhaustion_reports_conflict():
+    # 4 题位全判断 → 供给上限=题型种类数(1)：该簇供 1 题后
+    # phase2 无新题型可用，其余题位如实报 cluster_exhausted
+    qlora_cluster = [
+        _atom(f"QLoRA降低显存占用量化方案{t}", f"甲边界{t}") for t in "一二三四五六七"
+    ]
+    items = [_item(i + 1, "true_false") for i in range(4)]
+    assignments, conflicts = assign_atoms_to_items(items, [qlora_cluster])
+    assert len(assignments) == 1  # 簇内题型永不重复 → 单题型至多 1 题
     assert all(c.code == "cluster_exhausted" for c in conflicts)
-    assert [c.detail["item_index"] for c in conflicts] == [5, 6]
+    assert [c.detail["item_index"] for c in conflicts] == [2, 3, 4]
 
 
 def test_same_cluster_two_questions_require_different_types():

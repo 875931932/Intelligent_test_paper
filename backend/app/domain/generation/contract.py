@@ -47,8 +47,10 @@ def atom_bigram_features(atom_text: str) -> frozenset[str]:
     return frozenset(cleaned[i : i + 2] for i in range(len(cleaned) - 1))
 
 
-# 同一概念簇最多供给的题数（防“同概念扎堆”：如同一术语出 6 题）
-MAX_QUESTIONS_PER_CLUSTER = 2
+# Phase 1 每簇供给配额：优先跨簇多样性（防“同概念扎堆”）；
+# 全簇 phase1 满员而题位未满足时进入 phase2 容量感知超配（见 _pick_atom），
+# 簇内供给上限 = 该考点题型种类数（题型永不重复 → 单簇至多每型一题）
+PHASE1_CLUSTER_QUOTA = 2
 
 # 术语锚停用词：高频非概念英文词不参与强制同簇
 _TERM_ANCHOR_STOPWORDS = frozenset({
@@ -277,34 +279,60 @@ def cluster_pool_atoms(
     )
 
 
+def _first_usable_atom(
+    cluster: list[PoolAtom],
+    used_keys: set[str],
+    used_boundaries: list[str],
+) -> PoolAtom | None:
+    for atom in cluster:  # 簇内已按核心度降序
+        if atom.atom_key in used_keys:
+            continue
+        if any(b and boundaries_overlap(atom.boundary, b) for b in used_boundaries):
+            continue
+        return atom
+    return None
+
+
 def _pick_atom(
     clusters: list[list[PoolAtom]],
     cursor: int,
     used_keys: set[str],
     used_boundaries: list[str],
     cluster_supply: dict[int, int],
-    cluster_first_type: dict[int, str],
+    cluster_used_types: dict[int, set[str]],
     item_type: str,
+    max_per_cluster: int,
 ) -> tuple[PoolAtom | None, int, int]:
-    """从 cursor 所在簇开始轮转，找第一个未用且边界互斥的原子。
+    """容量感知的两阶段簇配额状态机。
 
-    簇配额：每簇最多供给 MAX_QUESTIONS_PER_CLUSTER 题，满员跳过；
-    同簇第 2 题必须与该簇第 1 题题型不同，题型撞车跳过该簇。
+    Phase 1（最大多样性）：从 cursor 轮转，只供给未满 PHASE1_CLUSTER_QUOTA 的簇；
+    Phase 2（超配）：phase1 无候选时按簇剩余原子数降序尝试超配，优先让大簇
+    吸纳剩余题位。两阶段共用"簇内题型永不重复"规则，且簇供给上限 =
+    题型种类数（max_per_cluster）——真实考纲对单一概念章节要求多题时，
+    大簇可供给每型一题而非被硬上限卡死；题型或原子耗尽才无候选。
     返回 (原子, 下一个 cursor, 命中簇下标)；无候选返回 (None, cursor, -1)。
     """
     n = len(clusters)
     for step in range(n):
         idx = (cursor + step) % n
-        supplied = cluster_supply.get(idx, 0)
-        if supplied >= MAX_QUESTIONS_PER_CLUSTER:
-            continue  # 该簇配额已满
-        if supplied == 1 and cluster_first_type.get(idx) == item_type:
-            continue  # 同簇第 2 题题型互斥
-        for atom in clusters[idx]:  # 簇内已按核心度降序
-            if atom.atom_key in used_keys:
-                continue
-            if any(b and boundaries_overlap(atom.boundary, b) for b in used_boundaries):
-                continue
+        if cluster_supply.get(idx, 0) >= PHASE1_CLUSTER_QUOTA:
+            continue  # phase1 配额已满，是否超配交给 phase2 裁量
+        if item_type in cluster_used_types.get(idx, set()):
+            continue  # 簇内题型永不重复（phase1/phase2 一致）
+        atom = _first_usable_atom(clusters[idx], used_keys, used_boundaries)
+        if atom is not None:
+            return atom, (idx + 1) % n, idx
+    remaining_order = sorted(
+        range(n),
+        key=lambda idx: -sum(1 for a in clusters[idx] if a.atom_key not in used_keys),
+    )
+    for idx in remaining_order:
+        if cluster_supply.get(idx, 0) >= max_per_cluster:
+            continue  # 簇供给已达题型种类数上限
+        if item_type in cluster_used_types.get(idx, set()):
+            continue
+        atom = _first_usable_atom(clusters[idx], used_keys, used_boundaries)
+        if atom is not None:
             return atom, (idx + 1) % n, idx
     return None, cursor, -1
 
@@ -320,11 +348,12 @@ def assign_atoms_to_items(
 
     构造性保证：跨簇优先（子主题不重复）、atom_key 唯一、
     答案边界互斥（任何两题答案不可互相包含）、
-    同簇最多 MAX_QUESTIONS_PER_CLUSTER 题且两题题型不同（同概念不扎堆）。
+    簇内题型永不重复且簇供给上限 = 题型种类数（同概念不扎堆；
+    phase1 每簇 ≤2，全簇满员后 phase2 按剩余原子数降序超配大簇）。
     传入 shared_used_keys/shared_used_boundaries 时直接读写共享集，
     使多个考点调用间互斥状态全卷贯通（与终检全卷两两比较口径一致）；
-    不传则每次调用独立维护局部集。簇数不足题数时轮转绕回同簇取下一个
-    可用原子（受簇配额与题型互斥约束）；耗尽则报冲突，不静默降级。
+    不传则每次调用独立维护局部集。两阶段配额下仍无候选（簇内原子
+    耗尽或题型全撞）则报冲突，不静默降级。
     """
     used_keys: set[str] = shared_used_keys if shared_used_keys is not None else set()
     used_boundaries: list[str] = (
@@ -333,7 +362,8 @@ def assign_atoms_to_items(
     assignments: list[tuple[PlanItem, PoolAtom]] = []
     conflicts: list[ContractConflict] = []
     cluster_supply: dict[int, int] = {}
-    cluster_first_type: dict[int, str] = {}
+    cluster_used_types: dict[int, set[str]] = {}
+    max_per_cluster = len({item.question_type for item in items})
     cursor = 0
     for item in items:
         if not clusters:
@@ -345,7 +375,7 @@ def assign_atoms_to_items(
             continue
         atom, cursor, cluster_idx = _pick_atom(
             clusters, cursor, used_keys, used_boundaries,
-            cluster_supply, cluster_first_type, item.question_type,
+            cluster_supply, cluster_used_types, item.question_type, max_per_cluster,
         )
         if atom is None:
             conflicts.append(ContractConflict(
@@ -357,7 +387,6 @@ def assign_atoms_to_items(
         used_keys.add(atom.atom_key)
         used_boundaries.append(atom.boundary)
         cluster_supply[cluster_idx] = cluster_supply.get(cluster_idx, 0) + 1
-        if cluster_supply[cluster_idx] == 1:
-            cluster_first_type[cluster_idx] = item.question_type
+        cluster_used_types.setdefault(cluster_idx, set()).add(item.question_type)
         assignments.append((item, atom))
     return assignments, conflicts
