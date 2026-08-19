@@ -424,6 +424,14 @@ knowledge_cards = _course_table(
     Column("cognitive_targets", JSON, nullable=False, default=list),
     Column("allowed_question_types", JSON, nullable=False, default=list),
     Column("importance", Integer, nullable=False, default=1),
+    # 语义画像字段：concept_cluster 供合同聚类强制同簇，answer_proposition 供
+    # 答案域互斥检测，prompt_material 供命题上下文回退——发布时必须一并持久化，
+    # 否则数据库链路丢失信号后防重复机制静默退化。
+    Column("concept_cluster", String(255), nullable=False, default="", server_default=""),
+    Column("answer_proposition", Text, nullable=False, default="", server_default=""),
+    Column("prompt_material", JSON, nullable=False, default=list, server_default="[]"),
+    # 语义关系边：图谱视图绘制卡片间 specializes/requires/contrasts_with 等关系。
+    Column("relation_edges", JSON, nullable=False, default=list, server_default="[]"),
     Column("content_hash", String(64), nullable=False),
     Column("status", String(40), nullable=False, default="draft"),
     Column("version", Integer, nullable=False, default=1),
