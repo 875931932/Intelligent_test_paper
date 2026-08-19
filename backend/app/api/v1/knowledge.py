@@ -205,3 +205,175 @@ def publish_tree(course_id: str, run_id: str, confirmation: KnowledgeTreeConfirm
         return result
     except knowledge_publish_service.KnowledgePublishError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+
+
+@router.get("/published-knowledge")
+def get_published_knowledge(course_id: str, session: Session = Depends(get_session)) -> dict:
+    """当前已发布知识目录的命题输入视图：考点 / 单元 / 知识卡。
+
+    供教师控制台在蓝图与合同阶段直接读取——cards 键为卡片 DB id，
+    units.card_ids 与之对齐；chapter_weights 可由 exam_points 的
+    anchor_key → weight_value 聚合得到。
+    """
+    from sqlalchemy import select
+
+    from app.db.schema import assessment_units, exam_points, knowledge_cards, knowledge_catalog_versions, knowledge_evidence_links
+
+    catalog = session.execute(
+        select(knowledge_catalog_versions)
+        .where(
+            knowledge_catalog_versions.c.course_id == course_id,
+            knowledge_catalog_versions.c.status == "published",
+        )
+        .order_by(knowledge_catalog_versions.c.version_no.desc())
+        .limit(1)
+    ).mappings().one_or_none()
+    if catalog is None:
+        raise _not_found()
+    catalog_id = catalog["id"]
+    framework_version_id = catalog["framework_version_id"]
+
+    point_rows = session.execute(
+        select(exam_points)
+        .where(
+            exam_points.c.course_id == course_id,
+            exam_points.c.framework_version_id == framework_version_id,
+            exam_points.c.status == "confirmed",
+        )
+        .order_by(exam_points.c.code)
+    ).mappings().all()
+    points_by_id = {row["id"]: dict(row) for row in point_rows}
+
+    unit_rows = session.execute(
+        select(assessment_units)
+        .where(
+            assessment_units.c.course_id == course_id,
+            assessment_units.c.catalog_version_id == catalog_id,
+            assessment_units.c.status == "active",
+        )
+        .order_by(assessment_units.c.code)
+    ).mappings().all()
+    unit_ids = [row["id"] for row in unit_rows]
+
+    card_rows = (
+        session.execute(
+            select(knowledge_cards)
+            .where(
+                knowledge_cards.c.course_id == course_id,
+                knowledge_cards.c.catalog_version_id == catalog_id,
+                knowledge_cards.c.status == "active",
+                knowledge_cards.c.assessment_unit_id.in_(unit_ids),
+            )
+            .order_by(knowledge_cards.c.assessment_unit_id, knowledge_cards.c.name)
+        ).mappings().all()
+        if unit_ids else []
+    )
+    # 查询每张卡的直接证据数，用于未落地判定
+    card_id_list = [row["id"] for row in card_rows] if card_rows else []
+    grounded_card_ids: set[str] = set()
+    if card_id_list:
+        link_rows = session.execute(
+            select(knowledge_evidence_links.c.knowledge_card_id).where(
+                knowledge_evidence_links.c.knowledge_card_id.in_(card_id_list),
+                knowledge_evidence_links.c.evidence_role == "direct",
+                knowledge_evidence_links.c.lifecycle_status == "active",
+            )
+        ).mappings().all()
+        grounded_card_ids = {r["knowledge_card_id"] for r in link_rows}
+    cards_by_unit: dict[str, list[str]] = {}
+    cards_payload: dict[str, dict] = {}
+    for row in card_rows:
+        card = dict(row)
+        card_id = card["id"]
+        cards_payload[card_id] = {
+            "name": card["name"],
+            "performance_statement": card["performance_statement"],
+            "assessable_content": card["assessable_content"],
+            "scope_boundary": card["scope_boundary"],
+            "cognitive_targets": card["cognitive_targets"],
+            "allowed_question_types": card["allowed_question_types"],
+            "importance": card["importance"],
+            "concept_cluster": card["concept_cluster"],
+            "answer_proposition": card["answer_proposition"],
+            "answer_boundary": card["answer_proposition"],
+            "prompt_material": card["prompt_material"],
+            "relation_edges": card.get("relation_edges", []),
+            "grounded": card_id in grounded_card_ids,
+        }
+        cards_by_unit.setdefault(card["assessment_unit_id"], []).append(card_id)
+
+    units_payload = []
+    for row in unit_rows:
+        point = points_by_id.get(row["exam_point_id"]) if row["exam_point_id"] else None
+        units_payload.append({
+            "unit_id": row["id"],
+            "code": row["code"],
+            "title": row["title"],
+            "performance_statement": row["performance_statement"],
+            "exam_point_id": row["exam_point_id"] or "",
+            "exam_point_code": point["code"] if point else "",
+            "anchor_key": point["anchor_key"] if point else "",
+            "card_ids": cards_by_unit.get(row["id"], []),
+        })
+
+    exam_points_payload = [
+        {
+            "id": row["id"],
+            "code": row["code"],
+            "title": row["title"],
+            "assessment_requirement": row["assessment_requirement"],
+            "anchor_key": row["anchor_key"],
+            "weight_value": row["weight_value"],
+            "weight_source": row["weight_source"],
+            "cognitive_targets": row["cognitive_targets"],
+            "allowed_question_types": row["allowed_question_types"],
+            "operational_detail_policy": row["operational_detail_policy"],
+        }
+        for row in point_rows
+    ]
+    return {
+        "catalog_version_id": catalog_id,
+        "framework_version_id": framework_version_id,
+        "exam_points": exam_points_payload,
+        "units": units_payload,
+        "knowledge_cards": cards_payload,
+    }
+
+
+@router.get("/published-knowledge/cards/{card_id}/evidence")
+def get_card_evidence(
+    course_id: str,
+    card_id: str,
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    """获取知识卡的证据链（direct/supporting/background）。"""
+    from sqlalchemy import select
+
+    from app.db.schema import evidence_chunks, knowledge_evidence_links
+
+    rows = session.execute(
+        select(
+            knowledge_evidence_links.c.evidence_role,
+            knowledge_evidence_links.c.confidence,
+            knowledge_evidence_links.c.lifecycle_status,
+            evidence_chunks.c.content,
+            evidence_chunks.c.locator,
+            evidence_chunks.c.material_version_id,
+        ).join(
+            evidence_chunks,
+            evidence_chunks.c.id == knowledge_evidence_links.c.evidence_chunk_id,
+        ).where(
+            knowledge_evidence_links.c.knowledge_card_id == card_id,
+            knowledge_evidence_links.c.lifecycle_status == "active",
+        )
+    ).mappings().all()
+    return [
+        {
+            "evidence_role": r["evidence_role"],
+            "confidence": r["confidence"],
+            "content": r["content"],
+            "locator": r["locator"],
+            "material_version_id": r["material_version_id"],
+        }
+        for r in rows
+    ]

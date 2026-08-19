@@ -86,3 +86,28 @@ def test_insert_tree_writes_relation_edges():
     assert params["relation_edges"] == [
         {"kind": "equivalent_to", "target": "Card B"},
     ]
+
+
+def test_published_knowledge_response_includes_relation_edges():
+    """published-knowledge 端点响应的 cards 必须含 relation_edges 字段。"""
+    import inspect
+    from app.api.v1 import knowledge as knowledge_api
+    source = inspect.getsource(knowledge_api)
+    assert "relation_edges" in source, "published-knowledge 端点未暴露 relation_edges"
+
+
+def test_published_knowledge_response_includes_grounded_status():
+    """published-knowledge 端点响应的 cards 必须含 grounded 布尔字段。"""
+    import inspect
+    from app.api.v1 import knowledge as knowledge_api
+    source = inspect.getsource(knowledge_api)
+    assert "grounded" in source, "published-knowledge 端点未暴露 grounded 状态"
+
+
+def test_evidence_endpoint_exists():
+    """knowledge 路由必须含 /published-knowledge/cards/{card_id}/evidence 端点。"""
+    import inspect
+    from app.api.v1 import knowledge as knowledge_api
+    source = inspect.getsource(knowledge_api)
+    assert "cards/{card_id}/evidence" in source, "缺少证据端点"
+    assert "evidence_chunks" in source, "证据端点未读取 evidence_chunks 表"
