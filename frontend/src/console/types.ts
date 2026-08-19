@@ -170,6 +170,20 @@ export type KnowledgeTreeConfirmation = {
 export type OrganizationRunCreated = { run_id: string; candidate_id: string; status: string }
 
 // ── 已发布知识 ────────────────────────────────────────
+// ── 知识目录图谱/证据 ──────────────────────────────────
+export type RelationEdge = {
+  kind: 'equivalent_to' | 'specializes' | 'component_of' | 'contrasts_with' | 'summarizes' | 'requires'
+  target: string
+}
+
+export type EvidenceLink = {
+  evidence_role: string
+  confidence: number | null
+  content: string
+  locator: Record<string, unknown> | null
+  material_version_id: string
+}
+
 export type PublishedCard = {
   name: string
   performance_statement: string
@@ -182,6 +196,8 @@ export type PublishedCard = {
   answer_proposition: string
   answer_boundary: string
   prompt_material: string[]
+  relation_edges: RelationEdge[]
+  grounded: boolean
 }
 
 export type PublishedUnit = {
