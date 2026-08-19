@@ -59,7 +59,7 @@ def test_generation_requires_complete_deepseek_configuration(monkeypatch, missin
             response = _post_generation(client, [_slot(1)])
 
         assert response.status_code == 503
-        assert response.json()["detail"] == "DeepSeek model is not configured"
+        assert response.json()["detail"] == "LLM model is not configured"
     finally:
         if hasattr(app.state, "generation_gateway"):
             del app.state.generation_gateway
