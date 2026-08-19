@@ -20,7 +20,7 @@ class ExamProjectNotFoundError(Exception):
 
 def list_projects(session: Session, course_id: str) -> list[dict[str, Any]]:
     rows = session.execute(
-        select(exam_projects).where(exam_projects.c.course_id == course_id).order_by(exam_projects.c.created_at.desc())
+        select(exam_projects).where(exam_projects.c.course_id == course_id).order_by(exam_projects.c.id.desc())
     ).mappings().all()
     return [dict(r) for r in rows]
 
