@@ -314,3 +314,55 @@ a:hover { text-decoration: underline; }
 .catalog-main { display: flex; gap: 0; min-height: 520px; }
 .catalog-canvas { flex: 1; position: relative; }
 .catalog-empty { display: flex; align-items: center; justify-content: center; height: 520px; color: var(--text-muted); }
+
+/* ── 试卷项目生产线 ── */
+.pipeline-nav { padding: 20px 24px; background: var(--surface-subtle); border-radius: var(--radius-lg); margin-bottom: 20px; }
+.pipeline-line { display: flex; align-items: center; gap: 0; position: relative; }
+.stage-dot { display: flex; flex-direction: column; align-items: center; gap: 8px; cursor: default; position: relative; z-index: 1; flex: 0 0 auto; }
+.stage-dot.active, .stage-dot.done { cursor: pointer; }
+.stage-circle { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; background: var(--surface); border: 2px solid var(--border-strong); color: var(--text-muted); transition: all 0.2s; }
+.stage-dot.active .stage-circle { background: var(--accent-500); border-color: var(--accent-500); color: white; box-shadow: 0 0 0 4px var(--accent-100); }
+.stage-dot.done .stage-circle { background: var(--success); border-color: var(--success); color: white; }
+.stage-dot.future .stage-circle { opacity: 0.4; }
+.stage-label { font-size: 12px; color: var(--text-secondary); font-weight: 500; }
+.stage-dot.active .stage-label { color: var(--accent-500); font-weight: 600; }
+.stage-connector { position: absolute; left: 100%; top: 18px; width: 100%; height: 2px; background: var(--border-strong); z-index: -1; }
+.stage-dot.done + .stage-dot .stage-connector { background: var(--success); }
+
+/* ── 阶段详情面板 ── */
+.stage-panel { background: var(--surface-subtle); border-radius: var(--radius-lg); padding: 24px; min-height: 400px; }
+.stage-panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+.stage-panel-head h3 { font-size: 16px; font-weight: 600; }
+.gate-banner { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-radius: var(--radius); background: var(--warning-subtle); border: 1px solid var(--warning-border); margin: 16px 0; }
+.gate-banner.verified { background: var(--success-subtle); border-color: var(--success-border); }
+.gate-icon { font-size: 18px; }
+.gate-text { flex: 1; font-size: 13px; color: var(--text); }
+.gate-actions { display: flex; gap: 8px; }
+
+/* ── 合同槽位表 ── */
+.slot-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.slot-table th { text-align: left; padding: 8px 10px; color: var(--text-muted); font-weight: 500; border-bottom: 1px solid var(--border); }
+.slot-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); color: var(--text-secondary); }
+
+/* ── 生成进度 ── */
+.gen-progress { display: flex; flex-direction: column; gap: 12px; }
+.gen-bar { height: 6px; background: var(--surface); border-radius: 3px; overflow: hidden; }
+.gen-bar-fill { height: 100%; background: var(--accent-500); transition: width 0.3s; }
+
+/* ── 题目预览卡 ── */
+.q-preview { padding: 14px; background: var(--surface); border-radius: var(--radius); margin-bottom: 10px; border: 1px solid var(--border); }
+.q-preview .q-stem { font-size: 13px; color: var(--text); margin-bottom: 8px; }
+.q-preview .q-meta { display: flex; gap: 8px; flex-wrap: wrap; }
+.q-preview .q-tag { font-size: 10px; padding: 2px 8px; border-radius: 10px; background: var(--accent-100); color: var(--accent-900); }
+.q-preview .q-tag.warn { background: var(--warning-subtle); color: var(--warning-text); }
+
+/* ── 项目列表 ── */
+.project-card { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; background: var(--surface-subtle); border-radius: var(--radius); margin-bottom: 10px; cursor: pointer; border: 1px solid var(--border); transition: border-color 0.2s; }
+.project-card:hover { border-color: var(--accent-500); }
+.project-status { font-size: 11px; padding: 3px 10px; border-radius: 10px; font-weight: 500; }
+.project-status.draft { background: var(--surface-muted); color: var(--text-muted); }
+.project-status.blueprint { background: var(--accent-100); color: var(--accent-900); }
+.project-status.contract { background: var(--accent-100); color: var(--accent-900); }
+.project-status.generating { background: var(--warning-subtle); color: var(--warning-text); }
+.project-status.review { background: var(--purple-subtle); color: var(--purple); }
+.project-status.exported { background: var(--success-subtle); color: var(--success-text); }
