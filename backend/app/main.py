@@ -13,6 +13,7 @@ from app.api.v1.blueprints import router as blueprints_router
 from app.api.v1.generation import router as generation_router
 from app.api.v1.knowledge import router as knowledge_router
 from app.api.v1.materials import router as materials_router
+from app.api.v1.exam_projects import router as exam_projects_router
 
 
 def _configured(value: str) -> bool:
@@ -66,6 +67,7 @@ app.include_router(framework_router)
 app.include_router(knowledge_router)
 app.include_router(blueprints_router)
 app.include_router(generation_router)
+app.include_router(exam_projects_router)
 
 
 @app.get("/api/v1/health")
