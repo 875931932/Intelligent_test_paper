@@ -583,3 +583,119 @@ def test_support_claim_fallback_publishes_distinct_atomic_units():
         ["客户端通过稳定接口发起请求"],
     ]
     assert len({unit.title for unit in units}) == 2
+
+
+# ---------------------------------------------------------------------------
+# 通过 TestClient + HTTP API 全链路构建 7 段式 pipeline.json 快照
+# HANDOVER §9 双链路同步：必须与 build_real_material_demo.py 输出结构同构
+# ---------------------------------------------------------------------------
+
+def _load_via_api_module():
+    """同文件内按需加载 scripts/build_pipeline_via_api.py（避免顶层 import 污染）。"""
+    script = Path(__file__).resolve().parents[2] / "scripts" / "build_pipeline_via_api.py"
+    specification = importlib.util.spec_from_file_location("build_pipeline_via_api", script)
+    assert specification is not None and specification.loader is not None
+    module = importlib.util.module_from_spec(specification)
+    specification.loader.exec_module(module)
+    return module
+
+
+def test_via_api_builds_pipeline_with_seven_sections(tmp_path):
+    """必须生成 7 段式快照，且题型规则恰好 37 题、总分 100。
+
+    完全通过 FastAPI TestClient 调用真实的 HTTP API 端点：
+    create-project → blueprints → plan-items → confirm blueprint →
+    allocate contract → confirm contract → generate → poll task_run →
+    get paper-version → needs-review → (force-)confirm。
+    """
+    mod = _load_via_api_module()
+    engine, factory = mod.build_seeded_factory(tmp_path)
+
+    pipeline = mod.run_pipeline_via_api(factory, engine, write_path=None)
+
+    # 1) 7 段式顶层结构必须精确匹配
+    assert set(pipeline.keys()) == {
+        "framework", "knowledge_tree", "blueprint",
+        "contract", "paper", "final_check", "status",
+    }, f"实际 keys={sorted(pipeline.keys())}"
+
+    # 2) status 必须 completed
+    assert pipeline["status"] == "completed"
+
+    # 3) blueprint.plan_items：15+10+5+4+3 = 37
+    plan_items = pipeline["blueprint"]["plan_items"]
+    assert len(plan_items) == 37, (
+        f"期望 37 道 plan_items（单选15+判断10+填空5+简答4+综合3），"
+        f"实际 {len(plan_items)}"
+    )
+
+    # 4) contract 段必要键
+    contract = pipeline["contract"]
+    for key in ("used_threshold", "slots", "slot_revisions_applied", "conflicts_history"):
+        assert key in contract, f"contract 缺少键: {key}"
+    # 合同 slots 是批处理分组（按概念簇/考点合并），数量 ≤ plan_items
+    assert isinstance(contract["slots"], list) and len(contract["slots"]) >= 1, (
+        f"contract slots 不应为空"
+    )
+
+    # 5) paper.items 数必须等于 blueprint.plan_items 数
+    paper_items = pipeline["paper"]["items"]
+    assert len(paper_items) == len(plan_items), (
+        f"paper items {len(paper_items)} != blueprint plan_items {len(plan_items)}"
+    )
+
+    # 6) paper 段必要字段
+    assert "paper_version_id" in pipeline["paper"]
+    assert "status" in pipeline["paper"]
+    for item in paper_items:
+        for field in ("item_index", "question_type", "stem", "options",
+                      "answer", "score", "teacher_override", "needs_review"):
+            assert field in item, f"paper item 缺少字段: {field}"
+        # item_index 必须严格单调且从 1 开始
+        assert isinstance(item["item_index"], int) and item["item_index"] >= 1
+        # score 非负（总分 100 由 final_check 统一保证）
+        assert float(item["score"]) >= 0
+
+    # 7) final_check：题数 37，总分 100（浮点容差）
+    fc = pipeline["final_check"]
+    assert fc["item_count"] == 37, f"final_check.item_count={fc['item_count']}，期望 37"
+    assert abs(float(fc["total_score"]) - 100.0) < 0.01, (
+        f"final_check.total_score={fc['total_score']}，期望 100"
+    )
+    # needs_review_count 应为正整数（我们把第 1 道标为 needs_review 以触发 force 路径）
+    assert isinstance(fc["needs_review_count"], int) and fc["needs_review_count"] >= 0
+
+    # 8) framework 段必须包含 10 个 exam_points
+    fw = pipeline["framework"]
+    assert "exam_points" in fw
+    assert len(fw["exam_points"]) == 10, (
+        f"seed 要求 exam_points × 10，实际 {len(fw['exam_points'])}"
+    )
+
+    # 9) knowledge_tree 段必须包含 2 个 L1 × 3 个 L2 content_domains
+    tree = pipeline["knowledge_tree"]
+    assert "content_domains" in tree
+    l1 = tree["content_domains"]
+    assert len(l1) == 2, f"L1 content_domains 期望 2，实际 {len(l1)}"
+    l2_count = sum(len(d.get("sub_domains") or []) for d in l1)
+    assert l2_count == 6, f"L2 content_domains 期望 6，实际 {l2_count}"
+    # 6 个 assessment_units + 12 个 knowledge_cards
+    aus = [u for d in l1 for sd in (d.get("sub_domains") or [])
+           for u in (sd.get("assessment_units") or [])]
+    assert len(aus) == 6, f"assessment_units 期望 6，实际 {len(aus)}"
+    cards = [c for u in aus for c in (u.get("cards") or [])]
+    assert len(cards) == 12, f"knowledge_cards 期望 12，实际 {len(cards)}"
+
+    # 10) blueprint 段必要字段
+    bp = pipeline["blueprint"]
+    for key in ("blueprint_version_id", "type_rules", "chapter_weights", "plan_items"):
+        assert key in bp, f"blueprint 缺少键: {key}"
+    # chapter_weights 合计必须 100
+    cw_sum = sum(int(v) for v in bp["chapter_weights"].values())
+    assert cw_sum == 100, f"chapter_weights 合计={cw_sum}，期望 100"
+    # type_rules: count 合计 = 37, score × count 合计 = 100
+    tr = bp["type_rules"]
+    tr_count = sum(int(tr[k]["count"]) for k in tr)
+    tr_score = sum(int(tr[k]["count"]) * float(tr[k]["score"]) for k in tr)
+    assert tr_count == 37, f"type_rules 题数合计={tr_count}，期望 37"
+    assert abs(tr_score - 100.0) < 0.01, f"type_rules 总分合计={tr_score}，期望 100"

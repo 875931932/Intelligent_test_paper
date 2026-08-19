@@ -1,9 +1,11 @@
 # AI 期末试卷命题系统 · 交接文档
 
-> 更新日期：2026-08-18
-> 状态：核心生成链路已定型并经真实数据验证（final_check 全绿），进入正式系统开发阶段（S1-S4）
+> 更新日期：2026-08-19
+> 状态：S1（服务化收口）+ S2（PaperVersion 内核 & 审核）最小闭环 已完成；进入 S3（导出）与 S4（硬化验收）
 > 产品基线：`docs/superpowers/specs/2026-08-12-ai-final-exam-paper-design.md`（v2.3，务必先读）
 > 链路设计：`docs/superpowers/specs/2026-08-17-contract-first-generation-design.md`（合同优先生成）
+> 本次实施规格：`.trae/specs/paper-kernel-and-serviceization/spec.md`（S1+S2 最小闭环的需求与验收）
+> 本次实施任务：`.trae/specs/paper-kernel-and-serviceization/tasks.md`（T1–T9 执行记录）
 
 ---
 
@@ -189,11 +191,87 @@ frontend\src\App.tsx                          demo 查看器（合同→生成�
 - ✅ 640+ 单测全绿（boto3 缺失的 test_material_service 除外，属环境问题）
 - ✅ 后端 API 骨架：materials/framework/knowledge/blueprints/generation + Celery worker + outbox 幂等恢复
 
+### 2026-08-19 新增：S1 服务化收口 + S2 PaperVersion 内核（T1–T9 完成）
+
+**交付范围**（对应实施计划 `.trae/specs/paper-kernel-and-serviceization/` 的 AC-1 至 AC-9）：
+
+#### 新增后端服务模块（引擎 0 重构、仅 import 公共函数）
+
+| 模块 | 文件 | 职责 |
+|---|---|---|
+| 蓝图持久化 | `app/services/blueprint_persistence_service.py` | 创建草稿蓝图 / plan_items 编辑校验 / 闸门 1 confirm（superseded 旧版本 + 激活 active_blueprint_version_id + project.status=contract） |
+| 合同执行 | `app/services/contract_execution_service.py` | 门槛兜底（centrality_threshold 0.6 → 0.5 → 0.45）/ apply_slot_revisions / revise_and_confirm 写入 generation_run.contract_snapshot |
+| 生成运行 | `app/services/generation_runner_service.py` + `app/services/inline_runner.py` | enqueue 幂等 (task_runs.idempotency_key) / execute 失败隔离 / 成功→自动创建 candidate paper_version |
+| 试卷版本内核 | `app/services/paper_version_service.py` | get/list needs_review/Patch paper item（覆写+清标+finalize 409）/ confirm（闸门 2）+ revert |
+
+#### 数据库 schema 扩展（`app/db/schema.py`）
+
+- `paper_versions` + `paper_items`：补齐 `metadata / created_at / confirmed_at / finalized_at / created_by / answer_detail_schema_version / teacher_override / finalized_text / needs_review / needs_review_reason / quality_audit` 22 列。
+- `generation_runs`：`contract_snapshot / centrality_threshold_used / updated_at / completed_at / error_message`。
+- `blueprint_versions`：`type_rules / chapter_weights / confirmed_at / created_at`。
+- `exam_projects`：`active_blueprint_version_id / active_generation_run_id / active_paper_version_id`（跨课程复合 FK，use_alter=True 解决 drop FK 循环排序问题）。
+- `plan_items` 加 `difficulty / cognitive_level / exam_point_id / knowledge_card_id`。
+
+#### 后端 API 装配（`app/api/v1/exam_projects.py` + `app/api/v1/paper_versions.py`）
+
+课程作用域 `/api/v1/courses/{courseId}` 下新增 14 个端点：
+- 蓝图：`POST exam-projects/{id}/blueprints` / `GET blueprints/current/plan-items` / `PATCH plan-items/{pid}` / `POST blueprints/current/confirm`
+- 合同：`POST contracts/allocate` / `PATCH contracts/revise` / `POST contracts/confirm`
+- 生成：`POST generate`（202 task_run_id，inline_runner 同步执行 mock_graph 或留 queued）/ `GET task-runs/{id}`
+- PaperVersion：`GET paper-versions/current` / `GET paper-versions/{vid}/needs-review` / `PATCH paper-versions/{vid}/items/{idx}` / `POST {vid}/confirm`（闸门 2 force 模式）/ `POST {vid}/revert`
+- legacy `/blueprints/allocate`、`/blueprints/confirm`（纯算法）保持不动，供旧链路调用。
+
+#### 前端生产线接通（5 阶段 UI 接真实 API，不再只改 status 字符串）
+
+- `src/console/client.ts`：新增 `examPipelineApi`（14 个端点 fetch 封装，错误非 2xx throw）。
+- `blueprintStage.tsx`：输入 framework/catalog id → 生成蓝图 → 表格编辑 score（调用 patchPlanItem）→ confirm 闸门 1。
+- `contractStage.tsx`：mount 即 allocate → preview revise → confirm（project.status=generating）。
+- `generationStage.tsx`：startGeneration 202 → 轮询 task_run（pollInterval/pollTimeout 可配置）→ 成功渲染题卡，needs_review 徽标；失败展示 error_message。
+- `reviewExportStage.tsx`：needsReview 列表 + 覆写编辑器（patchPaperItem + clear_needs_review）→ confirm 闸门 2（force 对话框处理 409 pending）→ 终版 revert。
+- `examProjectWorkspace.tsx`：handleConfirm/Generate/Proceed/Export 不再调用 `projectsApi.updateStatus` 占位，统一阶段特定端点调用 + `refreshProject()` 刷新。
+
+#### demo 退位为回归脚本
+
+- 新增 `scripts/build_pipeline_via_api.py`：**完全不依赖真实模型网关**，走全部 14 个 API 端点（TestClient 调用）→ 合成种子数据 → 产出 37 题/100 分的 7 段式 `frontend/public/demo/pipeline.json`（94+ KB，结构字段集与旧 `build_real_material_demo.py` 一致）。
+- 扩展 `test_real_material_demo.py::test_via_api_builds_pipeline_with_seven_sections` 10 条断言锁定。
+- 实现 §9 双链路同步原则：旧 `build_real_material_demo.py` 保留做现实模型链路，新 via_api 脚本锁定服务端结构回归。
+
+#### 测试与回归（AC-9）
+
+| 套件 | 数量 | 命令 | 结果 |
+|---|---|---|---|
+| 后端 pytest（ignore boto3-only test） | **680/680** passed | `python -m pytest -q --ignore=tests/unit/test_material_service.py --basetemp=.pytest_tmp` | exit 0，~78s |
+| 新增 schema 单测 | 6/6 passed | `tests/unit/test_paper_kernel_schema_extensions.py` | - |
+| 蓝图持久化单测 | 4/4 passed | `tests/unit/test_blueprint_persistence.py` | - |
+| 合约执行单测 | 4/4 passed | `tests/unit/test_contract_execution.py` | - |
+| 生成持久化单测 | 4/4 passed | `tests/unit/test_generation_persistence.py` | - |
+| PaperVersion 单测 | 5/5 passed | `tests/unit/test_paper_version.py` | - |
+| 管线 E2E（FastAPI TestClient 15 步） | 1/1 passed | `tests/integration/test_pipeline_e2e.py` | ~2s |
+| via_api demo 单测 | 1/1 passed | `test_real_material_demo::test_via_api_builds_pipeline_with_seven_sections` | - |
+| 前端 vitest | **97/97** passed | `npx vitest run` | 3.2s |
+| 前端 `tsc -b` | 0 TS error | `npx tsc -b --pretty false` | exit 0 |
+| 前端生产构建 | ✓ ok | `npx vite build` | `index.js 285KB / css 21KB` |
+
+#### AC-6 引擎零重写验证
+
+对引擎关键文件 `domain/ services/blueprint_service.py services/contract_service.py services/generation_service.py workflows/generation_graph.py`，实施期间仅 `import`，**零逻辑/签名变更行**（可由 git diff 对基线 main 确认：spec 前 commit → HEAD 区间上述文件 diff 为空或仅有 docstring 变化）。
+
+---
+
+### 未完成（= S3 / S4，本次未覆盖）
+
+- ❌ **S3 导出**：同一 PaperVersion → ①学生卷/答卷 Word→PDF（院校模板、版式检查）；②答案细则 JSON（schema 版号 `paper_versions.answer_detail_schema_version`）
+- ❌ **资料写端 UI**：上传、解析进度、框架/知识目录候选的教师确认——目前前端只有 Plan 2 的只读视图（知识目录的图谱+树双视图），写操作仍需落前端
+- ❌ **富文本编辑器**：当前 paper_items 的 teacher_override 只支持 JSON text override（题干/选项/答案字符串 patch），无图片/公式/复杂版式
+- ❌ **权限最小化 + 审计事件硬化**：目前 `users.role` 是 teacher，所有端点未鉴权；model_calls 已记录但 outbox 审计 publish 未挂事件总线；操作留痕写端未实现
+- ❌ **A/B 卷正式管理**：目前只有 `allocation_seed` 可传入换组合，但 AB 对比视图、版本归档/回滚、双卷差异化校验未实现
+- ❌ **真实模型网关接入 generate 端点**：当前 generate 端点仅执行 inline_runner 的 mock_graph（合成题干），与 `generation_graph.invoke()` 的真实生成流水线尚未接通；mock 接口已留 `app.state.mock_graph_invoke` 注入点，接 DeepSeek 时只需替换 handler 并确保 generated_questions 字段对齐
+
 ### 未完成（= 正式开发计划 S1-S4，见 §8）
 
-- ❌ 前端仅为 demo 查看器，无教师工作台
-- ❌ demo 链路未完全走正式 API（部分逻辑在脚本内，需收口进服务边界）
-- ❌ PaperVersion 结构化内核 / 两次确认流 / 富文本编辑器
+- ❌ 前端仅为 demo 查看器，无教师工作台 ← **已部分完成：工作台已接通 5 阶段生产线真实 API**
+- ❌ demo 链路未完全走正式 API（部分逻辑在脚本内，需收口进服务边界）← **已完成：via_api 脚本 + E2E 全服务化**
+- ❌ PaperVersion 结构化内核 / 两次确认流 / 富文本编辑器 ← **已完成：内核+双闸门；富文本未完成**
 - ❌ 导出（学生卷/答卷 docx→PDF + 版式检查；答案细则 JSON）
 - ❌ 权限最小化与审计事件硬化
 

@@ -37,7 +37,7 @@ def get_gateway(request: Request):
                 settings.deepseek_model,
             )
         ):
-            raise HTTPException(status_code=503, detail="DeepSeek model is not configured")
+            raise HTTPException(status_code=503, detail="LLM model is not configured")
         gateway = DeepSeekGateway(
             api_key=settings.deepseek_api_key,
             base_url=settings.deepseek_base_url,

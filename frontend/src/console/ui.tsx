@@ -68,9 +68,18 @@ export function Field({ label, hint, children }: { label: ReactNode; hint?: Reac
 
 export type NoticeKind = 'info' | 'success' | 'error' | 'warning'
 
-export function Notice({ kind, children }: { kind: NoticeKind; children: ReactNode }) {
+type NoticeProps = React.HTMLAttributes<HTMLDivElement> & {
+  kind: NoticeKind
+  children: React.ReactNode
+}
+
+export function Notice({ kind, children, className, ...rest }: NoticeProps) {
   if (!children) return null
-  return <div className={`notice ${kind}`}>{children}</div>
+  return (
+    <div {...rest} className={`notice ${kind}${className ? ` ${className}` : ''}`}>
+      {children}
+    </div>
+  )
 }
 
 export function LoadingLine({ children }: { children: ReactNode }) {

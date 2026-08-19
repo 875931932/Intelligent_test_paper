@@ -198,3 +198,138 @@ export const projectsApi = {
       body: JSON.stringify({ status }),
     }),
 }
+
+// ── 蓝图 / 合同 / 生成 / 试卷版本 Pipeline API ─────────
+export interface PipelineBlueprintInput {
+  framework_version_id: string
+  catalog_version_id: string
+  type_rules: Record<string, { count: number; score: number; difficulty_distribution?: Record<string, number> }>
+  chapter_weights: Record<string, number>
+  units: Array<unknown>
+  card_semantic_profiles: Record<string, unknown>
+  card_question_types: Record<string, string[]>
+}
+
+export interface PipelinePlanItem {
+  id: string
+  item_index: number
+  question_type: string
+  score: number
+  difficulty?: string
+  cognitive_level?: string
+  assessment_unit_id: string | null
+  assessment_unit_title?: string
+  knowledge_card_id: string | null
+  knowledge_card_name?: string
+  exam_point_id?: string | null
+}
+
+const projectBase = (courseId: string, projectId: string) => `${base(courseId)}/exam-projects/${projectId}`
+
+export const examPipelineApi = {
+  // BLUEPRINT
+  createBlueprint: (courseId: string, projectId: string, body: PipelineBlueprintInput) =>
+    api<{ blueprint_version_id: string; plan: PipelinePlanItem[] }>(`${projectBase(courseId, projectId)}/blueprints`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+
+  getPlanItems: (courseId: string, projectId: string) =>
+    api<PipelinePlanItem[]>(`${projectBase(courseId, projectId)}/blueprints/current/plan-items`),
+
+  patchPlanItem: (
+    courseId: string,
+    planItemId: string,
+    changes: Partial<PipelinePlanItem> & { card_id?: string },
+  ) =>
+    api<PipelinePlanItem>(`${base(courseId)}/plan-items/${planItemId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(changes),
+    }),
+
+  confirmBlueprint: (courseId: string, projectId: string, body?: { blueprint_version_id?: string }) =>
+    api<{ status: string; blueprint_version_id: string }>(
+      `${projectBase(courseId, projectId)}/blueprints/current/confirm`,
+      { method: 'POST', body: body ? JSON.stringify(body) : undefined },
+    ),
+
+  // CONTRACT
+  allocateContract: (
+    courseId: string,
+    projectId: string,
+    body?: { blueprint_version_id?: string; allocation_seed?: number },
+  ) =>
+    api<{
+      used_threshold: number
+      conflicts_history: Array<[number, number]>
+      contract_snapshot: { slots: Array<Record<string, unknown>> }
+    }>(`${projectBase(courseId, projectId)}/contracts/allocate`, {
+      method: 'POST',
+      body: body ? JSON.stringify(body) : undefined,
+    }),
+
+  reviseContract: (
+    courseId: string,
+    projectId: string,
+    body: { slot_revisions: Array<unknown>; blueprint_version_id?: string; allocation_seed?: number },
+  ) =>
+    api<{ revised_contract_snapshot: unknown }>(`${projectBase(courseId, projectId)}/contracts/revise`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+
+  confirmContract: (
+    courseId: string,
+    projectId: string,
+    body: { slot_revisions: Array<unknown>; blueprint_version_id?: string; allocation_seed?: number },
+  ) =>
+    api<{ generation_run_id: string; threshold: number; slot_count: number }>(
+      `${projectBase(courseId, projectId)}/contracts/confirm`,
+      { method: 'POST', body: JSON.stringify(body) },
+    ),
+
+  // GENERATION
+  startGeneration: (courseId: string, projectId: string, body?: { mock_graph?: boolean }) =>
+    api<{ task_run_id: string }>(`${projectBase(courseId, projectId)}/generate`, {
+      method: 'POST',
+      body: body ? JSON.stringify(body) : undefined,
+    }),
+
+  getTaskRun: (courseId: string, taskRunId: string) =>
+    api<{
+      id: string
+      status: string
+      progress: number
+      stage: string
+      result?: unknown
+      payload?: unknown
+      error_message?: string
+    }>(`${base(courseId)}/task-runs/${taskRunId}`),
+
+  // PAPER VERSIONS
+  getCurrentPaperVersion: (courseId: string, projectId: string) =>
+    api<unknown>(`${projectBase(courseId, projectId)}/paper-versions/current`),
+
+  listNeedsReview: (courseId: string, pvId: string) =>
+    api<Array<Record<string, unknown>>>(`${base(courseId)}/paper-versions/${pvId}/needs-review`),
+
+  patchPaperItem: (
+    courseId: string,
+    pvId: string,
+    itemIndex: number,
+    body: { teacher_override_patch: unknown; clear_needs_review?: boolean },
+  ) =>
+    api<unknown>(`${base(courseId)}/paper-versions/${pvId}/items/${itemIndex}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    }),
+
+  confirmPaperVersion: (courseId: string, pvId: string, body?: { force_ignore_needs_review?: boolean }) =>
+    api<{ status: string; unresolved: number }>(`${base(courseId)}/paper-versions/${pvId}/confirm`, {
+      method: 'POST',
+      body: body ? JSON.stringify(body) : undefined,
+    }),
+
+  revertPaperVersion: (courseId: string, pvId: string) =>
+    api<void>(`${base(courseId)}/paper-versions/${pvId}/revert`, { method: 'POST' }),
+}

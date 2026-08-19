@@ -9,7 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Settings read directly from the environment on every instantiation."""
 
-    model_config = SettingsConfigDict(extra="ignore")
+    model_config = SettingsConfigDict(extra="ignore", env_file=".env", env_file_encoding="utf-8")
 
     database_url: str = "postgresql+psycopg://exam:exam@localhost:5432/exam"
     redis_url: str = "redis://localhost:6379/0"
@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     mineru_poll_interval_seconds: int = 10
     mineru_max_poll_seconds: int = 1800
     deepseek_api_key: str = ""
-    deepseek_base_url: str = "https://api.deepseek.com/v1"
-    deepseek_model: str = "deepseek-v4-flash"
+    deepseek_base_url: str = "https://api.xiaomimimo.com/v1"
+    deepseek_model: str = "mimo-v2.5-pro"
     embedding_base_url: str = "https://api.openai.com/v1"
     embedding_api_key: str = ""
     embedding_model: str = "qwen3.7-text-embedding"

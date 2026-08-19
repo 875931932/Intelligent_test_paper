@@ -471,6 +471,9 @@ exam_projects = _course_table(
     "exam_projects",
     Column("name", String(255), nullable=False),
     Column("status", String(40), nullable=False, default="draft"),
+    Column("active_blueprint_version_id", String(64)),
+    Column("active_generation_run_id", String(64)),
+    Column("active_paper_version_id", String(64)),
     constraints=(UniqueConstraint("course_id", "name", name="uq_exam_projects_course_name"),),
 )
 
@@ -481,6 +484,10 @@ blueprint_versions = _course_table(
     Column("catalog_version_id", String(64), ForeignKey("knowledge_catalog_versions.id"), nullable=False),
     Column("version_no", Integer, nullable=False),
     Column("status", String(40), nullable=False, default="draft"),
+    Column("type_rules", JSON, nullable=False, default=dict, server_default="{}"),
+    Column("chapter_weights", JSON, nullable=False, default=dict, server_default="{}"),
+    Column("confirmed_at", DateTime(timezone=True)),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     constraints=(UniqueConstraint("exam_project_id", "version_no", name="uq_blueprint_versions_project_number"),),
 )
 
@@ -501,7 +508,11 @@ plan_items = _course_table(
     Column("question_type", String(60), nullable=False),
     Column("assessment_mode", String(60), nullable=False, default="conceptual", server_default="conceptual"),
     Column("item_index", Integer, nullable=False),
-    Column("score", Integer, nullable=False),
+    Column("score", Float, nullable=False),
+    Column("difficulty", String(40), nullable=False, default="medium", server_default="medium"),
+    Column("cognitive_level", String(60), nullable=False, default="understand", server_default="understand"),
+    Column("exam_point_id", String(64), ForeignKey("exam_points.id")),
+    Column("knowledge_card_id", String(64), ForeignKey("knowledge_cards.id")),
     constraints=(UniqueConstraint("blueprint_version_id", "item_index", name="uq_plan_items_version_index"),),
 )
 Index("ix_plan_items_course_blueprint_question_type", plan_items.c.course_id, plan_items.c.blueprint_version_id, plan_items.c.question_type)
@@ -511,12 +522,17 @@ generation_runs = _course_table(
     "generation_runs",
     Column("framework_version_id", String(64), ForeignKey("framework_versions.id"), nullable=False),
     Column("catalog_version_id", String(64), ForeignKey("knowledge_catalog_versions.id"), nullable=False),
-    Column("index_version_id", String(64), ForeignKey("index_versions.id"), nullable=False),
+    Column("index_version_id", String(64), ForeignKey("index_versions.id"), nullable=True),
     Column("blueprint_version_id", String(64), ForeignKey("blueprint_versions.id"), nullable=False),
     Column("prompt_template_version", String(80), nullable=False),
     Column("run_type", String(60), nullable=False),
     Column("status", String(40), nullable=False, default="queued"),
+    Column("contract_snapshot", JSON),
+    Column("centrality_threshold_used", Float),
+    Column("error_message", Text),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("completed_at", DateTime(timezone=True)),
 )
 Index("ix_generation_runs_course_status_created", generation_runs.c.course_id, generation_runs.c.status, generation_runs.c.created_at)
 
@@ -553,6 +569,12 @@ paper_versions = _course_table(
     Column("generation_run_id", String(64), ForeignKey("generation_runs.id")),
     Column("version_no", Integer, nullable=False),
     Column("status", String(40), nullable=False, default="draft"),
+    Column("created_by", String(64), ForeignKey("users.id")),
+    Column("metadata", JSON, nullable=False, default=dict, server_default="{}"),
+    Column("answer_detail_schema_version", String(120)),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("confirmed_at", DateTime(timezone=True)),
+    Column("finalized_at", DateTime(timezone=True)),
     constraints=(UniqueConstraint("exam_project_id", "version_no", name="uq_paper_versions_project_number"),),
 )
 
@@ -561,6 +583,11 @@ paper_items = _course_table(
     Column("paper_version_id", String(64), ForeignKey("paper_versions.id"), nullable=False),
     Column("generated_question_id", String(64), ForeignKey("generated_questions.id"), nullable=False),
     Column("display_order", Integer, nullable=False),
+    Column("teacher_override", JSON, nullable=False, default=dict, server_default="{}"),
+    Column("finalized_text", JSON),
+    Column("needs_review", Boolean, nullable=False, default=False, server_default=false()),
+    Column("needs_review_reason", String(200)),
+    Column("quality_audit", JSON, nullable=False, default=dict, server_default="{}"),
     constraints=(UniqueConstraint("paper_version_id", "display_order", name="uq_paper_items_version_order"),),
 )
 
@@ -649,7 +676,7 @@ Index(
 )
 
 
-def _same_course_fk(child_name: str, parent_column: str, parent_name: str) -> None:
+def _same_course_fk(child_name: str, parent_column: str, parent_name: str, *, use_alter: bool = False) -> None:
     """Prevent a child in one course from pointing at another course's parent."""
 
     child = Base.metadata.tables[child_name]
@@ -660,6 +687,7 @@ def _same_course_fk(child_name: str, parent_column: str, parent_name: str) -> No
             [parent_column, "course_id"],
             [f"{parent_name}.id", f"{parent_name}.course_id"],
             name=f"fk_{child_name[:16]}_{parent_column[:12]}_{suffix}",
+            use_alter=use_alter,
         )
     )
 
@@ -707,6 +735,8 @@ for _child, _column, _parent in (
     ("plan_items", "blueprint_version_id", "blueprint_versions"),
     ("plan_items", "blueprint_section_id", "blueprint_sections"),
     ("plan_items", "assessment_unit_id", "assessment_units"),
+    ("plan_items", "exam_point_id", "exam_points"),
+    ("plan_items", "knowledge_card_id", "knowledge_cards"),
     ("generation_runs", "framework_version_id", "framework_versions"),
     ("generation_runs", "catalog_version_id", "knowledge_catalog_versions"),
     ("generation_runs", "index_version_id", "index_versions"),
@@ -726,6 +756,17 @@ for _child, _column, _parent in (
     ("outbox_events", "task_run_id", "task_runs"),
 ):
     _same_course_fk(_child, _column, _parent)
+
+
+# exam_projects active-* references (nullable, composite cross-course FK)
+# These close back-references that create a FK cycle with blueprint/generation/paper
+# tables; use_alter=True lets SQLite/SA sort DROP without cycle ambiguity.
+for _child, _column, _parent in (
+    ("exam_projects", "active_blueprint_version_id", "blueprint_versions"),
+    ("exam_projects", "active_generation_run_id", "generation_runs"),
+    ("exam_projects", "active_paper_version_id", "paper_versions"),
+):
+    _same_course_fk(_child, _column, _parent, use_alter=True)
 
 
 CORE_TABLE_NAMES = set(Base.metadata.tables)

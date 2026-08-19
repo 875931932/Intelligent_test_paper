@@ -99,19 +99,19 @@ class DeepSeekJsonClient:
         self,
         *,
         api_key: str,
-        base_url: str = "https://api.deepseek.com/v1",
-        model: str = "deepseek-v4-flash",
+        base_url: str = "https://api.xiaomimimo.com/v1",
+        model: str = "mimo-v2.5-pro",
         timeout: float = 90.0,
         max_attempts: int = 4,
         client: httpx.Client | None = None,
         recorder: ModelCallRecorder | None = None,
     ) -> None:
         if not api_key.strip():
-            raise ValueError("DeepSeek API key is required")
+            raise ValueError("LLM API key is required")
         if not base_url.strip():
-            raise ValueError("DeepSeek base URL is required")
+            raise ValueError("LLM base URL is required")
         if not model.strip():
-            raise ValueError("DeepSeek model is required")
+            raise ValueError("LLM model is required")
         if max_attempts < 1:
             raise ValueError("DeepSeek max_attempts must be positive")
         self.api_key = api_key
@@ -341,8 +341,8 @@ class DeepSeekGateway:
         self,
         *,
         api_key: str,
-        base_url: str = "https://api.deepseek.com/v1",
-        model: str = "deepseek-v4-flash",
+        base_url: str = "https://api.xiaomimimo.com/v1",
+        model: str = "mimo-v2.5-pro",
         timeout: float = 90.0,
         max_attempts: int = 4,
         client: httpx.Client | None = None,
