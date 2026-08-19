@@ -277,7 +277,7 @@ a:hover { text-decoration: underline; }
 .graph-node { cursor: pointer; transition: r 0.2s, opacity 0.2s; }
 .graph-node:hover { opacity: 0.8; }
 .graph-node.selected { stroke: var(--accent-500); stroke-width: 3; }
-.graph-node.ungrounded { stroke: var(--error); stroke-dasharray: 4,3; stroke-width: 2; }
+.graph-node.ungrounded { stroke: var(--danger); stroke-dasharray: 4,3; stroke-width: 2; }
 .node-domain { fill: var(--surface); }
 .node-unit { fill: var(--surface); }
 .cluster-halo { pointer-events: none; }
@@ -289,22 +289,22 @@ a:hover { text-decoration: underline; }
 .ktree-search:focus { border-color: var(--accent-500); outline: none; }
 .ktree-node { padding: 6px 12px; cursor: pointer; border-radius: 8px; transition: background 0.15s; }
 .ktree-node:hover { background: var(--surface-subtle); }
-.ktree-node.selected { background: var(--accent-subtle); }
+.ktree-node.selected { background: var(--accent-100); }
 .ktree-children { margin-left: 20px; border-left: 1px solid var(--border); padding-left: 8px; }
 .ktree-badge { display: inline-flex; align-items: center; gap: 2px; font-size: 10px; margin-left: 8px; }
 .ktree-badge.grounded { color: var(--success); }
-.ktree-badge.ungrounded { color: var(--error); }
+.ktree-badge.ungrounded { color: var(--danger); }
 
 /* ── 详情抽屉 ── */
 .detail-drawer { width: 360px; border-left: 1px solid var(--border); background: var(--surface-subtle); overflow-y: auto; padding: 20px; }
 .detail-section { margin-bottom: 20px; }
 .detail-section h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 8px; }
 .tag-row { display: flex; flex-wrap: wrap; gap: 6px; }
-.tag { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; background: var(--accent-subtle); color: var(--accent-text); }
+.tag { display: inline-block; padding: 3px 10px; border-radius: 20px; font-size: 11px; background: var(--accent-100); color: var(--accent-900); }
 .atom-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; font-size: 13px; color: var(--text-secondary); border-bottom: 1px solid var(--border); }
 .atom-row .grounded-mark { font-size: 14px; }
 .atom-row .grounded-mark.yes { color: var(--success); }
-.atom-row .grounded-mark.no { color: var(--error); }
+.atom-row .grounded-mark.no { color: var(--danger); }
 
 /* ── 双视图切换 ── */
 .view-toggle { display: inline-flex; background: var(--surface); border-radius: 10px; padding: 3px; gap: 2px; }
