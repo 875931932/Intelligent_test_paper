@@ -33,17 +33,41 @@ _COGNITIVE_SEQUENCES = [
 ]
 
 
+def _comprehensive_archetype_pool(request: ContractRequest) -> list[str]:
+    """综合题原型池：教师经 type_rules.comprehensive.archetypes 显式控制。
+
+    教师可传原型白名单（顺序即偏好序），适合按学科裁剪——非编程课程可
+    排除 code_completion_scenario，文科可只留 case_analysis 等。未指定
+    或全部非法时回退完整原型池（通用机制，不绑定具体课程）。
+    """
+
+    rule = request.blueprint.type_rules.get("comprehensive") or {}
+    requested = rule.get("archetypes")
+    if not isinstance(requested, list) or not requested:
+        return list(_ARCHETYPE_ROTATION)
+    pool = [name for name in requested if name in ARCHETYPE_CONTRACTS]
+    return pool or list(_ARCHETYPE_ROTATION)
+
+
 class ContractRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     blueprint: BlueprintRequest
     knowledge_cards: dict[str, dict] = Field(min_length=1)
     centrality_threshold: float = DEFAULT_CENTRALITY_THRESHOLD
+    # 分配种子：None 保持确定性分配（同池同卷）；给定整数时打破评分
+    # 并列——同种子复现同卷，异种子在富余池上选出不同原子组合
+    allocation_seed: int | None = None
 
 
-def _comprehensive_fields(nth: int) -> dict:
-    """第 nth 道综合题的结构轮换字段。"""
-    archetype = _ARCHETYPE_ROTATION[nth % len(_ARCHETYPE_ROTATION)]
+def _comprehensive_fields(nth: int, pool: list[str]) -> dict:
+    """第 nth 道综合题的结构轮换字段。
+
+    pool 是原型轮换池（教师可裁剪）；轮换起点由 allocation_seed 扰动
+    （seed=None 时起点 0 保持确定性），同种子复现、异种子换原型序列，
+    避免每张卷的综合题永远是固定的前几种原型。
+    """
+    archetype = pool[nth % len(pool)]
     contract = ARCHETYPE_CONTRACTS[archetype]
     material_forms = sorted(contract.material_forms)
     material_form = material_forms[nth % len(material_forms)]
@@ -101,7 +125,13 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract:
         group.sort(key=lambda i: i.item_index)  # assign_atoms_to_items 依赖顺序
 
     slots: list[ContractSlot] = []
-    comp_counter = 0
+    # 综合题原型池（教师可裁剪）与轮换起点（种子扰动：同种子复现，
+    # 异种子换原型序列；None 保持确定性起点 0）
+    archetype_pool = _comprehensive_archetype_pool(request)
+    comp_counter = (
+        request.allocation_seed % len(archetype_pool)
+        if request.allocation_seed is not None else 0
+    )
     # 全卷共享互斥状态：跨考点原子唯一 + 答案边界互斥（终检为全卷两两比较）
     used_keys: set[str] = set()
     used_boundaries: list[str] = []
@@ -110,6 +140,7 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract:
         assignments, point_conflicts = assign_atoms_to_items(
             items_by_point[point], clusters,
             shared_used_keys=used_keys, shared_used_boundaries=used_boundaries,
+            seed=request.allocation_seed,
         )
         conflicts.extend(point_conflicts)
         for item, atom in assignments:
@@ -119,14 +150,14 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract:
             extra: dict = {}
             assessment_mode = item.assessment_mode
             if item.question_type == "comprehensive":
-                fields = _comprehensive_fields(comp_counter)
+                fields = _comprehensive_fields(comp_counter, archetype_pool)
                 # 校验兼容性，不兼容则顺延原型
-                for _ in range(len(_ARCHETYPE_ROTATION)):
+                for _ in range(len(archetype_pool)):
                     contract_def = ARCHETYPE_CONTRACTS[fields["comprehensive_archetype"]]
                     if assessment_mode in contract_def.allowed_modes:
                         break
                     comp_counter += 1
-                    fields = _comprehensive_fields(comp_counter)
+                    fields = _comprehensive_fields(comp_counter, archetype_pool)
                 contract_def = ARCHETYPE_CONTRACTS[fields["comprehensive_archetype"]]
                 if assessment_mode not in contract_def.allowed_modes:
                     assessment_mode = sorted(contract_def.allowed_modes)[0]

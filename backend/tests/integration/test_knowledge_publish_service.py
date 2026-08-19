@@ -205,6 +205,9 @@ def _tree(*, coverage_status="sufficient"):
                     cards=[KnowledgeCardDraft(
                         name="RAG基本流程", performance_statement="能够说明RAG基本流程",
                         assessable_content=["检索、上下文构造和生成"], evidence_chunk_ids=["evidence-1"],
+                        concept_cluster="RAG流程组成",
+                        answer_proposition="检索、上下文构造和生成",
+                        prompt_material=["RAG流程语境"],
                     )],
                 )],
             )
@@ -327,6 +330,9 @@ def test_database_repository_publishes_catalog_and_index_atomically(tmp_path):
         assert session.scalar(select(assessment_units.c.code).where(assessment_units.c.code == "rag-flow")) == "rag-flow"
         assert session.scalar(select(assessment_units.c.exam_point_id).where(assessment_units.c.code == "rag-flow")) == "exam-point-1"
         assert session.scalar(select(knowledge_cards.c.name).where(knowledge_cards.c.name == "RAG基本流程")) == "RAG基本流程"
+        assert session.scalar(select(knowledge_cards.c.concept_cluster).where(knowledge_cards.c.name == "RAG基本流程")) == "RAG流程组成"
+        assert session.scalar(select(knowledge_cards.c.answer_proposition).where(knowledge_cards.c.name == "RAG基本流程")) == "检索、上下文构造和生成"
+        assert session.scalar(select(knowledge_cards.c.prompt_material).where(knowledge_cards.c.name == "RAG基本流程")) == ["RAG流程语境"]
         assert session.scalar(select(knowledge_evidence_links.c.evidence_chunk_id)) == "evidence-1"
         assert session.scalar(select(index_memberships.c.knowledge_card_id)) is not None
         assert session.scalar(select(index_versions.c.status)) == "published"

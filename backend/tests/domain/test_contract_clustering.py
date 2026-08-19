@@ -6,10 +6,11 @@ from app.domain.generation.contract import (
 )
 
 
-def _atom(text: str, centrality: float = 0.8) -> PoolAtom:
+def _atom(text: str, centrality: float = 0.8, concept_cluster: str = "") -> PoolAtom:
     return PoolAtom(card_id="C", unit_id="U", exam_point_id="EP",
                     atom_text=text, boundary="", centrality=centrality,
-                    features=atom_bigram_features(text))
+                    features=atom_bigram_features(text),
+                    concept_cluster=concept_cluster)
 
 
 def test_semantically_similar_atoms_land_in_same_cluster():
@@ -76,5 +77,35 @@ def test_term_anchor_stopwords_do_not_force_cluster():
     # 停用词不产生锚：两句各含 "api"/"use" 等高频词仍各归各簇
     a = _atom("调用api接口获取模型输出")
     b = _atom("正确use提示词可以提升效果")
+    clusters = cluster_pool_atoms([a, b])
+    assert len(clusters) == 2
+
+
+def test_concept_cluster_label_forces_same_cluster():
+    # 纯中文枚举类原子：bigram 被枚举项稀释、无英文术语锚，
+    # 但语义画像给出相同 concept_cluster → 强制同簇
+    a = _atom("有效提示词由角色设定、任务说明、背景信息、输出格式和限制条件等要素组成",
+              concept_cluster="提示词要素组织与限制条件设计")
+    b = _atom("提示词优化可以加入角色设定、回答边界、语言风格要求等要素",
+              concept_cluster="提示词要素组织与限制条件设计")
+    assert jaccard_similarity(a.features, b.features) < 0.5  # 前置：字面不相似
+    clusters = cluster_pool_atoms([a, b])
+    assert len(clusters) == 1
+
+
+def test_different_concept_clusters_stay_apart():
+    # 不同 concept_cluster 标签（且字面不相似、无共享锚）不合并
+    a = _atom("有效提示词由角色设定、任务说明、背景信息、输出格式和限制条件等要素组成",
+              concept_cluster="提示词要素组织与限制条件设计")
+    b = _atom("评估优化后的提示词时观察输出准确性专业性与可控性",
+              concept_cluster="提示词优化效果评估与指标")
+    clusters = cluster_pool_atoms([a, b])
+    assert len(clusters) == 2
+
+
+def test_blank_concept_cluster_does_not_force_cluster():
+    # 缺省空标签不参与强制同簇
+    a = _atom("提示词包含角色设定要素")
+    b = _atom("模型评估衡量泛化能力")
     clusters = cluster_pool_atoms([a, b])
     assert len(clusters) == 2

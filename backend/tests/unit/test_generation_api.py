@@ -127,6 +127,7 @@ def test_generation_gateway_failure_returns_502():
         body = response.json()
         assert body["final_check"]["passed"] is False
         assert all(q["needs_review"] is True for q in body["questions"])
-        assert body["model_call_count"] == 1  # 一批一次调用，异常也计数
+        # 一批一次调用 + 批缺失的 3 题各走一次单题重试（异常即断）= 4
+        assert body["model_call_count"] == 4
     finally:
         del app.state.generation_gateway

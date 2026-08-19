@@ -3,6 +3,8 @@
 import { api } from '../api'
 import type {
   Course,
+  ExamProjectDetail,
+  EvidenceLink,
   FrameworkCandidate,
   FrameworkConfirmation,
   FrameworkRunCreated,
@@ -144,6 +146,9 @@ export const knowledgeApi = {
     }),
 
   getPublished: (courseId: string) => api<PublishedKnowledge>(`${base(courseId)}/published-knowledge`),
+
+  getEvidence: (courseId: string, cardId: string) =>
+    api<EvidenceLink[]>(`${base(courseId)}/published-knowledge/cards/${cardId}/evidence`),
 }
 
 // ── 蓝图 / 合同 / 出题 ────────────────────────────────
@@ -171,5 +176,25 @@ export const examApi = {
     api<GenerationRunResult>(`${base(courseId)}/generation-runs`, {
       method: 'POST',
       body: JSON.stringify({ contract, knowledge_cards: knowledgeCards }),
+    }),
+}
+
+// ── 试卷项目 CRUD ────────────────────────────────────
+export const projectsApi = {
+  list: (courseId: string) => api<ExamProjectDetail[]>(`${base(courseId)}/exam-projects`),
+
+  create: (courseId: string, name: string) =>
+    api<ExamProjectDetail>(`${base(courseId)}/exam-projects`, {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+
+  get: (courseId: string, projectId: string) =>
+    api<ExamProjectDetail>(`${base(courseId)}/exam-projects/${projectId}`),
+
+  updateStatus: (courseId: string, projectId: string, status: string) =>
+    api<ExamProjectDetail>(`${base(courseId)}/exam-projects/${projectId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status }),
     }),
 }

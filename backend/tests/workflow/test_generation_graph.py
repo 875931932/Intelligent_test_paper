@@ -123,12 +123,36 @@ def test_answer_must_hit_boundary():
     assert len(gateway.retry_payloads) == 1
 
 
-def test_missing_question_in_batch_marked_needs_review():
-    class DropOneGateway(FakeBatchGateway):
+def test_missing_question_in_batch_is_recovered_by_retry():
+    # 批调用丢了题2，但单题重试取回合格题 → 恢复，不再标 needs_review
+    class DropOnceGateway(FakeBatchGateway):
+        def __init__(self):
+            super().__init__()
+            self.dropped = False
+
+        def generate_batch(self, payload):
+            questions = super().generate_batch(payload)
+            if not self.dropped and len(payload.questions) > 1:
+                self.dropped = True
+                return [q for q in questions if q.get("item_index") != 2]
+            return questions
+
+    gateway = DropOnceGateway()
+    result = build_generation_graph(gateway).invoke(_state([_slot(1), _slot(2)]))
+    recovered = next(q for q in result["questions"] if q["item_index"] == 2)
+    assert recovered["quality"]["status"] == "pass"
+    assert recovered.get("needs_review") is not True
+    assert len(gateway.retry_payloads) == 1
+
+
+def test_missing_question_survives_only_as_review_after_all_defenses():
+    # 批丢题且每次重试也丢 → 三道防线失守，保留槽位标 needs_review
+    class AlwaysDropTwoGateway(FakeBatchGateway):
         def generate_batch(self, payload):
             questions = super().generate_batch(payload)
             return [q for q in questions if q.get("item_index") != 2]
-    gateway = DropOneGateway()
+
+    gateway = AlwaysDropTwoGateway()
     result = build_generation_graph(gateway).invoke(_state([_slot(1), _slot(2)]))
     missing = next(q for q in result["questions"] if q["item_index"] == 2)
     assert missing["needs_review"] is True
@@ -179,3 +203,45 @@ def test_true_false_boolean_answer_passes_boundary_check():
     assert question["quality"]["status"] == "pass"
     assert question["needs_review"] is not True
     assert gateway.retry_payloads == []
+
+
+def test_exhausted_retries_swap_in_replacement_atom():
+    """原子重试耗尽后从同考点未用原子换原子重出，成功则采用替换合同。"""
+    bad = _question(1, stem="根据课件第3页的内容，关于原子1的问题", options=["甲"], answer="")
+    cards = {
+        "C1": {
+            "assessable_content": ["原子1", "替换原子文本样例"],
+            "answer_boundary": "正确的选项内容",
+        },
+    }
+    units = [{"exam_point_id": "EP1", "unit_id": "U-EP1", "card_ids": ["C1"]}]
+    gateway = FakeBatchGateway(scenarios={1: [bad, bad, bad]})
+    result = build_generation_graph(gateway).invoke({
+        "contract": [_slot(1), _slot(2)],
+        "knowledge_cards": cards,
+        "units": units,
+    })
+    question = next(q for q in result["questions"] if q["item_index"] == 1)
+    assert question["quality"]["status"] == "pass"
+    assert question["needs_review"] is not True
+    # 合同溯源已更新为替换原子；原原子不再占用
+    assert question["coverage_atom"] == "替换原子文本样例"
+    assert question["answer_boundary"] == "正确的选项内容"
+    # 换原子调用 1 次（批 1 + 重试 2 + 换原子 1 = 4 次单题/批调用）
+    assert len(gateway.retry_payloads) == 3
+
+
+def test_no_replacement_atom_keeps_needs_review():
+    """无可用替换原子（卡片耗尽）时维持 needs_review，不静默成功。"""
+    bad = _question(1, stem="根据课件第3页的内容，关于原子1的问题", options=["甲"], answer="")
+    cards = {"C1": {"assessable_content": ["原子1"], "answer_boundary": "边界1"}}
+    units = [{"exam_point_id": "EP1", "unit_id": "U-EP1", "card_ids": ["C1"]}]
+    gateway = FakeBatchGateway(scenarios={1: [bad, bad, bad]})
+    result = build_generation_graph(gateway).invoke({
+        "contract": [_slot(1), _slot(2)],
+        "knowledge_cards": cards,
+        "units": units,
+    })
+    question = next(q for q in result["questions"] if q["item_index"] == 1)
+    assert question["quality"]["status"] == "blocker"
+    assert question["needs_review"] is True

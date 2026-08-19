@@ -23,3 +23,18 @@ def test_comprehensive_question_requires_subquestions_answer_and_rubric():
 def test_legitimate_model_weight_filename_wording_is_not_source_leakage():
     result = validate_generated_question({"question_type": "true_false", "stem": "模型服务名不必与权重文件名相同。", "answer": True})
     assert result["status"] == "pass"
+
+
+def test_low_difficulty_keyword_in_examined_term_is_exempted():
+    # "指标比较"中的"比较"是被考查的术语本身（出现在合同原子原文中），
+    # 不是对学生的认知要求 → 豁免
+    question = {
+        "question_type": "single_choice",
+        "difficulty": "low",
+        "stem": "在公式识别模型的评估中，关于指标比较，下列说法正确的是？",
+        "options": ["甲", "乙", "丙", "丁"], "answer": "甲",
+    }
+    atom = "模型评估中指标比较可通过对比不同模型版本在公式识别任务上的表现来完成。"
+    assert validate_generated_question(question, atom_text=atom)["status"] == "pass"
+    # 原子不含该关键词时（真认知要求）仍拦截
+    assert validate_generated_question(question, atom_text="模型评估的基本流程")["status"] == "blocker"

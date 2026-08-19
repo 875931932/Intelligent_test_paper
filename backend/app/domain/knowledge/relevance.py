@@ -23,6 +23,24 @@ class StagingChunk(BaseModel):
     embedding: list[float] | None = None
 
 
+# 情境绑定语：把内容锚定到特定实验运行（案例讲解的叙述背景）而非可迁移
+# 知识。知识卡是 RAG 检索库的源头，案例叙述（"失衡问题出现在上一轮训练中"
+# "本次实验使用 Qwen3-0.6B"）必须在入库前剥离情境或丢弃——只保留其承载
+# 的通用结论（"混合数据集用于解决两类数据失衡"）。
+# 指示词与运行词之间允许 ≤12 个非标点字符（如"本次 QLoRA 微调实验"），
+# 避免误伤"上一轮迭代采样"类通用机制描述。
+SITUATIONAL_BINDING_LANGUAGE = re.compile(
+    r"(?:上一轮|本轮|该轮|这轮|本次|这次|我们的)[^，。；;]{0,12}?(?:实验|训练|微调|运行|实践)",
+    re.IGNORECASE,
+)
+
+
+def is_transferable_fact(value: str) -> bool:
+    """事实是否为可迁移知识（未绑定特定实验运行的情境）。"""
+
+    return not SITUATIONAL_BINDING_LANGUAGE.search(str(value or "").strip())
+
+
 class RelevanceClass(StrEnum):
     DIRECT = "direct"
     SUPPORTING = "supporting"
@@ -381,6 +399,40 @@ def assessable_fact_keys(values: list[str]) -> frozenset[str]:
         for value in values
         for atom in re.split(r"[;；\r\n]+", value)
         if (key := semantic_text_key(atom.strip()))
+    )
+
+
+# 归属限定语的最短证据 key：更短的 key 作子串会产生误命中（如"用于控制"），
+# 只有足够长的证据事实才允许作为被包裹的核心参与包含判定。
+_MIN_WRAPPED_EVIDENCE_KEY_LENGTH = 6
+
+
+def fact_key_supported(atom_key: str, evidence_keys: frozenset[str] | set[str]) -> bool:
+    """判定一条归并原子是否被直接证据落地。
+
+    两种落地方式：
+    1. 与证据事实的规范化 key 完全相等（原有严格口径）；
+    2. 证据事实 key 是原子 key 的子串——允许归并阶段为碎片事实补全
+       归属限定语（如 "ms-swift框架中，eval_batch_size参数用于控制评测批大小"
+       落在证据 "eval_batch_size参数用于控制评测批大小" 上），
+       核心事实仍须逐字出现，编造内容依旧被拒。
+    """
+
+    if atom_key in evidence_keys:
+        return True
+    return any(
+        len(evidence_key) >= _MIN_WRAPPED_EVIDENCE_KEY_LENGTH and evidence_key in atom_key
+        for evidence_key in evidence_keys
+    )
+
+
+def all_facts_supported(
+    atom_keys: frozenset[str], evidence_keys: frozenset[str] | set[str]
+) -> bool:
+    """整卡原子是否全部被证据落地（逐条独立判定）。"""
+
+    return bool(atom_keys) and all(
+        fact_key_supported(atom_key, evidence_keys) for atom_key in atom_keys
     )
 
 

@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import random
 import re
 
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.domain.blueprint.models import PlanItem, UnitCoverage
 from app.domain.generation.archetypes import ComprehensiveArchetype, MaterialForm
 from app.domain.generation.coverage import _normalized, _validate_comprehensive_contract
+from app.domain.knowledge.relevance import semantic_text_key
 
 # 原子核心度阈值：打分基准 0.5、唯一扣分项 -0.05（含括号），
 # 非核心卡且无任何核心信号（定义类关键词 / 绩效强调 / 术语偏好 / 关联边）的原子
@@ -36,6 +38,10 @@ def compute_atom_centrality(card: dict, atom_text: str) -> float:
         score += 0.10
     if "(" in atom_text or "（" in atom_text:
         score -= 0.05
+    # 多子句复合原子降权：填空/判断题难以承载双子句语义，
+    # 优先把题位留给单句原子（切分兜底之外的第二道防线）
+    if "；" in atom_text or ";" in atom_text:
+        score -= 0.10
     relations = card.get("relation_edges", [])
     if isinstance(relations, list):
         score += min(len(relations) * 0.03, 0.10)
@@ -181,6 +187,7 @@ class PoolAtom:
     boundary: str
     centrality: float
     features: frozenset[str]
+    concept_cluster: str = ""
 
     @property
     def atom_key(self) -> str:
@@ -223,6 +230,7 @@ def build_exam_point_pools(
                         boundary=boundary,
                         centrality=centrality,
                         features=atom_bigram_features(atom_text),
+                        concept_cluster=str(card.get("concept_cluster") or ""),
                     )
                 )
     for pool in pools.values():
@@ -234,11 +242,14 @@ def build_exam_point_pools(
 def cluster_pool_atoms(
     pool: list[PoolAtom], *, similarity_threshold: float = 0.5
 ) -> list[list[PoolAtom]]:
-    """并查集聚类：bigram Jaccard > 阈值的原子归入同簇；共享术语锚的原子强制同簇。
+    """并查集聚类：bigram Jaccard > 阈值、共享术语锚或同 concept_cluster 的原子强制同簇。
 
     术语锚强制同簇堵住 bigram 的盲区：同一概念的不同表述
     （如围绕 QLoRA 的多张知识卡）字面相似度可能低于阈值，
     但共享的英文术语锚暴露了它们是同一概念。
+    concept_cluster 是语义画像阶段已产出的概念簇标签：纯中文的
+    同簇原子（如"提示词要素"系列枚举事实）既无英文锚、bigram 又
+    被枚举项稀释，唯一可靠信号就是该标签，等值即强制同簇。
     簇按最高核心度降序；簇内原子按核心度降序。O(n²) 对比对
     每考点 <100 原子的规模足够快。
     """
@@ -258,9 +269,14 @@ def cluster_pool_atoms(
                     parent[rj] = ri
 
     anchors = [_term_anchors(atom.atom_text) for atom in pool]
+    cluster_labels = [semantic_text_key(atom.concept_cluster) for atom in pool]
     for i in range(len(pool)):
         for j in range(i + 1, len(pool)):
-            if anchors[i] & anchors[j]:
+            same_cluster_label = (
+                bool(cluster_labels[i])
+                and cluster_labels[i] == cluster_labels[j]
+            )
+            if same_cluster_label or anchors[i] & anchors[j]:
                 ri, rj = find(i), find(j)
                 if ri != rj:
                     parent[rj] = ri
@@ -283,13 +299,19 @@ def _pick_atom(
     previous_cluster: int | None,
     item_type: str,
     selected_atoms: list[PoolAtom],
+    rng: random.Random | None = None,
 ) -> tuple[PoolAtom | None, int]:
     """约束过滤 + 软评分贪心：在全部可用原子中选分散度最优者。
 
     候选过滤只剩硬约束（原子未被用过、答案域与已选互斥）；多样性只进
     评分不进过滤：
     score = (该原子所在簇已供题数, 该簇已用当前题型次数, 与前一题位同簇,
-             与全部已选原子的最大 bigram Jaccard)，tuple 越小越优。
+             题型适配惩罚, 与全部已选原子的最大 bigram Jaccard, 种子扰动)，
+    tuple 越小越优。
+    题型适配惩罚：填空题要求简短唯一答案，多子句原子或长答案域
+    （归一化 > 30 字符）的原子适配度差，仅对 fill_blank 题位计 1。
+    种子扰动只在其余各项完全并列时打破平局（rng=None 时取 0 保持
+    原确定性）：同种子可复现，异种子在富余池上换出不同原子组合。
     池充足时自然跨簇分散、簇内题型错开；池紧张时自动退化同簇多题但
     仍最大化分散——多样性本身永不报错，只有真正的原子耗尽才无候选。
     并列取先遍历到者（簇与簇内均按核心度降序 → 高核心度优先）。
@@ -297,7 +319,7 @@ def _pick_atom(
     """
     best: PoolAtom | None = None
     best_cluster = -1
-    best_score: tuple[int, int, int, float] | None = None
+    best_score: tuple[int, int, int, int, float, float] | None = None
     for cluster_idx, cluster in enumerate(clusters):
         supply = cluster_supply.get(cluster_idx, 0)
         type_supply = cluster_type_supply.get(cluster_idx, {}).get(item_type, 0)
@@ -307,12 +329,20 @@ def _pick_atom(
                 continue
             if any(b and boundaries_overlap(atom.boundary, b) for b in used_boundaries):
                 continue
+            type_fit = 0
+            if item_type == "fill_blank" and (
+                "；" in atom.atom_text
+                or ";" in atom.atom_text
+                or len(_normalized(atom.boundary)) > 30
+            ):
+                type_fit = 1
             max_jaccard = max(
                 (jaccard_similarity(atom.features, other.features)
                  for other in selected_atoms),
                 default=0.0,
             )
-            score = (supply, type_supply, adjacent, max_jaccard)
+            tiebreak = rng.random() if rng is not None else 0.0
+            score = (supply, type_supply, adjacent, type_fit, max_jaccard, tiebreak)
             if best_score is None or score < best_score:
                 best, best_cluster, best_score = atom, cluster_idx, score
     return best, best_cluster
@@ -324,6 +354,7 @@ def assign_atoms_to_items(
     *,
     shared_used_keys: set[str] | None = None,
     shared_used_boundaries: list[str] | None = None,
+    seed: int | None = None,
 ) -> tuple[list[tuple[PlanItem, PoolAtom]], list[ContractConflict]]:
     """同考点题位按 item_index 顺序，软评分贪心 + 答案域互斥地取原子。
 
@@ -331,6 +362,9 @@ def assign_atoms_to_items(
     不可互相包含）。多样性（跨簇分散、簇内题型错开、避免相邻题位同簇、
     文本相似错开）只是贪心评分的软目标：池充足时自然分散，池紧张时
     自动退化同簇多题但最大化分散，永不因多样性本身报错。
+    seed：仅打破评分并列（rng=None 保持原确定性）。同种子复现同卷，
+    异种子在富余池上选出不同原子组合——池刚够配额时无论种子如何
+    都只能全选，这也是抽取目标须大于配额的原因。
     传入 shared_used_keys/shared_used_boundaries 时直接读写共享集，
     使多个考点调用间互斥状态全卷贯通（与终检全卷两两比较口径一致）；
     不传则每次调用独立维护局部集。硬过滤后无候选（真正的原子池耗尽）
@@ -340,6 +374,7 @@ def assign_atoms_to_items(
     used_boundaries: list[str] = (
         shared_used_boundaries if shared_used_boundaries is not None else []
     )
+    rng = random.Random(seed) if seed is not None else None
     assignments: list[tuple[PlanItem, PoolAtom]] = []
     conflicts: list[ContractConflict] = []
     cluster_supply: dict[int, int] = {}
@@ -357,7 +392,7 @@ def assign_atoms_to_items(
         atom, cluster_idx = _pick_atom(
             clusters, used_keys, used_boundaries,
             cluster_supply, cluster_type_supply, previous_cluster,
-            item.question_type, selected_atoms,
+            item.question_type, selected_atoms, rng,
         )
         if atom is None:
             conflicts.append(ContractConflict(

@@ -170,6 +170,20 @@ export type KnowledgeTreeConfirmation = {
 export type OrganizationRunCreated = { run_id: string; candidate_id: string; status: string }
 
 // ── 已发布知识 ────────────────────────────────────────
+// ── 知识目录图谱/证据 ──────────────────────────────────
+export type RelationEdge = {
+  kind: 'equivalent_to' | 'specializes' | 'component_of' | 'contrasts_with' | 'summarizes' | 'requires'
+  target: string
+}
+
+export type EvidenceLink = {
+  evidence_role: string
+  confidence: number | null
+  content: string
+  locator: Record<string, unknown> | null
+  material_version_id: string
+}
+
 export type PublishedCard = {
   name: string
   performance_statement: string
@@ -182,6 +196,8 @@ export type PublishedCard = {
   answer_proposition: string
   answer_boundary: string
   prompt_material: string[]
+  relation_edges: RelationEdge[]
+  grounded: boolean
 }
 
 export type PublishedUnit = {
@@ -355,3 +371,29 @@ export type CourseReadiness = {
   knowledgeUngroundedCount: number
   projects: ExamProjectSummary[]
 }
+
+// ── 试卷项目生产线（Plan 3） ──────────────────────────
+export type PipelineStage = 'blueprint' | 'contract' | 'generating' | 'review' | 'exported'
+
+export type ExamProjectDetail = {
+  id: string
+  name: string
+  semester_label: string
+  status: 'draft' | 'blueprint' | 'contract' | 'generating' | 'review' | 'exported'
+  total_score: number
+  question_count: number
+  pending_review: number
+  blueprint_confirmed: boolean
+  version_confirmed: boolean
+  blueprint?: BlueprintSettings
+  contract?: PaperContract
+  generation?: GenerationRunResult
+}
+
+export const PIPELINE_STAGES: { stage: PipelineStage; label: string; index: number }[] = [
+  { stage: 'blueprint', label: '蓝图', index: 1 },
+  { stage: 'contract', label: '合同', index: 2 },
+  { stage: 'generating', label: '生成', index: 3 },
+  { stage: 'review', label: '审核', index: 4 },
+  { stage: 'exported', label: '导出', index: 5 },
+]

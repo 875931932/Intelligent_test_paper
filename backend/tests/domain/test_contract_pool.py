@@ -17,6 +17,7 @@ def _cards():
             "assessable_content": ["有效提示词包含角色设定", "有效提示词包含任务说明"],
             "preferred_terms": ["提示词"],
             "answer_boundary": "提示词要素",
+            "concept_cluster": "提示词要素组织与限制条件设计",
         },
         "C2": {
             "is_core": True,
@@ -24,6 +25,7 @@ def _cards():
             "assessable_content": ["提示词可加入背景信息"],
             "preferred_terms": [],
             "answer_boundary": "背景信息",
+            "concept_cluster": "提示词要素组织与限制条件设计",
         },
         "C3": {
             "is_core": False,
@@ -61,6 +63,12 @@ def test_pool_atom_carries_card_unit_point_and_boundary():
     assert atom.unit_id == "U1"
     assert atom.exam_point_id == "EP1"
     assert atom.boundary in {"提示词要素", "背景信息"}
+
+
+def test_pool_atom_carries_concept_cluster_label():
+    pools = build_exam_point_pools(_units(), _cards())
+    for atom in pools["EP1"]:
+        assert atom.concept_cluster == "提示词要素组织与限制条件设计"
 
 
 def test_missing_card_is_skipped_silently():

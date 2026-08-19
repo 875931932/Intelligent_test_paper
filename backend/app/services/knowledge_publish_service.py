@@ -691,6 +691,9 @@ class DatabaseKnowledgeRepository:
                             "performance_statement": card.performance_statement,
                             "assessable_content": card.assessable_content,
                             "scope_boundary": card.scope_boundary,
+                            "concept_cluster": card.concept_cluster,
+                            "answer_proposition": card.answer_proposition,
+                            "prompt_material": card.prompt_material,
                         },
                         ensure_ascii=False,
                         sort_keys=True,
@@ -708,6 +711,13 @@ class DatabaseKnowledgeRepository:
                             cognitive_targets=card.cognitive_targets,
                             allowed_question_types=card.allowed_question_types,
                             importance=card.importance,
+                            concept_cluster=card.concept_cluster,
+                            answer_proposition=card.answer_proposition,
+                            prompt_material=card.prompt_material,
+                            relation_edges=[
+                                {"kind": e.kind, "target": e.target}
+                                for e in card.relation_edges
+                            ],
                             content_hash=sha256(material.encode()).hexdigest(),
                             status=card.status,
                             version=1,

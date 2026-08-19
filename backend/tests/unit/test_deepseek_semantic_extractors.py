@@ -81,12 +81,17 @@ def _point() -> ExamPoint:
     )
 
 
-def _decision(*, relevance_class: str = "direct") -> dict:
+def _decision(
+    *,
+    relevance_class: str = "direct",
+    candidate_facts: list[str] | None = None,
+    support_claim: str | None = None,
+) -> dict:
     return {
         "exam_point_code": "rag-diagnosis",
         "evidence_chunk_id": "e1",
         "relevance_class": relevance_class,
-        "support_claim": "切分粒度会影响关键内容召回",
+        "support_claim": support_claim or "切分粒度会影响关键内容召回",
         "evidence_role": "answer_or_rubric_basis",
         "content_kind": "principle",
         "candidate_assessment_unit": {
@@ -97,7 +102,7 @@ def _decision(*, relevance_class: str = "direct") -> dict:
         "candidate_card_content": {
             "name": "切分粒度影响",
             "performance_statement": "说明切分粒度如何影响召回",
-            "assessable_content": ["切分粒度会影响召回"],
+            "assessable_content": candidate_facts or ["切分粒度会影响召回"],
         },
         "confidence": 95,
         "source_locator": {"page": 3, "heading_path": ["检索"]},
@@ -1061,6 +1066,142 @@ def test_consolidator_rejects_fact_without_direct_evidence_coverage():
         )
 
     assert caught.value.error_code == "model_output_evidence_gap"
+
+
+def test_consolidator_accepts_owner_qualified_fact_wrapping_direct_evidence():
+    """归并原子为碎片证据补全归属限定（如工具名）时必须通过证据落地校验。"""
+
+    client = RecordingJsonClient(
+        [
+            {
+                "exam_point_code": "rag-diagnosis",
+                "assessment_units": [
+                    {
+                        "code": "diagnose-retrieval",
+                        "title": "评测参数配置",
+                        "performance_statement": "说明评测参数作用",
+                        "exam_point_code": "rag-diagnosis",
+                        "cards": [
+                            {
+                                "name": "eval_batch_size参数作用",
+                                "performance_statement": "说明eval_batch_size参数作用",
+                                "assessable_content": [
+                                    "ms-swift框架中，eval_batch_size参数用于控制评测批大小"
+                                ],
+                                "evidence_chunk_ids": ["e1"],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    )
+    decision = EvidenceDecision.model_validate(
+        _decision(
+            candidate_facts=["eval_batch_size参数用于控制评测批大小"],
+            support_claim="eval_batch_size参数用于控制评测批大小",
+        )
+    )
+
+    units = DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+        exam_point=_point(), admitted_decisions=[decision]
+    )
+
+    assert units[0].cards[0].assessable_content == [
+        "ms-swift框架中，eval_batch_size参数用于控制评测批大小"
+    ]
+    system = client.recorded_payloads[-1]["system"]
+    assert "自包含" in system
+    assert "归属" in system
+
+
+def test_consolidator_still_rejects_fabricated_owner_fact():
+    """归属限定包裹的是另一条无证据参数事实时依旧被拒。"""
+
+    client = RecordingJsonClient(
+        [
+            {
+                "exam_point_code": "rag-diagnosis",
+                "assessment_units": [
+                    {
+                        "code": "diagnose-retrieval",
+                        "title": "评测参数配置",
+                        "performance_statement": "说明评测参数作用",
+                        "exam_point_code": "rag-diagnosis",
+                        "cards": [
+                            {
+                                "name": "额外参数",
+                                "performance_statement": "说明额外参数",
+                                "assessable_content": [
+                                    "vLLM框架中，tensor_parallel_size参数用于控制张量并行数"
+                                ],
+                                "evidence_chunk_ids": ["e1"],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    )
+    decision = EvidenceDecision.model_validate(
+        _decision(
+            candidate_facts=["eval_batch_size参数用于控制评测批大小"],
+            support_claim="eval_batch_size参数用于控制评测批大小",
+        )
+    )
+
+    with pytest.raises(DeepSeekModelError) as caught:
+        DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+            exam_point=_point(), admitted_decisions=[decision]
+        )
+
+    assert caught.value.error_code == "model_output_evidence_gap"
+
+
+def test_consolidator_rejects_case_narrative_fact_bound_to_experiment_run():
+    """案例讲解的情境背景不是可迁移知识，入库前（RAG 检索库源头）即拒绝。"""
+
+    client = RecordingJsonClient(
+        [
+            {
+                "exam_point_code": "rag-diagnosis",
+                "assessment_units": [
+                    {
+                        "code": "diagnose-retrieval",
+                        "title": "数据构建",
+                        "performance_statement": "说明数据构建目标",
+                        "exam_point_code": "rag-diagnosis",
+                        "cards": [
+                            {
+                                "name": "数据失衡案例",
+                                "performance_statement": "说明数据失衡",
+                                "assessable_content": [
+                                    "思考模式数据与非思考模式数据分布不均衡的问题出现在上一轮训练中。"
+                                ],
+                                "evidence_chunk_ids": ["e1"],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    )
+    decision = EvidenceDecision.model_validate(
+        _decision(
+            candidate_facts=["思考模式数据与非思考模式数据分布不均衡的问题出现在上一轮训练中。"],
+            support_claim="上一轮训练中出现思考与非思考模式数据分布不均衡",
+        )
+    )
+
+    with pytest.raises(DeepSeekModelError) as caught:
+        DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+            exam_point=_point(), admitted_decisions=[decision]
+        )
+
+    assert caught.value.error_code == "model_output_evidence_gap"
+    system = client.recorded_payloads[-1]["system"]
+    assert "可迁移" in system
+    assert "上一轮训练" in system
 
 
 def test_consolidator_rejects_active_unit_without_knowledge_cards():

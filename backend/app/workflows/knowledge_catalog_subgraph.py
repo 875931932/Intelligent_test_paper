@@ -18,7 +18,9 @@ from app.domain.knowledge.relevance import (
     ExamPointFileDecision,
     RelevanceClass,
     admit_evidence_decision,
+    all_facts_supported,
     assessable_fact_keys,
+    fact_key_supported,
     semantic_text_key,
 )
 from app.services.knowledge_tree_service import (
@@ -144,12 +146,15 @@ def validate_consolidated_units(
                                 decision.candidate_card_content.assessable_content
                             )
                         )
-                if not evidence_facts or not evidence_facts & published_facts:
+                if not evidence_facts or not any(
+                    fact_key_supported(published, evidence_facts)
+                    for published in published_facts
+                ):
                     raise KnowledgeTreeValidationError(
                         "knowledge card requires direct evidence admitted for the same exam point"
                     )
                 supported_facts.update(evidence_facts)
-            if not published_facts or not published_facts <= supported_facts:
+            if not all_facts_supported(published_facts, supported_facts):
                 raise KnowledgeTreeValidationError(
                     "knowledge card requires direct evidence admitted for the same exam point"
                 )
