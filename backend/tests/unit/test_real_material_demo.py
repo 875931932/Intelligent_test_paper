@@ -188,6 +188,49 @@ def test_multi_content_fact_is_exploded_before_semantic_profiling():
     ]
 
 
+def test_multi_clause_fact_is_split_into_independent_atoms():
+    demo = _load_demo_module()
+
+    atomic = demo.explode_atomic_facts(
+        [
+            {
+                "evidence_chunk_id": "chunk-1",
+                "name": "模型评估",
+                "assessable_content": [
+                    "模型评估用于衡量模型在未知数据上的泛化能力；训练损失低仅表示拟合训练集"
+                ],
+            }
+        ]
+    )
+
+    assert [row["assessable_content"][0] for row in atomic] == [
+        "模型评估用于衡量模型在未知数据上的泛化能力",
+        "训练损失低仅表示拟合训练集",
+    ]
+
+
+def test_case_narrative_facts_never_enter_knowledge_cards():
+    # 案例讲解的情境背景（上一轮训练/本次实验/我们的实验）不进卡片：
+    # 知识卡是 RAG 检索库源头，汇聚点过滤兜底
+    demo = _load_demo_module()
+
+    card = demo.source_free_card(
+        {
+            "name": "数据失衡",
+            "assessable_content": [
+                "思考模式数据与非思考模式数据分布不均衡的问题出现在上一轮训练中。",
+                "本次 QLoRA 微调实验使用本地 Qwen3-0.6B 作为基座模型。",
+                "混合训练数据集的构建目标是解决两类数据分布不均衡的问题。",
+            ],
+        },
+        "说明数据均衡",
+    )
+
+    assert card["assessable_content"] == [
+        "混合训练数据集的构建目标是解决两类数据分布不均衡的问题。"
+    ]
+
+
 def test_admitted_evidence_is_partitioned_by_material_before_extraction():
     demo = _load_demo_module()
     chunks = {
@@ -503,11 +546,13 @@ def test_outline_extraction_keeps_the_complete_matching_section():
 def test_fact_extraction_target_scales_with_exam_weight_and_is_bounded():
     demo = _load_demo_module()
 
-    assert demo.target_fact_count(5) == 4
-    assert demo.target_fact_count(10) == 7
-    assert demo.target_fact_count(25) == 18
-    assert demo.target_fact_count(35) == 20
-    assert demo.target_fact_count(100) == 20
+    # 目标 ≈ 配额(w*0.7) × 1.7：池子必须明显大于题位配额，
+    # 分配器才有选择自由（否则每卷被迫选同样的原子）
+    assert demo.target_fact_count(5) == 6
+    assert demo.target_fact_count(10) == 12
+    assert demo.target_fact_count(25) == 30
+    assert demo.target_fact_count(35) == 30
+    assert demo.target_fact_count(100) == 30
 
 
 def test_support_claim_fallback_publishes_distinct_atomic_units():

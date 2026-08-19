@@ -92,6 +92,73 @@ def test_quota_reflects_weight_direction():
     assert ep1 >= 3 and ep2 <= 2  # 60/40 权重方向：EP1 占多数
 
 
+def _comprehensive_request(type_rules, *, seed=None):
+    return _request(
+        blueprint=BlueprintRequest(
+            total_score=20,
+            type_rules=type_rules,
+            chapter_weights={"A1": 50, "A2": 50},
+            units=_units(),
+        ),
+        allocation_seed=seed,
+    )
+
+
+def _comp_rules(**extra):
+    rule = {"count": 4, "score": 5}
+    rule.update(extra)
+    return {"comprehensive": rule}
+
+
+def test_comprehensive_archetypes_default_rotation_with_seed():
+    # 未指定池 + 种子：轮换起点受种子扰动，异种子换原型序列
+    base = _comp_rules()
+    archetypes_by_seed = {
+        seed: tuple(
+            s.comprehensive_archetype
+            for s in allocate_paper_contract(
+                _comprehensive_request(base, seed=seed)
+            ).slots
+        )
+        for seed in (None, 1, 2, 3, 5)
+    }
+    # 同种子复现
+    again = tuple(
+        s.comprehensive_archetype
+        for s in allocate_paper_contract(
+            _comprehensive_request(base, seed=2)
+        ).slots
+    )
+    assert again == archetypes_by_seed[2]
+    # 不同种子中至少一组选出不同序列（不再永远是固定前三种）
+    assert len(set(archetypes_by_seed.values())) > 1
+    # 全部来自合法原型
+    from app.domain.generation.archetypes import ARCHETYPE_CONTRACTS
+    for seq in archetypes_by_seed.values():
+        assert all(a in ARCHETYPE_CONTRACTS for a in seq)
+
+
+def test_teacher_specified_archetype_pool_is_respected():
+    # 教师指定原型白名单（如文科课程只要案例与方案设计）→ 只从池中轮换
+    request = _comprehensive_request(
+        _comp_rules(archetypes=["case_analysis", "solution_design", "critique_correction"]),
+    )
+    contract = allocate_paper_contract(request)
+    picked = {s.comprehensive_archetype for s in contract.slots}
+    assert picked <= {"case_analysis", "solution_design", "critique_correction"}
+    assert len(contract.slots) == 4
+
+
+def test_invalid_archetype_pool_falls_back_to_full_rotation():
+    # 非法原型名全部被滤掉时回退完整轮换池，不报错不静默空池
+    request = _comprehensive_request(_comp_rules(archetypes=["nonexistent", "also_fake"]))
+    contract = allocate_paper_contract(request)
+    from app.domain.generation.archetypes import ARCHETYPE_CONTRACTS
+    picked = {s.comprehensive_archetype for s in contract.slots}
+    assert picked <= set(ARCHETYPE_CONTRACTS)
+    assert len(contract.slots) == 4
+
+
 def test_atoms_unique_across_paper_and_mutex_within_point():
     contract = allocate_paper_contract(_request())
     atoms = [s.coverage_atom for s in contract.slots]

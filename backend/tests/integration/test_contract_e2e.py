@@ -197,5 +197,5 @@ def test_flawed_gateway_marks_review_not_blocks_pipeline():
     good = [q for q in questions if q["item_index"] != 1]
     assert len(good) == 5 and all(q["quality"]["status"] == "pass" for q in good)
     assert result["final_check"]["passed"] is False
-    # 成本上限：2 批 + 题1 重试 2 次 = 4
-    assert result["model_call_count"] <= 4
+    # 成本上限：2 批 + 题1 重试 2 次 + 换原子重出 1 次 = 5
+    assert result["model_call_count"] <= 5

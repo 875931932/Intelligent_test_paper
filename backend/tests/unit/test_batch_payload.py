@@ -38,6 +38,15 @@ def test_batch_payload_carries_slot_content_and_card_fallback():
     assert spec.prompt_material == ["材料1"]
 
 
+def test_batch_payload_carries_card_name_as_concept_context():
+    batch = split_contract_into_batches([_slot(1)])[0]
+    payload = compile_batch_generation_payload(batch, {"C1": {
+        "name": "ms-swift训练参数配置",
+    }})
+    assert payload.questions[0].card_name == "ms-swift训练参数配置"
+    assert "归属" in payload.batch_instruction
+
+
 def test_batch_payload_empty_slot_fields_fall_back_to_card():
     slot = _slot(1, performance_statement="", prompt_material=[], preferred_terms=[])
     batch = split_contract_into_batches([slot])[0]

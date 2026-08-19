@@ -59,6 +59,48 @@ def test_no_clusters_reports_conflict_for_every_item():
     assert len(conflicts) == 2
 
 
+def test_same_seed_reproduces_same_atom_selection():
+    # 富余池（4 簇各 1 原子，2 题位）：并列打破靠种子
+    clusters = [
+        [_atom(f"原子文本甲{ch}", f"边界甲{ch}")] for ch in "ABCD"
+    ]
+    items = [_item(1), _item(2)]
+    run_a = assign_atoms_to_items(items, clusters, seed=42)
+    run_b = assign_atoms_to_items(items, clusters, seed=42)
+    assert [a[1].atom_text for a in run_a[0]] == [a[1].atom_text for a in run_b[0]]
+
+
+def test_different_seeds_yield_different_atom_combinations():
+    # 富余池上不同种子应至少有一次选出不同组合（并列被不同打破）
+    clusters = [
+        [_atom(f"原子文本甲{ch}", f"边界甲{ch}")] for ch in "ABCD"
+    ]
+    items = [_item(1), _item(2)]
+    picks = {
+        tuple(a[1].atom_text for a in assign_atoms_to_items(items, clusters, seed=seed)[0])
+        for seed in range(12)
+    }
+    assert len(picks) > 1
+
+
+def test_seed_never_violates_hard_constraints():
+    # 任何种子下：原子唯一、答案域互斥不破
+    clusters = [
+        [_atom("SFTTrainer需要SFTConfig配置参数", "SFTConfig参数")],
+        [_atom("QLoRA使用NF4量化格式压缩", "NF4量化格式")],
+        [_atom("模型评估衡量泛化能力表现", "泛化能力指标")],
+    ]
+    for seed in range(8):
+        assignments, conflicts = assign_atoms_to_items(
+            [_item(i) for i in (1, 2, 3)], clusters, seed=seed,
+        )
+        assert not conflicts
+        texts = [a[1].atom_text for a in assignments]
+        bounds = [a[1].boundary for a in assignments]
+        assert len(set(texts)) == 3
+        assert len(set(bounds)) == 3
+
+
 def test_same_cluster_reuse_when_clusters_fewer_than_items():
     # 单簇两个原子：池紧张时贪心自动退化同簇连供（同题型也不再被硬拒绝）
     clusters = [

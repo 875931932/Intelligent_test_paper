@@ -15,6 +15,7 @@ import asyncio
 import hashlib
 import json
 import math
+import random
 import mimetypes
 import os
 import re
@@ -58,6 +59,8 @@ from app.domain.knowledge.relevance import (
     KnowledgeCardCandidate,
     RelevanceClass,
     StagingChunk,
+    SITUATIONAL_BINDING_LANGUAGE,
+    semantic_text_key,
 )
 from app.services.blueprint_service import allocate_plan_items
 from app.services.contract_service import (
@@ -90,7 +93,13 @@ _SOURCE_REFERENCE_LANGUAGE = re.compile(
     r"(?:中|里的|所述|要求|说明)?"
     r"|(?:课件|资料|教材|讲义|实验手册|文件)\s*(?:中|里的|所述|要求|说明|指出|规定|记载)"
     r"|文件名|页码|实验编号|证据(?:id|编号)|材料(?:id|版本)"
-    r"|第\s*\d+\s*(?:页|章|讲)",
+    r"|第\s*\d+\s*(?:页|章|讲)"
+    # 情境绑定语：把内容锚定到特定实验运行（案例讲解的叙述背景）而非
+    # 可迁移知识——与 relevance.SITUATIONAL_BINDING_LANGUAGE 同源（拼接进
+    # 本正则后由 is_source_free_assessable_fact 一并拒绝）。
+    # 抽取时应剥离情境只留通用结论，如"失衡问题出现在上一轮训练中"
+    # 不是知识点，"混合数据集用于解决两类数据失衡"才是。
+    r"|" + SITUATIONAL_BINDING_LANGUAGE.pattern,
     re.IGNORECASE,
 )
 # 实践材料（代码/配置/命令）识别信号：通用语法特征，不绑定具体课程。
@@ -152,7 +161,10 @@ def is_source_free_assessable_fact(value: str) -> bool:
 
 
 def target_fact_count(weight_value: float) -> int:
-    return max(4, min(20, math.ceil(float(weight_value) * 0.7)))
+    # 抽取目标 ≈ 配额(w*0.7) × 1.7：池子必须明显大于题位配额，
+    # 分配器才有选择自由——池子刚好等于配额时每卷被迫选同样的原子
+    # （考查点固定），富余池 + 分配种子才能换出不同的原子组合
+    return max(4, min(30, math.ceil(float(weight_value) * 1.2)))
 
 
 def validate_extracted_facts(
@@ -226,13 +238,19 @@ def explode_atomic_facts(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
             text = str(content).strip()
             if not text:
                 continue
-            atomic.append(
-                {
-                    "evidence_chunk_id": fact["evidence_chunk_id"],
-                    "name": text,
-                    "assessable_content": [text],
-                }
-            )
+            # 多子句复合事实按"；"切分为独立原子：填空/判断题无法承载
+            # 双子句语义，切分后每条仍是原子的子串，证据包含判定不受影响
+            for piece in re.split(r"[；;]", text):
+                piece = piece.strip()
+                if not piece:
+                    continue
+                atomic.append(
+                    {
+                        "evidence_chunk_id": fact["evidence_chunk_id"],
+                        "name": piece,
+                        "assessable_content": [piece],
+                    }
+                )
     return atomic
 
 
@@ -662,10 +680,17 @@ def source_free_card(card: dict[str, Any], fallback_statement: str) -> dict[str,
     prompt_material = card.get("prompt_material") or []
     if isinstance(prompt_material, str):
         prompt_material = [prompt_material]
+    # 汇聚点兜底过滤：无论原子来自抽取、补抽还是 support_claim 回退，
+    # 含来源话术或情境绑定的条目一律不进卡片（知识卡是 RAG 检索库源头）
+    assessable = [
+        str(content).strip()
+        for content in card.get("assessable_content") or []
+        if is_source_free_assessable_fact(str(content))
+    ]
     return {
         "name": card.get("name", ""),
         "performance_statement": card.get("performance_statement") or fallback_statement,
-        "assessable_content": list(card.get("assessable_content") or []),
+        "assessable_content": assessable,
         "scope_boundary": dict(card.get("scope_boundary") or {}),
         "cognitive_targets": list(card.get("cognitive_targets") or ["understand"]),
         "allowed_question_types": list(card.get("allowed_question_types") or []),
@@ -1327,26 +1352,39 @@ async def generate_paper_from_blueprint(
     snapshot["status"] = "generating"
     write_snapshot(snapshot)
 
+    # 每次跑卷换分配种子：富余原子池上选出不同原子组合，
+    # 避免"每张卷都在考同一批知识点"（同种子可复现同一份卷）
+    allocation_seed = random.randint(1, 10**9)
     request = ContractRequest(
         blueprint=BlueprintRequest.model_validate(blueprint["request"]),
         knowledge_cards=cards,
+        allocation_seed=allocation_seed,
     )
+    log(f"Contract allocation seed: {allocation_seed}")
     contract = allocate_paper_contract(request)
     centrality_threshold = request.centrality_threshold
-    if contract.conflicts:
+    # 门槛三级放宽：0.6（默认）→ 0.5（基准分）→ 0.45（基准-最大罚分地板）。
+    # 抽取量在配额附近波动时（池子贴地），0.5 下仍可能差 1-2 个原子，
+    # 0.45 只放行被括号罚分扣掉的原子，不放行 0.4 的低质原子
+    for fallback_threshold in (0.5, 0.45):
+        if not contract.conflicts:
+            break
         for conflict in contract.conflicts:
             log(f"Contract conflict [{conflict.code}]: {conflict.message}")
-        log("Retrying contract allocation with relaxed centrality threshold 0.5")
-        centrality_threshold = 0.5
+        log(
+            "Retrying contract allocation with relaxed centrality "
+            f"threshold {fallback_threshold}"
+        )
+        centrality_threshold = fallback_threshold
         contract = allocate_paper_contract(
             request.model_copy(update={"centrality_threshold": centrality_threshold})
         )
-        if contract.conflicts:
-            for conflict in contract.conflicts:
-                log(f"Contract conflict [{conflict.code}]: {conflict.message}")
-            raise RuntimeError(
-                "contract allocation still reports conflicts after relaxation"
-            )
+    if contract.conflicts:
+        for conflict in contract.conflicts:
+            log(f"Contract conflict [{conflict.code}]: {conflict.message}")
+        raise RuntimeError(
+            "contract allocation still reports conflicts after relaxation"
+        )
     log(
         f"Paper contract allocated: {len(contract.slots)} slots, "
         f"total score {contract.total_score}, threshold {centrality_threshold}"
@@ -1384,7 +1422,13 @@ async def generate_paper_from_blueprint(
     )
     result = await asyncio.to_thread(
         build_generation_graph(gateway).invoke,
-        {"contract": slots_json, "knowledge_cards": cards},
+        {
+            "contract": slots_json,
+            "knowledge_cards": cards,
+            "units": [
+                unit.model_dump(mode="json") for unit in request.blueprint.units
+            ],
+        },
     )
     questions = result.get("questions", [])
     final_check = result.get("final_check", {})
@@ -1654,8 +1698,14 @@ async def main() -> None:
         fact_prompt = (
             "你只处理一个考试考点下的一份教学资料，从已准入证据中抽取可用于高校期末笔试的"
             "原子事实。返回严格 JSON 对象，字段为 facts。每个 fact 只包含 evidence_index、name、"
-            "assessable_content，并且 assessable_content 必须只含一条可独立判分的简短事实；不得写"
-            "文件名、页码、实验编号、安装命令或来源话术。没有可考事实的证据不要输出；证据不足时"
+            "assessable_content，并且 assessable_content 必须只含一条可独立判分的简短事实；"
+            "每条事实必须自包含：明确归属主体，说明参数、命令或概念属于哪个框架、工具、模型或流程"
+            "（如写'ms-swift 的 eval_batch_size 参数…'而非'eval_batch_size 参数…'），"
+            "归属可结合证据内容与标题推断，禁止输出无主语的参数、命令或数值罗列；"
+            "每条事实必须是可迁移的通用知识：案例讲解只抽取其承载的通用结论，剥离绑定特定"
+            "实验运行的叙述背景——不得出现'上一轮训练''本次实验''我们的实验'等情境表述"
+            "（'失衡问题出现在上一轮训练中'不是知识点，'混合数据集用于解决思考与非思考数据失衡'才是）；"
+            "不得写文件名、页码、实验编号、安装命令或来源话术。没有可考事实的证据不要输出；证据不足时"
             "宁可少于目标，也不得补造。"
         )
         for material_version_id, evidence in sorted(evidence_by_material.items()):
@@ -1728,6 +1778,70 @@ async def main() -> None:
         atomic_facts = explode_atomic_facts(extracted)
         if not atomic_facts:
             return point.code, []
+        if len(atomic_facts) < fact_target:
+            existing = [fact["assessable_content"][0] for fact in atomic_facts]
+            existing_keys = {semantic_text_key(text) for text in existing}
+            all_evidence = [
+                item
+                for rows in evidence_by_material.values()
+                for item in rows
+            ]
+            topup: list[dict[str, Any]] = []
+
+            def validate_topup(result: dict, current_evidence=all_evidence) -> None:
+                topup.extend(validate_extracted_facts(result, current_evidence))
+
+            try:
+                CachedJsonRequester(
+                    semantic_client(),
+                    context={
+                        "stage": "topup_assessable_facts",
+                        "exam_point": point.model_dump(mode="json"),
+                        "material_hash": f"topup:{point.code}",
+                        "candidate_chunk_hashes": [
+                            hashlib.sha256(item["content"].encode()).hexdigest()
+                            for item in all_evidence
+                        ],
+                    },
+                ).request_json(
+                    system_prompt=(
+                        "你只处理一个考试考点下教学资料的补充抽取。此前已从证据中抽出若干原子"
+                        "事实但数量不足，请再从全部证据中抽取与已有事实不重复的补充事实。"
+                        "返回严格 JSON 对象，字段为 facts（确实没有新事实时为空数组）。"
+                        "每个 fact 只包含 evidence_index、name、assessable_content，并且 "
+                        "assessable_content 必须只含一条可独立判分、自包含（明确参数、命令或"
+                        "概念属于哪个框架、工具、模型或流程）的简短事实；必须是可迁移的通用知识，"
+                        "剥离'上一轮训练''本次实验''我们的实验'等特定实验运行的情境绑定；"
+                        "不得写文件名、页码、实验编号、安装命令或来源话术，"
+                        "不得复述已有事实的同义表述，不得补造。"
+                    ),
+                    payload={
+                        "exam_point": point.model_dump(mode="json"),
+                        "target_fact_count": fact_target - len(atomic_facts),
+                        "existing_facts": existing,
+                        "evidence": [
+                            {
+                                "evidence_index": index,
+                                "content": item["content"],
+                                "support_claim": item["support_claim"],
+                            }
+                            for index, item in enumerate(all_evidence)
+                        ],
+                    },
+                    temperature=0.0,
+                    response_validator=validate_topup,
+                )
+            except Exception as exc:
+                log(
+                    "Fact top-up failed for "
+                    f"{point.code}: {type(exc).__name__}; keeping {len(atomic_facts)} facts"
+                )
+            for row in explode_atomic_facts(topup):
+                text = row["assessable_content"][0]
+                key = semantic_text_key(text)
+                if key and key not in existing_keys:
+                    existing_keys.add(key)
+                    atomic_facts.append(row)
 
         profiled: list[dict[str, Any]] = []
         profile_prompt = (

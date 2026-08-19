@@ -117,6 +117,60 @@ def test_catalog_subgraph_rejects_card_evidence_not_admitted_direct_for_same_poi
         )
 
 
+def test_catalog_subgraph_accepts_owner_qualified_atom_wrapping_evidence_fact():
+    """归并为碎片事实补全归属限定后仍须通过证据落地校验。"""
+
+    decisions = [
+        ExamPointFileDecision(
+            exam_point_code="EP-1",
+            material_version_id="material-1",
+            decisions=[_decision("e1", fact="eval_batch_size参数用于控制评测批大小")],
+        )
+    ]
+
+    tree = build_knowledge_catalog_candidate(
+        framework_version_id="framework-v1",
+        exam_points=[_point()],
+        file_decisions=decisions,
+        consolidated_units={
+            "EP-1": [
+                _unit(
+                    ["e1"],
+                    fact="ms-swift框架中，eval_batch_size参数用于控制评测批大小",
+                )
+            ]
+        },
+    )
+
+    assert tree.coverage[0].status == "sufficient"
+    atom = tree.topics[0].units[0].cards[0].assessable_content[0]
+    assert atom.startswith("ms-swift框架中")
+
+
+def test_catalog_subgraph_still_rejects_atom_without_evidence_core():
+    """编造内容（证据核心未逐字出现）依旧被拒。"""
+
+    decisions = [
+        ExamPointFileDecision(
+            exam_point_code="EP-1",
+            material_version_id="material-1",
+            decisions=[_decision("e1", fact="eval_batch_size参数用于控制评测批大小")],
+        )
+    ]
+
+    with pytest.raises(KnowledgeTreeValidationError, match="direct evidence"):
+        build_knowledge_catalog_candidate(
+            framework_version_id="framework-v1",
+            exam_points=[_point()],
+            file_decisions=decisions,
+            consolidated_units={
+                "EP-1": [
+                    _unit(["e1"], fact="vLLM框架中，tensor_parallel_size参数用于控制张量并行数")
+                ]
+            },
+        )
+
+
 def test_catalog_subgraph_marks_missing_answer_or_rubric_basis_insufficient():
     decision = _decision("e1", role="fact")
     point = _point().model_copy(update={"required_evidence_roles": []})

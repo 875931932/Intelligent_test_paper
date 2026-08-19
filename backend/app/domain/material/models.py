@@ -98,3 +98,5 @@ class MaterialResponse(BaseModel):
     material_type: str
     status: str
     latest_version: MaterialVersionResponse | None = None
+    # 最新版本的解析状态（{id,status,error_code,error_summary} 或 None=未解析）
+    parse_status: dict | None = None

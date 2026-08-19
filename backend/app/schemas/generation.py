@@ -114,6 +114,7 @@ class BatchQuestionSpec(BaseModel):
     difficulty: str
     cognitive_level: str
     assessment_mode: AssessmentMode = "conceptual"
+    card_name: str = ""
     performance_statement: str = ""
     scope_boundary: dict = Field(default_factory=dict)
     prompt_material: list[str] = Field(default_factory=list)
@@ -164,6 +165,7 @@ def compile_batch_generation_payload(
             difficulty=slot.difficulty,
             cognitive_level=slot.cognitive_level,
             assessment_mode=slot.assessment_mode,
+            card_name=str(card.get("name", "") or ""),
             performance_statement=slot.performance_statement or (card.get("performance_statement") or ""),
             scope_boundary=slot.scope_boundary or card.get("scope_boundary", {}) or {},
             prompt_material=slot.prompt_material or list(card.get("prompt_material", []) or []),
@@ -182,6 +184,8 @@ def compile_batch_generation_payload(
     instruction = (
         f"为本批 {len(specs)} 道题目一次性命题，返回 JSON 对象（顶层字段 questions 为数组），数组每个元素必须含 item_index 字段及对应 output_schema 要求的全部字段。"
         "同批各题考查视角必须互补：题型与认知层级已指定，不得从同一角度重复考查同一内容。"
+        "每题的 card_name 是该知识卡的概念语境：题干涉及参数、命令或工具特性时，"
+        "必须写清其归属（哪个框架/工具/流程的参数），使题干脱离语境仍可独立理解，不得出现无主语的参数或命令。"
         "forbidden_atoms 与 forbidden_answer_cores 是同考点其他题目已使用的原子与答案核心，"
         "它们不得出现在本批任何题干、选项或答案文本中。"
     )

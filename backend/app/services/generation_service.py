@@ -11,19 +11,21 @@ def _compact_text(value) -> str:
     return re.sub(r"[^\w\u4e00-\u9fff]", "", str(value or "")).lower()
 
 
-def validate_generated_question(question: dict) -> dict:
+def validate_generated_question(question: dict, atom_text: str = "") -> dict:
     qtype = question.get("question_type")
     stem = str(question.get("stem", "")).strip()
     difficulty = question.get("difficulty", "medium")
     if not stem or re.search(r"根据(课件|资料)|第\s*\d+\s*(页|章|讲)|实验\s*\d+", stem, re.IGNORECASE):
         return {"status": "blocker", "code": "source_language", "message": "题目包含来源话术"}
-    # 难度合理性检查：低难度题不应出现"分析、评价、设计"等高级认知关键词
+    # 难度合理性检查：低难度题不应出现"分析、评价、设计"等高级认知关键词。
+    # 豁免：关键词同时出现在合同原子原文中时，它是被考查的术语本身
+    # （如原子"指标比较可通过……完成"中的"比较"），不是对学生的认知要求。
     if difficulty == "low":
         high_order_hints = [
             "分析", "评价", "评估", "设计", "创造", "比较", "对比",
             "综合", "判断并说明", "论证", "批判", "优化",
         ]
-        if any(hint in stem for hint in high_order_hints):
+        if any(hint in stem for hint in high_order_hints if hint not in atom_text):
             return {
                 "status": "blocker",
                 "code": "difficulty_mismatch",

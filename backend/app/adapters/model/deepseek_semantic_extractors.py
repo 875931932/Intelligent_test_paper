@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import (
@@ -25,7 +27,9 @@ from app.domain.knowledge.relevance import (
     ExamPointFileDecision,
     RelevanceClass,
     StagingChunk,
+    all_facts_supported,
     assessable_fact_keys,
+    is_transferable_fact,
 )
 from app.domain.model_calls import ModelCallContext
 
@@ -205,6 +209,24 @@ def _normalize_file_classification_response(raw: dict[str, Any]) -> dict[str, An
     return normalized
 
 
+def _split_multi_clause_atoms(values: Any) -> list[str]:
+    """多子句复合事实按"；/;"切分为独立原子。
+
+    填空/判断题无法承载双子句语义；切分后的子句是原子的子串，
+    证据包含判定（fact_key_supported）不受影响。
+    """
+
+    if not isinstance(values, list):
+        values = [values]
+    pieces: list[str] = []
+    for value in values:
+        for piece in re.split(r"[；;]", str(value or "")):
+            piece = piece.strip()
+            if piece:
+                pieces.append(piece)
+    return pieces
+
+
 def _normalize_consolidation_response(
     raw: dict[str, Any], exam_point: ExamPoint, admitted: list[EvidenceDecision]
 ) -> dict[str, Any]:
@@ -254,10 +276,10 @@ def _normalize_consolidation_response(
                             for key, value in card.items()
                             if key in card_fields
                         },
-                        "assessable_content": card.get(
+                        "assessable_content": _split_multi_clause_atoms(card.get(
                             "assessable_content",
                             card.get("content", card.get("facts", card.get("knowledge_points", []))),
-                        ),
+                        )),
                         "evidence_chunk_ids": card.get(
                             "evidence_chunk_ids", card.get("evidence_ids", [])
                         ),
@@ -271,10 +293,10 @@ def _normalize_consolidation_response(
             converted.append(raw_unit)
             continue
         card = dict(raw_unit)
-        card["assessable_content"] = card.get(
+        card["assessable_content"] = _split_multi_clause_atoms(card.get(
             "assessable_content",
             card.get("content", card.get("facts", card.get("knowledge_points", []))),
-        )
+        ))
         card["evidence_chunk_ids"] = card.get(
             "evidence_chunk_ids", card.get("evidence_ids", [])
         )
@@ -583,6 +605,9 @@ class DeepSeekExamPointEvidenceClassifier:
                 "relevance_class 仅允许 direct、supporting、background、out_of_scope；"
                 "direct 必须能直接支撑可评分事实、答案或评分点，且必须提供 candidate_assessment_unit 与 "
                 "candidate_card_content，否则降级为 supporting 或 background；"
+                "candidate_card_content.assessable_content 的每条事实必须自包含：明确归属主体，"
+                "说明该参数/命令/概念属于哪个框架、工具、模型或流程（如写'ms-swift 的 eval_batch_size 参数…'而非'eval_batch_size 参数…'），"
+                "归属信息可结合 chunk 内容与 locator 的 heading_path 推断，禁止输出无主语的参数、命令或数值罗列；"
                 "supporting 只用于设问语境；background/out_of_scope 不得生成知识卡。"
                 "遵守各考点 operational_detail_policy，不使用任何课程专属黑名单。"
                 "来源页码和标题仅用于教师追溯，不得写入 candidate_card_content 的正文。返回严格 JSON。"
@@ -662,7 +687,18 @@ class DeepSeekExamPointKnowledgeConsolidator:
                 "你只归并一个考试考点已经准入的 direct 和 supporting 决策。按可评分表现合并同义事实，"
                 "同时保留不同答案边界；不得按文件名、章节、页码或来源数量拆分知识卡。知识卡的每条"
                 "assessable_content 都必须被其 evidence_chunk_ids 引用的 direct 证据支持。supporting 内容"
-                "只能进入 prompt_material。输出严格 JSON 对象，包含 exam_point_code、assessment_units，可另带 source_locations"
+                "只能进入 prompt_material。"
+                "每条 assessable_content 必须是可迁移的通用知识：案例讲解只抽取其承载的通用结论，"
+                "剥离绑定特定实验运行的叙述背景——不得出现'上一轮训练''本次实验''我们的实验'等"
+                "情境表述（'失衡问题出现在上一轮训练中'不是知识点，"
+                "'混合数据集用于解决思考与非思考数据失衡'才是）；知识卡会进入检索库，"
+                "案例叙述会污染检索且消耗资源。"
+                "assessable_content 的每条事实必须自包含：脱离卡片名和单元名即可独立理解；"
+                "证据事实缺主语时必须补全归属限定（说明参数、命令、概念属于哪个框架、工具、模型或流程，"
+                "如证据为'eval_batch_size参数用于控制评测批大小'时归并为'ms-swift框架中，eval_batch_size参数用于控制评测批大小'），"
+                "归属限定只能来自证据本身、同考点其他证据或考点语境，禁止编造归属；"
+                "禁止输出无主语的参数、命令或数值罗列。"
+                "输出严格 JSON 对象，包含 exam_point_code、assessment_units，可另带 source_locations"
                 "供教师查看，但来源信息不得进入卡片 name、performance_statement 或 assessable_content。每张 active 卡还要输出"
                 "来源无关的 concept_cluster、answer_proposition、required_propositions、relation_edges 和 instance_carriers。"
                 "concept_cluster 按共同考核能力聚合；relation_edges 仅描述等价、上下位、组成、对比、汇总和前置关系；"
@@ -715,10 +751,24 @@ def _validate_consolidated_units(
                         assessable_fact_keys(decision.candidate_card_content.assessable_content)
                     )
                 supported_facts.update(assessable_fact_keys([decision.support_claim]))
-            if not assessable_fact_keys(card.assessable_content).issubset(supported_facts):
+            if not all_facts_supported(
+                assessable_fact_keys(card.assessable_content), supported_facts
+            ):
                 raise DeepSeekModelError(
                     "model_output_evidence_gap",
                     "knowledge card contains a fact not covered by direct evidence",
+                )
+            # 可迁移性：知识卡是 RAG 检索库的源头，案例叙述背景
+            # （"失衡问题出现在上一轮训练中"）不得入库，入库前即拒绝
+            non_transferable = [
+                text for text in card.assessable_content
+                if not is_transferable_fact(text)
+            ]
+            if non_transferable:
+                raise DeepSeekModelError(
+                    "model_output_evidence_gap",
+                    "knowledge card contains case-narrative facts bound to a specific "
+                    "experiment run; extract only the transferable conclusion",
                 )
 
 

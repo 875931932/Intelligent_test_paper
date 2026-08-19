@@ -13,7 +13,15 @@ from app.config import settings
 
 @lru_cache
 def get_engine():
-    return create_engine(settings.database_url, future=True)
+    # pool_pre_ping + pool_recycle：远程/共享 PostgreSQL 会掐断空闲连接，
+    # 取连接前先探活并回收陈旧连接，避免 "server closed the connection" 500。
+    return create_engine(
+        settings.database_url,
+        future=True,
+        pool_pre_ping=True,
+        pool_recycle=300,
+        pool_timeout=30,
+    )
 
 
 @lru_cache

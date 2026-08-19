@@ -23,7 +23,23 @@ from app.domain.knowledge.relevance import (
     RelevanceClass,
     admit_evidence_decision,
     assessable_fact_keys,
+    is_transferable_fact,
 )
+
+
+def test_case_narrative_facts_bound_to_experiment_run_are_not_transferable():
+    # 案例讲解的叙述背景（绑定特定实验运行）不是可迁移知识，入库前拒绝
+    assert not is_transferable_fact("思考模式数据与非思考模式数据分布不均衡的问题出现在上一轮训练中。")
+    assert not is_transferable_fact("本次 QLoRA 微调实验使用本地 Qwen3-0.6B 作为基座模型。")
+    assert not is_transferable_fact("本次微调实验的训练数据以 JSONL 格式存放。")
+    assert not is_transferable_fact("我们的实验中发现数据比例失衡。")
+
+
+def test_general_mechanism_wording_remains_transferable():
+    # 通用机制描述不含情境绑定，不得误伤
+    assert is_transferable_fact("迭代式DPO中用上一轮迭代产生的策略进行采样。")
+    assert is_transferable_fact("混合训练数据集的构建目标是解决思考模式数据与非思考模式数据分布不均衡的问题。")
+    assert is_transferable_fact("LoRA 通过低秩矩阵分解减少可训练参数量。")
 
 
 def _exam_point(

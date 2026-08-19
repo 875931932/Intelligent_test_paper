@@ -9,3 +9,9 @@ __pycache__/
 
 .runtime/
 node_modules/
+
+# 诊断/临时文件（不入库）
+diag_*.py
+diag_*.txt
+old_paper.json
+.pytest_tmp/
