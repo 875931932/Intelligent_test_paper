@@ -3,6 +3,7 @@
 import { api } from '../api'
 import type {
   Course,
+  EvidenceLink,
   FrameworkCandidate,
   FrameworkConfirmation,
   FrameworkRunCreated,
@@ -144,6 +145,9 @@ export const knowledgeApi = {
     }),
 
   getPublished: (courseId: string) => api<PublishedKnowledge>(`${base(courseId)}/published-knowledge`),
+
+  getEvidence: (courseId: string, cardId: string) =>
+    api<EvidenceLink[]>(`${base(courseId)}/published-knowledge/cards/${cardId}/evidence`),
 }
 
 // ── 蓝图 / 合同 / 出题 ────────────────────────────────
