@@ -35,14 +35,18 @@ export default function App() {
 
   const refreshMaterials = useCallback(async (courseId: string) => {
     try {
-      setMaterials(await materialsApi.list(courseId))
+      const mats = await materialsApi.list(courseId)
+      setMaterials(mats)
+      return mats
     } catch {
       setMaterials([])
+      return []
     }
   }, [])
 
-  const refreshReadiness = useCallback(async (courseId: string) => {
+  const refreshReadiness = useCallback(async (courseId: string, materialsCount = 0) => {
     const next: CourseReadiness = { ...EMPTY_READINESS }
+    next.materialsReady = materialsCount > 0
     try {
       await frameworkApi.getCurrent(courseId)
       next.frameworkReady = true
@@ -65,8 +69,8 @@ export default function App() {
       setRoute(openCourseSpace(course))
       setMaterials([])
       setReadiness(EMPTY_READINESS)
-      await refreshMaterials(course.id)
-      await refreshReadiness(course.id)
+      const mats = await refreshMaterials(course.id)
+      await refreshReadiness(course.id, mats.length)
     },
     [refreshMaterials, refreshReadiness],
   )
@@ -122,13 +126,13 @@ export default function App() {
           <MaterialsStep
             courseId={route.course.id}
             materials={materials}
-            onRefresh={() => refreshMaterials(route.course.id)}
+            onRefresh={async () => { await refreshMaterials(route.course.id) }}
           />
         ) : route.section === 'framework' ? (
           <FrameworkStep
             courseId={route.course.id}
             materials={materials}
-            onDone={() => refreshReadiness(route.course.id)}
+            onDone={() => refreshReadiness(route.course.id, materials.length)}
           />
         ) : route.section === 'knowledge' ? (
           <PublishedTreeBrowse courseId={route.course.id} />
