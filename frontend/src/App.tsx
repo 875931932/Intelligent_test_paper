@@ -10,11 +10,11 @@ import { FrameworkStep } from './console/steps/FrameworkStep'
 import { CourseSpaceHome } from './console/CourseSpaceHome'
 import { KnowledgeCatalog } from './console/knowledge/knowledgeCatalog'
 import { ExamProjectList } from './console/ExamProjectList'
+import { ExamProjectWorkspace } from './console/exam/examProjectWorkspace'
 import { Layout } from './console/shell/Layout'
 import { frameworkApi, knowledgeApi, materialsApi } from './console/client'
 import { openCourseSpace, goToSection, type CourseSection, type Route } from './console/nav'
 import type { Course, CourseReadiness, Material } from './console/types'
-import { Notice } from './console/ui'
 import { DemoApp } from './demo/DemoApp'
 
 const EMPTY_READINESS: CourseReadiness = {
@@ -136,17 +136,16 @@ export default function App() {
           />
         ) : route.section === 'knowledge' ? (
           <KnowledgeCatalog courseId={route.course.id} />
+        ) : route.section === 'projects' ? (
+          <ExamProjectList
+            courseId={route.course.id}
+            onOpenProject={(pid) => setRoute({ page: 'exam-project', course: route.course, projectId: pid })}
+          />
         ) : (
-          <ExamProjectList />
+          null
         )
       ) : route.page === 'exam-project' ? (
-        <div className="content-inner">
-          <div className="page-head">
-            <h2>试卷项目生产线</h2>
-            <div className="desc">蓝图 → 合同 → 生成 → 审核 → 导出 · 5 阶段流水线将在 Plan 3 交付。</div>
-          </div>
-          <Notice kind="info">S2/S3 占位</Notice>
-        </div>
+        <ExamProjectWorkspace courseId={route.course.id} projectId={route.projectId} />
       ) : null}
     </Layout>
   )

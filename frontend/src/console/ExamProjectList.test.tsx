@@ -1,13 +1,19 @@
-import { describe, it, expect } from 'vitest'
-import { screen } from '@testing-library/react'
-import { renderWithProviders } from '../test/render'
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen } from '@testing-library/react'
 import { ExamProjectList } from './ExamProjectList'
 
+// Mock projectsApi 避免真实 HTTP
+vi.mock('./client', () => ({
+  projectsApi: {
+    list: vi.fn().mockResolvedValue([]),
+  },
+}))
+
 describe('ExamProjectList', () => {
-  it('renders the S2 skeleton notice and empty list', () => {
-    renderWithProviders(<ExamProjectList />)
-    expect(screen.getByText('试卷项目')).toBeInTheDocument()
-    expect(screen.getByText(/S2/)).toBeInTheDocument()
+  it('renders empty state when no projects', async () => {
+    const { container } = render(<ExamProjectList courseId="c1" onOpenProject={vi.fn()} />)
+    // 等待异步加载完成
+    expect(await screen.findByText('试卷项目')).toBeInTheDocument()
     expect(screen.getByText(/暂无试卷项目/)).toBeInTheDocument()
   })
 })
