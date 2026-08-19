@@ -8,7 +8,7 @@ import { CoursesPage } from './console/CoursesPage'
 import { MaterialsStep } from './console/steps/MaterialsStep'
 import { FrameworkStep } from './console/steps/FrameworkStep'
 import { CourseSpaceHome } from './console/CourseSpaceHome'
-import { PublishedTreeBrowse } from './console/PublishedTreeBrowse'
+import { KnowledgeCatalog } from './console/knowledge/knowledgeCatalog'
 import { ExamProjectList } from './console/ExamProjectList'
 import { Layout } from './console/shell/Layout'
 import { frameworkApi, knowledgeApi, materialsApi } from './console/client'
@@ -135,7 +135,7 @@ export default function App() {
             onDone={() => refreshReadiness(route.course.id, materials.length)}
           />
         ) : route.section === 'knowledge' ? (
-          <PublishedTreeBrowse courseId={route.course.id} />
+          <KnowledgeCatalog courseId={route.course.id} />
         ) : (
           <ExamProjectList />
         )
