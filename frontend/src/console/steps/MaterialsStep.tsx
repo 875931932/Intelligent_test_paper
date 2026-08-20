@@ -15,6 +15,11 @@ const ZONES: { key: MaterialType; label: string; description: string; accept: st
   { key: 'exercise', label: '习题资料', description: '练习、作业或历史试卷', accept: '.pdf,.doc,.docx,.ppt,.pptx,.txt,.md,.jpg,.jpeg,.png,.gif,.webp,.bmp' },
 ]
 
+function fileExt(name: string) {
+  const parts = name.split('.')
+  return parts.length > 1 ? parts.pop()!.toUpperCase() : 'FILE'
+}
+
 function parsePill(parse: ParseStatus | null) {
   if (parse == null) return <Pill kind="neutral">未解析</Pill>
   switch (parse.status) {
@@ -63,6 +68,7 @@ export function MaterialsStep({ courseId, materials, onRefresh }: {
   const [error, setError] = useState('')
   const [info, setInfo] = useState('')
   const [dragOverZone, setDragOverZone] = useState<MaterialType | null>(null)
+  const [fileView, setFileView] = useState<Record<string, 'table' | 'compact'>>({})
   const zoneInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
 
   const active = materials.filter((m) => m.parse_status != null && !TERMINAL.has(m.parse_status.status))
@@ -262,7 +268,7 @@ export function MaterialsStep({ courseId, materials, onRefresh }: {
                 <div className="zone-drop-content">
                   <div className="zone-drop-icon">+</div>
                   <div className="zone-drop-text">
-                    <strong>点击上传{zone.key === 'teaching_material' || zone.key === 'exercise' ? '或拖入文件夹' : ''}</strong>
+                    <strong>点击上传或拖入文件夹</strong>
                     <span>支持批量文件；{zone.accept.split(',').slice(0, 3).join(', ')} 等</span>
                   </div>
                 </div>
@@ -300,75 +306,145 @@ export function MaterialsStep({ courseId, materials, onRefresh }: {
                 <div className="material-list">
                   <div className="material-list-head">
                     <span>{zoneMaterials.length} 个文件</span>
-                    <Button
-                      size="sm"
-                      variant="primary"
-                      loading={busyId === `__batch-${zone.key}__`}
-                      disabled={zoneMaterials.every((m) => !m.latest_version || TERMINAL.has(m.parse_status?.status ?? 'pending'))}
-                      onClick={() => void startAllParseByZone(zone.key)}
-                    >
-                      批量解析
-                    </Button>
+                    <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                      {(zone.key === 'teaching_material' || zone.key === 'exercise') && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => setFileView((v) => ({ ...v, [zone.key]: v[zone.key] === 'compact' ? 'table' : 'compact' }))}
+                        >
+                          {fileView[zone.key] === 'compact' ? '表格视图' : '文件夹视图'}
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        variant="primary"
+                        loading={busyId === `__batch-${zone.key}__`}
+                        disabled={zoneMaterials.every((m) => !m.latest_version || TERMINAL.has(m.parse_status?.status ?? 'pending'))}
+                        onClick={() => void startAllParseByZone(zone.key)}
+                      >
+                        批量解析
+                      </Button>
+                    </div>
                   </div>
-                  <table className="table">
-                    <thead>
-                      <tr>
-                        <th>资料</th>
-                        <th>大小</th>
-                        <th>版本</th>
-                        <th>状态</th>
-                        <th>操作</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {zoneMaterials.map((material) => (
-                        <tr key={material.id} className="material-item">
-                          <td>
-                            <div className="cell-title">{material.logical_name}</div>
-                            {material.parse_status?.error_summary ? (
-                              <div className="cell-sub">{material.parse_status.error_summary}</div>
-                            ) : null}
-                          </td>
-                          <td className="num">{material.latest_version ? formatBytes(material.latest_version.size_bytes) : '—'}</td>
-                          <td className="num">v{material.latest_version?.version_no ?? '—'}</td>
-                          <td>
-                            <Pill kind={statusKind(material.status)}>{statusLabel(material.status)}</Pill>
-                            {parsePill(material.parse_status)}
-                          </td>
-                          <td style={{ textAlign: 'right' }}>
-                            {material.parse_status?.status === 'ready' ? (
-                              <Pill kind="success">可用</Pill>
-                            ) : (
-                              <Button
-                                size="sm"
-                                variant="primary"
-                                loading={busyId === material.id}
-                                disabled={material.latest_version == null || (material.parse_status != null && !TERMINAL.has(material.parse_status.status))}
-                                onClick={() => void startParse(material)}
+
+                  {(fileView[zone.key] === 'compact' && zone.key === 'teaching_material') || (fileView[zone.key] === 'compact' && zone.key === 'exercise') ? (
+                    <div className="file-browser">
+                      <div className="file-browser-head">
+                        <span>文件名</span>
+                        <div className="file-browser-meta">
+                          <span>大小</span>
+                          <span>状态</span>
+                        </div>
+                      </div>
+                      {zoneMaterials.map((material) => {
+                        const name = material.logical_name
+                        const segments = name.includes('/') ? name.split('/') : name.includes('\\') ? name.split('\\') : [name]
+                        const fileName = segments.pop()!
+                        const folderPath = segments.join('/')
+                        return (
+                          <div key={material.id} className="file-browser-row">
+                            <div className="file-icon">{fileExt(fileName)}</div>
+                            <div className="file-browser-info">
+                              {folderPath ? <div className="file-browser-path">{folderPath}/</div> : null}
+                              <div className="file-browser-name">{fileName}</div>
+                            </div>
+                            <div className="file-browser-meta">
+                              <span>{material.latest_version ? formatBytes(material.latest_version.size_bytes) : '—'}</span>
+                              {material.parse_status?.status === 'ready' ? (
+                                <Pill kind="success">可用</Pill>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  variant="primary"
+                                  loading={busyId === material.id}
+                                  disabled={material.latest_version == null || (material.parse_status != null && !TERMINAL.has(material.parse_status.status))}
+                                  onClick={() => void startParse(material)}
+                                >
+                                  {material.parse_status?.status === 'failed' ? '重试解析' : '解析'}
+                                </Button>
+                              )}
+                            </div>
+                            <div className="file-browser-actions">
+                              <select
+                                className="select select-sm"
+                                value={material.material_type}
+                                disabled={busyId === material.id}
+                                onChange={(e) => updateType(material, e.target.value as MaterialType)}
                               >
-                                {material.parse_status?.status === 'failed' ? '重试解析' : '解析'}
+                                {Object.entries(MATERIAL_TYPE_LABELS).map(([value, label]) => (
+                                  <option key={value} value={value}>{label}</option>
+                                ))}
+                              </select>
+                              <Button size="sm" variant="danger-ghost" loading={busyId === material.id} onClick={() => void remove(material)}>
+                                删除
                               </Button>
-                            )}
-                            <span style={{ display: 'inline-block', width: 8 }} />
-                            <select
-                              className="select select-sm"
-                              value={material.material_type}
-                              disabled={busyId === material.id}
-                              onChange={(e) => updateType(material, e.target.value as MaterialType)}
-                              style={{ marginRight: 6 }}
-                            >
-                              {Object.entries(MATERIAL_TYPE_LABELS).map(([value, label]) => (
-                                <option key={value} value={value}>{label}</option>
-                              ))}
-                            </select>
-                            <Button size="sm" variant="danger-ghost" loading={busyId === material.id} onClick={() => void remove(material)}>
-                              删除
-                            </Button>
-                          </td>
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  ) : (
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>资料</th>
+                          <th>大小</th>
+                          <th>版本</th>
+                          <th>状态</th>
+                          <th>操作</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {zoneMaterials.map((material) => (
+                          <tr key={material.id} className="material-item">
+                            <td>
+                              <div className="cell-title">{material.logical_name}</div>
+                              {material.parse_status?.error_summary ? (
+                                <div className="cell-sub">{material.parse_status.error_summary}</div>
+                              ) : null}
+                            </td>
+                            <td className="num">{material.latest_version ? formatBytes(material.latest_version.size_bytes) : '—'}</td>
+                            <td className="num">v{material.latest_version?.version_no ?? '—'}</td>
+                            <td>
+                              <Pill kind={statusKind(material.status)}>{statusLabel(material.status)}</Pill>
+                              {parsePill(material.parse_status)}
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              {material.parse_status?.status === 'ready' ? (
+                                <Pill kind="success">可用</Pill>
+                              ) : (
+                                <Button
+                                  size="sm"
+                                  variant="primary"
+                                  loading={busyId === material.id}
+                                  disabled={material.latest_version == null || (material.parse_status != null && !TERMINAL.has(material.parse_status.status))}
+                                  onClick={() => void startParse(material)}
+                                >
+                                  {material.parse_status?.status === 'failed' ? '重试解析' : '解析'}
+                                </Button>
+                              )}
+                              <span style={{ display: 'inline-block', width: 8 }} />
+                              <select
+                                className="select select-sm"
+                                value={material.material_type}
+                                disabled={busyId === material.id}
+                                onChange={(e) => updateType(material, e.target.value as MaterialType)}
+                                style={{ marginRight: 6 }}
+                              >
+                                {Object.entries(MATERIAL_TYPE_LABELS).map(([value, label]) => (
+                                  <option key={value} value={value}>{label}</option>
+                                ))}
+                              </select>
+                              <Button size="sm" variant="danger-ghost" loading={busyId === material.id} onClick={() => void remove(material)}>
+                                删除
+                              </Button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
                 </div>
               )}
             </div>
