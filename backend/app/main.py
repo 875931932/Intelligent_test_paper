@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from sqlalchemy import create_engine, text
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import Response
 
 from app.config import settings
 from app.api.v1.courses import router as courses_router
@@ -75,3 +76,17 @@ app.include_router(paper_versions_router)
 @app.get("/api/v1/health")
 def health() -> dict:
     return health_payload()
+
+
+@app.put("/api/v1/_local-storage/{object_key:path}")
+async def local_storage_put(object_key: str, request: Request) -> Response:
+    """LocalStorage 回退：接收前端 PUT 上传的二进制文件。"""
+    from app.adapters.storage.local_storage import LocalStorage
+
+    storage = getattr(request.app.state, "storage", None)
+    if storage is None or not isinstance(storage, LocalStorage):
+        storage = LocalStorage()
+        request.app.state.storage = storage
+    body = await request.body()
+    storage.put_bytes(object_key, body, content_type=request.headers.get("content-type", ""))
+    return Response(status_code=200)

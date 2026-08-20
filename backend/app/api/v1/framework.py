@@ -100,6 +100,21 @@ def create_framework_run(
         raise HTTPException(status_code=502, detail="syllabus semantic extraction failed")
 
 
+@router.get("/framework-runs/latest")
+def get_latest_framework_run(course_id: str, session: Session = Depends(get_session)) -> dict:
+    from app.db.schema import framework_build_runs
+    from sqlalchemy import select
+    row = session.execute(
+        select(framework_build_runs)
+        .where(framework_build_runs.c.course_id == course_id)
+        .order_by(framework_build_runs.c.created_at.desc())
+        .limit(1)
+    ).mappings().one_or_none()
+    if row is None:
+        raise _not_found()
+    return dict(row)
+
+
 @router.get("/framework-runs/{run_id}")
 def get_framework_run(course_id: str, run_id: str, session: Session = Depends(get_session)) -> dict:
     try:
@@ -111,7 +126,12 @@ def get_framework_run(course_id: str, run_id: str, session: Session = Depends(ge
 @router.get("/framework-runs/{run_id}/candidate")
 def get_framework_candidate(course_id: str, run_id: str, session: Session = Depends(get_session)) -> dict:
     try:
-        return framework_service.get_framework_candidate(session, course_id=course_id, run_id=run_id)
+        row = framework_service.get_framework_candidate(session, course_id=course_id, run_id=run_id)
+        # 展开 payload 到顶层
+        payload = row.pop("payload", {})
+        if isinstance(payload, dict):
+            row.update(payload)
+        return row
     except framework_service.FrameworkNotFoundError:
         raise _not_found()
 
@@ -151,4 +171,4 @@ def get_current_framework(course_id: str, session: Session = Depends(get_session
     try:
         return framework_service.get_current_framework(session, course_id=course_id)
     except framework_service.FrameworkNotFoundError:
-        raise _not_found()
+        return {"published": False, "detail": "no published framework version"}

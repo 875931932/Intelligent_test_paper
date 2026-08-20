@@ -36,6 +36,8 @@ def _ensure_dev_owner(session: Session) -> None:
 
 def create_course(session: Session, *, name: str, slug: str, description: str | None) -> Course:
     _ensure_dev_owner(session)
+    if not slug:
+        slug = f"course-{uuid4().hex[:8]}"
     course = Course(id=str(uuid4()), owner_id=DEV_OWNER_ID, name=name, slug=slug, description=description)
     session.add(course)
     try:

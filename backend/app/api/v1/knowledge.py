@@ -229,7 +229,7 @@ def get_published_knowledge(course_id: str, session: Session = Depends(get_sessi
         .limit(1)
     ).mappings().one_or_none()
     if catalog is None:
-        raise _not_found()
+        return {"published": False, "knowledge_cards": {}, "assessment_units": [], "content_domains": [], "exam_points": [], "units": []}
     catalog_id = catalog["id"]
     framework_version_id = catalog["framework_version_id"]
 

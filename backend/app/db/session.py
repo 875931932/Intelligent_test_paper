@@ -19,6 +19,9 @@ def get_engine():
     if settings.database_url.startswith("sqlite"):
         # SQLite 默认禁止跨线程使用连接，uvicorn 多线程下必须放开。
         connect_args["check_same_thread"] = False
+    elif settings.database_url.startswith("postgresql"):
+        # 远程 PG 的 search_path 可能包含无权限的 schema，强制用 public
+        connect_args["options"] = "-c search_path=public"
     return create_engine(
         settings.database_url,
         future=True,

@@ -54,7 +54,7 @@
         "total_score": 100
       }
     },
-    "created_at": "2026-08-19 13:40:04",
+    "created_at": "2026-08-19 15:37:47",
     "published_at": null,
     "exam_points": [
       {
@@ -441,7 +441,7 @@
     "payload": {
       "construction_mode": "synthetic_seed"
     },
-    "created_at": "2026-08-19 13:40:04",
+    "created_at": "2026-08-19 15:37:47",
     "published_at": null,
     "content_domains": [
       {
@@ -1121,7 +1121,7 @@
     ]
   },
   "blueprint": {
-    "blueprint_version_id": "b97d641692ce491b",
+    "blueprint_version_id": "37567ff638084cc3",
     "type_rules": {
       "single_choice": {
         "count": 15,
@@ -1154,9 +1154,9 @@
     },
     "plan_items": [
       {
-        "id": "7e8d46ba2ed34f62",
+        "id": "db025eb3becb4dee",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch2",
         "question_type": "single_choice",
@@ -1172,9 +1172,9 @@
         "section_index": null
       },
       {
-        "id": "d2c6980ef9a14073",
+        "id": "7ae09801742247bd",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch2",
         "question_type": "single_choice",
@@ -1190,9 +1190,9 @@
         "section_index": null
       },
       {
-        "id": "927841fa215f4f38",
+        "id": "5d3845586bf54a62",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch5",
         "question_type": "single_choice",
@@ -1208,9 +1208,9 @@
         "section_index": null
       },
       {
-        "id": "67e798ce325745c6",
+        "id": "9b2ba334320f4108",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch5",
         "question_type": "single_choice",
@@ -1226,9 +1226,9 @@
         "section_index": null
       },
       {
-        "id": "06142b436eff422e",
+        "id": "7753d0d876b244c0",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch6",
         "question_type": "single_choice",
@@ -1244,9 +1244,9 @@
         "section_index": null
       },
       {
-        "id": "875a9877d94e4ab1",
+        "id": "e29ad26e3c6242f7",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch6",
         "question_type": "single_choice",
@@ -1262,9 +1262,9 @@
         "section_index": null
       },
       {
-        "id": "26cb47522cda45d5",
+        "id": "918404b05be0478c",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch3",
         "question_type": "single_choice",
@@ -1280,9 +1280,9 @@
         "section_index": null
       },
       {
-        "id": "3f1fc1f76dd24d65",
+        "id": "0a88077c753441ce",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch3",
         "question_type": "single_choice",
@@ -1298,9 +1298,9 @@
         "section_index": null
       },
       {
-        "id": "ec782121e2c04bd5",
+        "id": "b48d1dc1976447f3",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch3",
         "question_type": "single_choice",
@@ -1316,9 +1316,9 @@
         "section_index": null
       },
       {
-        "id": "7adfaabaefe6473f",
+        "id": "eabd1725fb024a3c",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch3",
         "question_type": "single_choice",
@@ -1334,9 +1334,9 @@
         "section_index": null
       },
       {
-        "id": "bddc8b295174489f",
+        "id": "34110a43ee53403b",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch1",
         "question_type": "single_choice",
@@ -1352,9 +1352,9 @@
         "section_index": null
       },
       {
-        "id": "834050f7dc2c4efd",
+        "id": "60afbd8577694c39",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch1",
         "question_type": "single_choice",
@@ -1370,9 +1370,9 @@
         "section_index": null
       },
       {
-        "id": "a1ed6410f08c42cc",
+        "id": "53f81a57c7a6452c",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch1",
         "question_type": "single_choice",
@@ -1388,9 +1388,9 @@
         "section_index": null
       },
       {
-        "id": "c7aa306fab11451e",
+        "id": "87ce06b92c294f7a",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch1",
         "question_type": "single_choice",
@@ -1406,9 +1406,9 @@
         "section_index": null
       },
       {
-        "id": "8a0c41f349d54935",
+        "id": "3a2de7a404ef472c",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch1",
         "question_type": "single_choice",
@@ -1424,9 +1424,9 @@
         "section_index": null
       },
       {
-        "id": "6770bbc6e32947c0",
+        "id": "1241bbbcf40b41a3",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch2",
         "question_type": "true_false",
@@ -1442,9 +1442,9 @@
         "section_index": null
       },
       {
-        "id": "a693e720df024fdf",
+        "id": "70b4ca93a5e1431a",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch5",
         "question_type": "true_false",
@@ -1460,9 +1460,9 @@
         "section_index": null
       },
       {
-        "id": "3e6857b5309e46a2",
+        "id": "7a53929a7bf641b4",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch6",
         "question_type": "true_false",
@@ -1478,9 +1478,9 @@
         "section_index": null
       },
       {
-        "id": "48b5a4ef70364062",
+        "id": "a2a6a57736844fbf",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch3",
         "question_type": "true_false",
@@ -1496,9 +1496,9 @@
         "section_index": null
       },
       {
-        "id": "a8227a7cc15a4600",
+        "id": "0d32038df6434907",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch3",
         "question_type": "true_false",
@@ -1514,9 +1514,9 @@
         "section_index": null
       },
       {
-        "id": "ae122eed9fbc4ab4",
+        "id": "19bcf7e747d2422b",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch3",
         "question_type": "true_false",
@@ -1532,9 +1532,9 @@
         "section_index": null
       },
       {
-        "id": "fbfec828a4104bce",
+        "id": "7d418c89b0964e72",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch3",
         "question_type": "true_false",
@@ -1550,9 +1550,9 @@
         "section_index": null
       },
       {
-        "id": "dbeb60a117bd413a",
+        "id": "e0536077131f4888",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch3",
         "question_type": "true_false",
@@ -1568,9 +1568,9 @@
         "section_index": null
       },
       {
-        "id": "f78cffc03f0341b7",
+        "id": "112223a702004886",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch3",
         "question_type": "true_false",
@@ -1586,9 +1586,9 @@
         "section_index": null
       },
       {
-        "id": "2ad63936426f44dc",
+        "id": "bb6c3109d295470f",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch3",
         "question_type": "true_false",
@@ -1604,9 +1604,9 @@
         "section_index": null
       },
       {
-        "id": "70a42d6b9f6742a5",
+        "id": "69905d8f0d574e33",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch1",
         "question_type": "fill_blank",
@@ -1622,9 +1622,9 @@
         "section_index": null
       },
       {
-        "id": "0abeac76e05a48a8",
+        "id": "fb4ba2084d514948",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch1",
         "question_type": "fill_blank",
@@ -1640,9 +1640,9 @@
         "section_index": null
       },
       {
-        "id": "1960b898d098465e",
+        "id": "6886d62fafaa4868",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch1",
         "question_type": "fill_blank",
@@ -1658,9 +1658,9 @@
         "section_index": null
       },
       {
-        "id": "42a4aaaace894a07",
+        "id": "a5ac0635671a4c46",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch1",
         "question_type": "fill_blank",
@@ -1676,9 +1676,9 @@
         "section_index": null
       },
       {
-        "id": "57c7ebad09ce4417",
+        "id": "0910924abf00472b",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch1",
         "question_type": "fill_blank",
@@ -1694,9 +1694,9 @@
         "section_index": null
       },
       {
-        "id": "4183ebdd36024448",
+        "id": "2e9de783bb1f4bc9",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch4",
         "question_type": "short_answer",
@@ -1712,9 +1712,9 @@
         "section_index": null
       },
       {
-        "id": "620a1492eb254775",
+        "id": "8a72b9bbed964d02",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch2",
         "question_type": "short_answer",
@@ -1730,9 +1730,9 @@
         "section_index": null
       },
       {
-        "id": "66d8aad25ee24aa9",
+        "id": "d9b949d01b0e4f8f",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch5",
         "question_type": "short_answer",
@@ -1748,9 +1748,9 @@
         "section_index": null
       },
       {
-        "id": "fefa0637fea84199",
+        "id": "604abbe178dc49fe",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch6",
         "question_type": "short_answer",
@@ -1766,9 +1766,9 @@
         "section_index": null
       },
       {
-        "id": "7b2e2de92d304487",
+        "id": "fe5deb7159f2418f",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch4",
         "question_type": "comprehensive",
@@ -1784,9 +1784,9 @@
         "section_index": null
       },
       {
-        "id": "c50dbc5f8b634748",
+        "id": "a238fd636245474a",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch2",
         "question_type": "comprehensive",
@@ -1802,9 +1802,9 @@
         "section_index": null
       },
       {
-        "id": "4d9810552e4e46e6",
+        "id": "1fa82c514ce54664",
         "course_id": "c1",
-        "blueprint_version_id": "b97d641692ce491b",
+        "blueprint_version_id": "37567ff638084cc3",
         "blueprint_section_id": null,
         "assessment_unit_id": "au-ch1",
         "question_type": "comprehensive",
@@ -2287,7 +2287,7 @@
     ]
   },
   "paper": {
-    "paper_version_id": "de8f4e4f205e4f78",
+    "paper_version_id": "e0cd6378849c42ed",
     "status": "finalized",
     "items": [
       {

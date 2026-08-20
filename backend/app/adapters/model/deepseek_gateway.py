@@ -119,7 +119,7 @@ class DeepSeekJsonClient:
         self.model = model
         self.timeout = timeout
         self.max_attempts = max_attempts
-        self.client = client
+        self.client = client or httpx.Client(trust_env=False, timeout=timeout)
         self.recorder = recorder
 
     def request_json(

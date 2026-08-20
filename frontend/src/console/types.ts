@@ -225,6 +225,7 @@ export type PublishedExamPoint = {
 }
 
 export type PublishedKnowledge = {
+  published?: boolean
   catalog_version_id: string
   framework_version_id: string
   exam_points: PublishedExamPoint[]
