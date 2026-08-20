@@ -76,6 +76,9 @@ export const materialsApi = {
 }
 
 async function sha256Hex(file: File): Promise<string> {
+  if (!crypto?.subtle?.digest) {
+    throw new Error('当前环境不支持 crypto.subtle，请通过 HTTPS 或 localhost 访问后再上传文件。')
+  }
   const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
   return Array.from(new Uint8Array(digest))
     .map((b) => b.toString(16).padStart(2, '0'))
