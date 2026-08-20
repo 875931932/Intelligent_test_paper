@@ -109,12 +109,13 @@ function sha256HexJs(buffer: ArrayBuffer): string {
 
   const len = bytes.length
   const bitLen = len * 8
-  const padded = new Uint8Array(len + 1 + 8)
+  const paddedLen = len + 1 + 8 + ((64 - ((len + 1 + 8) % 64)) % 64)
+  const padded = new Uint8Array(paddedLen)
   padded.set(bytes)
   padded[len] = 0x80
   const view = new DataView(padded.buffer)
-  view.setUint32(padded.length - 4, Math.floor(bitLen / 0x100000000), false)
-  view.setUint32(padded.length - 8, bitLen >>> 0, false)
+  view.setUint32(paddedLen - 8, Math.floor(bitLen / 0x100000000), false)
+  view.setUint32(paddedLen - 4, bitLen >>> 0, false)
 
   const w = new Uint32Array(64)
   let a = h0
@@ -131,7 +132,7 @@ function sha256HexJs(buffer: ArrayBuffer): string {
   const gamma0 = (x: number) => ((x >>> 2) | (x << 30)) ^ ((x >>> 13) | (x << 19)) ^ ((x >>> 22) | (x << 10))
   const gamma1 = (x: number) => ((x >>> 6) | (x << 26)) ^ ((x >>> 11) | (x << 21)) ^ ((x >>> 25) | (x << 7))
 
-  for (let i = 0; i < padded.length; i += 64) {
+  for (let i = 0; i < paddedLen; i += 64) {
     for (let t = 0; t < 16; t++) w[t] = view.getUint32(i + t * 4, false)
     for (let t = 16; t < 64; t++) w[t] = (sigma1(w[t - 2]) + w[t - 7] + sigma0(w[t - 15]) + w[t - 16]) | 0
 
