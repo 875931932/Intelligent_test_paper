@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { Button, Card, EmptyState, Field, Notice } from './ui'
 import { coursesApi } from './client'
 import type { Course } from './types'
+import { ArrowUpRight, BookOpen, Plus } from 'lucide-react'
 
 export function CoursesPage({ onOpen }: { onOpen: (course: Course) => void }) {
   const [courses, setCourses] = useState<Course[]>([])
@@ -61,6 +62,7 @@ export function CoursesPage({ onOpen }: { onOpen: (course: Course) => void }) {
         </div>
         <span className="spacer" />
         <Button variant="primary" onClick={() => setShowForm((v) => !v)}>
+          <Plus size={16} aria-hidden="true" />
           {showForm ? '收起' : '新建课程'}
         </Button>
       </div>
@@ -103,38 +105,38 @@ export function CoursesPage({ onOpen }: { onOpen: (course: Course) => void }) {
         </Card>
       ) : null}
 
-      <div className="table-card">
+      <section className="course-list-section">
+        <div className="section-bar">
+          <div>
+            <h3>我的课程</h3>
+            <span>{loading ? '正在同步课程空间' : `${courses.length} 门课程`}</span>
+          </div>
+          <span className="section-bar-note">课程资料会在各自空间内隔离</span>
+        </div>
         {loading ? (
           <EmptyState>正在加载课程…</EmptyState>
         ) : courses.length === 0 ? (
           <EmptyState>还没有课程，先新建一门课程开始命题准备。</EmptyState>
         ) : (
-          <table className="table">
-            <thead>
-              <tr>
-                <th>课程</th>
-                <th>标识</th>
-                <th>描述</th>
-                <th style={{ width: 120 }}></th>
-              </tr>
-            </thead>
-            <tbody>
-              {courses.map((course) => (
-                <tr key={course.id}>
-                  <td className="cell-title">{course.name}</td>
-                  <td className="num">{course.slug}</td>
-                  <td className="cell-sub">{course.description ?? '—'}</td>
-                  <td style={{ textAlign: 'right' }}>
-                    <Button variant="primary" size="sm" onClick={() => onOpen(course)}>
-                      进入工作台
-                    </Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <div className="course-grid">
+            {courses.map((course) => (
+              <article className="course-card" key={course.id}>
+                <div className="course-card-icon"><BookOpen size={19} strokeWidth={1.8} aria-hidden="true" /></div>
+                <div className="course-card-body">
+                  <div className="course-card-heading">
+                    <h3>{course.name}</h3>
+                    <span className="course-card-slug">{course.slug}</span>
+                  </div>
+                  <p>{course.description ?? '管理课程资料、命题框架与试卷项目。'}</p>
+                </div>
+                <Button variant="secondary" size="sm" onClick={() => onOpen(course)}>
+                  进入工作台 <ArrowUpRight size={15} aria-hidden="true" />
+                </Button>
+              </article>
+            ))}
+          </div>
         )}
-      </div>
+      </section>
     </div>
   )
 }

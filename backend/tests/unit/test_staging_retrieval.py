@@ -460,7 +460,7 @@ def test_organization_retrieval_settings_have_safe_defaults(monkeypatch):
     ):
         monkeypatch.delenv(variable, raising=False)
 
-    settings = Settings()
+    settings = Settings(_env_file=None)
 
     assert settings.embedding_base_url == "https://api.openai.com/v1"
     assert settings.embedding_api_key == ""

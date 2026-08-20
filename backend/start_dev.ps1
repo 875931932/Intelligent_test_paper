@@ -1,6 +1,12 @@
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $envPath = Join-Path $root '.env'
+if (-not (Test-Path $envPath)) {
+    $envPath = Join-Path $PSScriptRoot '.env'
+}
+if (-not (Test-Path $envPath)) {
+    throw "No .env file was found in $root or $PSScriptRoot. Copy .env.example and configure it before starting the backend."
+}
 
 foreach ($line in Get-Content $envPath) {
     if ($line -match '^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$') {

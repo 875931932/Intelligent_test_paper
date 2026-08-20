@@ -33,6 +33,7 @@ from app.services.blueprint_persistence_service import (
 )
 from app.services.contract_execution_service import revise_and_confirm
 from app.services.generation_runner_service import (
+    _default_graph_invoke,
     enqueue_generation,
     execute_generation_task_handler,
 )
@@ -357,3 +358,65 @@ def test_graph_invoke_raise_causes_run_failed_and_no_paper_version(session):
                paper_versions.c.course_id == "c1")
     ).scalar_one()
     assert pv == 0
+
+
+def test_default_graph_invocation_uses_contract_and_pure_knowledge_cards(session, monkeypatch):
+    """正式装配链路：真实 LangGraph + 假模型网关，不向模型暴露来源元数据。"""
+    from app.adapters.model import deepseek_gateway
+    from app.config import settings
+
+    generation_run_id, _ = _setup_pipeline(session)
+    run = session.execute(
+        select(generation_runs).where(generation_runs.c.id == generation_run_id)
+    ).one()._mapping
+    captured_payloads = []
+
+    class CapturingGateway:
+        def __init__(self, **_kwargs):
+            pass
+
+        def generate_batch(self, payload):
+            rendered = payload.model_dump(mode="json")
+            captured_payloads.append(rendered)
+            assert "material_version_id" not in repr(rendered)
+            assert "source_locator" not in repr(rendered)
+            assert "evidence_chunk" not in repr(rendered)
+            questions = []
+            for spec in payload.questions:
+                question = {
+                    "item_index": spec.item_index,
+                    "question_type": spec.question_type,
+                    "stem": f"关于{spec.coverage_atom}的题干",
+                }
+                if spec.question_type == "single_choice":
+                    question.update({
+                        "options": [spec.answer_boundary, "干扰项一", "干扰项二", "干扰项三"],
+                        "answer": spec.answer_boundary,
+                    })
+                elif spec.question_type == "true_false":
+                    question["answer"] = True
+                elif spec.question_type == "fill_blank":
+                    question.update({
+                        "stem": f"{spec.coverage_atom}对应的核心术语是____。",
+                        "answer": spec.answer_boundary,
+                    })
+                else:
+                    question.update({
+                        "answer": spec.answer_boundary,
+                        "explanation": "依据给定知识原子说明。",
+                        "rubric": [{"point": "回答核心内容", "score": spec.score}],
+                    })
+                questions.append(question)
+            return questions
+
+    monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
+    monkeypatch.setattr(settings, "deepseek_base_url", "https://model.invalid/v1")
+    monkeypatch.setattr(settings, "deepseek_model", "test-model")
+    monkeypatch.setattr(deepseek_gateway, "DeepSeekGateway", CapturingGateway)
+
+    questions = _default_graph_invoke(session, dict(run), run["contract_snapshot"])
+
+    assert len(questions) == len(run["contract_snapshot"]["slots"])
+    assert {question["plan_item_id"] for question in questions}
+    assert all(question["quality"]["needs_review"] is False for question in questions)
+    assert captured_payloads

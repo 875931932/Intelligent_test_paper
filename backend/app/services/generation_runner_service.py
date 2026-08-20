@@ -18,7 +18,9 @@ from app.db.schema import (
     exam_projects,
     generated_questions,
     generation_runs,
+    knowledge_cards,
     paper_versions,
+    plan_items,
     quality_checks,
     task_runs,
 )
@@ -97,21 +99,187 @@ def _default_graph_invoke(
     generation_run: dict,
     contract_snapshot: dict,
 ) -> list[dict]:
-    """默认生产包装：此处懒加载 build_generation_graph，避免引入 DeepSeek
-    gateway 依赖到模块 import-time；测试可传入 mock 绕过。
+    """运行正式 LangGraph，并把图输出映射回持久化题位。
 
-    生产环境真正运行时需要调用：
-        from app.workflows.generation_graph import build_generation_graph
-        gateway = <实际 BatchGateway>
-        graph = build_generation_graph(gateway)
-        graph.invoke({"contract": ..., ...})
-
-    为避免强依赖 gateway，这里抛出 NotImplementedError —— 让调用方显式传
-    graph_invoke 参数。
+    图只接收合同槽位和纯净知识卡；文件名、证据位置与其他资料来源均不进入
+    模型请求。测试仍可通过 ``graph_invoke`` 显式替换此函数。
     """
-    raise NotImplementedError(
-        "生产 graph_invoke 需要注入 BatchGateway；请提供 graph_invoke=... 参数"
+    from app.adapters.model.deepseek_gateway import DeepSeekGateway
+    from app.config import settings
+    from app.db.session import get_session_factory
+    from app.domain.generation.contract import ContractSlot
+    from app.domain.model_calls import ModelCallContext
+    from app.services.model_call_service import DatabaseModelCallRecorder
+    from app.workflows.generation_graph import build_generation_graph
+
+    if not all(value.strip() for value in (
+        settings.deepseek_api_key,
+        settings.deepseek_base_url,
+        settings.deepseek_model,
+    )):
+        raise GenerationRunnerError("LLM model is not configured")
+
+    raw_slots = contract_snapshot.get("slots") if isinstance(contract_snapshot, dict) else None
+    if not isinstance(raw_slots, list) or not raw_slots:
+        raise GenerationRunnerError("generation contract has no slots")
+    try:
+        slots = [ContractSlot.model_validate(raw) for raw in raw_slots]
+    except Exception as exc:
+        raise GenerationRunnerError("generation contract is invalid") from exc
+
+    course_id = str(generation_run["course_id"])
+    catalog_version_id = str(generation_run["catalog_version_id"])
+    context_cards, units = _load_generation_context(
+        session,
+        course_id=course_id,
+        catalog_version_id=catalog_version_id,
+        slots=slots,
     )
+    plan_item_ids = _plan_item_ids_by_index(
+        session,
+        course_id=course_id,
+        blueprint_version_id=str(generation_run["blueprint_version_id"]),
+    )
+    expected_indexes = {slot.item_index for slot in slots}
+    if not expected_indexes.issubset(plan_item_ids):
+        raise GenerationRunnerError("generation contract does not match blueprint plan items")
+
+    gateway = DeepSeekGateway(
+        api_key=settings.deepseek_api_key,
+        base_url=settings.deepseek_base_url,
+        model=settings.deepseek_model,
+        recorder=DatabaseModelCallRecorder(get_session_factory()),
+        call_context=ModelCallContext(course_id=course_id, stage="paper_generation"),
+    )
+    result = build_generation_graph(gateway).invoke({
+        "contract": [slot.model_dump(mode="json") for slot in slots],
+        "knowledge_cards": context_cards,
+        "units": units,
+    })
+    raw_questions = result.get("questions") if isinstance(result, dict) else None
+    if not isinstance(raw_questions, list):
+        raise GenerationRunnerError("generation graph returned no questions")
+
+    questions: list[dict] = []
+    received_indexes: set[int] = set()
+    for raw in raw_questions:
+        if not isinstance(raw, dict):
+            raise GenerationRunnerError("generation graph returned an invalid question")
+        question = dict(raw)
+        item_index = question.get("item_index")
+        if isinstance(item_index, bool) or not isinstance(item_index, int):
+            raise GenerationRunnerError("generation graph returned a question without item_index")
+        if item_index in received_indexes or item_index not in plan_item_ids:
+            raise GenerationRunnerError("generation graph returned unexpected question indexes")
+        received_indexes.add(item_index)
+        card_id = question.get("card_id")
+        if not isinstance(card_id, str) or card_id not in context_cards:
+            raise GenerationRunnerError("generation graph returned a question without a valid knowledge card")
+        quality = dict(question.get("quality") or {})
+        quality_status = str(quality.get("status") or "blocker")
+        needs_review = bool(question.get("needs_review")) or quality_status != "pass"
+        quality["needs_review"] = needs_review
+        quality.setdefault("message", "generation contract check")
+        quality.setdefault("quality_checks", [{
+            "check_type": "generation_contract",
+            "status": "pass" if quality_status == "pass" else "warn",
+            "details": {"message": str(quality["message"])[:200]},
+        }])
+        question["plan_item_id"] = plan_item_ids[item_index]
+        question["knowledge_card_id"] = card_id
+        question["needs_review"] = needs_review
+        question["quality"] = quality
+        questions.append(question)
+
+    if received_indexes != expected_indexes:
+        raise GenerationRunnerError("generation graph did not return every contract slot")
+    return sorted(questions, key=lambda question: question["item_index"])
+
+
+def _load_generation_context(
+    session: Session,
+    *,
+    course_id: str,
+    catalog_version_id: str,
+    slots,
+) -> tuple[dict[str, dict], list[dict]]:
+    """从已发布目录装配图所需的纯净卡片与同考点候选卡片。"""
+    unit_to_exam_point: dict[str, str] = {}
+    for slot in slots:
+        existing = unit_to_exam_point.setdefault(slot.unit_id, slot.exam_point_id)
+        if existing != slot.exam_point_id:
+            raise GenerationRunnerError("generation contract maps one unit to multiple exam points")
+    unit_ids = list(unit_to_exam_point)
+    rows = session.execute(
+        select(
+            knowledge_cards.c.id,
+            knowledge_cards.c.assessment_unit_id,
+            knowledge_cards.c.name,
+            knowledge_cards.c.performance_statement,
+            knowledge_cards.c.assessable_content,
+            knowledge_cards.c.scope_boundary,
+            knowledge_cards.c.cognitive_targets,
+            knowledge_cards.c.allowed_question_types,
+            knowledge_cards.c.importance,
+            knowledge_cards.c.concept_cluster,
+            knowledge_cards.c.answer_proposition,
+            knowledge_cards.c.prompt_material,
+            knowledge_cards.c.relation_edges,
+        ).where(
+            knowledge_cards.c.course_id == course_id,
+            knowledge_cards.c.catalog_version_id == catalog_version_id,
+            knowledge_cards.c.assessment_unit_id.in_(unit_ids),
+            knowledge_cards.c.status == "active",
+        )
+    ).all()
+    cards: dict[str, dict] = {}
+    card_ids_by_unit: dict[str, list[str]] = {unit_id: [] for unit_id in unit_ids}
+    for row in rows:
+        card = row._mapping
+        card_id = card["id"]
+        cards[card_id] = {
+            "name": card["name"] or "",
+            "performance_statement": card["performance_statement"] or "",
+            "assessable_content": list(card["assessable_content"] or []),
+            "scope_boundary": card["scope_boundary"] or {},
+            "cognitive_targets": list(card["cognitive_targets"] or []),
+            "allowed_question_types": list(card["allowed_question_types"] or []),
+            "importance": card["importance"] or 1,
+            "concept_cluster": card["concept_cluster"] or "",
+            "answer_proposition": card["answer_proposition"] or "",
+            "answer_boundary": card["answer_proposition"] or "",
+            "prompt_material": list(card["prompt_material"] or []),
+            "preferred_terms": [],
+            "relation_edges": list(card["relation_edges"] or []),
+        }
+        card_ids_by_unit[card["assessment_unit_id"]].append(card_id)
+    missing_card_ids = {slot.card_id for slot in slots}.difference(cards)
+    if missing_card_ids:
+        raise GenerationRunnerError("generation context is missing contracted knowledge cards")
+    units = [
+        {
+            "unit_id": unit_id,
+            "exam_point_id": unit_to_exam_point[unit_id],
+            "card_ids": card_ids_by_unit[unit_id],
+        }
+        for unit_id in unit_ids
+    ]
+    return cards, units
+
+
+def _plan_item_ids_by_index(
+    session: Session,
+    *,
+    course_id: str,
+    blueprint_version_id: str,
+) -> dict[int, str]:
+    rows = session.execute(
+        select(plan_items.c.item_index, plan_items.c.id).where(
+            plan_items.c.course_id == course_id,
+            plan_items.c.blueprint_version_id == blueprint_version_id,
+        )
+    ).all()
+    return {row._mapping["item_index"]: row._mapping["id"] for row in rows}
 
 
 def execute_generation_task(
@@ -119,7 +287,8 @@ def execute_generation_task(
     *,
     graph_invoke: Callable[[Session, dict, dict], list[dict]] | None = None,
     write_paper_version: bool = True,
-) -> None:
+    manage_task_run: bool = True,
+) -> dict:
     """执行单个生成任务：更新状态 → 调图 → 写题 + 质检 → 写试卷 → 标记成功。
 
     Parameters
@@ -165,19 +334,20 @@ def execute_generation_task(
     paper_version_id: str | None = None
     try:
         # a) 任务标记 running
-        session.execute(
-            task_runs.update()
-            .where(
-                task_runs.c.id == task_run_id,
-                task_runs.c.course_id == course_id,
+        if manage_task_run:
+            session.execute(
+                task_runs.update()
+                .where(
+                    task_runs.c.id == task_run_id,
+                    task_runs.c.course_id == course_id,
+                )
+                .values(
+                    status="running",
+                    stage="executing",
+                    updated_at=now,
+                    progress=5,
+                )
             )
-            .values(
-                status="running",
-                stage="executing",
-                updated_at=now,
-                progress=5,
-            )
-        )
         # b) generation_run 标记 running
         session.execute(
             generation_runs.update()
@@ -287,24 +457,27 @@ def execute_generation_task(
                 updated_at=now2,
             )
         )
-        session.execute(
-            task_runs.update()
-            .where(
-                task_runs.c.id == task_run_id,
-                task_runs.c.course_id == course_id,
+        result = {
+            "generated_questions": len(questions),
+            "paper_version_id": paper_version_id,
+        }
+        if manage_task_run:
+            session.execute(
+                task_runs.update()
+                .where(
+                    task_runs.c.id == task_run_id,
+                    task_runs.c.course_id == course_id,
+                )
+                .values(
+                    status="succeeded",
+                    progress=100,
+                    completed_at=now2,
+                    updated_at=now2,
+                    result=result,
+                )
             )
-            .values(
-                status="succeeded",
-                progress=100,
-                completed_at=now2,
-                updated_at=now2,
-                result={
-                    "generated_questions": len(questions),
-                    "paper_version_id": paper_version_id,
-                },
-            )
-        )
         session.commit()
+        return result
 
     except Exception as exc:
         # 异常处理：回滚，标记失败
@@ -324,18 +497,19 @@ def execute_generation_task(
                     updated_at=now3,
                 )
             )
-            session.execute(
-                task_runs.update()
-                .where(
-                    task_runs.c.id == task_run_id,
-                    task_runs.c.course_id == course_id,
+            if manage_task_run:
+                session.execute(
+                    task_runs.update()
+                    .where(
+                        task_runs.c.id == task_run_id,
+                        task_runs.c.course_id == course_id,
+                    )
+                    .values(
+                        status="failed",
+                        error_message=err_msg,
+                        updated_at=now3,
+                    )
                 )
-                .values(
-                    status="failed",
-                    error_message=err_msg,
-                    updated_at=now3,
-                )
-            )
             # 如果 paper_version 被部分创建，回滚事务已经消除，无需单独清理
             session.commit()
         except SQLAlchemyError:
@@ -349,7 +523,8 @@ def execute_generation_task_handler(
     *,
     graph_invoke=None,
     write_paper_version: bool = True,
-) -> None:
+    manage_task_run: bool = True,
+) -> dict:
     """供 inline_runner / worker 调用的 handler：绑定 session 再调用核心函数。"""
     if hasattr(task_run_row, "_mapping"):
         tr = dict(task_run_row._mapping)
@@ -358,8 +533,9 @@ def execute_generation_task_handler(
     else:
         tr = dict(task_run_row._asdict()) if hasattr(task_run_row, "_asdict") else dict(task_run_row)
     tr["_session"] = session
-    execute_generation_task(
+    return execute_generation_task(
         tr,
         graph_invoke=graph_invoke,
         write_paper_version=write_paper_version,
+        manage_task_run=manage_task_run,
     )

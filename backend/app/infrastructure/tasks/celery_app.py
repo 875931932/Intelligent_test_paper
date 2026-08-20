@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import os
-
 from celery import Celery
 
+from app.config import settings
 from app.infrastructure.tasks.models import DISPATCH_EVENT_TYPE
 
 
-celery_app = Celery("exam_system", broker=os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+celery_app = Celery("exam_system", broker=settings.redis_url)
 celery_app.conf.update(
     task_serializer="json",
     result_serializer="json",

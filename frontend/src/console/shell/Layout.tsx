@@ -1,5 +1,14 @@
 import type { ReactNode } from 'react'
+import { ArrowLeft, BookOpen, Boxes, ClipboardList, FileText, Network, Settings2 } from 'lucide-react'
 import { COURSE_SECTIONS, SECTION_LABELS, type CourseSection, type Route } from '../nav'
+
+const SECTION_ICONS = {
+  home: BookOpen,
+  materials: FileText,
+  framework: ClipboardList,
+  knowledge: Network,
+  projects: Boxes,
+} as const
 
 export function Layout({ route, onNavigateSection, onBackToCourses, onOpenDemo, children }: {
   route: Route
@@ -30,29 +39,26 @@ export function Layout({ route, onNavigateSection, onBackToCourses, onOpenDemo, 
               <span>{course.slug}</span>
             </div>
             <div className="sidebar-section">课程资产</div>
-            <button
-              className={`nav-item${section === 'home' ? ' active' : ''}`}
-              onClick={() => onNavigateSection('home')}
-            >
-              <span className="dot" />
-              {SECTION_LABELS.home}
-            </button>
-            {COURSE_SECTIONS.map((s) => (
-              <button
-                key={s.key}
-                className={`nav-item${section === s.key ? ' active' : ''}`}
-                onClick={() => onNavigateSection(s.key)}
-              >
-                <span className="dot" />
-                {s.label}
-              </button>
-            ))}
+            {(['home', ...COURSE_SECTIONS.map((s) => s.key)] as CourseSection[]).map((key) => {
+              const Icon = SECTION_ICONS[key]
+              return (
+                <button
+                  key={key}
+                  className={`nav-item${section === key ? ' active' : ''}`}
+                  onClick={() => onNavigateSection(key)}
+                  aria-current={section === key ? 'page' : undefined}
+                >
+                  <Icon size={16} strokeWidth={1.8} aria-hidden="true" />
+                  {SECTION_LABELS[key]}
+                </button>
+              )
+            })}
           </>
         ) : (
           <>
             <div className="sidebar-section">导航</div>
             <button className="nav-item active">
-              <span className="dot" />
+              <BookOpen size={16} strokeWidth={1.8} aria-hidden="true" />
               课程列表
             </button>
           </>
@@ -60,7 +66,7 @@ export function Layout({ route, onNavigateSection, onBackToCourses, onOpenDemo, 
 
         <div className="sidebar-foot">
           <button className="nav-item" onClick={inWorkspace ? onBackToCourses : onOpenDemo}>
-            <span className="dot" />
+            {inWorkspace ? <ArrowLeft size={16} strokeWidth={1.8} aria-hidden="true" /> : <Settings2 size={16} strokeWidth={1.8} aria-hidden="true" />}
             {inWorkspace ? '返回课程列表' : '旧版演示流程'}
           </button>
         </div>
@@ -68,19 +74,30 @@ export function Layout({ route, onNavigateSection, onBackToCourses, onOpenDemo, 
 
       <div className="main">
         <header className="topbar">
-          {inWorkspace && course ? (
-            <>
-              <span className="crumb-link" onClick={onBackToCourses}>课程</span>
-              <span className="crumb-sep">/</span>
-              <h1>{course.name}</h1>
-              <span className="muted small">{SECTION_LABELS[section]}</span>
-            </>
-          ) : (
-            <h1>课程列表</h1>
-          )}
-          <div className="topbar-actions">
-            {inWorkspace && course ? <span className="muted small mono">{course.slug}</span> : null}
+          <div className="topbar-main">
+            {inWorkspace && course ? (
+              <>
+                <button className="crumb-link" onClick={onBackToCourses}>课程</button>
+                <span className="crumb-sep">/</span>
+                <h1>{course.name}</h1>
+                <span className="topbar-section">{SECTION_LABELS[section]}</span>
+              </>
+            ) : (
+              <h1>课程列表</h1>
+            )}
+            <div className="topbar-actions">
+              {inWorkspace && course ? <span className="course-slug mono">{course.slug}</span> : null}
+            </div>
           </div>
+          {inWorkspace && course ? (
+            <nav className="mobile-section-nav" aria-label="课程导航">
+              {(['home', ...COURSE_SECTIONS.map((s) => s.key)] as CourseSection[]).map((key) => (
+                <button key={key} className={section === key ? 'active' : ''} onClick={() => onNavigateSection(key)}>
+                  {SECTION_LABELS[key]}
+                </button>
+              ))}
+            </nav>
+          ) : null}
         </header>
 
         <main className="content">{children}</main>

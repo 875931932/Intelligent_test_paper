@@ -10,6 +10,274 @@ from urllib.error import URLError
 import server
 
 
+class BlueprintDistributionTests(unittest.TestCase):
+    def _points(self, count: int) -> list[dict]:
+        chapters = ["RAG应用", "模型微调", "推理部署", "评测与对齐"]
+        return [
+            {
+                "id": f"kp_{index:02d}",
+                "name": f"知识点{index:02d}",
+                "chapter": chapters[index % len(chapters)],
+                "importance": "key" if index % 3 == 0 else "normal",
+            }
+            for index in range(count)
+        ]
+
+    def test_assign_knowledge_points_caps_hot_topics(self) -> None:
+        points = self._points(6)
+        ordered = server.assign_knowledge_points(points, 15)
+
+        counts: dict[str, int] = {}
+        for point, _cursor, _total, _label in ordered:
+            counts[point["id"]] = counts.get(point["id"], 0) + 1
+        self.assertLessEqual(max(counts.values()), 4)
+        self.assertEqual(sum(counts.values()), 15)
+
+    def test_assign_knowledge_points_spreads_chapters(self) -> None:
+        ordered = server.assign_knowledge_points(self._points(8), 12)
+
+        chapters = [point["chapter"] for point, _cursor, _total, _label in ordered]
+        # 相邻题位不应同章节，避免连续三题考同一主题。
+        adjacent_same = sum(1 for first, second in zip(chapters, chapters[1:]) if first == second)
+        self.assertLessEqual(adjacent_same, 2)
+
+    def test_assign_follows_outline_chapter_weights(self) -> None:
+        chapters = ["第2章 提示词工程", "第3章 模型微调", "第5章 模型评估"]
+        points = [
+            {
+                "id": f"kp_{index:02d}",
+                "name": f"知识点{index:02d}",
+                "chapter": f"材料章节{index}",
+                "framework_anchor_name": chapters[index % len(chapters)],
+                "importance": "normal",
+            }
+            for index in range(12)
+        ]
+        weights = [
+            {"name": chapters[0], "weight": 20},
+            {"name": chapters[1], "weight": 60},
+            {"name": chapters[2], "weight": 20},
+        ]
+
+        ordered = server.assign_knowledge_points(points, 10, weights)
+
+        planned = {}
+        for _point, _cursor, _total, label in ordered:
+            planned[label] = planned.get(label, 0) + 1
+        self.assertEqual(sum(planned.values()), 10)
+        self.assertEqual(planned.get(chapters[1]), 6)
+        self.assertEqual(planned.get(chapters[0]), 2)
+        self.assertEqual(planned.get(chapters[2]), 2)
+
+    def test_assign_weights_redistribute_when_chapter_has_no_points(self) -> None:
+        points = [
+            {
+                "id": "kp_00",
+                "name": "检索增强生成原理",
+                "chapter": "材料章节",
+                "framework_anchor_name": "第2章 提示词工程与RAG",
+                "importance": "normal",
+            }
+        ]
+        weights = [
+            {"name": "第2章 提示词工程与RAG", "weight": 25},
+            {"name": "第3章 监督微调", "weight": 75},
+        ]
+
+        ordered = server.assign_knowledge_points(points, 3, weights)
+
+        labels = [label for _point, _cursor, _total, label in ordered]
+        self.assertEqual(labels.count("第2章 提示词工程与RAG"), 3)
+
+    def test_largest_remainder_split_sums_exactly(self) -> None:
+        self.assertEqual(server.largest_remainder_split(40, [0.05, 0.25, 0.35, 0.05, 0.10, 0.15, 0.05]), [2, 10, 14, 2, 4, 6, 2])
+        self.assertEqual(sum(server.largest_remainder_split(7, [1 / 3, 1 / 3, 1 / 3])), 7)
+
+    def test_sections_from_structure_matches_outline_ratios(self) -> None:
+        structure = {
+            "question_type_ratios": [
+                {"name": "选择题", "ratio": 20},
+                {"name": "判断题", "ratio": 20},
+                {"name": "填空题", "ratio": 10},
+                {"name": "简答题", "ratio": 20},
+                {"name": "综合题", "ratio": 30},
+            ]
+        }
+
+        sections, warnings = server.sections_from_structure(structure, server.json_decimal(100))
+
+        self.assertEqual(warnings, [])
+        by_type = {section["question_type"]: section for section in sections}
+        self.assertEqual(by_type["single_choice"]["score"], 20)
+        self.assertEqual(by_type["true_false"]["score"], 20)
+        self.assertEqual(by_type["fill_blank"]["score"], 10)
+        self.assertEqual(by_type["short_answer"]["score"], 20)
+        self.assertEqual(by_type["comprehensive"]["score"], 30)
+        self.assertEqual(by_type["comprehensive"]["count"], 1)
+        self.assertEqual(sum(section["score"] for section in sections), 100)
+        total_items = sum(section["count"] for section in sections)
+        self.assertLessEqual(total_items, 50)
+
+    def test_difficulty_targets_form_gradient(self) -> None:
+        targets = [server.difficulty_target_for("medium", index, 10) for index in range(1, 11)]
+        self.assertEqual(targets[0], "easy")
+        self.assertIn("hard", targets)
+        self.assertLess(targets.count("easy"), targets.count("medium"))
+
+    def test_true_false_targets_mix_verdicts(self) -> None:
+        targets = server.balanced_true_false_targets(10)
+        self.assertIn("正确", targets)
+        self.assertIn("错误", targets)
+        self.assertGreaterEqual(min(targets.count("正确"), targets.count("错误")), 3)
+
+    def test_choice_targets_cycle_labels(self) -> None:
+        targets = server.balanced_choice_targets(8)
+        self.assertEqual(set(targets), {"A", "B", "C", "D"})
+        self.assertEqual(targets.count("A"), 2)
+
+
+class FactSliceTests(unittest.TestCase):
+    def test_repeated_point_gets_disjoint_fact_slices(self) -> None:
+        facts = ["事实一内容", "事实二内容", "事实三内容", "事实四内容"]
+        first, first_is_slice = server.allocate_facts(facts, 0, 2)
+        second, second_is_slice = server.allocate_facts(facts, 1, 2)
+
+        self.assertTrue(first_is_slice)
+        self.assertTrue(second_is_slice)
+        self.assertFalse(set(second) & set(first))
+
+    def test_single_occurrence_keeps_all_facts(self) -> None:
+        facts = ["事实一内容", "事实二内容", "事实三内容"]
+        first, is_slice = server.allocate_facts(facts, 0, 1)
+
+        self.assertEqual(first, facts)
+        self.assertFalse(is_slice)
+
+    def test_more_occurrences_than_facts_falls_back_to_tail(self) -> None:
+        facts = ["唯一事实内容"]
+        first, first_is_slice = server.allocate_facts(facts, 0, 3)
+        third, third_is_slice = server.allocate_facts(facts, 2, 3)
+
+        self.assertFalse(first_is_slice)
+        self.assertFalse(third_is_slice)
+        self.assertEqual(third, facts)
+
+    def test_generation_spec_carries_difficulty_and_angle(self) -> None:
+        plan = {
+            "id": "Q01",
+            "question_type": "single_choice",
+            "question_type_label": "单项选择题",
+            "score": 2,
+            "knowledge_point_id": "kp_awq",
+            "knowledge_point_name": "AWQ 权重量化",
+            "chapter": "模型量化",
+            "difficulty": "medium",
+            "difficulty_target": "hard",
+            "cognitive_level": "理解/应用",
+            "cognitive_angle": "场景应用",
+            "fact_cursor": 0,
+        }
+        point = {
+            "id": "kp_awq",
+            "name": "AWQ 权重量化",
+            "assessable_content": ["AWQ 通过识别重要权重并采取保护策略，在低比特量化时尽量降低模型精度损失。"],
+            "evidence_ids": ["ev_awq"],
+        }
+
+        spec = server.build_generation_item_spec(plan, point)
+
+        self.assertEqual(spec["difficulty_target"], "hard")
+        self.assertEqual(spec["cognitive_angle"], "场景应用")
+        self.assertIn("assessable_content", spec)
+
+
+class RepositionOptionsTests(unittest.TestCase):
+    def test_correct_option_moves_to_target_label(self) -> None:
+        item = {
+            "options": [
+                {"label": "A", "text": "干扰项一"},
+                {"label": "B", "text": "正确答案文本"},
+                {"label": "C", "text": "干扰项二"},
+                {"label": "D", "text": "干扰项三"},
+            ],
+            "answer": {"correct_option": "B"},
+        }
+
+        server.reposition_options(item, "D")
+
+        self.assertEqual(item["answer"]["correct_option"], "D")
+        self.assertEqual(item["options"][3]["text"], "正确答案文本")
+        self.assertEqual(item["options"][1]["text"], "干扰项三")
+
+
+class CrossValidationTests(unittest.TestCase):
+    def _plan(self, item_id: str, question_type: str, point: str = "默认知识点") -> dict:
+        return {"id": item_id, "question_type": question_type, "knowledge_point_name": point}
+
+    def test_answer_leak_across_questions_is_rejected(self) -> None:
+        items = [
+            {
+                "plan_item_id": "Q01",
+                "stem": "DPO 偏好样本由哪三个字段组成？",
+                "options": [
+                    {"label": "A", "text": "prompt、chosen、rejected"},
+                    {"label": "B", "text": "其他"},
+                    {"label": "C", "text": "别的"},
+                    {"label": "D", "text": "再别的"},
+                ],
+                "answer": {"correct_option": "A"},
+            },
+            {
+                "plan_item_id": "Q02",
+                "stem": "在 DPO 偏好数据中，每条记录由 prompt、chosen 和 ______ 组成。",
+                "answer": {"accepted_answers": ["rejected"]},
+            },
+        ]
+        plans = {item_id: self._plan(item_id, "fill_blank") for item_id in ("Q01", "Q02")}
+        plans["Q01"]["question_type"] = "single_choice"
+
+        errors, _warnings, _stats, _conflicts = server.cross_validate_items(items, plans)
+
+        self.assertTrue(any("互相提示" in error for error in errors))
+
+    def test_all_true_verdicts_are_rejected(self) -> None:
+        items = [
+            {"plan_item_id": f"Q{index:02d}", "stem": f"陈述{index}", "answer": {"value": "正确"}}
+            for index in range(1, 5)
+        ]
+        plans = {f"Q{index:02d}": self._plan(f"Q{index:02d}", "true_false") for index in range(1, 5)}
+
+        errors, _warnings, stats, _conflicts = server.cross_validate_items(items, plans)
+
+        self.assertTrue(any("判断题" in error for error in errors))
+        self.assertEqual(stats["verdict_distribution"], {"正确": 4})
+
+    def test_duplicate_stems_are_rejected(self) -> None:
+        items = [
+            {"plan_item_id": "Q01", "stem": "在 Agentic RAG 中系统提示词的作用是什么", "answer": {"accepted_answers": ["工具调用"]}},
+            {"plan_item_id": "Q02", "stem": "在 Agentic RAG 中系统提示词的作用是什么", "answer": {"accepted_answers": ["路由规则"]}},
+        ]
+        plans = {item_id: self._plan(item_id, "fill_blank") for item_id in ("Q01", "Q02")}
+
+        errors, _warnings, _stats, _conflicts = server.cross_validate_items(items, plans)
+
+        self.assertTrue(any("题干高度相似" in error for error in errors))
+
+    def test_balanced_paper_passes_cross_validation(self) -> None:
+        items = [
+            {"plan_item_id": "Q01", "stem": "陈述一关于检索增强生成", "answer": {"value": "正确"}},
+            {"plan_item_id": "Q02", "stem": "陈述二关于低比特量化部署", "answer": {"value": "错误"}},
+            {"plan_item_id": "Q03", "stem": "陈述三关于奖励模型训练", "answer": {"value": "正确"}},
+            {"plan_item_id": "Q04", "stem": "陈述四关于适配器合并流程", "answer": {"value": "错误"}},
+        ]
+        plans = {f"Q{index:02d}": self._plan(f"Q{index:02d}", "true_false") for index in range(1, 5)}
+
+        errors, warnings, stats, _conflicts = server.cross_validate_items(items, plans)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(stats["verdict_distribution"], {"正确": 2, "错误": 2})
+
+
 class StructuredModelRequestTests(unittest.TestCase):
     def test_outline_organization_prompt_requests_semantic_requirements_and_keeps_sources(self) -> None:
         material = {
@@ -560,7 +828,8 @@ class StructuredModelRequestTests(unittest.TestCase):
         messages = server.build_organization_messages(chunks, batch_index=1)
         user_message = messages[1]["content"]
 
-        self.assertIn("最多输出 2 个", user_message)
+        self.assertIn(f"最多输出 {server.ORGANIZATION_MAX_KNOWLEDGE_POINTS} 个", user_message)
+        self.assertIn("2 到 6 条相互独立", user_message)
         self.assertNotIn("a" * 451, user_message)
 
     def test_organization_messages_reject_mixed_files(self) -> None:

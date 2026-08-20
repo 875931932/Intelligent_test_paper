@@ -85,9 +85,19 @@ def execute_task(task_id: str, *, worker_id: str | None = None) -> bool:
         if row is None:
             return False
         course_id = row["course_id"]
-        if not claim_task(session, course_id=course_id, task_id=task_id, worker_id=worker_id):
+        lease_seconds = 1800 if row["task_type"] == "generation_run" else 60
+        if not claim_task(
+            session,
+            course_id=course_id,
+            task_id=task_id,
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+        ):
             session.rollback()
             return False
+        # 将租约作为独立事务提交。业务处理器可能因模型/数据库错误回滚，
+        # 不能因此把已领取的任务恢复成 queued，导致重复执行或无法失败收敛。
+        session.commit()
         handler = _HANDLERS.get(row["task_type"])
         if handler is None:
             fail_task(
@@ -135,3 +145,24 @@ def execute_task(task_id: str, *, worker_id: str | None = None) -> bool:
         return status == "waiting_external"
     finally:
         session.close()
+
+
+def _handle_generation_run(context: TaskContext) -> dict:
+    """Execute the durable paper-generation task with the worker's lease."""
+    from app.services.generation_runner_service import execute_generation_task_handler
+
+    context.report_progress(stage="generating", progress=5)
+    row = context.session.execute(
+        select(task_runs).where(
+            task_runs.c.id == context.task_id,
+            task_runs.c.course_id == context.course_id,
+        )
+    ).one()
+    return execute_generation_task_handler(
+        context.session,
+        row,
+        manage_task_run=False,
+    )
+
+
+register_task_handler("generation_run", _handle_generation_run)

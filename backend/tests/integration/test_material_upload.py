@@ -64,7 +64,13 @@ def test_course_create_and_list_are_scoped_to_development_owner(client):
         ("exam_point_knowledge_consolidator", "knowledge consolidator is not configured"),
     ],
 )
-def test_organization_run_requires_all_semantic_dependencies(client, missing_attribute, expected_detail):
+def test_organization_run_requires_all_semantic_dependencies(client, monkeypatch, missing_attribute, expected_detail):
+    monkeypatch.setattr(settings, "embedding_api_key", "")
+    monkeypatch.setattr(settings, "embedding_base_url", "")
+    monkeypatch.setattr(settings, "embedding_model", "")
+    monkeypatch.setattr(settings, "deepseek_api_key", "")
+    monkeypatch.setattr(settings, "deepseek_base_url", "")
+    monkeypatch.setattr(settings, "deepseek_model", "")
     attributes = {
         "organization_embedder": object(),
         "exam_point_evidence_classifier": object(),
@@ -73,13 +79,15 @@ def test_organization_run_requires_all_semantic_dependencies(client, missing_att
     for name, value in attributes.items():
         setattr(client.app.state, name, value)
     delattr(client.app.state, missing_attribute)
+    if hasattr(client.app.state, "semantic_json_client"):
+        delattr(client.app.state, "semantic_json_client")
     try:
         response = client.post(
             "/api/v1/courses/not-needed/organization-runs",
             json={"material_version_ids": ["material-v1"]},
         )
     finally:
-        for name in attributes:
+        for name in (*attributes, "semantic_json_client"):
             if hasattr(client.app.state, name):
                 delattr(client.app.state, name)
 
@@ -91,6 +99,7 @@ def test_organization_dependency_lazily_builds_embedding_client(client, monkeypa
     monkeypatch.setattr(settings, "embedding_api_key", "embedding-test-key")
     monkeypatch.setattr(settings, "embedding_base_url", "https://embedding.invalid/v1")
     monkeypatch.setattr(settings, "embedding_model", "embedding-model")
+    monkeypatch.setattr(settings, "embedding_api_format", "openai")
     app.state.exam_point_evidence_classifier = object()
     app.state.exam_point_knowledge_consolidator = object()
     if hasattr(app.state, "organization_embedder"):

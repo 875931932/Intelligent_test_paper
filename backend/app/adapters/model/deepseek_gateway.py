@@ -348,7 +348,9 @@ class DeepSeekGateway:
         client: httpx.Client | None = None,
         json_client: DeepSeekJsonClient | None = None,
         recorder: ModelCallRecorder | None = None,
+        call_context: ModelCallContext | None = None,
     ) -> None:
+        self.call_context = call_context
         self.json_client = json_client or DeepSeekJsonClient(
             api_key=api_key,
             base_url=base_url,
@@ -400,6 +402,7 @@ class DeepSeekGateway:
         response = self._request_json(
             payload,
             temperature=0.2,
+            call_context=self.call_context,
             system_prompt=(
                 "你是高校期末考试命题教师，一次为本批所有题位命题，必须返回 JSON 对象，"
                 "顶层字段 questions 为数组，数组每个元素包含 item_index 及该题 output_schema 要求的全部字段。"

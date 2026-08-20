@@ -105,7 +105,7 @@ describe('GenerationStage (TR-8.2)', () => {
       />,
     )
     await user.click(screen.getByTestId('start-gen-btn'))
-    expect(mockStart).toHaveBeenCalled()
+    expect(mockStart).toHaveBeenCalledWith('c1', 'p1')
 
     // Both polls should fire quickly (5ms apart). Wait for both mock calls.
     await waitFor(() => expect(mockGetTaskRun).toHaveBeenCalledTimes(2), { timeout: 6000 })

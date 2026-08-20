@@ -134,7 +134,7 @@ export function GenerationStage({
     setItems([])
     pollCountRef.current = 0
     try {
-      const { task_run_id } = await examPipelineApi.startGeneration(courseId, project.id, { mock_graph: true })
+      const { task_run_id } = await examPipelineApi.startGeneration(courseId, project.id)
       setTaskRunId(task_run_id)
       setStatus('running')
       timeoutTimer.current = window.setTimeout(() => {

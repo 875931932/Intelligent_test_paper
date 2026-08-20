@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
 from app.db.schema import Base, Course, User, outbox_events, task_runs
+from app.infrastructure.tasks import worker as task_worker
 from app.infrastructure.tasks.models import cancel_task, claim_task, complete_task, create_task_run, fail_task, refresh_lease
 from app.infrastructure.tasks.outbox import FakePublisher, dispatch_pending_events
 from app.infrastructure.tasks.worker import execute_task, register_task_handler
@@ -130,3 +131,21 @@ def test_worker_context_can_pause_long_external_task(session, monkeypatch):
     assert row["status"] == "waiting_external"
     assert row["stage"] == "waiting_external"
     assert row["progress"] == 20
+
+
+def test_generation_worker_uses_extended_lease(session, monkeypatch):
+    task_id = create_task_run(
+        session,
+        course_id="course-a",
+        task_type="generation_run",
+        idempotency_key="generation-lease",
+        input_version="v1",
+        payload={},
+    )
+    session.commit()
+    monkeypatch.setattr("app.infrastructure.tasks.worker.get_session_factory", lambda: lambda: session)
+    monkeypatch.setitem(task_worker._HANDLERS, "generation_run", lambda _context: {"ok": True})
+
+    assert execute_task(task_id, worker_id="worker")
+    row = session.execute(select(task_runs).where(task_runs.c.id == task_id)).one()._mapping
+    assert row["status"] == "succeeded"

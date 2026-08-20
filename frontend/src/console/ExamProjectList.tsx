@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Card, EmptyState, LoadingLine, Notice } from './ui'
+import { Button, Card, EmptyState, LoadingLine, Notice, Pill } from './ui'
 import { projectsApi } from './client'
 import type { ExamProjectDetail } from './types'
+import { ArrowUpRight, FileText } from 'lucide-react'
 
 interface Props {
   courseId: string
@@ -34,23 +35,22 @@ export function ExamProjectList({ courseId, onOpenProject }: Props) {
   return (
     <div className="content-inner">
       <div className="page-head">
-        <h2>试卷项目</h2>
-        <div className="desc">按学期归档的单次命题对象。进入后是 5 阶段生产线。</div>
+        <div><span className="eyebrow-label">课程资产 / 按学期归档</span><h2>试卷项目</h2><p className="desc">每个项目都是一份独立试卷，从蓝图到导出分步确认。</p></div>
       </div>
       {projects.length === 0 ? (
         <Card title="项目列表">
           <EmptyState>暂无试卷项目</EmptyState>
         </Card>
       ) : (
-        <div>
+        <div className="project-grid">
           {projects.map((p) => (
-            <div className="project-card" key={p.id} onClick={() => onOpenProject(p.id)}>
-              <div>
-                <b>{p.name}</b>
-                <span className="muted small" style={{ marginLeft: 12 }}>{p.semester_label || '—'}</span>
+            <button className="project-card" key={p.id} onClick={() => onOpenProject(p.id)}>
+              <div className="project-card-main">
+                <span className="project-card-icon"><FileText size={18} strokeWidth={1.8} /></span>
+                <div><b>{p.name}</b><span>{p.semester_label || '未设置学期'}</span></div>
               </div>
-              <span className={`project-status ${p.status}`}>{STATUS_LABELS[p.status] ?? p.status}</span>
-            </div>
+              <div className="project-card-meta"><Pill kind={p.status === 'exported' ? 'success' : p.status === 'review' ? 'warning' : 'info'}>{STATUS_LABELS[p.status] ?? p.status}</Pill><span>{p.question_count} 题 · {p.total_score} 分</span><ArrowUpRight size={17} /></div>
+            </button>
           ))}
         </div>
       )}

@@ -38,6 +38,8 @@ f:\比赛项目\阅卷出题功能\                        ← 主仓库（大�
 
 ### 2.2 环境与启动
 
+Ubuntu 服务器部署（Redis、PostgreSQL、API、Celery Worker、outbox dispatcher、Nginx）：见 [`DEPLOY_UBUNTU.md`](./DEPLOY_UBUNTU.md)。
+
 ```powershell
 # 后端（加载 .env，端口 8000）
 cd .worktrees\core-implementation\backend
@@ -51,7 +53,16 @@ npx vite --host
 curl http://127.0.0.1:8000/api/v1/health
 ```
 
-依赖：PostgreSQL（必须）、Redis（当前健康检查显示 unavailable 但不阻塞链路）、DeepSeek API Key（.env 的 `DEEPSEEK_API_KEY`）、MinerU 服务（文档解析，结果缓存在 `backend\.runtime\mineru`）。
+依赖：PostgreSQL（必须）、Redis（Celery broker，真实生成必须）、DeepSeek API Key（.env 的 `DEEPSEEK_API_KEY`）、MinerU 服务（文档解析，结果缓存在 `backend\.runtime\mineru`）。
+
+真实生成由 `POST /api/v1/courses/{course_id}/exam-projects/{project_id}/generate` 创建 durable task，经 outbox 投递给 Celery，再由 Worker 调用正式 LangGraph。部署时除了 API 进程，还必须运行：
+
+```powershell
+cd backend
+celery -A app.infrastructure.tasks.celery_app.celery_app worker --loglevel=INFO
+```
+
+并安排 outbox dispatcher 周期性执行（当前 API 在创建任务时会做一次即时投递；若 Redis 临时不可用，未发布事件会保留为 `pending`，需要 dispatcher/recovery 重新投递）。`mock_graph` 只保留给测试夹具，教师工作台默认不会再请求 mock。
 
 ### 2.3 常用命令
 
@@ -65,6 +76,23 @@ python -m pytest tests\ -q --ignore=tests\unit\test_material_service.py
 ```
 
 demo 产物：`frontend\public\demo\pipeline.json`（全链路快照：框架/知识树/合同/37 题试卷/终检报告），前端页面直接渲染它。该文件入 git，用于版本间对比。
+
+### 2.4 部署前置条件（2026-08-20 已核验）
+
+当前可以作为**受控内部联调环境**部署，不能以“正式生产系统”直接暴露到公网。部署机器在启动应用前必须具备以下条件：
+
+| 项目 | 服务器验收动作 | 当前本机结论 |
+|---|---|---|
+| PostgreSQL + pgvector | 从后端容器/进程执行 `SELECT 1`，确认可访问目标数据库和 `vector` 扩展 | 本机出站策略拒绝远程 5432 连接，未验证 |
+| Redis | 配置为服务器可访问地址并执行 `PING` | 当前仍是 `localhost:6379`，未启动 |
+| MinIO/S3 | 配置可访问的服务端 endpoint、bucket、访问密钥；健康检查与上传各执行一次 | 当前仍是 `localhost:9000`，未启动；本地回退存储不适用于多进程部署 |
+| DashScope 向量模型 | `EMBEDDING_BASE_URL` 指向 `.../api/v1/services/embeddings/text-embedding/text-embedding`，`EMBEDDING_API_FORMAT=dashscope`，用一条短文本确认返回向量 | 本机出站策略拒绝连接，需在服务器验证 |
+| MinerU / LLM | 分别完成一份资料解析和一次真实出卷冒烟测试 | 本机仅确认配置存在，未完成网络实测 |
+| 前端 | 在 `frontend` 运行 `npm ci` 后执行 `npm run build` | lockfile 已存在；本工作区未安装 `node_modules` |
+
+`backend/start_dev.ps1` 会优先加载仓库根目录 `.env`，其不存在时回退加载 `backend/.env`。真实密钥只能放在部署环境的 `.env` 或密钥服务中，不能提交。曾在开发沟通中明文使用过的数据库或模型密钥应在部署前轮换。
+
+部署完成后的最小验收顺序：`/api/v1/health` 四项依赖均可用 → 创建课程 → 上传一份文件 → MinerU 解析 → 双大纲框架确认 → 知识目录发布 → 蓝图/合同确认 → 生成并审核一张候选试卷。生成任务必须观察到 `queued → running → succeeded/failed`，并核对 `model_calls` 有 `paper_generation` 记录；不能以 mock graph 的结果判断通过。
 
 ---
 
@@ -217,7 +245,7 @@ frontend\src\App.tsx                          demo 查看器（合同→生成�
 课程作用域 `/api/v1/courses/{courseId}` 下新增 14 个端点：
 - 蓝图：`POST exam-projects/{id}/blueprints` / `GET blueprints/current/plan-items` / `PATCH plan-items/{pid}` / `POST blueprints/current/confirm`
 - 合同：`POST contracts/allocate` / `PATCH contracts/revise` / `POST contracts/confirm`
-- 生成：`POST generate`（202 task_run_id，inline_runner 同步执行 mock_graph 或留 queued）/ `GET task-runs/{id}`
+- 生成：`POST generate`（202 task_run_id；默认经 outbox/Celery 执行真实 LangGraph，测试夹具才允许 mock_graph）/ `GET task-runs/{id}`
 - PaperVersion：`GET paper-versions/current` / `GET paper-versions/{vid}/needs-review` / `PATCH paper-versions/{vid}/items/{idx}` / `POST {vid}/confirm`（闸门 2 force 模式）/ `POST {vid}/revert`
 - legacy `/blueprints/allocate`、`/blueprints/confirm`（纯算法）保持不动，供旧链路调用。
 
@@ -265,7 +293,7 @@ frontend\src\App.tsx                          demo 查看器（合同→生成�
 - ❌ **富文本编辑器**：当前 paper_items 的 teacher_override 只支持 JSON text override（题干/选项/答案字符串 patch），无图片/公式/复杂版式
 - ❌ **权限最小化 + 审计事件硬化**：目前 `users.role` 是 teacher，所有端点未鉴权；model_calls 已记录但 outbox 审计 publish 未挂事件总线；操作留痕写端未实现
 - ❌ **A/B 卷正式管理**：目前只有 `allocation_seed` 可传入换组合，但 AB 对比视图、版本归档/回滚、双卷差异化校验未实现
-- ❌ **真实模型网关接入 generate 端点**：当前 generate 端点仅执行 inline_runner 的 mock_graph（合成题干），与 `generation_graph.invoke()` 的真实生成流水线尚未接通；mock 接口已留 `app.state.mock_graph_invoke` 注入点，接 DeepSeek 时只需替换 handler 并确保 generated_questions 字段对齐
+- ✅ **真实模型网关接入 generate 端点**：默认生成任务经 outbox/Celery Worker 调用 `DeepSeekGateway` + `generation_graph.invoke()`；模型输入只含合同槽位与纯净知识卡，输出经过题位映射、质量标记后写入 `PaperVersion`。`mock_graph` 仅在测试进程显式注入 `app.state.mock_graph_invoke` 时可用
 
 ### 未完成（= 正式开发计划 S1-S4，见 §8）
 

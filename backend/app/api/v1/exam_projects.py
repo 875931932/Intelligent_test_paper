@@ -1,11 +1,10 @@
 """exam_projects CRUD 端点（课程作用域），以及 blueprint / contract / generation 子端点。"""
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -16,6 +15,7 @@ from app.db.schema import (
     task_runs,
 )
 from app.db.session import get_session, get_session_factory
+from app.config import settings
 from app.services import exam_project_service
 from app.services.blueprint_persistence_service import (
     BlueprintPersistenceError,
@@ -45,6 +45,14 @@ class ExamProjectCreate(BaseModel):
 
 class ExamProjectStatusUpdate(BaseModel):
     status: str
+
+
+class GenerationStartRequest(BaseModel):
+    """Mock generation is test-only; production requests use the real graph."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mock_graph: bool = False
 
 
 def _not_found(detail: str = "exam project not found") -> HTTPException:
@@ -379,62 +387,8 @@ def confirm_contract(
 # ===========================================================================
 
 def _graph_invoke_factory(request: Request):
-    """返回一个 graph_invoke 可调用对象（优先读取 app.state.mock_graph_invoke）。"""
-    override = getattr(request.app.state, "mock_graph_invoke", None)
-    if override is not None:
-        return override
-
-    # 默认 mock: 按 plan_item 生成合成题（质量 ok，不访问网络）
-    from sqlalchemy import select as _select
-    from app.db.schema import plan_items as _pi
-
-    def _default_mock(session: Session, generation_run: dict, contract_snapshot: dict) -> list[dict]:
-        bv_id = generation_run.get("blueprint_version_id")
-        course_id = generation_run.get("course_id")
-        stmt = (
-            _select(_pi.c.id, _pi.c.question_type, _pi.c.score, _pi.c.difficulty,
-                    _pi.c.cognitive_level, _pi.c.knowledge_card_id, _pi.c.item_index)
-            .where(_pi.c.blueprint_version_id == bv_id, _pi.c.course_id == course_id)
-            .order_by(_pi.c.item_index)
-        )
-        rows = session.execute(stmt).all()
-        out: list[dict[str, Any]] = []
-        for idx, r in enumerate(rows):
-            qtype = r._mapping["question_type"] or "single_choice"
-            if qtype == "single_choice":
-                options = [f"选项A-{idx}", f"选项B-{idx}", f"选项C-{idx}", f"选项D-{idx}"]
-                answer = "A"
-            elif qtype == "true_false":
-                options = []
-                answer = "true"
-            elif qtype == "fill_blank":
-                options = []
-                answer = f"答案-{idx}"
-            else:
-                options = []
-                answer = f"参考答案-{idx}"
-            out.append({
-                "plan_item_id": r._mapping["id"],
-                "knowledge_card_id": r._mapping["knowledge_card_id"],
-                "stem": f"合成题干 [{idx + 1}] - 类型 {qtype}",
-                "options": options,
-                "answer": answer,
-                "question_type": qtype,
-                "difficulty": r._mapping["difficulty"] or "medium",
-                "cognitive_level": r._mapping["cognitive_level"] or "understand",
-                "score": float(r._mapping["score"] or 0),
-                "quality": {
-                    "needs_review": False,
-                    "message": "mock generation",
-                    "quality_checks": [
-                        {"check_type": "semantic", "status": "pass", "details": {"score": 0.9}},
-                        {"check_type": "answerable", "status": "pass", "details": {"score": 0.9}},
-                    ],
-                },
-            })
-        return out
-
-    return _default_mock
+    """只返回测试进程显式注入的 mock，生产环境没有合成题回退。"""
+    return getattr(request.app.state, "mock_graph_invoke", None)
 
 
 @router.post(
@@ -446,16 +400,18 @@ def generate(
     request: Request,
     course_id: str,
     project_id: str,
-    body: dict | None = None,
+    body: GenerationStartRequest | None = None,
     session: Session = Depends(get_session),
     session_factory: sessionmaker[Session] = Depends(get_session_factory),
 ) -> dict:
     _get_project_or_404(session, course_id=course_id, project_id=project_id)
-    body = body or {}
-    # 若提供 mock_graph 或者没有 deepseek 配置，用 mock 立即同步执行一次
-    mock_graph = body.get("mock_graph", True) if isinstance(body, dict) else True
-    has_deepseek = bool(os.environ.get("DEEPSEEK_API_KEY") or "")
-    should_run_inline = bool(mock_graph) or (not has_deepseek)
+    mock_graph = bool(body.mock_graph) if body is not None else False
+    if not mock_graph and not all(value.strip() for value in (
+        settings.deepseek_api_key,
+        settings.deepseek_base_url,
+        settings.deepseek_model,
+    )):
+        raise HTTPException(status_code=503, detail="LLM model is not configured")
 
     try:
         task_run_id = enqueue_generation(
@@ -468,9 +424,11 @@ def generate(
     except GenerationRunnerError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
-    if should_run_inline:
+    if mock_graph:
         # 使用注入的 session_factory（可能来自 dependency_overrides，比如测试场景）
         graph_invoke = _graph_invoke_factory(request)
+        if graph_invoke is None:
+            raise HTTPException(status_code=403, detail="mock generation is not enabled")
 
         def _handler(sess: Session, task_run_row):
             from app.services.generation_runner_service import (
@@ -489,6 +447,22 @@ def generate(
             )
             if not ok:
                 break
+    else:
+        # 真实任务经 transactional outbox 投递给 Celery；投递暂时失败时事件保持
+        # pending，任务不会丢失，后续 dispatcher 可安全重试。
+        from app.infrastructure.tasks.celery_app import CeleryPublisher
+        from app.infrastructure.tasks.outbox import dispatch_pending_events
+
+        try:
+            dispatch_pending_events(
+                session,
+                CeleryPublisher(),
+                course_id=course_id,
+                limit=1,
+            )
+            session.commit()
+        except Exception:
+            session.rollback()
 
     return {"task_run_id": task_run_id}
 

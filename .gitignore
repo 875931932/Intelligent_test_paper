@@ -5,6 +5,7 @@ __pycache__/
 *.pyc
 .pytest_cache/
 *.egg-info/
+.git-index-temp
 
 
 .runtime/
