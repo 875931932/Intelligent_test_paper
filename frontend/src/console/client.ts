@@ -76,13 +76,101 @@ export const materialsApi = {
 }
 
 async function sha256Hex(file: File): Promise<string> {
-  if (!crypto?.subtle?.digest) {
-    throw new Error('当前环境不支持 crypto.subtle，请通过 HTTPS 或 localhost 访问后再上传文件。')
+  const buffer = await file.arrayBuffer()
+  if (crypto?.subtle?.digest) {
+    const digest = await crypto.subtle.digest('SHA-256', buffer)
+    return Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('')
   }
-  const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer())
-  return Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, '0'))
+  return sha256HexJs(buffer)
+}
+
+function sha256HexJs(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer)
+  const k = new Uint32Array([
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+  ])
+  const h0 = 0x6a09e667
+  const h1 = 0xbb67ae85
+  const h2 = 0x3c6ef372
+  const h3 = 0xa54ff53a
+  const h4 = 0x510e527f
+  const h5 = 0x9b05688c
+  const h6 = 0x1f83d9ab
+  const h7 = 0x5be0cd19
+
+  const len = bytes.length
+  const bitLen = len * 8
+  const padded = new Uint8Array(len + 1 + 8)
+  padded.set(bytes)
+  padded[len] = 0x80
+  const view = new DataView(padded.buffer)
+  view.setUint32(padded.length - 4, Math.floor(bitLen / 0x100000000), false)
+  view.setUint32(padded.length - 8, bitLen >>> 0, false)
+
+  const w = new Uint32Array(64)
+  let a = h0
+  let b = h1
+  let c = h2
+  let d = h3
+  let e = h4
+  let f = h5
+  let g = h6
+  let h = h7
+
+  const sigma0 = (x: number) => ((x >>> 7) | (x << 25)) ^ ((x >>> 18) | (x << 14)) ^ (x >>> 3)
+  const sigma1 = (x: number) => ((x >>> 17) | (x << 15)) ^ ((x >>> 19) | (x << 13)) ^ (x >>> 10)
+  const gamma0 = (x: number) => ((x >>> 2) | (x << 30)) ^ ((x >>> 13) | (x << 19)) ^ ((x >>> 22) | (x << 10))
+  const gamma1 = (x: number) => ((x >>> 6) | (x << 26)) ^ ((x >>> 11) | (x << 21)) ^ ((x >>> 25) | (x << 7))
+
+  for (let i = 0; i < padded.length; i += 64) {
+    for (let t = 0; t < 16; t++) w[t] = view.getUint32(i + t * 4, false)
+    for (let t = 16; t < 64; t++) w[t] = (sigma1(w[t - 2]) + w[t - 7] + sigma0(w[t - 15]) + w[t - 16]) | 0
+
+    let A = a
+    let B = b
+    let C = c
+    let D = d
+    let E = e
+    let F = f
+    let G = g
+    let H = h
+
+    for (let t = 0; t < 64; t++) {
+      const t1 = (H + gamma1(E) + ((E & F) ^ (~E & G)) + k[t] + w[t]) | 0
+      const t2 = (gamma0(A) + ((A & B) ^ (A & C) ^ (B & C))) | 0
+      H = G
+      G = F
+      F = E
+      E = (D + t1) | 0
+      D = C
+      C = B
+      B = A
+      A = (t1 + t2) | 0
+    }
+
+    a = (a + A) | 0
+    b = (b + B) | 0
+    c = (c + C) | 0
+    d = (d + D) | 0
+    e = (e + E) | 0
+    f = (f + F) | 0
+    g = (g + G) | 0
+    h = (h + H) | 0
+  }
+
+  const hex = [a, b, c, d, e, f, g, h]
+    .map((v) => ((v < 0 ? 0x100000000 + v : v) >>> 0).toString(16).padStart(8, '0'))
     .join('')
+  return hex
 }
 
 function guessMime(filename: string): string {
