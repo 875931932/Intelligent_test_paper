@@ -23,7 +23,7 @@ export function Layout({ route, onNavigateSection, onBackToCourses, onOpenDemo, 
 
   return (
     <div className="shell">
-      <aside className="sidebar">
+      <aside className="sidebar" aria-label="课程导航">
         <div className="sidebar-brand">
           <div className="brand-mark">卷</div>
           <div className="brand-copy">
@@ -100,7 +100,11 @@ export function Layout({ route, onNavigateSection, onBackToCourses, onOpenDemo, 
           ) : null}
         </header>
 
-        <main className="content">{children}</main>
+        <main className="content" tabIndex={-1}>
+          <div className="content-inner">
+            {children}
+          </div>
+        </main>
       </div>
     </div>
   )

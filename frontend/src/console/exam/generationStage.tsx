@@ -187,7 +187,7 @@ export function GenerationStage({
       )}
 
       {items.length > 0 && (
-        <div style={{ marginTop: 20 }} data-testid="question-cards">
+        <div className="question-list" data-testid="question-cards" style={{ marginTop: 20 }}>
           {items.map((q, i) => (
             <div className="q-preview" key={`${q.item_index ?? i}`} data-testid={`q-card-${q.item_index ?? i}`}>
               <div className="q-stem">
@@ -209,7 +209,7 @@ export function GenerationStage({
         </Notice>
       )}
 
-      <div style={{ marginTop: 20, display: 'flex', gap: 12 }}>
+      <div className="stage-actions">
         <Button
           variant="primary"
           onClick={handleStart}

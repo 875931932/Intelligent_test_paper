@@ -235,7 +235,7 @@ export function ReviewExportStage({ courseId, project, onExport }: Props) {
       {loading && items.length === 0 && <div className="loading-line muted small">加载试卷版本…</div>}
 
       {needsReview.length > 0 && !finalized && (
-        <div className="card" style={{ marginTop: 12 }} data-testid="needs-review-list">
+        <div className="card" data-testid="needs-review-list" style={{ marginTop: 12 }}>
           <div className="card-head">
             <div>
               <h4 style={{ margin: 0 }}>待审核列表（优先处理）</h4>
@@ -271,7 +271,7 @@ export function ReviewExportStage({ courseId, project, onExport }: Props) {
       )}
 
       {items.length > 0 && (
-        <div style={{ marginBottom: 20 }} data-testid="review-item-list">
+        <div className="question-list" data-testid="review-item-list" style={{ marginBottom: 20 }}>
           {items.map((q, i) => {
             const idx = q.item_index ?? i + 1
             return (
@@ -347,7 +347,7 @@ export function ReviewExportStage({ courseId, project, onExport }: Props) {
       )}
 
       {forceDialog && (
-        <div className="card" style={{ marginBottom: 20, borderColor: '#f5c26b' }} role="dialog" data-testid="force-dialog">
+        <div className="card" data-testid="force-dialog" style={{ marginBottom: 20, borderColor: '#f5c26b' }} role="dialog">
           <div className="card-head">
             <div>
               <h4 style={{ margin: 0 }}>仍有待审项目未解决</h4>
@@ -377,7 +377,7 @@ export function ReviewExportStage({ courseId, project, onExport }: Props) {
             </Button>
           </div>
         ) : (
-          <div className="gate-actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <div className="gate-actions stage-actions-wrap">
             {pvId && (
               <>
                 <a

@@ -6,7 +6,6 @@ import type { AssessmentAnchor, ExamPoint, FrameworkCandidate, Material } from '
 import { Button, Card, EmptyState, Field, Notice, Pill } from '../ui'
 import { InlineProgress } from '../ProgressFeedback'
 
-/** 从已解析就绪的资料中筛出指定类型。 */
 function readyOf(materials: Material[], type: string): Material[] {
   return materials.filter((m) => m.material_type === type && m.parse_status?.status === 'ready')
 }
@@ -31,7 +30,6 @@ export function FrameworkStep({ courseId, materials, onDone }: {
   const [resolutions, setResolutions] = useState<Record<string, string>>({})
   const [showExamPoints, setShowExamPoints] = useState(false)
 
-  // 自动恢复：进入页面时加载最近的候选
   useEffect(() => {
     if (candidate) return
     let cancelled = false
@@ -180,44 +178,39 @@ export function FrameworkStep({ courseId, materials, onDone }: {
 
       {hasCandidate ? (
         <div className="framework-layout">
-          {/* 左侧：摘要 + 操作 */}
-          <aside className="fw-sidebar">
-            <div className="fw-summary">
-              <h3>概览</h3>
-              <div className="fw-stat-grid">
-                <div className="fw-stat">
-                  <div className="fw-stat-num">{candidate.anchors.length}</div>
-                  <div className="fw-stat-label">考核锚点</div>
+          <aside className="framework-summary">
+            <Card title="概览">
+              <div className="framework-stat-grid">
+                <div className="framework-stat">
+                  <div className="framework-stat-num">{candidate.anchors.length}</div>
+                  <div className="framework-stat-label">考核锚点</div>
                 </div>
-                <div className="fw-stat">
-                  <div className="fw-stat-num">{candidate.exam_points.length}</div>
-                  <div className="fw-stat-label">考点</div>
+                <div className="framework-stat">
+                  <div className="framework-stat-num">{candidate.exam_points.length}</div>
+                  <div className="framework-stat-label">考点</div>
                 </div>
-                <div className="fw-stat">
-                  <div className="fw-stat-num">{candidate.teaching_topics.length}</div>
-                  <div className="fw-stat-label">教学主题</div>
+                <div className="framework-stat">
+                  <div className="framework-stat-num">{candidate.teaching_topics.length}</div>
+                  <div className="framework-stat-label">教学主题</div>
                 </div>
-                <div className="fw-stat">
-                  <div className={`fw-stat-num ${openConflicts.length > 0 ? 'text-warn' : 'text-ok'}`}>{openConflicts.length}</div>
-                  <div className="fw-stat-label">待处理冲突</div>
+                <div className="framework-stat">
+                  <div className={`framework-stat-num ${openConflicts.length > 0 ? 'text-warn' : 'text-ok'}`}>{openConflicts.length}</div>
+                  <div className="framework-stat-label">待处理冲突</div>
                 </div>
               </div>
 
-              <div className="fw-weight-meter">
-                <div className="fw-meter-label">
+              <div className="framework-meter">
+                <div className="framework-meter-title">
                   <span>权重合计</span>
                   <span className={weightsOk ? 'text-ok' : 'text-warn'}>{weightTotal.toFixed(1)} / 100</span>
                 </div>
-                <div className="fw-meter-bar">
-                  <div
-                    className={`fw-meter-fill ${weightsOk ? 'ok' : 'warn'}`}
-                    style={{ width: `${Math.min(weightTotal, 100)}%` }}
-                  />
+                <div className="framework-meter-track">
+                  <div className="framework-meter-fill" style={{ width: `${Math.min(weightTotal, 100)}%` }} />
                 </div>
               </div>
-            </div>
+            </Card>
 
-            <div className="fw-actions">
+            <div className="framework-actions">
               <Button
                 variant="primary"
                 loading={confirming}
@@ -229,21 +222,20 @@ export function FrameworkStep({ courseId, materials, onDone }: {
               <Button variant="secondary" loading={confirming} onClick={() => void reject()}>
                 驳回候选
               </Button>
-              {!weightsOk ? <div className="fw-hint">权重合计须为 100</div> : null}
-              {!conflictsOk ? <div className="fw-hint">请处理所有冲突</div> : null}
+              {!weightsOk ? <div className="framework-hint">权重合计须为 100</div> : null}
+              {!conflictsOk ? <div className="framework-hint">请处理所有冲突</div> : null}
             </div>
           </aside>
 
-          {/* 中间：主要内容 */}
-          <div className="fw-main">
+          <div className="framework-main">
             <Card title="考核锚点权重" sub="调整每个锚点权重，合计须为 100。">
-              <div className="fw-anchor-grid">
+              <div className="framework-anchor-grid">
                 {candidate.anchors.map((anchor) => (
-                  <div key={anchor.key} className="fw-anchor-card">
-                    <div className="fw-anchor-title">{anchor.title}</div>
-                    <div className="fw-anchor-key mono">{anchor.key}</div>
-                    <div className="fw-anchor-meta">{anchor.ability_requirements.join('；') || '—'}</div>
-                    <div className="fw-anchor-weight">
+                  <div key={anchor.key} className="framework-anchor-card">
+                    <div className="framework-anchor-title">{anchor.title}</div>
+                    <div className="framework-anchor-key mono">{anchor.key}</div>
+                    <div className="framework-anchor-meta">{anchor.ability_requirements.join('；') || '—'}</div>
+                    <div className="framework-anchor-weight">
                       <input
                         className="input"
                         type="number"
@@ -255,7 +247,7 @@ export function FrameworkStep({ courseId, materials, onDone }: {
                           setAnchorWeights({ ...anchorWeights, [anchor.key]: Number(e.target.value) })
                         }
                       />
-                      <span className="fw-anchor-weight-pct">%</span>
+                      <span className="framework-anchor-weight-pct">%</span>
                     </div>
                   </div>
                 ))}
@@ -272,18 +264,18 @@ export function FrameworkStep({ courseId, materials, onDone }: {
               }
             >
               {showExamPoints ? (
-                <div className="fw-exam-points">
+                <div className="framework-exam-points">
                   {candidate.anchors.map((anchor) => {
                     const points = candidate.exam_points.filter((p) => p.anchor_key === anchor.key)
                     if (points.length === 0) return null
                     return (
-                      <div key={anchor.key} className="fw-ep-group">
-                        <div className="fw-ep-group-title">{anchor.title} <span className="muted">({points.length})</span></div>
-                        <ul className="fw-ep-list">
+                      <div key={anchor.key} className="framework-ep-group">
+                        <div className="framework-ep-group-title">{anchor.title} <span className="muted">({points.length})</span></div>
+                        <ul className="framework-ep-list">
                           {points.map((p) => (
-                            <li key={p.code} className="fw-ep-item">
+                            <li key={p.code} className="framework-ep-item">
                               <span className="mono muted">{p.code}</span>
-                              <span className="fw-ep-title">{p.title}</span>
+                              <span>{p.title}</span>
                             </li>
                           ))}
                         </ul>
@@ -292,20 +284,19 @@ export function FrameworkStep({ courseId, materials, onDone }: {
                   })}
                 </div>
               ) : (
-                <div className="cell-sub">点击「展开」查看 {candidate.exam_points.length} 个考点的分组详情。</div>
+                <div className="sub">点击「展开」查看 {candidate.exam_points.length} 个考点的分组详情。</div>
               )}
             </Card>
           </div>
 
-          {/* 右侧：冲突 */}
           {openConflicts.length > 0 ? (
-            <aside className="fw-conflicts">
+            <aside className="framework-conflicts">
               <Card title={`冲突 ${openConflicts.length}`} sub="填写处理说明后即可确认框架。">
-                <div className="fw-conflict-list">
+                <div className="framework-conflict-list">
                   {openConflicts.map((conflict) => (
-                    <div key={conflict.key} className="fw-conflict-item">
-                      <div className="fw-conflict-kind">{conflict.kind.replace(/_/g, ' ')}</div>
-                      <div className="fw-conflict-msg">{conflict.message}</div>
+                    <div key={conflict.key} className="framework-conflict-item">
+                      <div className="cell-title">{conflict.kind.replace(/_/g, ' ')}</div>
+                      <div className="cell-sub">{conflict.message}</div>
                       <input
                         className="input input-sm"
                         placeholder="处理说明"

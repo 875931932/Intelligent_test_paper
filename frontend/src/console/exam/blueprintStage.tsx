@@ -146,18 +146,18 @@ export function BlueprintStage({ courseId, project, onConfirm }: Props) {
               />
             </Field>
           </div>
-          <div style={{ marginTop: 12 }} className="muted small">
+          <div className="muted small">
             <div>题型预设：单选 15×2 / 判断 10×1 / 填空 5×2 / 简答 4×5 / 综合 3×10</div>
             <div>章节权重预设：anchor_EP1~6 分别为 30/20/15/15/10/10</div>
           </div>
-          <div style={{ marginTop: 16 }}>
+          <div className="stage-actions">
             <Button variant="primary" onClick={handleGenerate} loading={loading} data-testid="generate-blueprint-btn">
               生成蓝图
             </Button>
           </div>
         </div>
       ) : (
-        <div style={{ marginTop: 16 }}>
+        <div className="plan-table-wrap" style={{ marginTop: 16 }}>
           <table className="slot-table plan-table">
             <thead>
               <tr>

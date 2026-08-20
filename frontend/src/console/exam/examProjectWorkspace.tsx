@@ -55,16 +55,10 @@ export function ExamProjectWorkspace({ courseId, projectId }: { courseId: string
     }
   }, [courseId, projectId])
 
-  // ── 四个阶段"进入下一步"回调 ──
-  // 不再只调用 updateStatus；先让阶段内部完成对应 API（见各 *Stage.tsx），
-  // 再统一刷新项目以展示后端真实状态与 active_*_id 字段。
-
   const handleConfirmBlueprint = useCallback(
     async (_pid: string) => {
-      // BlueprintStage 已调用 confirmBlueprint；此处仅负责刷新项目状态
       const p = await refreshProject()
       if (p && !p.blueprint_confirmed) {
-        // 兜底：若后端尚未自动推进，则尝试推进 status
         try {
           await projectsApi.updateStatus(courseId, projectId, 'contract')
           await refreshProject()
@@ -78,7 +72,6 @@ export function ExamProjectWorkspace({ courseId, projectId }: { courseId: string
 
   const handleGenerate = useCallback(
     async (_pid: string) => {
-      // ContractStage 已调用 confirmContract；刷新项目，兜底推进到 generating
       const p = await refreshProject()
       if (p && p.status !== 'generating' && p.status !== 'review') {
         try {
@@ -94,7 +87,6 @@ export function ExamProjectWorkspace({ courseId, projectId }: { courseId: string
 
   const handleProceedToReview = useCallback(
     async (_pid: string) => {
-      // GenerationStage 已完成生成；刷新项目，兜底推进到 review
       const p = await refreshProject()
       if (p && p.status !== 'review' && p.status !== 'exported') {
         try {
@@ -110,7 +102,6 @@ export function ExamProjectWorkspace({ courseId, projectId }: { courseId: string
 
   const handleExport = useCallback(
     async (_pid: string) => {
-      // ReviewExportStage 已调用 confirmPaperVersion；刷新项目，兜底推进到 exported
       const p = await refreshProject()
       if (p && p.status !== 'exported') {
         try {
@@ -146,11 +137,15 @@ export function ExamProjectWorkspace({ courseId, projectId }: { courseId: string
   }) ?? {}
 
   return (
-    <div className="content-inner">
+    <div className="project-workspace">
       <div className="page-head">
         <h2>{project.name}</h2>
-        <div className="desc">
-          {project.semester_label} · 总分 {project.total_score} · {project.question_count} 题
+        <div className="project-meta">
+          <span>{project.semester_label}</span>
+          <span>·</span>
+          <span>总分 {project.total_score}</span>
+          <span>·</span>
+          <span>{project.question_count} 题</span>
         </div>
         <div className="muted small" style={{ marginTop: 4 }} data-testid="active-ids">
           状态：{project.status}
@@ -166,18 +161,20 @@ export function ExamProjectWorkspace({ courseId, projectId }: { courseId: string
 
       <PipelineNav current={currentStage} completed={completedStages} onJump={handleJump} />
 
-      {currentStage === 'blueprint' && (
-        <BlueprintStage courseId={courseId} project={project} onConfirm={handleConfirmBlueprint} />
-      )}
-      {currentStage === 'contract' && (
-        <ContractStage courseId={courseId} project={project} onGenerate={handleGenerate} />
-      )}
-      {currentStage === 'generating' && (
-        <GenerationStage courseId={courseId} project={project} onProceed={handleProceedToReview} />
-      )}
-      {(currentStage === 'review' || currentStage === 'exported') && (
-        <ReviewExportStage courseId={courseId} project={project} onExport={handleExport} />
-      )}
+      <div className="project-stage">
+        {currentStage === 'blueprint' && (
+          <BlueprintStage courseId={courseId} project={project} onConfirm={handleConfirmBlueprint} />
+        )}
+        {currentStage === 'contract' && (
+          <ContractStage courseId={courseId} project={project} onGenerate={handleGenerate} />
+        )}
+        {currentStage === 'generating' && (
+          <GenerationStage courseId={courseId} project={project} onProceed={handleProceedToReview} />
+        )}
+        {(currentStage === 'review' || currentStage === 'exported') && (
+          <ReviewExportStage courseId={courseId} project={project} onExport={handleExport} />
+        )}
+      </div>
     </div>
   )
 }

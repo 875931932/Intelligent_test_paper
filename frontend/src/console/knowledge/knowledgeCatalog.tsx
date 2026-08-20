@@ -79,7 +79,7 @@ export function KnowledgeCatalog({ courseId }: { courseId: string }) {
       </div>
 
       <div className="catalog-main">
-        <div className="catalog-canvas">
+        <div className="catalog-canvas view-enter" key={view}>
           {view === 'graph' ? (
             <GraphView layout={layout} onSelectNode={handleSelect} selectedId={selectedId} />
           ) : (

@@ -179,7 +179,7 @@ export function ContractStage({ courseId, project, onGenerate }: Props) {
         </div>
       )}
 
-      <div style={{ marginTop: 20, display: 'flex', gap: 12 }}>
+      <div className="stage-actions">
         <Button variant="secondary" onClick={handleRevise} loading={reviseLoading} disabled={slots.length === 0}>
           修订（演示：修改首个题位卡）
         </Button>

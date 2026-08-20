@@ -11,7 +11,7 @@ export function PipelineNav({ current, completed, onJump }: Props) {
 
   return (
     <div className="pipeline-nav">
-      <div className="pipeline-line">
+      <div className="pipeline-track">
         {PIPELINE_STAGES.map((s, i) => {
           const isCompleted = completed.includes(s.stage)
           const isActive = current === s.stage
@@ -19,14 +19,15 @@ export function PipelineNav({ current, completed, onJump }: Props) {
           const isClickable = isCompleted || isActive
           return (
             <div
-              className={`stage-dot ${isActive ? 'active' : ''} ${isCompleted ? 'done' : ''} ${isFuture ? 'future' : ''}`}
+              className={`pipeline-step${isActive ? ' active' : ''}${isCompleted ? ' done' : ''}${isFuture ? ' future' : ''}`}
               key={s.stage}
               onClick={() => isClickable && onJump(s.stage)}
               role="button"
+              tabIndex={isClickable ? 0 : -1}
             >
-              <div className="stage-circle">{isCompleted ? '✓' : s.index}</div>
-              <div className="stage-label">{s.label}</div>
-              {i < PIPELINE_STAGES.length - 1 && <div className="stage-connector" />}
+              <div className="pipeline-circle">{isCompleted ? '✓' : s.index}</div>
+              <div className="pipeline-label">{s.label}</div>
+              {i < PIPELINE_STAGES.length - 1 && <div className="pipeline-connector" />}
             </div>
           )
         })}

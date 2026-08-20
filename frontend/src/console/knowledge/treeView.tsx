@@ -36,7 +36,7 @@ export function TreeView({ data, onSelectCard, selectedId }: Props) {
           return (
             <div className="ktree-node domain" key={ep.id}>
               <div className="ktree-node-head">
-                <span className="code">{ep.code}</span>
+                <span className="mono muted">{ep.code}</span>
                 <span>{ep.title}</span>
               </div>
               <div className="ktree-children">
@@ -61,8 +61,8 @@ export function TreeView({ data, onSelectCard, selectedId }: Props) {
                             onClick={() => onSelectCard(cid)}
                           >
                             <span>{c.name}</span>
-                            <span className={`ktree-badge ${c.grounded ? 'grounded' : 'ungrounded'}`}>
-                              {c.grounded ? '●' : '●'} {c.assessable_content.length} 原子
+                            <span className="ktree-badge">
+                              {c.grounded ? '●' : '○'} {c.assessable_content.length} 原子
                             </span>
                           </div>
                         )
