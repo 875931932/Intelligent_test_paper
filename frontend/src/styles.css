@@ -1735,6 +1735,7 @@ textarea:focus-visible {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
+  overflow: hidden;
 }
 
 .material-list-head {
@@ -1788,6 +1789,7 @@ textarea:focus-visible {
   border-bottom: 1px solid var(--divider);
   transition: background var(--duration-fast) ease;
   cursor: default;
+  min-width: 0;
 }
 
 .file-browser-row:last-child {
@@ -1843,12 +1845,24 @@ textarea:focus-visible {
   flex-shrink: 0;
   font-size: 12px;
   color: var(--text-muted);
+  max-width: 320px;
+}
+
+.file-browser-meta .btn,
+.file-browser-meta .pill {
+  flex-shrink: 0;
+}
+
+.file-browser-body {
+  max-height: 320px;
+  overflow: auto;
 }
 
 .file-browser-actions {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  flex-shrink: 0;
 }
 
 /* ── 资料项交错入场 ──────────────────────────────────── */

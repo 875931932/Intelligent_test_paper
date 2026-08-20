@@ -337,6 +337,7 @@ export function MaterialsStep({ courseId, materials, onRefresh }: {
                           <span>状态</span>
                         </div>
                       </div>
+                      <div className="file-browser-body">
                       {zoneMaterials.map((material) => {
                         const name = material.logical_name
                         const segments = name.includes('/') ? name.split('/') : name.includes('\\') ? name.split('\\') : [name]
@@ -347,10 +348,10 @@ export function MaterialsStep({ courseId, materials, onRefresh }: {
                             <div className="file-icon">{fileExt(fileName)}</div>
                             <div className="file-browser-info">
                               {folderPath ? <div className="file-browser-path">{folderPath}/</div> : null}
-                              <div className="file-browser-name">{fileName}</div>
+                              <div className="file-browser-name" title={fileName}>{fileName}</div>
                             </div>
                             <div className="file-browser-meta">
-                              <span>{material.latest_version ? formatBytes(material.latest_version.size_bytes) : '—'}</span>
+                              <span className="file-browser-size">{material.latest_version ? formatBytes(material.latest_version.size_bytes) : '—'}</span>
                               {material.parse_status?.status === 'ready' ? (
                                 <Pill kind="success">可用</Pill>
                               ) : (
@@ -383,6 +384,7 @@ export function MaterialsStep({ courseId, materials, onRefresh }: {
                           </div>
                         )
                       })}
+                      </div>
                     </div>
                   ) : (
                     <table className="table">
