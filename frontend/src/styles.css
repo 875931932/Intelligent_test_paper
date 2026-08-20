@@ -1985,6 +1985,7 @@ textarea:focus-visible {
   font-size: 13.5px;
   line-height: 1.6;
   border: 1px solid transparent;
+  margin-bottom: var(--space-4);
 }
 
 .notice-info {
