@@ -1,6 +1,6 @@
 /** 步骤二 · 考纲框架：双大纲语义提取 → 教师审阅权重与冲突 → 确认发布。 */
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { frameworkApi } from '../client'
 import type { AssessmentAnchor, ExamPoint, FrameworkCandidate, Material } from '../types'
 import { Button, Card, EmptyState, Field, Notice, Pill } from '../ui'
@@ -28,8 +28,31 @@ export function FrameworkStep({ courseId, materials, onDone }: {
   const [candidate, setCandidate] = useState<FrameworkCandidate | null>(null)
   const [anchorWeights, setAnchorWeights] = useState<Record<string, number>>({})
   const [resolutions, setResolutions] = useState<Record<string, string>>({})
+  const [showExamPoints, setShowExamPoints] = useState(false)
 
-  const openConflicts = candidate?.conflicts.filter((c) => c.status === 'open') ?? []
+  // 自动恢复：进入页面时加载最近的候选
+  useEffect(() => {
+    if (candidate) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const latest = await frameworkApi.getLatestRun(courseId)
+        if (cancelled || !latest) return
+        if (latest.status === 'awaiting_teacher_confirmation') {
+          const data = await frameworkApi.getCandidate(courseId, latest.id)
+          if (cancelled) return
+          setRunId(latest.id)
+          setCandidate(data)
+          setAnchorWeights(Object.fromEntries(data.anchors.map((a) => [a.key, a.exam_weight])))
+        }
+      } catch {
+        // 无历史 run 或加载失败，静默处理
+      }
+    })()
+    return () => { cancelled = true }
+  }, [courseId, candidate])
+
+  const openConflicts = candidate?.conflicts?.filter((c) => c.status === 'open') ?? []
   const weightTotal = Object.values(anchorWeights).reduce((sum, w) => sum + (Number.isFinite(w) ? w : 0), 0)
   const weightsOk = Math.abs(weightTotal - 100) < 0.01
   const conflictsOk = openConflicts.every((c) => (resolutions[c.key] ?? '').trim().length > 0)
@@ -122,6 +145,8 @@ export function FrameworkStep({ courseId, materials, onDone }: {
     )
   }
 
+  const hasCandidate = candidate && candidate.anchors && candidate.exam_points
+
   return (
     <>
       <Card title="提取考纲框架" sub="从教学大纲提取教学主题，从考核大纲提取考核锚点与考点，并交叉比对。">
@@ -149,114 +174,149 @@ export function FrameworkStep({ courseId, materials, onDone }: {
       </Card>
 
       {error ? <Notice kind="error">{error}</Notice> : null}
-      {info ? <Notice kind={candidate ? 'info' : 'success'}>{info}</Notice> : null}
+      {info ? <Notice kind={hasCandidate ? 'info' : 'success'}>{info}</Notice> : null}
 
-      {candidate ? (
-        <>
-          <Card
-            title="考核锚点"
-            sub="锚点权重决定整卷章节配比，合计须为 100。"
-            actions={<Pill kind={weightsOk ? 'success' : 'warning'}>合计 {weightTotal.toFixed(1)} / 100</Pill>}
-          >
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>锚点</th>
-                  <th>权重</th>
-                  <th>能力要求</th>
-                  <th>允许题型</th>
-                </tr>
-              </thead>
-              <tbody>
+      {hasCandidate ? (
+        <div className="framework-layout">
+          {/* 左侧：摘要 + 操作 */}
+          <aside className="fw-sidebar">
+            <div className="fw-summary">
+              <h3>概览</h3>
+              <div className="fw-stat-grid">
+                <div className="fw-stat">
+                  <div className="fw-stat-num">{candidate.anchors.length}</div>
+                  <div className="fw-stat-label">考核锚点</div>
+                </div>
+                <div className="fw-stat">
+                  <div className="fw-stat-num">{candidate.exam_points.length}</div>
+                  <div className="fw-stat-label">考点</div>
+                </div>
+                <div className="fw-stat">
+                  <div className="fw-stat-num">{candidate.teaching_topics.length}</div>
+                  <div className="fw-stat-label">教学主题</div>
+                </div>
+                <div className="fw-stat">
+                  <div className={`fw-stat-num ${openConflicts.length > 0 ? 'text-warn' : 'text-ok'}`}>{openConflicts.length}</div>
+                  <div className="fw-stat-label">待处理冲突</div>
+                </div>
+              </div>
+
+              <div className="fw-weight-meter">
+                <div className="fw-meter-label">
+                  <span>权重合计</span>
+                  <span className={weightsOk ? 'text-ok' : 'text-warn'}>{weightTotal.toFixed(1)} / 100</span>
+                </div>
+                <div className="fw-meter-bar">
+                  <div
+                    className={`fw-meter-fill ${weightsOk ? 'ok' : 'warn'}`}
+                    style={{ width: `${Math.min(weightTotal, 100)}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="fw-actions">
+              <Button
+                variant="primary"
+                loading={confirming}
+                disabled={!weightsOk || !conflictsOk}
+                onClick={() => void confirm()}
+              >
+                确认并发布框架
+              </Button>
+              <Button variant="secondary" loading={confirming} onClick={() => void reject()}>
+                驳回候选
+              </Button>
+              {!weightsOk ? <div className="fw-hint">权重合计须为 100</div> : null}
+              {!conflictsOk ? <div className="fw-hint">请处理所有冲突</div> : null}
+            </div>
+          </aside>
+
+          {/* 中间：主要内容 */}
+          <div className="fw-main">
+            <Card title="考核锚点权重" sub="调整每个锚点权重，合计须为 100。">
+              <div className="fw-anchor-grid">
                 {candidate.anchors.map((anchor) => (
-                  <tr key={anchor.key}>
-                    <td>
-                      <div className="cell-title">{anchor.title}</div>
-                      <div className="cell-sub mono">{anchor.key}</div>
-                    </td>
-                    <td>
+                  <div key={anchor.key} className="fw-anchor-card">
+                    <div className="fw-anchor-title">{anchor.title}</div>
+                    <div className="fw-anchor-key mono">{anchor.key}</div>
+                    <div className="fw-anchor-meta">{anchor.ability_requirements.join('；') || '—'}</div>
+                    <div className="fw-anchor-weight">
                       <input
                         className="input"
                         type="number"
                         min={0}
                         max={100}
                         step={0.5}
-                        style={{ width: 90 }}
                         value={anchorWeights[anchor.key] ?? anchor.exam_weight}
                         onChange={(e) =>
                           setAnchorWeights({ ...anchorWeights, [anchor.key]: Number(e.target.value) })
                         }
                       />
-                    </td>
-                    <td className="cell-sub">{anchor.ability_requirements.join('；') || '—'}</td>
-                    <td className="cell-sub">{anchor.allowed_question_types.join(' / ') || '不限'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </Card>
-
-          <Card title={`考点（${candidate.exam_points.length}）`} sub="考点是知识整理与命题合同的最小分配单元。">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>编码</th>
-                  <th>考点</th>
-                  <th>锚点</th>
-                  <th>权重</th>
-                  <th>考核要求</th>
-                </tr>
-              </thead>
-              <tbody>
-                {candidate.exam_points.map((point: ExamPoint) => (
-                  <tr key={point.code}>
-                    <td className="num">{point.code}</td>
-                    <td className="cell-title">{point.title}</td>
-                    <td className="cell-sub mono">{point.anchor_key}</td>
-                    <td className="num">{point.weight_value}</td>
-                    <td className="cell-sub">{point.assessment_requirement}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </Card>
-
-          {openConflicts.length > 0 ? (
-            <Card title="待处理冲突" sub="为每处冲突填写处理说明后才能确认框架。">
-              {openConflicts.map((conflict) => (
-                <div key={conflict.key} style={{ marginBottom: 14 }}>
-                  <div className="section-title">
-                    {conflict.kind} <span className="muted small mono">{conflict.key}</span>
+                      <span className="fw-anchor-weight-pct">%</span>
+                    </div>
                   </div>
-                  <div className="cell-sub" style={{ marginBottom: 6 }}>{conflict.message}</div>
-                  <input
-                    className="input"
-                    placeholder="处理说明，如：以考核大纲为准，教学深度按大纲要求补齐"
-                    value={resolutions[conflict.key] ?? ''}
-                    onChange={(e) => setResolutions({ ...resolutions, [conflict.key]: e.target.value })}
-                  />
-                </div>
-              ))}
+                ))}
+              </div>
             </Card>
-          ) : null}
 
-          <Card title="教学主题覆盖" sub="教学大纲提取的主题，用于交叉验证考核覆盖。">
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-              {candidate.teaching_topics.map((topic) => (
-                <Pill key={topic.key} kind="neutral">{topic.title}</Pill>
-              ))}
-            </div>
-          </Card>
-
-          <div className="form-row">
-            <Button variant="primary" loading={confirming} onClick={() => void confirm()}>
-              确认并发布框架
-            </Button>
-            <Button variant="secondary" loading={confirming} onClick={() => void reject()}>
-              驳回候选
-            </Button>
+            <Card
+              title={`考点 ${candidate.exam_points.length} 个`}
+              sub="按锚点分组的考点列表。"
+              actions={
+                <button className="collapse-toggle" onClick={() => setShowExamPoints(!showExamPoints)}>
+                  {showExamPoints ? '收起' : '展开'}
+                </button>
+              }
+            >
+              {showExamPoints ? (
+                <div className="fw-exam-points">
+                  {candidate.anchors.map((anchor) => {
+                    const points = candidate.exam_points.filter((p) => p.anchor_key === anchor.key)
+                    if (points.length === 0) return null
+                    return (
+                      <div key={anchor.key} className="fw-ep-group">
+                        <div className="fw-ep-group-title">{anchor.title} <span className="muted">({points.length})</span></div>
+                        <ul className="fw-ep-list">
+                          {points.map((p) => (
+                            <li key={p.code} className="fw-ep-item">
+                              <span className="mono muted">{p.code}</span>
+                              <span className="fw-ep-title">{p.title}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <div className="cell-sub">点击「展开」查看 {candidate.exam_points.length} 个考点的分组详情。</div>
+              )}
+            </Card>
           </div>
-        </>
+
+          {/* 右侧：冲突 */}
+          {openConflicts.length > 0 ? (
+            <aside className="fw-conflicts">
+              <Card title={`冲突 ${openConflicts.length}`} sub="填写处理说明后即可确认框架。">
+                <div className="fw-conflict-list">
+                  {openConflicts.map((conflict) => (
+                    <div key={conflict.key} className="fw-conflict-item">
+                      <div className="fw-conflict-kind">{conflict.kind.replace(/_/g, ' ')}</div>
+                      <div className="fw-conflict-msg">{conflict.message}</div>
+                      <input
+                        className="input input-sm"
+                        placeholder="处理说明"
+                        value={resolutions[conflict.key] ?? ''}
+                        onChange={(e) => setResolutions({ ...resolutions, [conflict.key]: e.target.value })}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            </aside>
+          ) : null}
+        </div>
       ) : null}
     </>
   )

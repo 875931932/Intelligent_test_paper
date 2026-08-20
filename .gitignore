@@ -10,6 +10,9 @@ __pycache__/
 
 .runtime/
 node_modules/
+backend/uploads/
+backend/.pytest_tmp/
+backend/tmp*/
 
 # 诊断/临时文件（不入库）
 diag_*.py

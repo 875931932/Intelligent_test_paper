@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy.orm import Session
 
+from app.adapters.storage.local_storage import LocalStorage
 from app.adapters.storage.minio_storage import MinioStorage, StoragePort, StoragePreconditionError, StorageUnavailableError
 from app.config import settings
 from app.db.session import get_session
@@ -22,7 +23,8 @@ def get_storage(request: Request) -> StoragePort:
                 bucket=settings.s3_bucket, region=settings.s3_region,
             )
         except Exception:
-            raise HTTPException(status_code=503, detail="object storage unavailable")
+            # MinIO 不可用时回退到本地文件存储
+            storage = LocalStorage()
         request.app.state.storage = storage
     return storage
 
@@ -125,6 +127,16 @@ def poll_material_parse(
         raise _not_found()
     except parse_service.ParseError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc))
+
+@router.patch("/materials/{material_id}/type", response_model=MaterialResponse)
+def update_material_type(course_id: str, material_id: str, material_type: str, session: Session = Depends(get_session)) -> dict:
+    try:
+        return material_service.update_material_type(session, course_id=course_id, material_id=material_id, material_type=material_type)
+    except (course_service.CourseNotFoundError, material_service.MaterialNotFoundError):
+        raise _not_found()
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
 
 @router.delete("/materials/{material_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_material(course_id: str, material_id: str, session: Session = Depends(get_session)) -> Response:

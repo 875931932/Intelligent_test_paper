@@ -56,7 +56,7 @@ export function KnowledgeCatalog({ courseId }: { courseId: string }) {
 
   if (loading) return <LoadingLine>加载知识目录…</LoadingLine>
   if (error) return <Notice kind="warning">{error}</Notice>
-  if (!data) return <EmptyState>无知识目录</EmptyState>
+  if (!data || data.published === false) return <EmptyState>暂无已发布的知识目录，请先在「知识整理」步骤完成构建与发布。</EmptyState>
 
   const layout = computeGraphLayout(data)
   const cardCount = Object.keys(data.knowledge_cards).length

@@ -60,6 +60,9 @@ export const materialsApi = {
   remove: (courseId: string, materialId: string) =>
     api<void>(`${base(courseId)}/materials/${materialId}`, { method: 'DELETE' }),
 
+  updateType: (courseId: string, materialId: string, materialType: string) =>
+    api<Material>(`${base(courseId)}/materials/${materialId}/type?material_type=${materialType}`, { method: 'PATCH' }),
+
   startParse: (courseId: string, materialId: string) =>
     api<{ run_id: string; status: string; reused: boolean }>(`${base(courseId)}/materials/${materialId}/parse`, {
       method: 'POST',
@@ -111,6 +114,9 @@ export const frameworkApi = {
         assessment_material_version_id: assessmentVersionId,
       }),
     }),
+
+  getLatestRun: (courseId: string) =>
+    api<{ id: string; status: string } | null>(`${base(courseId)}/framework-runs/latest`),
 
   getCandidate: (courseId: string, runId: string) =>
     api<FrameworkCandidate>(`${base(courseId)}/framework-runs/${runId}/candidate`),
@@ -332,4 +338,12 @@ export const examPipelineApi = {
 
   revertPaperVersion: (courseId: string, pvId: string) =>
     api<void>(`${base(courseId)}/paper-versions/${pvId}/revert`, { method: 'POST' }),
+
+  // ── 导出 ──
+  exportStudentPaperUrl: (courseId: string, projectId: string, pvId: string) =>
+    `${base(courseId)}/exam-projects/${projectId}/paper-versions/${pvId}/export/student`,
+  exportAnswerKeyUrl: (courseId: string, projectId: string, pvId: string) =>
+    `${base(courseId)}/exam-projects/${projectId}/paper-versions/${pvId}/export/answer-key`,
+  exportAnswerDetailJsonUrl: (courseId: string, projectId: string, pvId: string) =>
+    `${base(courseId)}/exam-projects/${projectId}/paper-versions/${pvId}/export/json`,
 }

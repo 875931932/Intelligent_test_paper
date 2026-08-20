@@ -105,6 +105,29 @@ export function MaterialsStep({ courseId, materials, onRefresh }: {
     }
   }, [courseId, onRefresh])
 
+  const startAllParse = useCallback(async () => {
+    const pending = materials.filter(
+      (m) => m.latest_version != null && !TERMINAL.has(m.parse_status?.status ?? 'pending'),
+    )
+    if (pending.length === 0) return
+    setBusyId('__batch__')
+    setError('')
+    setInfo('')
+    let ok = 0
+    let fail = 0
+    for (const m of pending) {
+      try {
+        await materialsApi.startParse(courseId, m.id)
+        ok++
+      } catch {
+        fail++
+      }
+    }
+    setInfo(`批量解析已提交：${ok} 份成功${fail > 0 ? `，${fail} 份失败` : ''}，正在轮询进度…`)
+    await onRefresh()
+    setBusyId(null)
+  }, [courseId, materials, onRefresh])
+
   const remove = useCallback(async (material: Material) => {
     if (!window.confirm(`确认删除资料「${material.logical_name}」？该操作不可恢复。`)) return
     setBusyId(material.id)
@@ -153,6 +176,26 @@ export function MaterialsStep({ courseId, materials, onRefresh }: {
         </Notice>
       ) : null}
 
+      {materials.some((m) => m.parse_status?.status === 'ready') && active.length === 0 ? (
+        <Notice kind="success">
+          所有资料解析就绪，请进入下一步「考纲框架」提取考核锚点与考点。
+        </Notice>
+      ) : null}
+
+      {materials.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <Button
+            size="sm"
+            variant="secondary"
+            loading={busyId === '__batch__'}
+            disabled={materials.every((m) => !m.latest_version || TERMINAL.has(m.parse_status?.status ?? 'pending'))}
+            onClick={() => void startAllParse()}
+          >
+            全部解析
+          </Button>
+        </div>
+      )}
+
       <div className="table-card">
         {materials.length === 0 ? (
           <EmptyState>尚无课程资料。上传教学大纲与考核大纲后即可提取考纲框架。</EmptyState>
@@ -177,7 +220,28 @@ export function MaterialsStep({ courseId, materials, onRefresh }: {
                       <div className="cell-sub">{material.parse_status.error_summary}</div>
                     ) : null}
                   </td>
-                  <td>{MATERIAL_TYPE_LABELS[material.material_type] ?? material.material_type}</td>
+                  <td>
+                    <select
+                      className="select select-sm"
+                      value={material.material_type}
+                      disabled={busyId === material.id}
+                      onChange={async (e) => {
+                        setBusyId(material.id)
+                        try {
+                          await materialsApi.updateType(courseId, material.id, e.target.value)
+                          await onRefresh()
+                        } catch {
+                          setError('修改类型失败')
+                        } finally {
+                          setBusyId(null)
+                        }
+                      }}
+                    >
+                      {Object.entries(MATERIAL_TYPE_LABELS).map(([value, label]) => (
+                        <option key={value} value={value}>{label}</option>
+                      ))}
+                    </select>
+                  </td>
                   <td className="num">v{material.latest_version?.version_no ?? '—'}</td>
                   <td className="num">{material.latest_version ? formatBytes(material.latest_version.size_bytes) : '—'}</td>
                   <td>{parsePill(material.parse_status)}</td>

@@ -281,6 +281,22 @@ def get_material(session: Session, *, course_id: str, material_id: str) -> dict:
     return _material_response(session, row)
 
 
+def update_material_type(session: Session, *, course_id: str, material_id: str, material_type: str) -> dict:
+    valid_types = {'teaching_syllabus', 'assessment_syllabus', 'teaching_material', 'exercise'}
+    if material_type not in valid_types:
+        raise ValueError(f"invalid material_type: {material_type}")
+    row = session.execute(
+        select(materials).where(materials.c.id == material_id, materials.c.course_id == course_id)
+    ).mappings().first()
+    if row is None:
+        raise MaterialNotFoundError
+    session.execute(
+        materials.update().where(materials.c.id == material_id).values(material_type=material_type)
+    )
+    session.commit()
+    return get_material(session, course_id=course_id, material_id=material_id)
+
+
 def delete_material(session: Session, *, course_id: str, material_id: str) -> None:
     get_material(session, course_id=course_id, material_id=material_id)
     version_ids = list(

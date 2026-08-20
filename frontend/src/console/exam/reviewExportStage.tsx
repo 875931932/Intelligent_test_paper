@@ -377,7 +377,37 @@ export function ReviewExportStage({ courseId, project, onExport }: Props) {
             </Button>
           </div>
         ) : (
-          <div className="gate-actions">
+          <div className="gate-actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {pvId && (
+              <>
+                <a
+                  href={examPipelineApi.exportStudentPaperUrl(courseId, project.id, pvId)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn primary"
+                  data-testid="export-student-btn"
+                >
+                  学生卷（打印/PDF）
+                </a>
+                <a
+                  href={examPipelineApi.exportAnswerKeyUrl(courseId, project.id, pvId)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn secondary"
+                  data-testid="export-answer-key-btn"
+                >
+                  答卷（含答案）
+                </a>
+                <a
+                  href={examPipelineApi.exportAnswerDetailJsonUrl(courseId, project.id, pvId)}
+                  download
+                  className="btn secondary"
+                  data-testid="export-json-btn"
+                >
+                  答案细则 JSON
+                </a>
+              </>
+            )}
             <Button variant="danger-ghost" onClick={handleRevert} loading={revertLoading} data-testid="revert-btn">
               撤销确认（回到候选）
             </Button>

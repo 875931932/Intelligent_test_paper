@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -12,6 +13,9 @@ from app.services.paper_version_service import (
     PendingNeedsReview,
     PaperVersionError,
     confirm_paper_version,
+    export_answer_detail_json,
+    export_answer_key_html,
+    export_student_paper_html,
     get_paper_version,
     list_needs_review,
     revert_to_candidate,
@@ -168,3 +172,55 @@ def revert_pv(
         if "不存在" in msg:
             raise HTTPException(status_code=404, detail=msg)
         raise HTTPException(status_code=422, detail=msg)
+
+
+# ─── 导出端点 ────────────────────────────────────────────────
+
+@router.get("/exam-projects/{project_id}/paper-versions/{pv_id}/export/json")
+def export_json(
+    course_id: str,
+    project_id: str,
+    pv_id: str,
+    session: Session = Depends(get_session),
+):
+    """答案细则 JSON 下载。"""
+    try:
+        data = export_answer_detail_json(session, pv_id, course_id=course_id)
+    except PaperVersionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return JSONResponse(
+        content=data,
+        headers={
+            "Content-Disposition": f'attachment; filename="answer_detail_v{data.get("version_no", 1)}.json"'
+        },
+    )
+
+
+@router.get("/exam-projects/{project_id}/paper-versions/{pv_id}/export/student")
+def export_student(
+    course_id: str,
+    project_id: str,
+    pv_id: str,
+    session: Session = Depends(get_session),
+):
+    """学生卷 HTML（无答案，可浏览器打印为 PDF）。"""
+    try:
+        html = export_student_paper_html(session, pv_id, course_id=course_id)
+    except PaperVersionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return HTMLResponse(content=html)
+
+
+@router.get("/exam-projects/{project_id}/paper-versions/{pv_id}/export/answer-key")
+def export_answer_key(
+    course_id: str,
+    project_id: str,
+    pv_id: str,
+    session: Session = Depends(get_session),
+):
+    """答卷 HTML（含答案，可浏览器打印为 PDF）。"""
+    try:
+        html = export_answer_key_html(session, pv_id, course_id=course_id)
+    except PaperVersionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return HTMLResponse(content=html)

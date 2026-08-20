@@ -39,6 +39,9 @@ const CARD_BASE_R = 10
  * 节点按层级水平排列，间距随同级节点数自适应。
  */
 export function computeGraphLayout(data: PublishedKnowledge): GraphLayout {
+  if (!data?.exam_points || !data?.units || !data?.knowledge_cards) {
+    return { nodes: [], edges: [], clusters: [] }
+  }
   const clusters = uniqueClusters(data)
   const clusterIndex = (c: string) => clusters.indexOf(c)
 

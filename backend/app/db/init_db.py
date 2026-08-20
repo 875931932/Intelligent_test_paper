@@ -15,7 +15,10 @@ from app.db.schema import Base, Course, User
 
 
 def _engine(database_url: str) -> Engine:
-    return create_engine(database_url, future=True)
+    connect_args: dict[str, object] = {}
+    if database_url.startswith("postgresql"):
+        connect_args["options"] = "-c search_path=public"
+    return create_engine(database_url, future=True, connect_args=connect_args)
 
 
 def _seed_dev_data(bind: Engine | Connection) -> None:
@@ -48,9 +51,15 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
     try:
         # A transaction-scoped advisory lock serializes fresh PostgreSQL initialization.
         if engine.dialect.name == "postgresql":
+            # pgvector 扩展可选：失败时跳过（schema 用 JSON 存 embedding）
+            with engine.connect() as ext_conn:
+                try:
+                    ext_conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+                    ext_conn.commit()
+                except Exception:
+                    ext_conn.rollback()
             with engine.begin() as conn:
                 conn.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": 824036462})
-                conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
                 Base.metadata.create_all(conn)
                 if seed:
                     _seed_dev_data(conn)

@@ -12,7 +12,7 @@ export function CoursesPage({ onOpen }: { onOpen: (course: Course) => void }) {
   const [error, setError] = useState('')
   const [creating, setCreating] = useState(false)
   const [showForm, setShowForm] = useState(false)
-  const [form, setForm] = useState({ name: '', slug: '', description: '' })
+  const [form, setForm] = useState({ name: '', description: '' })
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -31,8 +31,8 @@ export function CoursesPage({ onOpen }: { onOpen: (course: Course) => void }) {
   }, [load])
 
   async function create() {
-    if (!form.name.trim() || !form.slug.trim()) {
-      setError('课程名称与标识不能为空')
+    if (!form.name.trim()) {
+      setError('课程名称不能为空')
       return
     }
     setCreating(true)
@@ -40,10 +40,10 @@ export function CoursesPage({ onOpen }: { onOpen: (course: Course) => void }) {
     try {
       await coursesApi.create({
         name: form.name.trim(),
-        slug: form.slug.trim(),
+        slug: '',
         description: form.description.trim() || undefined,
       })
-      setForm({ name: '', slug: '', description: '' })
+      setForm({ name: '', description: '' })
       setShowForm(false)
       await load()
     } catch (err) {
@@ -70,7 +70,7 @@ export function CoursesPage({ onOpen }: { onOpen: (course: Course) => void }) {
       {error ? <Notice kind="error">{error}</Notice> : null}
 
       {showForm ? (
-        <Card title="新建课程" sub="课程是资料与命题的安全边界，标识（slug）创建后不可重复。">
+        <Card title="新建课程" sub="课程是资料与命题的安全边界。">
           <div className="form-grid" style={{ marginBottom: 14 }}>
             <Field label="课程名称">
               <input
@@ -78,14 +78,6 @@ export function CoursesPage({ onOpen }: { onOpen: (course: Course) => void }) {
                 placeholder="如：大模型提示词工程"
                 value={form.name}
                 onChange={(e) => setForm({ ...form, name: e.target.value })}
-              />
-            </Field>
-            <Field label="课程标识" hint="仅小写字母、数字与连字符">
-              <input
-                className="input"
-                placeholder="如：prompt-engineering"
-                value={form.slug}
-                onChange={(e) => setForm({ ...form, slug: e.target.value })}
               />
             </Field>
             <Field label="课程描述">

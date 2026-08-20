@@ -48,16 +48,20 @@ export default function App() {
     const next: CourseReadiness = { ...EMPTY_READINESS }
     next.materialsReady = materialsCount > 0
     try {
-      await frameworkApi.getCurrent(courseId)
-      next.frameworkReady = true
+      const fw = await frameworkApi.getCurrent(courseId)
+      next.frameworkReady = fw?.published !== false
     } catch {
       next.frameworkReady = false
     }
     try {
       const k = await knowledgeApi.getPublished(courseId)
-      next.knowledgeReady = true
-      next.knowledgeVersion = (k.catalog_version_id ?? '').slice(0, 8) || null
-      next.knowledgeCardCount = Object.keys(k.knowledge_cards).length
+      if (k?.published === false) {
+        next.knowledgeReady = false
+      } else {
+        next.knowledgeReady = true
+        next.knowledgeVersion = (k.catalog_version_id ?? '').slice(0, 8) || null
+        next.knowledgeCardCount = Object.keys(k.knowledge_cards ?? {}).length
+      }
     } catch {
       next.knowledgeReady = false
     }

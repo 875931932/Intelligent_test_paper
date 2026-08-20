@@ -574,3 +574,175 @@ def revert_to_candidate(
     except SQLAlchemyError as exc:
         session.rollback()
         raise PaperVersionError(f"数据库错误: {exc}") from exc
+
+
+# ─── 导出 ───────────────────────────────────────────────────
+
+def _q_type_label(qt: str | None) -> str:
+    labels = {
+        "single_choice": "单选题",
+        "multiple_choice": "多选题",
+        "true_false": "判断题",
+        "short_answer": "简答题",
+        "essay": "论述题",
+        "fill_blank": "填空题",
+        "calculation": "计算题",
+    }
+    return labels.get(qt or "", qt or "题")
+
+
+def _difficulty_label(d: Any) -> str:
+    labels = {1: "容易", 2: "较易", 3: "中等", 4: "较难", 5: "困难"}
+    if isinstance(d, (int, float)):
+        return labels.get(int(d), str(d))
+    return str(d) if d else "未知"
+
+
+def export_answer_detail_json(
+    session: Session,
+    paper_version_id: str,
+    *,
+    course_id: str,
+) -> dict:
+    """答案细则 JSON：每题含题干/选项/答案/难度/认知层级/质量审计。"""
+    pv = get_paper_version(session, paper_version_id, course_id=course_id)
+    questions = pv.get("questions", [])
+    return {
+        "answer_detail_schema_version": "1.0.0",
+        "paper_version_id": paper_version_id,
+        "version_no": pv.get("version_no"),
+        "exam_project_id": pv.get("exam_project_id"),
+        "total_questions": len(questions),
+        "questions": [
+            {
+                "item_index": q["item_index"],
+                "question_type": q.get("question_type"),
+                "question_type_label": _q_type_label(q.get("question_type")),
+                "stem": q.get("stem", ""),
+                "options": q.get("options", []),
+                "answer": q.get("answer", ""),
+                "difficulty": q.get("difficulty"),
+                "difficulty_label": _difficulty_label(q.get("difficulty")),
+                "cognitive_level": q.get("cognitive_level"),
+                "knowledge_card_id": q.get("knowledge_card_id"),
+                "plan_item_id": q.get("plan_item_id"),
+                "needs_review": q.get("needs_review", False),
+                "needs_review_reason": q.get("needs_review_reason"),
+                "quality_audit": q.get("quality_audit") or {},
+            }
+            for q in questions
+        ],
+    }
+
+
+def _render_question_html(q: dict, *, with_answer: bool) -> str:
+    """渲染单题 HTML。with_answer=True 时显示答案。"""
+    idx = q.get("item_index", 0)
+    stem = q.get("stem", "")
+    qt_label = _q_type_label(q.get("question_type"))
+    options = q.get("options", [])
+    answer = q.get("answer", "")
+
+    parts = [f'<div class="question">', f'<div class="q-stem">{idx}. {stem}</div>']
+
+    if options:
+        opts_html = []
+        for i, opt in enumerate(options):
+            label = chr(65 + i)  # A, B, C, D
+            if isinstance(opt, dict):
+                text = opt.get("text", str(opt))
+            else:
+                text = str(opt)
+            opts_html.append(f'<div class="q-option">{label}. {text}</div>')
+        parts.append(f'<div class="q-options">{"".join(opts_html)}</div>')
+
+    if with_answer:
+        diff = _difficulty_label(q.get("difficulty"))
+        cog = q.get("cognitive_level", "")
+        parts.append(
+            f'<div class="q-answer"><span class="ans-label">【答案】</span>{answer}</div>'
+            f'<div class="q-meta">难度: {diff}'
+            + (f' ｜ 认知层级: {cog}' if cog else '')
+            + '</div>'
+        )
+
+    parts.append('</div>')
+    return "".join(parts)
+
+
+def export_student_paper_html(
+    session: Session,
+    paper_version_id: str,
+    *,
+    course_id: str,
+) -> str:
+    """学生卷 HTML（无答案，可打印为 PDF）。"""
+    pv = get_paper_version(session, paper_version_id, course_id=course_id)
+    questions = pv.get("questions", [])
+    version_no = pv.get("version_no", 1)
+    project_id = pv.get("exam_project_id", "")
+    body = "".join(_render_question_html(q, with_answer=False) for q in questions)
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>试卷 - 版本{version_no}</title>
+<style>
+  body {{ font-family: 'SimSun','宋体',serif; max-width: 780px; margin: 0 auto; padding: 40px 20px; color: #1d1d1f; }}
+  .header {{ text-align: center; border-bottom: 2px solid #1d1d1f; padding-bottom: 16px; margin-bottom: 24px; }}
+  .header h1 {{ font-size: 22px; margin: 0 0 8px; }}
+  .header .meta {{ font-size: 13px; color: #6e6e73; }}
+  .question {{ margin-bottom: 20px; page-break-inside: avoid; }}
+  .q-stem {{ font-size: 15px; line-height: 1.8; margin-bottom: 8px; }}
+  .q-options {{ padding-left: 24px; }}
+  .q-option {{ font-size: 14px; line-height: 1.8; }}
+  .q-type-tag {{ display: inline-block; font-size: 12px; color: #6e6e73; margin-left: 8px; }}
+  .footer {{ margin-top: 40px; text-align: center; font-size: 12px; color: #86868b; border-top: 1px solid #e5e5e7; padding-top: 12px; }}
+  @media print {{ body {{ padding: 20px; }} .no-print {{ display: none; }} }}
+</style></head>
+<body>
+  <div class="header">
+    <h1>试卷</h1>
+    <div class="meta">版本 {version_no} ｜ 共 {len(questions)} 题</div>
+  </div>
+  {body}
+  <div class="footer">试卷版本号: {version_no} | 项目: {project_id[:8] if project_id else 'N/A'}</div>
+</body></html>"""
+
+
+def export_answer_key_html(
+    session: Session,
+    paper_version_id: str,
+    *,
+    course_id: str,
+) -> str:
+    """答卷 HTML（含答案，可打印为 PDF）。"""
+    pv = get_paper_version(session, paper_version_id, course_id=course_id)
+    questions = pv.get("questions", [])
+    version_no = pv.get("version_no", 1)
+    project_id = pv.get("exam_project_id", "")
+    body = "".join(_render_question_html(q, with_answer=True) for q in questions)
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>答卷（含答案）- 版本{version_no}</title>
+<style>
+  body {{ font-family: 'SimSun','宋体',serif; max-width: 780px; margin: 0 auto; padding: 40px 20px; color: #1d1d1f; }}
+  .header {{ text-align: center; border-bottom: 2px solid #1d1d1f; padding-bottom: 16px; margin-bottom: 24px; }}
+  .header h1 {{ font-size: 22px; margin: 0 0 8px; }}
+  .header .meta {{ font-size: 13px; color: #6e6e73; }}
+  .question {{ margin-bottom: 24px; page-break-inside: avoid; }}
+  .q-stem {{ font-size: 15px; line-height: 1.8; margin-bottom: 8px; }}
+  .q-options {{ padding-left: 24px; }}
+  .q-option {{ font-size: 14px; line-height: 1.8; }}
+  .q-answer {{ font-size: 14px; line-height: 1.8; margin-top: 6px; color: #1a7e34; }}
+  .ans-label {{ font-weight: 700; }}
+  .q-meta {{ font-size: 12px; color: #6e6e73; margin-top: 4px; }}
+  .footer {{ margin-top: 40px; text-align: center; font-size: 12px; color: #86868b; border-top: 1px solid #e5e5e7; padding-top: 12px; }}
+  @media print {{ body {{ padding: 20px; }} .no-print {{ display: none; }} }}
+</style></head>
+<body>
+  <div class="header">
+    <h1>答卷（含答案）</h1>
+    <div class="meta">版本 {version_no} ｜ 共 {len(questions)} 题</div>
+  </div>
+  {body}
+  <div class="footer">试卷版本号: {version_no} | 项目: {project_id[:8] if project_id else 'N/A'}</div>
+</body></html>"""
