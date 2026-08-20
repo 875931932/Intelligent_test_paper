@@ -2,6 +2,7 @@ import { Pill } from './ui'
 import type { CourseReadiness } from './types'
 import type { CourseSection } from './nav'
 import { ArrowRight, Boxes, ClipboardList, FileText, Network } from 'lucide-react'
+import { ProgressFeedback } from './ProgressFeedback'
 
 const WORKFLOW = [
   { key: 'materials' as const, title: '资料库', kicker: '01 · 准备素材', description: '上传考纲、教案和教学材料，解析状态集中查看。', icon: FileText },
@@ -15,6 +16,7 @@ export function CourseSpaceHome({ readiness, onOpenSection }: {
   onOpenSection: (section: CourseSection) => void
 }) {
   const inProgress = readiness.projects.filter((p) => p.status !== 'exported').length
+  const idle = { percent: 0, status: 'idle' as const, message: '尚未开始' }
   return (
     <div className="content-inner">
       <div className="workspace-hero">
@@ -28,6 +30,11 @@ export function CourseSpaceHome({ readiness, onOpenSection }: {
           <strong>{readiness.knowledgeReady ? '可以开始出卷' : readiness.frameworkReady ? '等待知识目录发布' : readiness.materialsReady ? '等待构建命题框架' : '从上传资料开始'}</strong>
         </div>
       </div>
+      <ProgressFeedback
+        materialProgress={readiness.materialProgress ?? idle}
+        blueprintProgress={readiness.blueprintProgress ?? idle}
+        paperProgress={readiness.paperProgress ?? idle}
+      />
       <section className="workflow-section">
         <div className="section-bar">
           <div><h3>命题流程</h3><span>从课程资产到可打印试卷</span></div>

@@ -105,6 +105,15 @@ describe('examPipelineApi (fetch-level)', () => {
     expect(res.task_run_id).toBe('tr-999')
   })
 
+  it('getTaskRun uses the exam-project task route', async () => {
+    const { examPipelineApi } = await loadRealClient()
+    fetchSpy.mockResolvedValue(Response.json({ id: 'tr-1', status: 'running', progress: 37, stage: 'generating' }))
+    const result = await examPipelineApi.getTaskRun('courseA', 'tr-1')
+    const [url] = fetchSpy.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/v1/courses/courseA/exam-projects/task-runs/tr-1')
+    expect(result.progress).toBe(37)
+  })
+
   it('confirmPaperVersion POSTs /confirm with force flag', async () => {
     const { examPipelineApi } = await loadRealClient()
     fetchSpy.mockResolvedValue(Response.json({ status: 'finalized', unresolved: 0 }))

@@ -26,6 +26,10 @@ describe('CourseSpaceHome', () => {
     expect(screen.getByText(/37 卡/)).toBeInTheDocument()
     expect(screen.getByText(/3 未落地/)).toBeInTheDocument()
     expect(screen.getByText('1 个')).toBeInTheDocument()
+    expect(screen.getByText('出卷进度')).toBeInTheDocument()
+    expect(screen.getByText('资料整理')).toBeInTheDocument()
+    expect(screen.getByText('生成蓝图')).toBeInTheDocument()
+    expect(screen.getByText('生成试卷')).toBeInTheDocument()
   })
 
   it('clicking a card calls onOpenSection with that section', async () => {

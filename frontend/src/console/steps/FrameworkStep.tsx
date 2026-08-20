@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { frameworkApi } from '../client'
 import type { AssessmentAnchor, ExamPoint, FrameworkCandidate, Material } from '../types'
 import { Button, Card, EmptyState, Field, Notice, Pill } from '../ui'
+import { InlineProgress } from '../ProgressFeedback'
 
 /** 从已解析就绪的资料中筛出指定类型。 */
 function readyOf(materials: Material[], type: string): Material[] {
@@ -175,6 +176,7 @@ export function FrameworkStep({ courseId, materials, onDone }: {
 
       {error ? <Notice kind="error">{error}</Notice> : null}
       {info ? <Notice kind={hasCandidate ? 'info' : 'success'}>{info}</Notice> : null}
+      {running ? <InlineProgress label="生成蓝图" message="正在分析教学大纲与考核大纲，请稍候…" /> : null}
 
       {hasCandidate ? (
         <div className="framework-layout">

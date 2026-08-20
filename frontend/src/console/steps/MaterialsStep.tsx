@@ -5,6 +5,7 @@ import { materialsApi } from '../client'
 import { MATERIAL_TYPE_LABELS, formatBytes } from '../types'
 import type { Material, MaterialType, ParseStatus } from '../types'
 import { Button, Card, EmptyState, Field, Notice, Pill } from '../ui'
+import { InlineProgress } from '../ProgressFeedback'
 
 const TERMINAL = new Set(['ready', 'failed'])
 
@@ -36,6 +37,9 @@ export function MaterialsStep({ courseId, materials, onRefresh }: {
   const active = materials.filter(
     (m) => m.parse_status != null && !TERMINAL.has(m.parse_status.status),
   )
+  const readyCount = materials.filter((m) => m.parse_status?.status === 'ready').length
+  const failedCount = materials.filter((m) => m.parse_status?.status === 'failed').length
+  const parsePercent = materials.length > 0 ? Math.round((readyCount / materials.length) * 100) : 0
 
   // 解析轮询：存在进行中的解析时每 3 秒推进一次状态机
   const refreshRef = useRef(onRefresh)
@@ -171,9 +175,11 @@ export function MaterialsStep({ courseId, materials, onRefresh }: {
       {error ? <Notice kind="error">{error}</Notice> : null}
       {info ? <Notice kind="info">{info}</Notice> : null}
       {active.length > 0 ? (
-        <Notice kind="info">
-          {active.length} 份资料正在解析，完成后状态将自动更新为「解析就绪」。
-        </Notice>
+        <InlineProgress label="资料整理" percent={parsePercent} message={`${readyCount}/${materials.length} 份资料已解析，${active.length} 份处理中`} />
+      ) : null}
+
+      {materials.length > 0 && active.length === 0 && readyCount < materials.length ? (
+        <InlineProgress label="资料整理" percent={parsePercent} status={failedCount > 0 ? 'warning' : 'idle'} message={`${readyCount}/${materials.length} 份资料已解析${failedCount > 0 ? `，${failedCount} 份失败待重试` : ''}`} />
       ) : null}
 
       {materials.some((m) => m.parse_status?.status === 'ready') && active.length === 0 ? (

@@ -177,11 +177,11 @@ export function GenerationStage({
 
       {status === 'running' && (
         <div className="gen-progress" style={{ marginTop: 16 }}>
-          <div className="gen-bar" aria-label="progress-bar">
+          <div className="gen-bar" role="progressbar" aria-label="试卷生成进度" aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
             <div className="gen-bar-fill" style={{ width: `${progress}%` }} />
           </div>
           <span className="muted small" data-testid="progress-text">
-            进度：{progress}%
+            进度：{progress}%{taskRunId ? ` · 任务 ${taskRunId.slice(0, 8)}` : ''}
           </span>
         </div>
       )}

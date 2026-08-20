@@ -397,6 +397,11 @@ a:hover { text-decoration: underline; }
 .stage-panel { background: var(--surface-subtle); border-radius: var(--radius-lg); padding: 24px; min-height: 400px; }
 .stage-panel-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
 .stage-panel-head h3 { font-size: 16px; font-weight: 600; }
+.stage-progress-note { display: flex; align-items: center; gap: 9px; min-height: 38px; margin: -6px 0 14px; padding: 8px 11px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text-secondary); font-size: 12px; }
+.stage-progress-note.is-running { border-color: var(--accent-200); background: var(--accent-50); color: var(--accent-700); }
+.stage-progress-note.is-complete { border-color: var(--success-border); background: var(--success-subtle); color: var(--success-text); }
+.stage-progress-note.is-ready { border-color: var(--warning-border); background: var(--warning-subtle); color: var(--warning-text); }
+.stage-progress-dot { display: grid; width: 21px; height: 21px; flex: 0 0 21px; place-items: center; border-radius: 50%; background: currentColor; color: var(--surface); font-size: 12px; font-weight: 700; }
 .gate-banner { display: flex; align-items: center; gap: 12px; padding: 14px 16px; border-radius: var(--radius); background: var(--warning-subtle); border: 1px solid var(--warning-border); margin: 16px 0; }
 .gate-banner.verified { background: var(--success-subtle); border-color: var(--success-border); }
 .gate-icon { font-size: 18px; }
@@ -560,6 +565,47 @@ button, input, select, textarea { font-family: var(--font-sans); }
 .overview-note { display: flex; align-items: center; gap: 12px; padding: 13px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-subtle); color: var(--text-secondary); font-size: 12px; }
 .overview-note strong { color: var(--text); white-space: nowrap; }
 
+/* ── 首页真实流程反馈 ── */
+.workflow-progress { padding: 20px 22px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-sm); }
+.workflow-progress-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 18px; }
+.workflow-progress-head .eyebrow-label { margin-bottom: 4px; }
+.workflow-progress-head h3 { margin: 0; font-family: var(--font-display); font-size: 16px; }
+.workflow-progress-caption { color: var(--text-muted); font-size: 11px; }
+.workflow-progress-track { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+.workflow-progress-step { position: relative; min-width: 0; }
+.workflow-progress-step-head { display: flex; align-items: center; gap: 9px; min-height: 30px; }
+.workflow-progress-marker { display: grid; width: 29px; height: 29px; flex: 0 0 29px; place-items: center; border: 1px solid var(--border-strong); border-radius: 50%; color: var(--text-muted); background: var(--surface-subtle); }
+.workflow-progress-title { display: flex; min-width: 0; flex-direction: column; gap: 1px; }
+.workflow-progress-title span { color: var(--text-muted); font: 10px var(--font-mono); }
+.workflow-progress-title strong { overflow: hidden; color: var(--text); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-progress-percent { margin-left: auto; color: var(--text-secondary); font: 600 11px var(--font-mono); }
+.workflow-progress-bar { height: 5px; margin: 12px 0 8px 38px; overflow: hidden; border-radius: 4px; background: var(--surface-muted); }
+.workflow-progress-bar > div { height: 100%; border-radius: inherit; background: var(--accent-500); transition: width .35s ease; }
+.workflow-progress-message { display: flex; gap: 7px; margin-left: 38px; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
+.workflow-progress-message span:first-child { flex: 0 0 auto; font-weight: 600; color: var(--text-secondary); }
+.workflow-progress-message span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workflow-progress-step[data-status='running'] .workflow-progress-marker { border-color: var(--accent-500); color: var(--accent-600); background: var(--accent-50); }
+.workflow-progress-step[data-status='running'] .workflow-progress-title strong { color: var(--accent-700); }
+.workflow-progress-step[data-status='success'] .workflow-progress-marker { border-color: var(--success-border); color: var(--success-text); background: var(--success-subtle); }
+.workflow-progress-step[data-status='success'] .workflow-progress-bar > div { background: var(--success); }
+.workflow-progress-step[data-status='warning'] .workflow-progress-marker { border-color: var(--warning-border); color: var(--warning-text); background: var(--warning-subtle); }
+.workflow-progress-step[data-status='warning'] .workflow-progress-bar > div { background: var(--warning); }
+.workflow-progress-step[data-status='error'] .workflow-progress-marker { border-color: var(--danger-border); color: var(--danger-text); background: var(--danger-subtle); }
+.workflow-progress-step[data-status='error'] .workflow-progress-bar > div { background: var(--danger); }
+.workflow-progress-connector { position: absolute; top: 14px; right: calc(-18px - 1px); width: 18px; height: 1px; background: var(--border-strong); }
+.workflow-progress-spinner { animation: workflow-progress-spin 1s linear infinite; }
+@keyframes workflow-progress-spin { to { transform: rotate(360deg); } }
+.inline-progress { padding: 13px 15px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text-secondary); }
+.inline-progress-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; }
+.inline-progress-head span { font: 11px var(--font-mono); color: var(--text-muted); }
+.inline-progress-bar { height: 5px; margin: 9px 0 7px; overflow: hidden; border-radius: 3px; background: var(--surface-muted); }
+.inline-progress-bar > div { height: 100%; border-radius: inherit; background: var(--accent-500); transition: width .35s ease; }
+.inline-progress-bar.is-indeterminate > div { animation: inline-progress-slide 1.3s ease-in-out infinite; }
+.inline-progress > span { color: var(--text-muted); font-size: 11px; }
+.inline-progress-warning { border-color: var(--warning-border); background: var(--warning-subtle); }
+.inline-progress-warning .inline-progress-bar > div { background: var(--warning); }
+@keyframes inline-progress-slide { 0% { transform: translateX(-120%); } 100% { transform: translateX(320%); } }
+
 /* 课程与项目采用同一列轨道，卡片内容始终对齐 */
 .course-list-section { padding: 22px; }
 .course-grid, .project-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
@@ -606,6 +652,11 @@ button, input, select, textarea { font-family: var(--font-sans); }
   .project-card { align-items: flex-start; flex-direction: column; gap: 11px; }
   .project-card-meta { width: 100%; justify-content: space-between; }
   .overview-note { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .workflow-progress { padding: 17px 16px; }
+  .workflow-progress-head { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .workflow-progress-track { display: flex; flex-direction: column; gap: 14px; }
+  .workflow-progress-connector { top: 43px; right: auto; bottom: -14px; left: 14px; width: 1px; height: 14px; }
+  .workflow-progress-step:last-child .workflow-progress-connector { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }

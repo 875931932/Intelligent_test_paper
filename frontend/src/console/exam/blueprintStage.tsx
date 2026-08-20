@@ -113,6 +113,11 @@ export function BlueprintStage({ courseId, project, onConfirm }: Props) {
         </span>
       </div>
 
+      <div className={`stage-progress-note ${loading ? 'is-running' : confirmed ? 'is-complete' : planItems.length > 0 ? 'is-ready' : ''}`} role="status" aria-live="polite">
+        <span className="stage-progress-dot" aria-hidden="true">{loading ? '…' : confirmed ? '✓' : planItems.length > 0 ? '!' : '○'}</span>
+        <span>{loading ? '正在生成蓝图，请稍候…' : confirmed ? '已进入合同阶段，可以继续配置生成任务。' : planItems.length > 0 ? '蓝图已生成，逐行确认题型、分值和知识点后继续。' : '尚未生成蓝图。'}</span>
+      </div>
+
       {error && (
         <Notice kind="error" role="alert">
           {error}

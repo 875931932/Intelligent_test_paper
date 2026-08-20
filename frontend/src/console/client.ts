@@ -310,7 +310,7 @@ export const examPipelineApi = {
       result?: unknown
       payload?: unknown
       error_message?: string
-    }>(`${base(courseId)}/task-runs/${taskRunId}`),
+    }>(`${base(courseId)}/exam-projects/task-runs/${taskRunId}`),
 
   // PAPER VERSIONS
   getCurrentPaperVersion: (courseId: string, projectId: string) =>

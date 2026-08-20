@@ -360,6 +360,22 @@ export type ExamProjectSummary = {
   total_score: number
   question_count: number
   pending_review: number
+  /** 后端项目列表在生成阶段返回的 durable task 关联。 */
+  active_task_run_id?: string | null
+  active_blueprint_version_id?: string | null
+  active_paper_version_id?: string | null
+  generation_progress?: number | null
+  generation_stage?: string | null
+  generation_error?: string | null
+}
+
+export type WorkflowProgressStatus = 'idle' | 'running' | 'success' | 'warning' | 'error'
+
+export type WorkflowProgress = {
+  percent: number
+  status: WorkflowProgressStatus
+  message: string
+  detail?: string
 }
 
 export type CourseReadiness = {
@@ -371,6 +387,10 @@ export type CourseReadiness = {
   knowledgeCardCount: number
   knowledgeUngroundedCount: number
   projects: ExamProjectSummary[]
+  /** 首页三段流程的真实状态，百分比只用于已知的阶段边界或任务进度。 */
+  materialProgress?: WorkflowProgress
+  blueprintProgress?: WorkflowProgress
+  paperProgress?: WorkflowProgress
 }
 
 // ── 试卷项目生产线（Plan 3） ──────────────────────────
@@ -389,6 +409,14 @@ export type ExamProjectDetail = {
   blueprint?: BlueprintSettings
   contract?: PaperContract
   generation?: GenerationRunResult
+  active_task_run_id?: string | null
+  active_blueprint_version_id?: string | null
+  active_contract_snapshot_id?: string | null
+  active_paper_version_id?: string | null
+  generation_progress?: number | null
+  generation_stage?: string | null
+  generation_error?: string | null
+  generation_task_status?: string | null
 }
 
 export const PIPELINE_STAGES: { stage: PipelineStage; label: string; index: number }[] = [

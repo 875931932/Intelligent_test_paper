@@ -114,6 +114,16 @@ def create_draft_blueprint(
                 chapter_weights=chapter_weights,
             )
         )
+        # 项目状态与蓝图草稿同步，前端才能区分“尚未生成”和“已生成待教师确认”。
+        session.execute(
+            exam_projects.update()
+            .where(
+                exam_projects.c.id == project_id,
+                exam_projects.c.course_id == course_id,
+                exam_projects.c.status == "draft",
+            )
+            .values(status="blueprint")
+        )
 
         # 5. 插入 blueprint_sections（如果 plan 有 sections 字段；当前 BlueprintPlan 不含
         # sections，留空以便后续扩展，不建立 section → plan_items 关联）
