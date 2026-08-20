@@ -458,10 +458,48 @@ a {
   padding-left: var(--space-2);
 }
 
+.course-slug {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
 .topbar-actions {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+}
+
+.topbar-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.mobile-section-nav {
+  display: none;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.mobile-section-nav button {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-full);
+  background: var(--surface-muted);
+  border: 1px solid var(--divider);
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  font-weight: 500;
+  transition: all var(--duration-fast) ease;
+}
+
+.mobile-section-nav button.active {
+  background: var(--text);
+  color: var(--text-inverse);
+  border-color: var(--text);
 }
 
 .content {
@@ -2352,6 +2390,12 @@ textarea:focus-visible {
 }
 
 /* ── 实时进度反馈 ────────────────────────────────────── */
+.workflow-progress-caption {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
 .workflow-progress {
   padding: var(--space-6);
   border-radius: var(--radius-lg);
@@ -2477,11 +2521,10 @@ textarea:focus-visible {
 .workflow-progress-connector {
   position: absolute;
   top: 14px;
-  right: calc(-50% - 8px);
-  width: 100%;
+  left: 100%;
+  width: var(--space-6);
   height: 1px;
   background: var(--border-strong);
-  z-index: -1;
 }
 
 .workflow-progress-step:last-child .workflow-progress-connector {
@@ -2491,6 +2534,15 @@ textarea:focus-visible {
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.6; }
+}
+
+.workflow-progress-spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 /* ── 响应式：移动端侧边栏转为顶部 ───────────────────── */
@@ -2677,6 +2729,86 @@ textarea:focus-visible {
   font-size: 12px;
   color: var(--text-muted);
   font-weight: 500;
+}
+
+.course-list-section {
+  margin-top: var(--space-2);
+}
+
+.course-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-4);
+}
+
+.course-card {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  border-radius: var(--radius-lg);
+  background: var(--glass-90);
+  backdrop-filter: blur(20px);
+  border: 1px solid var(--glass-border);
+  box-shadow: var(--shadow-glow);
+  transition: all var(--duration-normal) var(--ease-out-expo);
+  animation: slideUp var(--duration-normal) var(--ease-out-expo) both;
+}
+
+.course-card:nth-child(1) { animation-delay: 0ms; }
+.course-card:nth-child(2) { animation-delay: 50ms; }
+.course-card:nth-child(3) { animation-delay: 100ms; }
+.course-card:nth-child(4) { animation-delay: 150ms; }
+.course-card:nth-child(5) { animation-delay: 200ms; }
+.course-card:nth-child(6) { animation-delay: 250ms; }
+
+.course-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+.course-card-icon {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.course-card-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.course-card-heading {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  margin-bottom: var(--space-1);
+}
+
+.course-card-heading h3 {
+  font-family: var(--font-display);
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+
+.course-card-slug {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.course-card p {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 /* ── 工作流栅格 ────────────────────────────────────────── */
