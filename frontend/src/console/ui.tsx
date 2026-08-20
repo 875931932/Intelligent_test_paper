@@ -14,7 +14,7 @@ export function Button({
   loading?: boolean
 }) {
   return (
-    <button className={`btn ${variant}${size ? ` ${size}` : ''}`} {...rest} disabled={rest.disabled || loading}>
+    <button className={`btn btn-${variant}${size ? ` btn-${size}` : ''}`} {...rest} disabled={rest.disabled || loading}>
       {loading ? <span className="spinner" style={{ width: 13, height: 13, borderWidth: 2 }} /> : null}
       {children}
     </button>
@@ -49,7 +49,7 @@ export type PillKind = 'neutral' | 'info' | 'success' | 'danger' | 'warning'
 
 export function Pill({ kind = 'neutral', dot, children }: { kind?: PillKind; dot?: boolean; children: ReactNode }) {
   return (
-    <span className={`pill ${kind}`}>
+    <span className={`pill pill-${kind}`}>
       {dot ? <i className="dot" /> : null}
       {children}
     </span>
@@ -76,7 +76,7 @@ type NoticeProps = React.HTMLAttributes<HTMLDivElement> & {
 export function Notice({ kind, children, className, ...rest }: NoticeProps) {
   if (!children) return null
   return (
-    <div {...rest} className={`notice ${kind}${className ? ` ${className}` : ''}`}>
+    <div {...rest} className={`notice notice-${kind}${className ? ` ${className}` : ''}`}>
       {children}
     </div>
   )

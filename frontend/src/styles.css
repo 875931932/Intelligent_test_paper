@@ -113,6 +113,7 @@ body {
   font-size: 14px;
   line-height: 1.6;
   font-weight: 400;
+  overflow-x: hidden;
 }
 
 #root {
@@ -131,6 +132,21 @@ input, textarea, select {
   font-family: inherit;
   font-size: inherit;
   color: inherit;
+}
+
+button, input, textarea, select {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Prevent long labels and grid content from pushing controls out of view. */
+body, #root, main, section, article, header, nav, form, .card, .stage-panel,
+.stage-panel-head, .gate-banner, .gate-text, .card-head, .page-head {
+  min-width: 0;
+}
+
+p, h1, h2, h3, h4, h5, h6, td, th, label, .muted, .sub {
+  overflow-wrap: anywhere;
 }
 
 a {
@@ -451,7 +467,8 @@ a {
 .content {
   flex: 1;
   width: 100%;
-  max-width: 1200px;
+  /* The shell already reserves space for the sidebar; use the remaining viewport. */
+  max-width: none;
   animation: fadeIn var(--duration-normal) var(--ease-out-expo);
 }
 
@@ -1316,6 +1333,17 @@ textarea:focus-visible {
   color: var(--text-inverse);
 }
 
+.btn-danger-ghost {
+  background: transparent;
+  color: var(--danger);
+  border: 1px solid var(--border-strong);
+}
+
+.btn-danger-ghost:hover:not(:disabled) {
+  background: var(--danger-bg);
+  border-color: var(--danger);
+}
+
 .btn-sm {
   min-height: 32px;
   padding: var(--space-2) var(--space-3);
@@ -1325,6 +1353,7 @@ textarea:focus-visible {
 
 /* ── 卡片：液态玻璃 ──────────────────────────────────── */
 .card {
+  position: relative;
   background: var(--glass-90);
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
@@ -1760,7 +1789,7 @@ textarea:focus-visible {
   gap: var(--space-2);
 }
 
-.field > label {
+.field > span:first-child {
   font-size: 12px;
   font-weight: 600;
   color: var(--text-secondary);
@@ -3036,5 +3065,12 @@ textarea:focus-visible {
   .gate-actions {
     margin-left: 0;
     width: 100%;
+  }
+
+  .gate-actions .btn,
+  .stage-actions .btn,
+  .stage-actions-wrap .btn {
+    flex: 1 1 auto;
+    min-width: 0;
   }
 }
