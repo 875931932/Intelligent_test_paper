@@ -1,0 +1,94 @@
+/* ============================================================
+   Design System Tokens - Liquid Glass (明亮苹果风)
+   ============================================================ */
+
+:root {
+  /* ── 背景层 ── */
+  --bg: #f2f2f7;
+  --bg-secondary: #ffffff;
+  --surface: rgba(255, 255, 255, 0.72);
+  --surface-solid: #ffffff;
+  --surface-elevated: rgba(255, 255, 255, 0.88);
+  --surface-glass: rgba(255, 255, 255, 0.48);
+  --glass: rgba(255, 255, 255, 0.62);
+  --glass-border: rgba(255, 255, 255, 0.6);
+  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04);
+  --glass-blur: blur(20px) saturate(180%);
+
+  /* ── 悬浮岛侧栏 ── */
+  --sidebar-width: 260px;
+  --sidebar-collapsed: 72px;
+  --sidebar-offset: 12px;
+  --sidebar-radius: 20px;
+  --sidebar-glass: rgba(255, 255, 255, 0.76);
+  --sidebar-blur: blur(24px) saturate(1.8);
+  --sidebar-shadow: 0 4px 24px rgba(0, 0, 0, 0.06), 0 1px 4px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  --topbar-height: 52px;
+
+  /* ── 文字 ── */
+  --text: #1d1d1f;
+  --text-secondary: #6e6e73;
+  --text-tertiary: #8e8e93;
+  --text-on-accent: #ffffff;
+
+  /* ── 强调色 ── */
+  --accent: #0071e3;
+  --accent-hover: #0077ed;
+  --accent-subtle: rgba(0, 113, 227, 0.12);
+  --accent-text: #0071e3;
+  --accent-glass: rgba(0, 113, 227, 0.2);
+
+  /* ── 状态色 ── */
+  --success: #34c759;
+  --success-subtle: rgba(52, 199, 89, 0.12);
+  --warning: #ff9500;
+  --warning-subtle: rgba(255, 149, 0, 0.12);
+  --error: #ff3b30;
+  --error-subtle: rgba(255, 59, 48, 0.12);
+  --info: #5ac8fa;
+  --info-subtle: rgba(90, 200, 250, 0.12);
+  --purple: #af52de;
+  --purple-subtle: rgba(175, 82, 222, 0.12);
+
+  /* ── 相关性色 ── */
+  --relevance-direct: #34c759;
+  --relevance-supporting: #ff9500;
+  --relevance-background: #8e8e93;
+  --relevance-outofscope: #c7c7cc;
+
+  /* ── 间距 ── */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 16px;
+  --space-lg: 24px;
+  --space-xl: 32px;
+  --space-2xl: 48px;
+  --space-3xl: 64px;
+
+  /* ── 圆角 ── */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
+  --radius-2xl: 24px;
+  --radius-full: 9999px;
+
+  /* ── 字体 ── */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+
+  /* ── 骨架屏 ── */
+  --skeleton-base: rgba(0, 0, 0, 0.06);
+  --skeleton-shine: rgba(0, 0, 0, 0.04);
+  --skeleton-radius: var(--radius-md);
+
+  /* ── 动画缓动 ── */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* ── z-index ── */
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-modal: 300;
+  --z-toast: 400;
+}

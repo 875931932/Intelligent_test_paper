@@ -1,0 +1,32 @@
+/**
+ * 全局 CSS 重置 - 最小化，仅覆盖浏览器默认样式。
+ * 设计令牌 / 组件样式见 design-tokens.css 和 global.css。
+ */
+@import './styles/global.css';
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 16px;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--bg);
+  color: var(--text);
+  line-height: 1.5;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}

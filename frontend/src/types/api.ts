@@ -169,6 +169,13 @@ export interface CurrentFrameworkResponse {
 }
 
 // ── Knowledge ──
+export interface AnswerRelation {
+  source: string;
+  target: string;
+  relation: string;
+  confidence: number;
+}
+
 export interface KnowledgeCard {
   id: string;
   name: string;
