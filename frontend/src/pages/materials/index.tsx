@@ -2,22 +2,39 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   Upload, RefreshCw, Trash2, FileText, Loader2,
-  Folder, FolderOpen,
+  Folder, FolderOpen, BookOpen, ClipboardCheck, BookMarked, X,
 } from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
 import { api } from '@/api/client';
+import { config } from '@/config';
 import { useCourseStore } from '@/stores/course';
 import { useToastStore } from '@/stores/toast';
-import { Button, Modal, Input, Select, Badge, Spinner } from '@/components/ui';
+import { Button, Modal, Badge, Spinner } from '@/components/ui';
 import { computeSha256 } from '@/lib/sha256';
 import type { MaterialResponse } from '@/types/api';
 
-type FolderKey = 'syllabus' | 'materials' | 'all';
+type FolderKey = 'syllabus' | 'materials';
+type SubFolderKey = 'teaching_syllabus' | 'assessment_syllabus' | 'teaching_material' | 'exercise';
+
+interface SubFolderMeta {
+  key: SubFolderKey;
+  name: string;
+  description: string;
+  icon: LucideIcon;
+  color: string;
+}
 
 interface FolderMeta {
   key: FolderKey;
   name: string;
   description: string;
-  icon: typeof Folder;
+  icon: LucideIcon;
+  subFolders: SubFolderMeta[];
+}
+
+interface UploadItem {
+  file: File;
+  type: string;
 }
 
 const MATERIAL_TYPE_LABELS: Record<string, string> = {
@@ -48,6 +65,36 @@ const PARSE_STATUS_VARIANTS: Record<string, string> = {
   failed: 'error',
 };
 
+const FOLDER_GROUPS: FolderMeta[] = [
+  {
+    key: 'syllabus',
+    name: '课程大纲',
+    description: '教学大纲与考核大纲',
+    icon: Folder,
+    subFolders: [
+      { key: 'teaching_syllabus', name: '教学大纲', description: '课程教学目标与内容范围', icon: BookOpen, color: '#0071e3' },
+      { key: 'assessment_syllabus', name: '考核大纲', description: '考核方式与评分标准', icon: ClipboardCheck, color: '#34c759' },
+    ],
+  },
+  {
+    key: 'materials',
+    name: '课程资料',
+    description: '教材与习题等教学资源',
+    icon: FolderOpen,
+    subFolders: [
+      { key: 'teaching_material', name: '教材', description: '教学用书与讲义', icon: BookMarked, color: '#af52de' },
+      { key: 'exercise', name: '习题', description: '练习与试卷', icon: FileText, color: '#ff9500' },
+    ],
+  },
+];
+
+const ALL_TYPE_OPTIONS = [
+  { value: 'teaching_syllabus', label: '教学大纲' },
+  { value: 'assessment_syllabus', label: '考核大纲' },
+  { value: 'teaching_material', label: '教材' },
+  { value: 'exercise', label: '习题' },
+];
+
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -56,10 +103,6 @@ function formatFileSize(bytes: number): string {
 
 function isSyllabus(type: string) {
   return type === 'teaching_syllabus' || type === 'assessment_syllabus';
-}
-
-function fileIcon(_type: string) {
-  return FileText;
 }
 
 export default function MaterialsPage() {
@@ -72,12 +115,12 @@ export default function MaterialsPage() {
   const [loading, setLoading] = useState(true);
 
   const [activeFolder, setActiveFolder] = useState<FolderKey | null>(null);
+  const [activeSubFolder, setActiveSubFolder] = useState<SubFolderKey | null>(null);
 
   const [uploadOpen, setUploadOpen] = useState(false);
-  const [uploadFilename, setUploadFilename] = useState('');
-  const [uploadType, setUploadType] = useState('teaching_material');
-  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
   const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -106,71 +149,112 @@ export default function MaterialsPage() {
     };
   }, [loadMaterials]);
 
-  const folders: FolderMeta[] = useMemo(
-    () => [
-      {
-        key: 'syllabus',
-        name: '课程大纲',
-        description: '教学大纲与考核大纲',
-        icon: Folder,
-      },
-      {
-        key: 'materials',
-        name: '课程资料',
-        description: '教材、习题与参考资料',
-        icon: FolderOpen,
-      },
-    ],
-    []
-  );
-
   const filteredMaterials = useMemo(() => {
+    if (activeSubFolder) return materials.filter((m) => m.material_type === activeSubFolder);
     if (activeFolder === 'syllabus') return materials.filter((m) => isSyllabus(m.material_type));
     if (activeFolder === 'materials') return materials.filter((m) => !isSyllabus(m.material_type));
     return materials;
-  }, [materials, activeFolder]);
+  }, [materials, activeFolder, activeSubFolder]);
+
+  const countByType = useCallback(
+    (type: string) => materials.filter((m) => m.material_type === type).length,
+    [materials]
+  );
+
+  // ── 多文件上传 ──
+  const openUpload = () => {
+    setUploadItems([]);
+    setUploadOpen(true);
+  };
+
+  const defaultTypeForNewFile = (): string => activeSubFolder || 'teaching_material';
+
+  const handleFilesChange = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    const defaultType = defaultTypeForNewFile();
+    const newItems: UploadItem[] = Array.from(files).map((file) => ({ file, type: defaultType }));
+    setUploadItems((prev) => [...prev, ...newItems]);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const updateItemType = (index: number, type: string) => {
+    setUploadItems((prev) => prev.map((it, i) => (i === index ? { ...it, type } : it)));
+  };
+
+  const removeItem = (index: number) => {
+    setUploadItems((prev) => prev.filter((_, i) => i !== index));
+  };
 
   const handleUpload = async () => {
-    if (!courseId || !uploadFile || !uploadFilename.trim()) {
-      addToast('请填写完整信息', 'error');
+    if (!courseId || uploadItems.length === 0) {
+      addToast('请先选择要上传的文件', 'error');
       return;
     }
+    setUploading(true);
+    let successCount = 0;
     try {
-      setUploading(true);
-      const sha256 = await computeSha256(uploadFile);
-      const session = await api.materials.createUploadSession(courseId, {
-        filename: uploadFilename,
-        material_type: uploadType,
-        size_bytes: uploadFile.size,
-        sha256,
-        mime_type: uploadFile.type || 'application/octet-stream',
-      });
+      for (const item of uploadItems) {
+        const sha256 = await computeSha256(item.file);
+        const session = await api.materials.createUploadSession(courseId, {
+          filename: item.file.name,
+          material_type: item.type,
+          size_bytes: item.file.size,
+          sha256,
+          mime_type: item.file.type || 'application/octet-stream',
+        });
 
-      if (!session?.upload_url) {
-        throw new Error('未获取到上传地址');
+        // 演示模式 upload_url 为空，跳过真实直传
+        if (session?.upload_url) {
+          await fetch(session.upload_url, {
+            method: 'PUT',
+            body: item.file,
+            headers: { 'Content-Type': item.file.type || 'application/octet-stream' },
+          });
+        }
+
+        await api.materials.completeUpload(courseId, session.session_id);
+
+        if (config.enableMock) {
+          const id = 'm' + Date.now() + Math.random().toString(36).slice(2, 6);
+          setMaterials((prev) => [
+            ...prev,
+            {
+              id,
+              course_id: courseId,
+              logical_name: item.file.name,
+              material_type: item.type as MaterialResponse['material_type'],
+              status: 'ready',
+              latest_version: {
+                id: 'v' + Date.now(),
+                material_id: id,
+                status: 'active',
+                version_no: 1,
+                sha256: sha256.slice(0, 64).padEnd(64, '0'),
+                mime_type: item.file.type || 'application/octet-stream',
+                size_bytes: item.file.size,
+              },
+              parse_status: { id: 'ps' + Date.now(), status: 'pending' },
+              created_at: new Date().toISOString(),
+            },
+          ]);
+        }
+        successCount++;
       }
-
-      await fetch(session.upload_url, {
-        method: 'PUT',
-        body: uploadFile,
-        headers: { 'Content-Type': uploadFile.type || 'application/octet-stream' },
-      });
-
-      await api.materials.completeUpload(courseId, session.session_id);
-
-      addToast('资料上传成功', 'success');
+      addToast(`成功上传 ${successCount} 份资料`, 'success');
       setUploadOpen(false);
-      setUploadFilename('');
-      setUploadFile(null);
-      setUploadType('teaching_material');
-      loadMaterials();
+      setUploadItems([]);
+      if (!config.enableMock) loadMaterials();
     } catch {
-      addToast('上传失败，请重试', 'error');
+      addToast(
+        successCount > 0 ? `部分上传失败（成功 ${successCount} 份）` : '上传失败，请重试',
+        successCount > 0 ? 'info' : 'error'
+      );
     } finally {
       setUploading(false);
     }
   };
 
+  // ── 解析 ──
   const handleParse = async (material: MaterialResponse) => {
     const materialId = material.id;
     try {
@@ -196,7 +280,15 @@ export default function MaterialsPage() {
               return next;
             });
             addToast(statusValue === 'completed' ? '解析完成' : '解析失败', statusValue === 'completed' ? 'success' : 'error');
-            loadMaterials();
+            if (config.enableMock) {
+              setMaterials((prev) =>
+                prev.map((m) =>
+                  m.id === materialId ? { ...m, parse_status: { ...m.parse_status, status: statusValue } } : m
+                )
+              );
+            } else {
+              loadMaterials();
+            }
           }
         } catch {
           clearInterval(timer);
@@ -221,8 +313,12 @@ export default function MaterialsPage() {
       setDeleting(true);
       await api.materials.delete(courseId, deleteId);
       addToast('删除成功', 'success');
+      if (config.enableMock) {
+        setMaterials((prev) => prev.filter((m) => m.id !== deleteId));
+      } else {
+        loadMaterials();
+      }
       setDeleteId(null);
-      loadMaterials();
     } catch {
       addToast('删除失败', 'error');
     } finally {
@@ -230,10 +326,10 @@ export default function MaterialsPage() {
     }
   };
 
-  const syllabusCount = useMemo(() => materials.filter((m) => isSyllabus(m.material_type)).length, [materials]);
-  const materialCount = useMemo(() => materials.filter((m) => !isSyllabus(m.material_type)).length, [materials]);
+  const currentFolder = activeFolder ? FOLDER_GROUPS.find((f) => f.key === activeFolder) : null;
+  const currentSubFolder = activeSubFolder ? currentFolder?.subFolders.find((s) => s.key === activeSubFolder) : null;
 
-  const folderContent = () => {
+  const fileGrid = () => {
     if (loading) {
       return (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '80px 0' }}>
@@ -256,65 +352,62 @@ export default function MaterialsPage() {
 
     return (
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '16px' }}>
-        {filteredMaterials.map((m) => {
-          const Icon = fileIcon(m.material_type);
-          return (
-            <div
-              key={m.id}
-              className="glass-card"
-              style={{ padding: '18px', display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative' }}
-            >
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
-                <div style={{
-                  width: 44, height: 44, borderRadius: '12px',
-                  background: 'var(--accent-subtle)', color: 'var(--accent)',
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
-                }}>
-                  <Icon size={22} />
-                </div>
-                <div style={{ minWidth: 0, flex: 1 }}>
-                  <h4 style={{
-                    fontSize: '0.95rem', fontWeight: 600, margin: 0,
-                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  }} title={m.logical_name}>
-                    {m.logical_name}
-                  </h4>
-                  <p style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', marginTop: '4px' }}>
-                    {m.latest_version ? formatFileSize(m.latest_version.size_bytes) : '-'} · v{m.latest_version?.version_no ?? '-'}
-                  </p>
-                </div>
+        {filteredMaterials.map((m) => (
+          <div
+            key={m.id}
+            className="glass-card"
+            style={{ padding: '18px', display: 'flex', flexDirection: 'column', gap: '12px' }}
+          >
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
+              <div style={{
+                width: 44, height: 44, borderRadius: '12px',
+                background: 'var(--accent-subtle)', color: 'var(--accent)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              }}>
+                <FileText size={22} />
               </div>
-
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 'auto' }}>
-                <Badge variant={MATERIAL_TYPE_VARIANTS[m.material_type] || 'default'}>
-                  {MATERIAL_TYPE_LABELS[m.material_type] || m.material_type}
-                </Badge>
-                <Badge variant={PARSE_STATUS_VARIANTS[m.parse_status.status] || 'default'}>
-                  {PARSE_STATUS_LABELS[m.parse_status.status] || m.parse_status.status}
-                </Badge>
-              </div>
-
-              <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => handleParse(m)}
-                  disabled={parsingIds.has(m.id)}
-                  icon={parsingIds.has(m.id) ? <Loader2 size={14} /> : <RefreshCw size={14} />}
-                  style={{ flex: 1 }}
-                >
-                  解析
-                </Button>
-                <Button
-                  variant="danger"
-                  size="sm"
-                  onClick={() => setDeleteId(m.id)}
-                  icon={<Trash2 size={14} />}
-                />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <h4 style={{
+                  fontSize: '0.95rem', fontWeight: 600, margin: 0,
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }} title={m.logical_name}>
+                  {m.logical_name}
+                </h4>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                  {m.latest_version ? formatFileSize(m.latest_version.size_bytes) : '-'} · v{m.latest_version?.version_no ?? '-'}
+                </p>
               </div>
             </div>
-          );
-        })}
+
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 'auto' }}>
+              <Badge variant={MATERIAL_TYPE_VARIANTS[m.material_type] || 'default'}>
+                {MATERIAL_TYPE_LABELS[m.material_type] || m.material_type}
+              </Badge>
+              <Badge variant={PARSE_STATUS_VARIANTS[m.parse_status.status] || 'default'}>
+                {PARSE_STATUS_LABELS[m.parse_status.status] || m.parse_status.status}
+              </Badge>
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => handleParse(m)}
+                disabled={parsingIds.has(m.id)}
+                icon={parsingIds.has(m.id) ? <Loader2 size={14} /> : <RefreshCw size={14} />}
+                style={{ flex: 1 }}
+              >
+                解析
+              </Button>
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() => setDeleteId(m.id)}
+                icon={<Trash2 size={14} />}
+              />
+            </div>
+          </div>
+        ))}
       </div>
     );
   };
@@ -329,21 +422,21 @@ export default function MaterialsPage() {
             按文件夹管理课程大纲与教学资料
           </p>
         </div>
-        <Button onClick={() => setUploadOpen(true)} icon={<Upload size={16} />}>
+        <Button onClick={openUpload} icon={<Upload size={16} />}>
           上传资料
         </Button>
       </div>
 
-      {/* Folder grid / active folder content */}
-      {activeFolder === null ? (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '20px' }}>
-          {folders.map((f) => {
+      {/* ── 根视图：两个一级文件夹 ── */}
+      {activeFolder === null && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '20px' }}>
+          {FOLDER_GROUPS.map((f) => {
             const Icon = f.icon;
-            const count = f.key === 'syllabus' ? syllabusCount : materialCount;
+            const count = f.subFolders.reduce((sum, s) => sum + countByType(s.key), 0);
             return (
               <button
                 key={f.key}
-                onClick={() => setActiveFolder(f.key)}
+                onClick={() => { setActiveFolder(f.key); setActiveSubFolder(null); }}
                 className="glass-card"
                 style={{
                   padding: '24px', textAlign: 'left', background: 'none', border: '1px solid var(--glass-border)',
@@ -366,72 +459,138 @@ export default function MaterialsPage() {
             );
           })}
         </div>
-      ) : (
+      )}
+
+      {/* ── 一级视图：子文件夹 ── */}
+      {activeFolder !== null && activeSubFolder === null && currentFolder && (
         <div className="glass-card" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '18px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <Button variant="secondary" size="sm" onClick={() => setActiveFolder(null)}>
               返回文件夹
             </Button>
             <span style={{ color: 'var(--text-tertiary)' }}>/</span>
-            <h2 style={{ fontSize: '1.15rem', fontWeight: 600 }}>
-              {folders.find((f) => f.key === activeFolder)?.name}
-            </h2>
+            <h2 style={{ fontSize: '1.15rem', fontWeight: 600 }}>{currentFolder.name}</h2>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '16px' }}>
+            {currentFolder.subFolders.map((s) => {
+              const Icon = s.icon;
+              return (
+                <button
+                  key={s.key}
+                  onClick={() => setActiveSubFolder(s.key)}
+                  className="glass-card"
+                  style={{
+                    padding: '20px', textAlign: 'left', background: 'none', border: '1px solid var(--glass-border)',
+                    cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '14px',
+                  }}
+                >
+                  <div style={{
+                    width: 48, height: 48, borderRadius: '14px', background: s.color + '1a', color: s.color,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                  }}>
+                    <Icon size={24} />
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <h4 style={{ fontSize: '0.95rem', fontWeight: 600, marginBottom: '2px' }}>{s.name}</h4>
+                    <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{s.description}</p>
+                    <p style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)', marginTop: '4px' }}>{countByType(s.key)} 份文件</p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── 二级视图：文件列表 ── */}
+      {activeSubFolder !== null && currentSubFolder && (
+        <div className="glass-card" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '18px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <Button variant="secondary" size="sm" onClick={() => setActiveSubFolder(null)}>
+              返回上级
+            </Button>
+            <span style={{ color: 'var(--text-tertiary)' }}>/</span>
+            <span style={{ color: 'var(--text-tertiary)' }}>{currentFolder?.name}</span>
+            <span style={{ color: 'var(--text-tertiary)' }}>/</span>
+            <h2 style={{ fontSize: '1.15rem', fontWeight: 600 }}>{currentSubFolder.name}</h2>
             <span style={{ fontSize: '0.85rem', color: 'var(--text-tertiary)' }}>
               ({filteredMaterials.length} 份)
             </span>
           </div>
-          {folderContent()}
+          {fileGrid()}
         </div>
       )}
 
-      {/* Upload Dialog */}
+      {/* ── 多文件上传弹窗 ── */}
       <Modal
         open={uploadOpen}
-        onClose={() => setUploadOpen(false)}
+        onClose={() => { if (!uploading) setUploadOpen(false); }}
         title="上传资料"
         onConfirm={handleUpload}
-        confirmLabel="确认上传"
+        confirmLabel={uploadItems.length > 0 ? `确认上传（${uploadItems.length} 份）` : '确认上传'}
         loading={uploading}
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          <Input
-            label="文件名"
-            placeholder="请输入文件名"
-            value={uploadFilename}
-            onChange={(e) => setUploadFilename(e.target.value)}
-          />
-          <Select
-            label="资料类型"
-            value={uploadType}
-            onChange={(e) => setUploadType(e.target.value)}
-            options={[
-              { value: 'teaching_syllabus', label: '教学大纲' },
-              { value: 'assessment_syllabus', label: '考核大纲' },
-              { value: 'teaching_material', label: '教材' },
-              { value: 'exercise', label: '习题' },
-            ]}
-          />
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-            <label style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)' }}>选择文件</label>
+            <label style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)' }}>
+              选择文件（可多选）
+            </label>
             <input
+              ref={fileInputRef}
               type="file"
-              onChange={(e) => {
-                const f = e.target.files?.[0];
-                if (f) {
-                  setUploadFile(f);
-                  if (!uploadFilename) setUploadFilename(f.name);
-                }
-              }}
+              multiple
+              onChange={(e) => handleFilesChange(e.target.files)}
               className="input-field"
             />
-            {uploadFile && (
-              <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '4px' }}>已选择: {uploadFile.name}</p>
-            )}
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+              支持同时选择多个文件，每个文件可单独指定类型
+            </p>
           </div>
+
+          {uploadItems.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '280px', overflowY: 'auto' }}>
+              {uploadItems.map((item, idx) => (
+                <div
+                  key={idx}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px',
+                    background: 'var(--surface-elevated)', borderRadius: '10px', border: '1px solid var(--glass-border)',
+                  }}
+                >
+                  <FileText size={18} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <p style={{ fontSize: '0.8125rem', fontWeight: 500, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {item.file.name}
+                    </p>
+                    <p style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)', margin: 0 }}>
+                      {formatFileSize(item.file.size)}
+                    </p>
+                  </div>
+                  <select
+                    value={item.type}
+                    onChange={(e) => updateItemType(idx, e.target.value)}
+                    className="input-field"
+                    style={{ width: 'auto', padding: '4px 8px', fontSize: '0.8125rem' }}
+                  >
+                    {ALL_TYPE_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                  <button
+                    onClick={() => removeItem(idx)}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', padding: 4, display: 'flex' }}
+                    title="移除"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </Modal>
 
-      {/* Delete Confirm Dialog */}
+      {/* ── 删除确认 ── */}
       <Modal
         open={!!deleteId}
         onClose={() => setDeleteId(null)}

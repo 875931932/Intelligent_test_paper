@@ -351,6 +351,30 @@ export function matchMock(path: string, method: string, body?: string): unknown 
   // 资料列表
   if (/^\/courses\/[^/]+\/materials$/.test(path) && m === 'GET') return demoMaterials;
 
+  // 上传会话 / 完成上传（演示模式直接返回成功，upload_url 留空跳过真实 PUT）
+  if (/^\/courses\/[^/]+\/upload-sessions$/.test(path) && m === 'POST') {
+    const filename = (parsedBody?.filename as string) || 'file';
+    return {
+      session_id: 's' + Date.now(),
+      object_key: 'mock/' + filename,
+      upload_url: '',
+      expires_at: new Date().toISOString(),
+      headers: {},
+    };
+  }
+  if (/^\/courses\/[^/]+\/upload-sessions\/[^/]+\/complete$/.test(path) && m === 'POST') {
+    return { id: 'v' + Date.now(), material_id: 'm' + Date.now(), status: 'active', version_no: 1, sha256: 'e'.repeat(64), mime_type: 'application/pdf', size_bytes: 1024 };
+  }
+
+  // 解析 / 轮询 / 删除
+  if (/^\/courses\/[^/]+\/materials\/[^/]+\/parse\/poll$/.test(path) && m === 'POST') {
+    return { parse_status: { id: 'ps', status: 'completed' } };
+  }
+  if (/^\/courses\/[^/]+\/materials\/[^/]+\/parse$/.test(path) && m === 'POST') {
+    return { status: 'completed' };
+  }
+  if (/^\/courses\/[^/]+\/materials\/[^/]+$/.test(path) && m === 'DELETE') return undefined;
+
   // 命题框架当前版本
   if (/\/framework-versions\/current$/.test(path)) return demoFramework;
 
