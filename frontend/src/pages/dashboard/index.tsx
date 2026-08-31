@@ -1,9 +1,8 @@
 import { useEffect, useState, type FC } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   Plus, ChevronRight, FolderOpen, ClipboardList, Network, FileQuestion,
 } from 'lucide-react';
-import { useCourseStore } from '@/stores/course';
 import { useToastStore } from '@/stores/toast';
 import { useAuthStore } from '@/stores/auth';
 import { api } from '@/api/client';
@@ -15,7 +14,8 @@ import type { MaterialResponse, CurrentFrameworkResponse, PublishedKnowledgeResp
 
 const DashboardPage: FC = () => {
   const navigate = useNavigate();
-  const activeCourseId = useCourseStore().activeCourseId;
+  const { courseId: routeCourseId } = useParams<{ courseId: string }>();
+  const activeCourseId = routeCourseId || '';
   const token = useAuthStore().token;
   const addToast = useToastStore((s) => s.addToast);
 
@@ -72,29 +72,6 @@ const DashboardPage: FC = () => {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeCourseId, token]);
-
-  // ── 无课程 ──
-  if (!activeCourseId) {
-    return (
-      <div className="page-enter">
-        <div style={{ marginBottom: 'var(--space-xl)' }}>
-          <h1 style={{ fontSize: '1.75rem', fontWeight: 700, letterSpacing: '-0.03em', marginBottom: '6px' }}>课程工作台</h1>
-          <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)' }}>智能出卷系统 - 您的 AI 辅助教学助手</p>
-        </div>
-        <div className="glass-panel" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '80px 20px', gap: '16px' }}>
-          <div style={{
-            width: 64, height: 64, borderRadius: '20px',
-            background: 'var(--accent-subtle)', color: 'var(--accent)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-          }}>
-            <FolderOpen size={32} />
-          </div>
-          <h3 style={{ fontSize: '1.125rem', fontWeight: 600 }}>请选择课程</h3>
-          <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>在侧边栏选择或创建一门课程</p>
-        </div>
-      </div>
-    );
-  }
 
   // ── 加载中 ──
   if (loading) {
