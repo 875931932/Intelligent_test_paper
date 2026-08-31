@@ -18,8 +18,6 @@ export const config = {
 
   /** 3xx/4xx 是否跟随（与鉴权 cookie 相关） */
   credentials: (import.meta.env.VITE_API_CREDENTIALS ?? 'include') as RequestCredentials,
-  /** 演示模式：后端未连接时使用内置静态数据渲染页面。默认关闭，走真实后端接口。 */
-  enableMock: (import.meta.env.VITE_ENABLE_MOCK ?? 'false') !== 'true',
 } as const;
 
 export type Config = typeof config;

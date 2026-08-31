@@ -6,7 +6,6 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { api } from '@/api/client';
-import { config } from '@/config';
 import { useCourseStore } from '@/stores/course';
 import { useToastStore } from '@/stores/toast';
 import { Button, Modal, Badge, Spinner } from '@/components/ui';
@@ -203,7 +202,7 @@ export default function MaterialsPage() {
           mime_type: item.file.type || 'application/octet-stream',
         });
 
-        // 演示模式 upload_url 为空，跳过真实直传
+        // 直传对象存储（若后端返回 upload_url）
         if (session?.upload_url) {
           await fetch(session.upload_url, {
             method: 'PUT',
@@ -214,36 +213,12 @@ export default function MaterialsPage() {
 
         await api.materials.completeUpload(courseId, session.session_id);
 
-        if (config.enableMock) {
-          const id = 'm' + Date.now() + Math.random().toString(36).slice(2, 6);
-          setMaterials((prev) => [
-            ...prev,
-            {
-              id,
-              course_id: courseId,
-              logical_name: item.file.name,
-              material_type: item.type as MaterialResponse['material_type'],
-              status: 'ready',
-              latest_version: {
-                id: 'v' + Date.now(),
-                material_id: id,
-                status: 'active',
-                version_no: 1,
-                sha256: sha256.slice(0, 64).padEnd(64, '0'),
-                mime_type: item.file.type || 'application/octet-stream',
-                size_bytes: item.file.size,
-              },
-              parse_status: { id: 'ps' + Date.now(), status: 'pending' },
-              created_at: new Date().toISOString(),
-            },
-          ]);
-        }
         successCount++;
       }
       addToast(`成功上传 ${successCount} 份资料`, 'success');
       setUploadOpen(false);
       setUploadItems([]);
-      if (!config.enableMock) loadMaterials();
+      loadMaterials();
     } catch {
       addToast(
         successCount > 0 ? `部分上传失败（成功 ${successCount} 份）` : '上传失败，请重试',
@@ -280,15 +255,7 @@ export default function MaterialsPage() {
               return next;
             });
             addToast(statusValue === 'completed' ? '解析完成' : '解析失败', statusValue === 'completed' ? 'success' : 'error');
-            if (config.enableMock) {
-              setMaterials((prev) =>
-                prev.map((m) =>
-                  m.id === materialId ? { ...m, parse_status: { ...m.parse_status, status: statusValue } } : m
-                )
-              );
-            } else {
-              loadMaterials();
-            }
+            loadMaterials();
           }
         } catch {
           clearInterval(timer);
@@ -313,11 +280,7 @@ export default function MaterialsPage() {
       setDeleting(true);
       await api.materials.delete(courseId, deleteId);
       addToast('删除成功', 'success');
-      if (config.enableMock) {
-        setMaterials((prev) => prev.filter((m) => m.id !== deleteId));
-      } else {
-        loadMaterials();
-      }
+      loadMaterials();
       setDeleteId(null);
     } catch {
       addToast('删除失败', 'error');
