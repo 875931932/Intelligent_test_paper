@@ -89,13 +89,13 @@ body::after {
 }
 
 .glass-card:hover {
-  transform: translateY(-4px);
+  transform: translateY(-2px);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.1), 0 4px 12px rgba(0, 0, 0, 0.04);
   border-color: rgba(0, 0, 0, 0.12);
 }
 
 .glass-card:active {
-  transform: translateY(-1px) scale(0.99);
+  transform: translateY(0) scale(0.99);
 }
 
 .glass-panel {

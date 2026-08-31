@@ -747,7 +747,7 @@ export default function ExamProjectsPage() {
           <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>点击「新建项目」开始您的第一次出卷</p>
         </div>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {projects.map((p) => {
             const sm = STATUS_META[p.status] ?? { label: p.status, variant: 'default' as BadgeVariant };
             return (
