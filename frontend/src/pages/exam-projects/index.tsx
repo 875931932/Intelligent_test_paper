@@ -296,7 +296,7 @@ function renderGenerate({
               onClick={async () => {
                 try {
                   setGenerating(true);
-                  const res = await api.examProjects.startGeneration(courseId, sp.id, { mock_graph: true });
+                  const res = await api.examProjects.startGeneration(courseId, sp.id);
                   const tr = await api.examProjects.getTaskRun(courseId, res.task_run_id, token ?? undefined);
                   setTaskRun(tr);
                   addToast('任务已启动', 'success');
@@ -594,13 +594,34 @@ export default function ExamProjectsPage() {
     if (!activeProject) return;
     try {
       setBpCreating(true);
-      const units = JSON.parse('[{"unit_id":"default","exam_point_id":"default","card_ids":[]}]');
+      const data = await api.knowledge.getPublished(courseId);
+      if (data?.published === false || !data?.units || data.units.length === 0) {
+        addToast('请先发布知识目录', 'error');
+        setBpCreating(false);
+        return;
+      }
+
+      const units = (data.units || []).map((u) => ({
+        unit_id: u.unit_id,
+        exam_point_id: u.exam_point_id || u.exam_point_code || '',
+        anchor_key: u.anchor_key || '',
+        card_ids: u.card_ids || [],
+      }));
+
+      const chapter_weights: Record<string, number> = {};
+      (data.exam_points || []).forEach((p) => {
+        const key = p.anchor_key || p.id;
+        if (key && p.weight_value != null) {
+          chapter_weights[key] = p.weight_value;
+        }
+      });
+
       await api.examProjects.createBlueprint(courseId, activeProject.id, {
-        framework_version_id: String(1),
-        catalog_version_id: String(1),
+        framework_version_id: data.framework_version_id,
+        catalog_version_id: data.catalog_version_id,
         type_rules: {},
-        chapter_weights: {},
-        units: units as never,
+        chapter_weights,
+        units,
       });
       addToast('蓝图已生成', 'success');
       setCurrentStage('contract');

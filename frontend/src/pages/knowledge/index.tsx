@@ -61,6 +61,9 @@ export default function KnowledgePage() {
   const [versionIds, setVersionIds] = useState<string[]>([]);
   const [building, setBuilding] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
+  const [reviewedTopicCodes, setReviewedTopicCodes] = useState<string[]>([]);
+  const [reviewedExamPointCodes, setReviewedExamPointCodes] = useState<string[]>([]);
+  const [teacherExclusions, setTeacherExclusions] = useState<string[]>([]);
 
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<EvidenceChunk[]>([]);
@@ -161,6 +164,24 @@ export default function KnowledgePage() {
       try {
         const runData = await api.knowledge.getRun(courseId, rid);
         if (runData?.candidate_id) {
+          const candidate = await api.knowledge.getCandidate(courseId, rid);
+          const payload = (candidate as Record<string, unknown>).payload as Record<string, unknown> | undefined;
+          if (payload) {
+            const topics = (payload.topics || []) as Array<{ code: string; status: string }>;
+            const currentTopicCodes: string[] = [];
+            topics.forEach((t) => {
+              if (t.status === 'active') {
+                currentTopicCodes.push(t.code);
+                setReviewedTopicCodes((prev) => prev.includes(t.code) ? prev : [...prev, t.code]);
+              }
+            });
+            const coverage = (payload.coverage || []) as Array<{ exam_point_code: string; status: string }>;
+            coverage.forEach((c) => {
+              if (c.status === 'sufficient') {
+                setReviewedExamPointCodes((prev) => prev.includes(c.exam_point_code) ? prev : [...prev, c.exam_point_code]);
+              }
+            });
+          }
           clearInterval(pollingRef.current!);
           pollingRef.current = null;
           setBuildState('candidate');
@@ -205,9 +226,9 @@ export default function KnowledgePage() {
     try {
       await api.knowledge.publish(courseId, runId, {
         operations: [],
-        reviewed_topic_codes: [],
-        reviewed_exam_point_codes: [],
-        teacher_exclusions: [],
+        reviewed_topic_codes: reviewedTopicCodes,
+        reviewed_exam_point_codes: reviewedExamPointCodes,
+        teacher_exclusions: teacherExclusions,
       });
       addToast('知识目录已发布', 'success');
       setBuildState('published');
@@ -215,7 +236,7 @@ export default function KnowledgePage() {
     } catch {
       addToast('发布失败', 'error');
     }
-  }, [courseId, runId, loadPublished, addToast]);
+  }, [courseId, runId, loadPublished, addToast, reviewedTopicCodes, reviewedExamPointCodes, teacherExclusions]);
 
   // Evidence
   const loadEvidence = useCallback(async (cardId: string) => {

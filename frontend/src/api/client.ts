@@ -1,4 +1,4 @@
-import { request } from './http';
+import { request, uploadBinary } from './http';
 import { coursesApi } from './domains/courses';
 import { blueprintsApi, generationApi } from './domains/blueprints';
 import { knowledgeRunApi } from './domains/knowledgeRun';
@@ -19,4 +19,5 @@ export const api = {
   framework: frameworkApi,
   examProjects: examProjectsApi,
   paperVersions: paperVersionsApi,
+  uploadBinary,
 };

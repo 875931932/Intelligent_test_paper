@@ -207,8 +207,14 @@ export default function MaterialsPage() {
           await fetch(session.upload_url, {
             method: 'PUT',
             body: item.file,
-            headers: { 'Content-Type': item.file.type || 'application/octet-stream' },
+            headers: {
+              'Content-Type': item.file.type || 'application/octet-stream',
+              'x-amz-meta-sha256': sha256,
+              ...(session.headers || {}),
+            },
           });
+        } else {
+          await api.uploadBinary('/_local-storage/' + session.object_key, item.file);
         }
 
         await api.materials.completeUpload(courseId, session.session_id);

@@ -5,6 +5,7 @@ from __future__ import annotations
 from sqlalchemy import create_engine, text
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 from app.config import settings
@@ -63,6 +64,13 @@ def health_payload() -> dict:
 
 
 app = FastAPI(title="AI Exam System")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(courses_router)
 app.include_router(materials_router)
 app.include_router(framework_router)

@@ -88,7 +88,7 @@ const DashboardPage: FC = () => {
 
   // ── 统计数据 ──
   const materialStats = {
-    categories: 4,
+    categories: new Set(materials.map((m) => m.material_type)).size,
     parsed: materials.filter((m) =>
       ['parsed', 'completed', 'success'].includes(m.parse_status.status),
     ).length,

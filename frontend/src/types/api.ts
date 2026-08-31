@@ -144,7 +144,7 @@ export interface FrameworkRunCreate {
 }
 
 export interface FrameworkBuildRun {
-  id: string;
+  run_id: string;
   course_id: string;
   status: string;
   candidate_id?: string;

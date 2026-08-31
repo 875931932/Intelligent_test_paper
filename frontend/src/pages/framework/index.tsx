@@ -5,7 +5,7 @@ import { api } from '@/api/client';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
 import { Modal, Select, Badge, Spinner } from '@/components/ui';
-import type { FrameworkCandidate, AssessmentAnchor } from '@/types/api';
+import type { FrameworkCandidate, CurrentFrameworkResponse, AssessmentAnchor } from '@/types/api';
 
 type BuildState = 'idle' | 'building' | 'candidate' | 'done';
 
@@ -49,13 +49,12 @@ export default function FrameworkPage() {
   const loadPublished = useCallback(async () => {
     if (!courseId) return;
     try {
-      const data = await api.framework.getCurrent(courseId);
-      const anyData = data as unknown as { published?: boolean; payload?: FrameworkCandidate };
-      if (anyData?.published === false || !anyData?.payload) {
+      const data = await api.framework.getCurrent(courseId) as CurrentFrameworkResponse;
+      if (data.published === false || !data.payload) {
         setPublished(null);
         setBuildState('idle');
       } else {
-        setPublished(anyData.payload as FrameworkCandidate);
+        setPublished(data.payload as FrameworkCandidate);
         setBuildState('done');
       }
     } catch {
@@ -113,13 +112,12 @@ export default function FrameworkPage() {
         teaching_material_version_id: teachingVersionId,
         assessment_material_version_id: assessmentVersionId,
       });
-      const runObj = run as unknown as { run_id?: string; candidate_id?: string };
+      const runObj = await run;
       if (runObj?.run_id) {
         setRunId(runObj.run_id);
       }
       setBuildOpen(false);
 
-      // 后端同步 invoke，创建后通常已有 candidate；否则轮询 latest
       if (runObj?.candidate_id && runObj?.run_id) {
         await loadCandidate(runObj.run_id);
       } else {
@@ -136,7 +134,7 @@ export default function FrameworkPage() {
   const loadCandidate = useCallback(async (rid: string) => {
     try {
       const candidateData = await api.framework.getCandidate(courseId, rid);
-      setCandidate(candidateData as unknown as FrameworkCandidate);
+      setCandidate(candidateData);
       setRunId(rid);
       setBuildState('candidate');
     } catch {
@@ -150,15 +148,14 @@ export default function FrameworkPage() {
     pollingRef.current = setInterval(async () => {
       try {
         const latest = await api.framework.getLatest(courseId);
-        const anyLatest = latest as unknown as { candidate_id?: string; id?: string; status?: string };
-        if (anyLatest?.candidate_id) {
+        if (latest.candidate_id) {
           clearPolling();
-          await loadCandidate(anyLatest.id || anyLatest.candidate_id);
-        } else if (anyLatest?.status === 'rejected') {
+          await loadCandidate(latest.run_id);
+        } else if (latest.status === 'rejected') {
           clearPolling();
           setBuildState('idle');
           addToast('框架已被拒绝', 'info');
-        } else if (anyLatest?.status === 'failed') {
+        } else if (latest.status === 'failed') {
           clearPolling();
           setBuildState('idle');
           addToast('框架构建失败', 'error');
