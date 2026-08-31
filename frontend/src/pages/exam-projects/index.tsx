@@ -677,13 +677,13 @@ export default function ExamProjectsPage() {
     const sp = activeProject;
     const statusMeta = STATUS_META[sp.status] ?? { label: sp.status, variant: 'default' as BadgeVariant };
     return (
-      <div className="page-enter">
+      <div className="page-enter" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
         <button
           onClick={() => setActiveProject(null)}
           style={{
             background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)',
-            fontSize: '0.8125rem', display: 'flex', alignItems: 'center', gap: '4px', marginBottom: '10px',
-            padding: 0,
+            fontSize: '0.8125rem', display: 'flex', alignItems: 'center', gap: '4px',
+            padding: 0, marginBottom: '-4px',
           }}
         >
           <ArrowLeft size={16} /> 返回项目列表
