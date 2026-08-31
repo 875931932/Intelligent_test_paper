@@ -388,6 +388,10 @@ export interface PaperVersionItem {
   options: Record<string, string>;
   answer: string;
   explanation: string;
+  score: number;
+  difficulty: string;
+  cognitive_level: string;
+  exam_point_id: string;
   scoring_detail: string;
   needs_review: boolean;
   needs_review_reasons: string[];
