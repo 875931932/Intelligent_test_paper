@@ -132,7 +132,7 @@ const DashboardPage: FC = () => {
   const knowledgeCardCount = Object.keys(knowledgeCards).length;
   const evidenceCount = knowledgeCatalog
     ? Object.values(knowledgeCards).reduce<number>((sum, card) => {
-        const edges = (card as Record<string, unknown>).relation_edges;
+        const edges = card.relation_edges;
         return sum + (Array.isArray(edges) ? edges.length : 0);
       }, 0)
     : 0;

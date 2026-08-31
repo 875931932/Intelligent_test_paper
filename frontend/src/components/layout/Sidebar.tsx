@@ -1,14 +1,11 @@
 import { useState } from 'react';
-import { NavLink, useLocation } from 'react-router-dom';
+import { NavLink } from 'react-router-dom';
 import {
-  BookOpen, FlaskConical, Target, FolderOpen, LayoutDashboard,
-  Plus, ChevronLeft, ChevronRight, ChevronDown, ChevronUp,
+  BookOpen, FlaskConical, FolderOpen, LayoutDashboard,
+  Plus, ChevronLeft, ChevronRight,
   FolderTree, FileQuestion, X, LogOut,
 } from 'lucide-react';
-import { api } from '@/api/client';
-import { useToastStore } from '@/stores/toast';
-import { useCourseStore } from '@/stores/course';
-import { Button, Input, Modal } from '@/components/ui';
+import { Button, Input } from '@/components/ui';
 import type { Course } from '../../stores/course';
 
 interface Props {
@@ -20,8 +17,6 @@ interface Props {
 }
 
 export function Sidebar({ courses, activeCourseId, onSelectCourse, onLogout, onCreateCourse }: Props) {
-  const location = useLocation();
-  const activeCourse = courses.find((c) => c.id === activeCourseId);
   const coursePath = activeCourseId ? `/courses/${activeCourseId}` : '/dashboard';
   const [collapsed, setCollapsed] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -249,7 +244,7 @@ export function Sidebar({ courses, activeCourseId, onSelectCourse, onLogout, onC
               </button>
             </div>
             <div className="modal-body">
-              <Input ref={undefined as any} label="课程名称" placeholder="请输入课程名称" value={newName} onChange={(e: any) => setNewName(e.target.value)} autoFocus />
+              <Input label="课程名称" placeholder="请输入课程名称" value={newName} onChange={(e) => setNewName(e.target.value)} autoFocus />
             </div>
             <div className="modal-footer">
               <Button variant="secondary" onClick={() => setCreateOpen(false)}>取消</Button>

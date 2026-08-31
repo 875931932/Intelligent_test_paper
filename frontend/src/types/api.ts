@@ -103,6 +103,7 @@ export interface AssessmentOutline {
 }
 
 export interface FrameworkExamPoint {
+  id: string;
   code: string;
   anchor_key: string;
   title: string;

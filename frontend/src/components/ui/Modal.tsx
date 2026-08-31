@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react';
 import { X } from 'lucide-react';
+import { Button } from './Button';
 
 interface Props {
   open: boolean;
@@ -8,9 +9,24 @@ interface Props {
   children: ReactNode;
   footer?: ReactNode;
   maxWidth?: string;
+  onConfirm?: () => void | Promise<void>;
+  confirmLabel?: string;
+  loading?: boolean;
+  danger?: boolean;
 }
 
-export function Modal({ open, onClose, title, children, footer, maxWidth = '560px' }: Props) {
+export function Modal({
+  open,
+  onClose,
+  title,
+  children,
+  footer,
+  maxWidth = '560px',
+  onConfirm,
+  confirmLabel = '确认',
+  loading = false,
+  danger = false,
+}: Props) {
   if (!open) return null;
 
   return (
@@ -31,7 +47,21 @@ export function Modal({ open, onClose, title, children, footer, maxWidth = '560p
         <div className="modal-body">
           {children}
         </div>
-        {footer && <div className="modal-footer">{footer}</div>}
+        {footer ? (
+          <div className="modal-footer">{footer}</div>
+        ) : onConfirm ? (
+          <div className="modal-footer">
+            <Button variant="secondary" onClick={onClose}>取消</Button>
+            <Button
+              variant={danger ? 'danger' : 'primary'}
+              loading={loading}
+              disabled={loading}
+              onClick={onConfirm}
+            >
+              {confirmLabel}
+            </Button>
+          </div>
+        ) : null}
       </div>
     </div>
   );
