@@ -1,202 +1,208 @@
-import { useState, type CSSProperties } from 'react';
-import { NavLink, useNavigate, useParams } from 'react-router-dom';
+import { NavLink, useParams, useNavigate } from 'react-router-dom';
 import {
-  BookOpen, FlaskConical, FolderOpen, LayoutDashboard,
-  ChevronLeft, ChevronRight, ArrowLeft,
-  FolderTree, FileQuestion, LogOut,
+  BookOpen,
+  LayoutDashboard,
+  FolderOpen,
+  FlaskConical,
+  FolderTree,
+  FileQuestion,
+  LogOut,
+  ArrowLeft,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
+import { useState } from 'react';
 import { useCourseStore } from '@/stores/course';
 
 interface Props {
   onLogout: () => void;
 }
 
-// ── 共享样式常量（去重） ──
-const HAIRLINE = '1px solid rgba(0, 0, 0, 0.06)';
-const flexCenter: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'center' };
-const flexBetween: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between' };
-const plainBtn: CSSProperties = { background: 'none', border: 'none', cursor: 'pointer', padding: 0 };
-const iconBtn40: CSSProperties = { width: 40, height: 40, borderRadius: 12, ...flexCenter };
-
 export function Sidebar({ onLogout }: Props) {
-  const navigate = useNavigate();
   const { courseId } = useParams<{ courseId: string }>();
+  const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
   const courses = useCourseStore((s) => s.courses);
   const currentCourse = courses.find((c) => c.id === courseId);
 
-  const courseBase = courseId ? `/courses/${courseId}` : '/courses';
+  const base = courseId ? `/courses/${courseId}` : '/courses';
 
-  const navGroup = [
-    {
-      label: '课程空间',
-      items: [
-        { icon: LayoutDashboard, label: '概览', path: courseBase },
-        { icon: FolderOpen, label: '资料库', path: `${courseBase}/materials` },
-        { icon: FlaskConical, label: '命题框架', path: `${courseBase}/framework` },
-        { icon: FolderTree, label: '知识目录', path: `${courseBase}/knowledge` },
-      ],
-    },
-    {
-      label: '命题',
-      items: [
-        { icon: FileQuestion, label: '试卷项目', path: `${courseBase}/exam-projects` },
-      ],
-    },
+  const nav = [
+    { to: base, icon: LayoutDashboard, label: '概览' },
+    { to: `${base}/materials`, icon: FolderOpen, label: '资料库' },
+    { to: `${base}/framework`, icon: FlaskConical, label: '命题框架' },
+    { to: `${base}/knowledge`, icon: FolderTree, label: '知识目录' },
+    { to: `${base}/exam-projects`, icon: FileQuestion, label: '试卷项目' },
   ];
 
   return (
     <aside
-      className="sidebar-island"
-      style={{ width: collapsed ? 'var(--sidebar-collapsed)' : 'var(--sidebar-width)' }}
+      style={{
+        width: collapsed ? 72 : 220,
+        height: '100vh',
+        position: 'fixed',
+        left: 0,
+        top: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        background: '#fff',
+        borderRight: '1px solid #e8e8e8',
+        transition: 'width 200ms ease',
+        zIndex: 100,
+      }}
     >
-      {/* ═══ Logo header ═══ */}
-      <div style={{
-        padding: collapsed ? '14px 10px' : '16px 18px',
-        ...(collapsed ? flexCenter : flexBetween),
-        borderBottom: HAIRLINE,
-        minHeight: 'var(--topbar-height)',
-        gap: '8px',
-      }}>
-        <button onClick={() => navigate('/courses')} title="返回课程空间" style={{ ...plainBtn, display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <div style={{
-            width: 34, height: 34, borderRadius: 10,
-            background: 'linear-gradient(135deg, var(--accent), #5856d6)',
-            color: 'white', flexShrink: 0, ...flexCenter,
-          }}>
-            <BookOpen size={18} />
-          </div>
-          {!collapsed && (
-            <div style={{ textAlign: 'left' }}>
-              <div style={{ fontSize: '0.9375rem', fontWeight: 700 }}>智能出卷</div>
-              <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)' }}>AI Exam System</div>
-            </div>
-          )}
+      {/* Header */}
+      <div
+        style={{
+          height: 64,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: collapsed ? 'center' : 'space-between',
+          padding: collapsed ? '0 12px' : '0 16px',
+          borderBottom: '1px solid #e8e8e8',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 8,
+            color: '#1a1a1a',
+            fontWeight: 700,
+            fontSize: 16,
+          }}
+        >
+          <BookOpen size={22} />
+          {!collapsed && <span>智卷</span>}
+        </div>
+        <button
+          onClick={() => setCollapsed((v) => !v)}
+          style={{
+            width: 28,
+            height: 28,
+            border: '1px solid #e8e8e8',
+            borderRadius: 6,
+            background: '#fff',
+            cursor: 'pointer',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            color: '#666',
+          }}
+          title={collapsed ? '展开' : '收起'}
+        >
+          {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
         </button>
-        {!collapsed && (
-          <button onClick={() => setCollapsed(true)} title="收起侧边栏" style={{ ...plainBtn, padding: '4px', borderRadius: 6, color: 'var(--text-tertiary)', display: 'flex', flexShrink: 0 }}>
-            <ChevronLeft size={16} />
-          </button>
-        )}
       </div>
 
-      {collapsed ? (
-        /* ═══ 折叠态：图标条 ═══ */
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '8px 0', gap: '2px' }}>
-          <button onClick={() => setCollapsed(false)} title="展开侧边栏" style={{ ...iconBtn40, background: 'rgba(0,113,227,0.08)', color: '#0071e3', marginBottom: 8 }}>
-            <ChevronRight size={18} />
-          </button>
-
-          <button onClick={() => navigate('/courses')} title="返回课程空间" style={{ ...iconBtn40, color: 'var(--text-secondary)', marginBottom: 8 }}>
-            <ArrowLeft size={18} />
-          </button>
-
-          {navGroup.map((group) => (
-            <div key={group.label} style={{ width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '2px', marginBottom: 12 }}>
-              {group.items.map((item) => (
-                <NavLink
-                  key={item.path}
-                  to={item.path}
-                  title={item.label}
-                  style={({ isActive }) => ({
-                    ...iconBtn40,
-                    color: isActive ? '#0071e3' : 'var(--text-tertiary)',
-                    background: isActive ? 'rgba(0,113,227,0.1)' : 'transparent',
-                    textDecoration: 'none',
-                    transition: 'all 0.15s ease',
-                  })}
+      {/* Course switcher */}
+      {courseId && (
+        <div
+          style={{
+            padding: '12px 12px 0',
+            borderBottom: '1px solid #e8e8e8',
+            paddingBottom: 12,
+          }}
+        >
+          <button
+            onClick={() => navigate('/courses')}
+            style={{
+              width: '100%',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              padding: collapsed ? '8px 0' : '8px 10px',
+              border: '1px solid #e8e8e8',
+              borderRadius: 8,
+              background: '#fafafa',
+              cursor: 'pointer',
+              justifyContent: collapsed ? 'center' : 'flex-start',
+            }}
+            title="返回课程空间"
+          >
+            <ArrowLeft size={16} color="#666" />
+            {!collapsed && (
+              <div style={{ overflow: 'hidden', textAlign: 'left' }}>
+                <div
+                  style={{
+                    fontSize: 11,
+                    color: '#999',
+                    lineHeight: 1.2,
+                  }}
                 >
-                  <item.icon size={18} />
-                </NavLink>
-              ))}
-            </div>
-          ))}
+                  当前课程
+                </div>
+                <div
+                  style={{
+                    fontSize: 13,
+                    fontWeight: 600,
+                    color: '#1a1a1a',
+                    lineHeight: 1.4,
+                    whiteSpace: 'nowrap',
+                    textOverflow: 'ellipsis',
+                    overflow: 'hidden',
+                  }}
+                >
+                  {currentCourse?.name || '未命名课程'}
+                </div>
+              </div>
+            )}
+          </button>
         </div>
-      ) : (
-        /* ═══ 展开态 ═══ */
-        <>
-          {/* 当前课程 + 返回入口 */}
-          <div style={{ padding: '12px 14px', borderBottom: HAIRLINE, display: 'flex', flexDirection: 'column', gap: 10 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-              <div style={{ width: 30, height: 30, borderRadius: 9, background: 'var(--accent-subtle)', color: 'var(--accent)', flexShrink: 0, ...flexCenter }}>
-                <BookOpen size={15} />
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)' }}>当前课程</div>
-                <div style={{ fontSize: '0.8125rem', fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {currentCourse?.name || '未选择课程'}
-                </div>
-              </div>
-            </div>
-            <button
-              onClick={() => navigate('/courses')}
-              style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                width: '100%', padding: '8px 10px', borderRadius: 10,
-                background: 'rgba(0,0,0,0.04)', border: HAIRLINE, cursor: 'pointer',
-                fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)',
-                transition: 'all 0.15s ease',
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(0,113,227,0.08)'; e.currentTarget.style.color = '#0071e3'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(0,0,0,0.04)'; e.currentTarget.style.color = 'var(--text-secondary)'; }}
-            >
-              <ArrowLeft size={15} />
-              返回课程空间
-            </button>
-          </div>
-
-          <nav style={{ flex: 1, overflowY: 'auto', padding: '4px 10px' }}>
-            {navGroup.map((group) => (
-              <div key={group.label} style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: '0.6875rem', fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', padding: '8px 10px 4px' }}>
-                  {group.label}
-                </div>
-                {group.items.map((item) => (
-                  <NavLink
-                    key={item.path}
-                    to={item.path}
-                    style={({ isActive }) => ({
-                      display: 'flex', alignItems: 'center', gap: 10,
-                      padding: '9px 12px', borderRadius: 10,
-                      fontSize: '0.875rem', fontWeight: isActive ? 600 : 400,
-                      color: isActive ? '#0071e3' : 'var(--text-secondary)',
-                      background: isActive ? 'rgba(0,113,227,0.07)' : 'transparent',
-                      textDecoration: 'none',
-                      transition: 'all 0.15s ease',
-                      marginBottom: 2,
-                    })}
-                  >
-                    <item.icon size={17} style={{ flexShrink: 0 }} />
-                    {item.label}
-                  </NavLink>
-                ))}
-              </div>
-            ))}
-          </nav>
-        </>
       )}
 
-      {/* ═══ 用户信息 ═══ */}
-      <div style={{
-        padding: collapsed ? 10 : '12px 14px',
-        borderTop: HAIRLINE,
-        gap: collapsed ? 0 : 10,
-        ...(collapsed ? flexCenter : flexBetween),
-      }}>
-        <div style={{ width: 32, height: 32, borderRadius: '50%', background: 'linear-gradient(135deg, #0071e3, #5856d6)', color: 'white', fontWeight: 600, fontSize: '0.8125rem', flexShrink: 0, ...flexCenter }}>
-          T
-        </div>
-        {!collapsed && (
-          <>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: '0.8125rem', fontWeight: 600 }}>教师</div>
-              <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)' }}>teacher@edu.cn</div>
-            </div>
-            <button onClick={onLogout} title="退出登录" style={{ ...plainBtn, padding: 5, borderRadius: 7, color: 'var(--text-tertiary)', display: 'flex' }}>
-              <LogOut size={15} />
-            </button>
-          </>
-        )}
+      {/* Nav */}
+      <nav style={{ flex: 1, padding: '12px 10px', overflowY: 'auto' }}>
+        {nav.map(({ to, icon: Icon, label }) => (
+          <NavLink
+            key={to}
+            to={to}
+            end={to === base}
+            style={({ isActive }) => ({
+              display: 'flex',
+              alignItems: 'center',
+              gap: 12,
+              padding: collapsed ? '10px 0' : '10px 12px',
+              borderRadius: 8,
+              marginBottom: 4,
+              color: isActive ? '#1677ff' : '#595959',
+              background: isActive ? '#f0f5ff' : 'transparent',
+              textDecoration: 'none',
+              fontSize: 14,
+              fontWeight: isActive ? 600 : 500,
+              justifyContent: collapsed ? 'center' : 'flex-start',
+              transition: 'all 150ms ease',
+            })}
+          >
+            <Icon size={18} />
+            {!collapsed && <span>{label}</span>}
+          </NavLink>
+        ))}
+      </nav>
+
+      {/* Logout */}
+      <div style={{ padding: '12px 10px', borderTop: '1px solid #e8e8e8' }}>
+        <button
+          onClick={onLogout}
+          style={{
+            width: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 12,
+            padding: collapsed ? '10px 0' : '10px 12px',
+            borderRadius: 8,
+            border: 'none',
+            background: 'transparent',
+            color: '#595959',
+            cursor: 'pointer',
+            fontSize: 14,
+            fontWeight: 500,
+            justifyContent: collapsed ? 'center' : 'flex-start',
+          }}
+        >
+          <LogOut size={18} />
+          {!collapsed && <span>退出登录</span>}
+        </button>
       </div>
     </aside>
   );
