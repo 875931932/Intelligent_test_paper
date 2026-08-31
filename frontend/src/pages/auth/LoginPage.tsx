@@ -46,7 +46,7 @@ export function LoginPage() {
         'mock-token-' + Date.now()
       );
       addToast('登录成功，欢迎回来！', 'success');
-      navigate('/courses', { replace: true });
+      navigate('/', { replace: true });
     } else {
       addToast('用户名或密码错误，请重试', 'error');
     }

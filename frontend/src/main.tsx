@@ -1,13 +1,12 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
-import { useCourseStore } from '@/stores/course'
 import { ToastContainer } from '@/components/ui/Toast'
 import App from '@/App'
 import './styles/global.css'
 
 function Init() {
-  useCourseStore.getState().setCourses([]);
+  // 课程由 course store 在演示模式下自动注入静态数据，无需在此清空
 
   return (
     <BrowserRouter>

@@ -1,6 +1,11 @@
 import { config } from '@/config';
 import { useAuthStore } from '@/stores/auth';
 import { ApiError } from './errors';
+import { matchMock } from '@/mocks/demo';
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 const resolveToken = (t?: string): string | undefined =>
   t ?? useAuthStore.getState().token ?? undefined;
@@ -31,6 +36,15 @@ export async function request<T>(
   options: RequestInit = {},
   token?: string,
 ): Promise<T> {
+  // 演示模式：后端未连接时，命中静态数据则直接返回
+  if (config.enableMock) {
+    const mocked = matchMock(path, options.method ?? 'GET', typeof options.body === 'string' ? options.body : undefined);
+    if (mocked !== undefined) {
+      await sleep(280);
+      return mocked as T;
+    }
+  }
+
   const controller =
     config.requestTimeoutMs > 0 ? new AbortController() : undefined;
   const timer = controller
