@@ -7,13 +7,11 @@ interface Props {
 
 export function Layout({ children, sidebar }: Props) {
   return (
-    <div style={{ display: 'flex', minHeight: '100vh' }}>
+    <div style={{ display: 'flex', minHeight: '100vh', background: '#f4f6f9' }}>
       {sidebar}
       <main style={{
         flex: 1,
-        padding: '16px',
-        paddingLeft: 'calc(var(--sidebar-width) + 28px)',
-        paddingTop: '16px',
+        padding: '24px 32px 24px 260px',
         minHeight: '100vh',
         maxWidth: '1400px',
         margin: '0 auto',

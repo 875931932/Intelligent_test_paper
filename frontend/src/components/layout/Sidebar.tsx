@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { NavLink, useParams, useNavigate } from 'react-router-dom';
 import {
   BookOpen,
@@ -8,15 +9,23 @@ import {
   FileQuestion,
   LogOut,
   ArrowLeft,
-  ChevronLeft,
-  ChevronRight,
+  PanelLeftClose,
+  PanelLeft,
 } from 'lucide-react';
-import { useState } from 'react';
 import { useCourseStore } from '@/stores/course';
 
 interface Props {
   onLogout: () => void;
 }
+
+const ISLAND_BG = 'rgba(255, 255, 255, 0.95)';
+const ISLAND_SHADOW = '0 12px 40px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04)';
+const HAIRLINE = '1px solid rgba(0, 0, 0, 0.06)';
+const RADIUS = 20;
+const TEXT_MAIN = '#1f2937';
+const TEXT_SECONDARY = '#6b7280';
+const ACCENT = '#2563eb';
+const ACCENT_BG = 'rgba(37, 99, 235, 0.08)';
 
 export function Sidebar({ onLogout }: Props) {
   const { courseId } = useParams<{ courseId: string }>();
@@ -27,7 +36,7 @@ export function Sidebar({ onLogout }: Props) {
 
   const base = courseId ? `/courses/${courseId}` : '/courses';
 
-  const nav = [
+  const navItems = [
     { to: base, icon: LayoutDashboard, label: '概览' },
     { to: `${base}/materials`, icon: FolderOpen, label: '资料库' },
     { to: `${base}/framework`, icon: FlaskConical, label: '命题框架' },
@@ -38,28 +47,34 @@ export function Sidebar({ onLogout }: Props) {
   return (
     <aside
       style={{
-        width: collapsed ? 72 : 220,
-        height: '100vh',
         position: 'fixed',
-        left: 0,
-        top: 0,
+        left: 14,
+        top: 14,
+        bottom: 14,
+        width: collapsed ? 68 : 220,
         display: 'flex',
         flexDirection: 'column',
-        background: '#fff',
-        borderRight: '1px solid #e8e8e8',
-        transition: 'width 200ms ease',
+        background: ISLAND_BG,
+        border: HAIRLINE,
+        borderRadius: RADIUS,
+        boxShadow: ISLAND_SHADOW,
+        backdropFilter: 'blur(12px)',
+        WebkitBackdropFilter: 'blur(12px)',
         zIndex: 100,
+        overflow: 'hidden',
+        transition: 'width 220ms cubic-bezier(0.4, 0, 0.2, 1)',
       }}
     >
       {/* Header */}
       <div
         style={{
-          height: 64,
+          height: 60,
           display: 'flex',
           alignItems: 'center',
           justifyContent: collapsed ? 'center' : 'space-between',
-          padding: collapsed ? '0 12px' : '0 16px',
-          borderBottom: '1px solid #e8e8e8',
+          padding: collapsed ? '0 10px' : '0 14px 0 16px',
+          borderBottom: HAIRLINE,
+          flexShrink: 0,
         }}
       >
         <div
@@ -67,76 +82,79 @@ export function Sidebar({ onLogout }: Props) {
             display: 'flex',
             alignItems: 'center',
             gap: 8,
-            color: '#1a1a1a',
+            color: TEXT_MAIN,
             fontWeight: 700,
             fontSize: 16,
+            whiteSpace: 'nowrap',
           }}
         >
-          <BookOpen size={22} />
+          <BookOpen size={20} color={ACCENT} />
           {!collapsed && <span>智卷</span>}
         </div>
+
         <button
           onClick={() => setCollapsed((v) => !v)}
+          title={collapsed ? '展开' : '收起'}
           style={{
             width: 28,
             height: 28,
-            border: '1px solid #e8e8e8',
-            borderRadius: 6,
-            background: '#fff',
+            border: 'none',
+            borderRadius: 8,
+            background: 'transparent',
             cursor: 'pointer',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            color: '#666',
+            color: TEXT_SECONDARY,
+            transition: 'background 150ms ease',
           }}
-          title={collapsed ? '展开' : '收起'}
+          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(0,0,0,0.04)')}
+          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
         >
-          {collapsed ? <ChevronRight size={14} /> : <ChevronLeft size={14} />}
+          {collapsed ? <PanelLeft size={18} /> : <PanelLeftClose size={18} />}
         </button>
       </div>
 
-      {/* Course switcher */}
+      {/* Back to course space */}
       {courseId && (
         <div
           style={{
-            padding: '12px 12px 0',
-            borderBottom: '1px solid #e8e8e8',
-            paddingBottom: 12,
+            padding: '10px 10px 0',
+            borderBottom: HAIRLINE,
+            flexShrink: 0,
           }}
         >
           <button
             onClick={() => navigate('/courses')}
+            title="返回课程空间"
             style={{
               width: '100%',
               display: 'flex',
               alignItems: 'center',
-              gap: 8,
-              padding: collapsed ? '8px 0' : '8px 10px',
-              border: '1px solid #e8e8e8',
-              borderRadius: 8,
-              background: '#fafafa',
-              cursor: 'pointer',
+              gap: collapsed ? 0 : 10,
               justifyContent: collapsed ? 'center' : 'flex-start',
+              padding: collapsed ? 9 : '9px 11px',
+              border: 'none',
+              borderRadius: 12,
+              background: ACCENT_BG,
+              cursor: 'pointer',
+              color: ACCENT,
+              transition: 'background 150ms ease',
             }}
-            title="返回课程空间"
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(37,99,235,0.14)')}
+            onMouseLeave={(e) => (e.currentTarget.style.background = ACCENT_BG)}
           >
-            <ArrowLeft size={16} color="#666" />
+            <ArrowLeft size={18} />
             {!collapsed && (
-              <div style={{ overflow: 'hidden', textAlign: 'left' }}>
-                <div
-                  style={{
-                    fontSize: 11,
-                    color: '#999',
-                    lineHeight: 1.2,
-                  }}
-                >
-                  当前课程
+              <div style={{ overflow: 'hidden', textAlign: 'left', minWidth: 0 }}>
+                <div style={{ fontSize: 11, color: '#3b82f6', lineHeight: 1.2 }}>
+                  返回课程空间
                 </div>
                 <div
                   style={{
-                    fontSize: 13,
+                    fontSize: 12,
                     fontWeight: 600,
-                    color: '#1a1a1a',
+                    color: ACCENT,
                     lineHeight: 1.4,
                     whiteSpace: 'nowrap',
                     textOverflow: 'ellipsis',
@@ -151,9 +169,9 @@ export function Sidebar({ onLogout }: Props) {
         </div>
       )}
 
-      {/* Nav */}
-      <nav style={{ flex: 1, padding: '12px 10px', overflowY: 'auto' }}>
-        {nav.map(({ to, icon: Icon, label }) => (
+      {/* Navigation */}
+      <nav style={{ flex: 1, padding: '10px 8px', overflowY: 'auto' }}>
+        {navItems.map(({ to, icon: Icon, label }) => (
           <NavLink
             key={to}
             to={to}
@@ -161,16 +179,16 @@ export function Sidebar({ onLogout }: Props) {
             style={({ isActive }) => ({
               display: 'flex',
               alignItems: 'center',
-              gap: 12,
-              padding: collapsed ? '10px 0' : '10px 12px',
-              borderRadius: 8,
+              gap: collapsed ? 0 : 11,
+              justifyContent: collapsed ? 'center' : 'flex-start',
+              padding: collapsed ? '10px 0' : '10px 11px',
+              borderRadius: 12,
               marginBottom: 4,
-              color: isActive ? '#1677ff' : '#595959',
-              background: isActive ? '#f0f5ff' : 'transparent',
+              color: isActive ? ACCENT : TEXT_SECONDARY,
+              background: isActive ? ACCENT_BG : 'transparent',
               textDecoration: 'none',
               fontSize: 14,
               fontWeight: isActive ? 600 : 500,
-              justifyContent: collapsed ? 'center' : 'flex-start',
               transition: 'all 150ms ease',
             })}
           >
@@ -181,24 +199,33 @@ export function Sidebar({ onLogout }: Props) {
       </nav>
 
       {/* Logout */}
-      <div style={{ padding: '12px 10px', borderTop: '1px solid #e8e8e8' }}>
+      <div
+        style={{
+          padding: '10px 8px',
+          borderTop: HAIRLINE,
+          flexShrink: 0,
+        }}
+      >
         <button
           onClick={onLogout}
           style={{
             width: '100%',
             display: 'flex',
             alignItems: 'center',
-            gap: 12,
-            padding: collapsed ? '10px 0' : '10px 12px',
-            borderRadius: 8,
+            gap: collapsed ? 0 : 11,
+            justifyContent: collapsed ? 'center' : 'flex-start',
+            padding: collapsed ? '10px 0' : '10px 11px',
+            borderRadius: 12,
             border: 'none',
             background: 'transparent',
-            color: '#595959',
+            color: TEXT_SECONDARY,
             cursor: 'pointer',
             fontSize: 14,
             fontWeight: 500,
-            justifyContent: collapsed ? 'center' : 'flex-start',
+            transition: 'background 150ms ease',
           }}
+          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(0,0,0,0.04)')}
+          onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
         >
           <LogOut size={18} />
           {!collapsed && <span>退出登录</span>}
