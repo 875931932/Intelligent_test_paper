@@ -1,12 +1,24 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams } from 'react-router-dom';
-import { Upload, RefreshCw, Trash2, FileText, Loader2 } from 'lucide-react';
+import {
+  Upload, RefreshCw, Trash2, FileText, Loader2,
+  Folder, FolderOpen,
+} from 'lucide-react';
 import { api } from '@/api/client';
 import { useCourseStore } from '@/stores/course';
 import { useToastStore } from '@/stores/toast';
 import { Button, Modal, Input, Select, Badge, Spinner } from '@/components/ui';
 import { computeSha256 } from '@/lib/sha256';
 import type { MaterialResponse } from '@/types/api';
+
+type FolderKey = 'syllabus' | 'materials' | 'all';
+
+interface FolderMeta {
+  key: FolderKey;
+  name: string;
+  description: string;
+  icon: typeof Folder;
+}
 
 const MATERIAL_TYPE_LABELS: Record<string, string> = {
   teaching_syllabus: '教学大纲',
@@ -42,15 +54,24 @@ function formatFileSize(bytes: number): string {
   return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
 }
 
+function isSyllabus(type: string) {
+  return type === 'teaching_syllabus' || type === 'assessment_syllabus';
+}
+
+function fileIcon(_type: string) {
+  return FileText;
+}
+
 export default function MaterialsPage() {
   const { courseId: routeCourseId } = useParams<{ courseId: string }>();
   const { activeCourseId } = useCourseStore();
   const courseId = routeCourseId || activeCourseId || '';
-
   const { addToast } = useToastStore();
 
   const [materials, setMaterials] = useState<MaterialResponse[]>([]);
   const [loading, setLoading] = useState(true);
+
+  const [activeFolder, setActiveFolder] = useState<FolderKey | null>(null);
 
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadFilename, setUploadFilename] = useState('');
@@ -62,7 +83,6 @@ export default function MaterialsPage() {
   const [deleting, setDeleting] = useState(false);
 
   const [parsingIds, setParsingIds] = useState<Set<string>>(new Set());
-
   const pollingRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
 
   const loadMaterials = useCallback(async () => {
@@ -85,6 +105,30 @@ export default function MaterialsPage() {
       pollingRef.current.clear();
     };
   }, [loadMaterials]);
+
+  const folders: FolderMeta[] = useMemo(
+    () => [
+      {
+        key: 'syllabus',
+        name: '课程大纲',
+        description: '教学大纲与考核大纲',
+        icon: Folder,
+      },
+      {
+        key: 'materials',
+        name: '课程资料',
+        description: '教材、习题与参考资料',
+        icon: FolderOpen,
+      },
+    ],
+    []
+  );
+
+  const filteredMaterials = useMemo(() => {
+    if (activeFolder === 'syllabus') return materials.filter((m) => isSyllabus(m.material_type));
+    if (activeFolder === 'materials') return materials.filter((m) => !isSyllabus(m.material_type));
+    return materials;
+  }, [materials, activeFolder]);
 
   const handleUpload = async () => {
     if (!courseId || !uploadFile || !uploadFilename.trim()) {
@@ -186,95 +230,159 @@ export default function MaterialsPage() {
     }
   };
 
+  const syllabusCount = useMemo(() => materials.filter((m) => isSyllabus(m.material_type)).length, [materials]);
+  const materialCount = useMemo(() => materials.filter((m) => !isSyllabus(m.material_type)).length, [materials]);
+
+  const folderContent = () => {
+    if (loading) {
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '80px 0' }}>
+          <Spinner size="lg" />
+        </div>
+      );
+    }
+
+    if (filteredMaterials.length === 0) {
+      return (
+        <div style={{ padding: '80px 20px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', textAlign: 'center' }}>
+          <div style={{ width: 56, height: 56, borderRadius: '18px', background: 'var(--accent-subtle)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <FileText size={28} />
+          </div>
+          <h3 style={{ fontSize: '1.125rem', fontWeight: 600 }}>暂无资料</h3>
+          <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>点击「上传资料」按钮添加文件</p>
+        </div>
+      );
+    }
+
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '16px' }}>
+        {filteredMaterials.map((m) => {
+          const Icon = fileIcon(m.material_type);
+          return (
+            <div
+              key={m.id}
+              className="glass-card"
+              style={{ padding: '18px', display: 'flex', flexDirection: 'column', gap: '12px', position: 'relative' }}
+            >
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
+                <div style={{
+                  width: 44, height: 44, borderRadius: '12px',
+                  background: 'var(--accent-subtle)', color: 'var(--accent)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                }}>
+                  <Icon size={22} />
+                </div>
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <h4 style={{
+                    fontSize: '0.95rem', fontWeight: 600, margin: 0,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }} title={m.logical_name}>
+                    {m.logical_name}
+                  </h4>
+                  <p style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                    {m.latest_version ? formatFileSize(m.latest_version.size_bytes) : '-'} · v{m.latest_version?.version_no ?? '-'}
+                  </p>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 'auto' }}>
+                <Badge variant={MATERIAL_TYPE_VARIANTS[m.material_type] || 'default'}>
+                  {MATERIAL_TYPE_LABELS[m.material_type] || m.material_type}
+                </Badge>
+                <Badge variant={PARSE_STATUS_VARIANTS[m.parse_status.status] || 'default'}>
+                  {PARSE_STATUS_LABELS[m.parse_status.status] || m.parse_status.status}
+                </Badge>
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => handleParse(m)}
+                  disabled={parsingIds.has(m.id)}
+                  icon={parsingIds.has(m.id) ? <Loader2 size={14} /> : <RefreshCw size={14} />}
+                  style={{ flex: 1 }}
+                >
+                  解析
+                </Button>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  onClick={() => setDeleteId(m.id)}
+                  icon={<Trash2 size={14} />}
+                />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
   return (
     <div className="page-enter" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
         <div>
           <h1 style={{ fontSize: '1.75rem', fontWeight: 700, letterSpacing: '-0.03em' }}>资料库</h1>
-          <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)', marginTop: '6px' }}>管理课程教学资料与解析</p>
+          <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)', marginTop: '6px' }}>
+            按文件夹管理课程大纲与教学资料
+          </p>
         </div>
         <Button onClick={() => setUploadOpen(true)} icon={<Upload size={16} />}>
           上传资料
         </Button>
       </div>
 
-      {/* Materials Table */}
-      <div className="glass-card" style={{ padding: '16px', overflow: 'hidden' }}>
-        {loading ? (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '80px 0' }}>
-            <Spinner size="lg" />
+      {/* Folder grid / active folder content */}
+      {activeFolder === null ? (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '20px' }}>
+          {folders.map((f) => {
+            const Icon = f.icon;
+            const count = f.key === 'syllabus' ? syllabusCount : materialCount;
+            return (
+              <button
+                key={f.key}
+                onClick={() => setActiveFolder(f.key)}
+                className="glass-card"
+                style={{
+                  padding: '24px', textAlign: 'left', background: 'none', border: '1px solid var(--glass-border)',
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '18px',
+                }}
+              >
+                <div style={{
+                  width: 56, height: 56, borderRadius: '16px',
+                  background: 'var(--accent-subtle)', color: 'var(--accent)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+                }}>
+                  <Icon size={28} />
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <h3 style={{ fontSize: '1.05rem', fontWeight: 600, marginBottom: '4px' }}>{f.name}</h3>
+                  <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{f.description}</p>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '6px' }}>{count} 份文件</p>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="glass-card" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '18px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <Button variant="secondary" size="sm" onClick={() => setActiveFolder(null)}>
+              返回文件夹
+            </Button>
+            <span style={{ color: 'var(--text-tertiary)' }}>/</span>
+            <h2 style={{ fontSize: '1.15rem', fontWeight: 600 }}>
+              {folders.find((f) => f.key === activeFolder)?.name}
+            </h2>
+            <span style={{ fontSize: '0.85rem', color: 'var(--text-tertiary)' }}>
+              ({filteredMaterials.length} 份)
+            </span>
           </div>
-        ) : materials.length === 0 ? (
-          <div style={{ padding: '80px 20px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', textAlign: 'center' }}>
-            <div style={{ width: 56, height: 56, borderRadius: '18px', background: 'var(--accent-subtle)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <FileText size={28} />
-            </div>
-            <h3 style={{ fontSize: '1.125rem', fontWeight: 600 }}>暂无资料</h3>
-            <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>点击「上传资料」按钮添加课程资料</p>
-          </div>
-        ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>名称</th>
-                  <th>类型</th>
-                  <th>版本</th>
-                  <th>文件大小</th>
-                  <th>解析状态</th>
-                  <th>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {materials.map((m) => (
-                  <tr key={m.id}>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <FileText size={16} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
-                        <span style={{ fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '240px' }}>{m.logical_name}</span>
-                      </div>
-                    </td>
-                    <td>
-                      <Badge variant={MATERIAL_TYPE_VARIANTS[m.material_type] || 'default'}>
-                        {MATERIAL_TYPE_LABELS[m.material_type] || m.material_type}
-                      </Badge>
-                    </td>
-                    <td suppressHydrationWarning>{m.latest_version ? 'v' + m.latest_version.version_no : '-'}</td>
-                    <td suppressHydrationWarning>{m.latest_version ? formatFileSize(m.latest_version.size_bytes) : '-'}</td>
-                    <td>
-                      <Badge variant={PARSE_STATUS_VARIANTS[m.parse_status.status] || 'default'}>
-                        {PARSE_STATUS_LABELS[m.parse_status.status] || m.parse_status.status}
-                      </Badge>
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', gap: '8px' }}>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={() => handleParse(m)}
-                          disabled={parsingIds.has(m.id)}
-                          icon={parsingIds.has(m.id) ? <Loader2 size={14} /> : <RefreshCw size={14} />}
-                        >
-                          解析
-                        </Button>
-                        <Button
-                          variant="danger"
-                          size="sm"
-                          onClick={() => setDeleteId(m.id)}
-                          icon={<Trash2 size={14} />}
-                        >
-                          删除
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+          {folderContent()}
+        </div>
+      )}
 
       {/* Upload Dialog */}
       <Modal
