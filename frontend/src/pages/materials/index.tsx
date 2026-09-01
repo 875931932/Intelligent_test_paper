@@ -94,6 +94,9 @@ const ALL_TYPE_OPTIONS = [
   { value: 'exercise', label: '习题' },
 ];
 
+// 直传对象存储的最长等待时间，超时即中止并报错，避免无限挂起
+const DIRECT_UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -168,6 +171,29 @@ export default function MaterialsPage() {
 
   const defaultTypeForNewFile = (): string => activeSubFolder || 'teaching_material';
 
+  const directPut = async (url: string, file: File, sha256: string, extraHeaders: Record<string, string>) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), DIRECT_UPLOAD_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'PUT',
+        body: file,
+        signal: controller.signal,
+        headers: {
+          'Content-Type': file.type || 'application/octet-stream',
+          'x-amz-meta-sha256': sha256,
+          ...extraHeaders,
+        },
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!res.ok) {
+      throw new Error('object storage upload failed: ' + res.status);
+    }
+  };
+
   const handleFilesChange = (files: FileList | null) => {
     if (!files || files.length === 0) return;
     const defaultType = defaultTypeForNewFile();
@@ -204,15 +230,7 @@ export default function MaterialsPage() {
 
         // 直传对象存储（若后端返回 upload_url）
         if (session?.upload_url) {
-          await fetch(session.upload_url, {
-            method: 'PUT',
-            body: item.file,
-            headers: {
-              'Content-Type': item.file.type || 'application/octet-stream',
-              'x-amz-meta-sha256': sha256,
-              ...(session.headers || {}),
-            },
-          });
+          await directPut(session.upload_url, item.file, sha256, session.headers || {});
         } else {
           await api.uploadBinary('/_local-storage/' + session.object_key, item.file);
         }

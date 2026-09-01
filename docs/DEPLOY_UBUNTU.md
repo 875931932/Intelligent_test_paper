@@ -244,6 +244,15 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # MinIO/S3 直传反代（同域避免 CORS）。S3_ENDPOINT 填站点同源地址：
+    # 有域名填 https://<域名>/s3，只有外网 IP 则填 http://<外网IP>/s3
+    location /s3/ {
+        client_max_body_size 210m;
+        proxy_pass http://127.0.0.1:9000/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
     location / {
         try_files $uri $uri/ /index.html;
     }
@@ -256,7 +265,9 @@ sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-资料上传使用 S3 预签名地址时，浏览器必须能够访问 `S3_ENDPOINT`。若使用 MinIO，请通过同一域名反向代理或设置该 bucket 的 CORS，仅允许部署站点域名发起 `PUT` 请求。
+资料上传使用 S3 预签名地址，浏览器必须能够访问 `S3_ENDPOINT`。推荐把 `S3_ENDPOINT` 设为站点同源地址并让预签名 URL 走上面的 `/s3/` 反代转发到本机 MinIO（有域名 `https://<域名>/s3`，只有外网 IP 则 `http://<外网IP>/s3`），同源即可直传，无需配置 CORS。
+
+只有外网 IP 时注意：后端初始化 MinIO 时也会通过同一个 `S3_ENDPOINT` 访问（`head_bucket` 等），若服务器无法访问自己的外网 IP（未开启 NAT 回环/hairpin），会判定 MinIO 不可用并回退到本地文件存储，实际上传改走 `/api/v1/_local-storage/`（无需配置 MinIO 也可用）。可在服务器上自测：`curl -i http://<外网IP>/s3/`。
 
 ## 9. 最小验收
 

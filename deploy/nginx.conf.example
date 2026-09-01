@@ -16,6 +16,17 @@ server {
         proxy_read_timeout 1800s;
     }
 
+    # MinIO/S3 直传反代（同域避免 CORS）。S3_ENDPOINT 填站点同源地址：
+    # 有域名填 https://<域名>/s3，只有外网 IP 则填 http://<外网IP>/s3，
+    # 让预签名 URL 与站点同源，浏览器才能直传 PUT 大文件且无需 CORS。
+    location /s3/ {
+        client_max_body_size 200m;
+        proxy_pass http://127.0.0.1:9000/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
     location / {
         try_files $uri $uri/ /index.html;
     }
