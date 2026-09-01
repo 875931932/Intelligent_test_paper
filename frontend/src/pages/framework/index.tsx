@@ -474,7 +474,7 @@ function CandidateView({ candidate, rejecting, onReject, onOpenConfirm }: {
           {points.length === 0 ? (
             <p style={{ fontSize: '0.875rem', color: 'var(--text-tertiary)' }}>暂无考点</p>
           ) : (
-            <div style={{ overflowX: 'auto' }}>
+            <div style={{ overflow: 'auto', maxHeight: '360px' }}>
               <table className="data-table">
                 <thead>
                   <tr>
@@ -498,8 +498,17 @@ function CandidateView({ candidate, rejecting, onReject, onOpenConfirm }: {
         </div>
       </div>
 
-      {/* Actions */}
-      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+      {/* Actions: 固定在视口底部，内容较多时无需滚到页面最下方 */}
+      <div style={{
+        position: 'sticky', bottom: 0, zIndex: 20,
+        display: 'flex', justifyContent: 'flex-end', gap: '8px',
+        padding: '12px 16px',
+        background: 'var(--sidebar-glass)',
+        backdropFilter: 'var(--glass-blur)', WebkitBackdropFilter: 'var(--glass-blur)',
+        border: '1px solid rgba(0,0,0,0.08)',
+        borderRadius: '14px',
+        boxShadow: '0 -4px 20px rgba(0,0,0,0.06)',
+      }}>
         <Button variant="secondary" icon={<X size={16} />} loading={rejecting} onClick={onReject}>
           拒绝
         </Button>
