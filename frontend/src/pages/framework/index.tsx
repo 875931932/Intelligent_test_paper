@@ -32,7 +32,7 @@ function SyllabusSelect({ label, value, options, onChange }: {
   const selected = options.find((o) => o.id === value);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', position: 'relative' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', position: 'relative', minWidth: 0 }}>
       <label style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)' }}>{label}</label>
       <button
         type="button"
@@ -40,10 +40,10 @@ function SyllabusSelect({ label, value, options, onChange }: {
         onBlur={() => setTimeout(() => setOpen(false), 120)}
         style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
-          width: '100%', padding: '10px 12px', borderRadius: '10px',
+          width: '100%', minWidth: 0, padding: '10px 12px', borderRadius: '10px',
           background: 'var(--surface)', border: '1px solid rgba(0,0,0,0.1)',
           fontSize: '0.875rem', color: selected ? 'var(--text-primary)' : 'var(--text-tertiary)',
-          cursor: 'pointer', textAlign: 'left',
+          cursor: 'pointer', textAlign: 'left', overflow: 'hidden',
         }}
       >
         <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -72,10 +72,10 @@ function SyllabusSelect({ label, value, options, onChange }: {
                 padding: '9px 10px', borderRadius: 8, cursor: o.disabled ? 'not-allowed' : 'pointer',
                 background: value === o.id ? 'rgba(0,113,227,0.08)' : 'transparent',
                 color: o.disabled ? 'var(--text-tertiary)' : 'var(--text-primary)',
-                fontSize: '0.8125rem', opacity: o.disabled ? 0.7 : 1,
+                fontSize: '0.8125rem', opacity: o.disabled ? 0.7 : 1, overflow: 'hidden',
               }}
             >
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.label}</span>
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{o.label}</span>
               {o.disabled && (
                 <span
                   title="未解析"
