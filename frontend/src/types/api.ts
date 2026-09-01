@@ -11,6 +11,18 @@ export interface HealthResponse {
   deepseek: string;
 }
 
+// ── Auth ──
+export interface UserProfile {
+  id: string;
+  username: string;
+  name: string;
+  role: string;
+}
+export interface LoginResponse {
+  token: string;
+  user: UserProfile;
+}
+
 // ── Course ──
 export interface CourseCreate {
   name: string;
@@ -433,15 +445,4 @@ export interface TaskRun {
   created_at: string;
   updated_at: string;
   completed_at?: string;
-}
-
-// ── Auth (mock) ──
-export interface LoginCredentials {
-  username: string;
-  password: string;
-}
-export interface AuthState {
-  user: { id: string; username: string; name: string; role: string } | null;
-  token: string | null;
-  isAuthenticated: boolean;
 }

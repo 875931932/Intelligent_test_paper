@@ -17,14 +17,17 @@ router = APIRouter(prefix="/api/v1/courses/{course_id}", tags=["materials"])
 def get_storage(request: Request) -> StoragePort:
     storage = getattr(request.app.state, "storage", None)
     if storage is None:
-        try:
-            storage = MinioStorage(
-                endpoint=settings.s3_endpoint, access_key=settings.s3_access_key, secret_key=settings.s3_secret_key,
-                bucket=settings.s3_bucket, region=settings.s3_region,
-            )
-        except Exception:
-            # MinIO 不可用时回退到本地文件存储
+        if not (settings.s3_endpoint and settings.s3_access_key and settings.s3_secret_key):
+            # 未配置 S3 时回退到本地文件存储
             storage = LocalStorage()
+        else:
+            try:
+                storage = MinioStorage(
+                    endpoint=settings.s3_endpoint, access_key=settings.s3_access_key, secret_key=settings.s3_secret_key,
+                    bucket=settings.s3_bucket, region=settings.s3_region,
+                )
+            except Exception as exc:
+                raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="object storage unavailable") from exc
         request.app.state.storage = storage
     return storage
 

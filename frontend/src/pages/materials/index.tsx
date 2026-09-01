@@ -373,8 +373,8 @@ export default function MaterialsPage() {
               <Badge variant={MATERIAL_TYPE_VARIANTS[m.material_type] || 'default'}>
                 {MATERIAL_TYPE_LABELS[m.material_type] || m.material_type}
               </Badge>
-              <Badge variant={PARSE_STATUS_VARIANTS[m.parse_status.status] || 'default'}>
-                {PARSE_STATUS_LABELS[m.parse_status.status] || m.parse_status.status}
+              <Badge variant={(m.parse_status && PARSE_STATUS_VARIANTS[m.parse_status.status]) || 'default'}>
+                {m.parse_status ? (PARSE_STATUS_LABELS[m.parse_status.status] || m.parse_status.status) : '未解析'}
               </Badge>
             </div>
 

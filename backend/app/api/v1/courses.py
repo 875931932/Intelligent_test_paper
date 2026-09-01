@@ -1,8 +1,10 @@
-"""Course endpoints for the development owner."""
+"""Course endpoints scoped to the authenticated owner."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.api.v1.auth import get_current_user
+from app.db.schema import User
 from app.db.session import get_session
 from app.domain.course.models import CourseCreate, CourseResponse, CourseUpdate
 from app.services import course_service
@@ -15,30 +17,46 @@ def _not_found() -> HTTPException:
 
 
 @router.post("", response_model=CourseResponse, status_code=status.HTTP_201_CREATED)
-def create(payload: CourseCreate, session: Session = Depends(get_session)) -> CourseResponse:
+def create(
+    payload: CourseCreate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> CourseResponse:
     try:
-        return course_service.create_course(session, **payload.model_dump())
+        return course_service.create_course(session, owner_id=current_user.id, **payload.model_dump())
     except course_service.CourseConflictError:
         raise HTTPException(status_code=409, detail="course slug already exists")
 
 
 @router.get("", response_model=list[CourseResponse])
-def list_all(session: Session = Depends(get_session)) -> list[CourseResponse]:
-    return course_service.list_courses(session)
+def list_all(
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> list[CourseResponse]:
+    return course_service.list_courses(session, current_user.id)
 
 
 @router.get("/{course_id}", response_model=CourseResponse)
-def get_one(course_id: str, session: Session = Depends(get_session)) -> CourseResponse:
+def get_one(
+    course_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> CourseResponse:
     try:
-        return course_service.get_course(session, course_id)
+        return course_service.get_owned_course(session, current_user.id, course_id)
     except course_service.CourseNotFoundError:
         raise _not_found()
 
 
 @router.patch("/{course_id}", response_model=CourseResponse)
-def patch(course_id: str, payload: CourseUpdate, session: Session = Depends(get_session)) -> CourseResponse:
+def patch(
+    course_id: str,
+    payload: CourseUpdate,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> CourseResponse:
     try:
-        return course_service.update_course(session, course_id, **payload.model_dump(exclude_unset=True))
+        return course_service.update_course(session, current_user.id, course_id, **payload.model_dump(exclude_unset=True))
     except course_service.CourseNotFoundError:
         raise _not_found()
     except course_service.CourseConflictError:

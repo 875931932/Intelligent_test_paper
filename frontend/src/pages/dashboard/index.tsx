@@ -90,10 +90,10 @@ const DashboardPage: FC = () => {
   const materialStats = {
     categories: new Set(materials.map((m) => m.material_type)).size,
     parsed: materials.filter((m) =>
-      ['parsed', 'completed', 'success'].includes(m.parse_status.status),
+      ['parsed', 'completed', 'success'].includes(m.parse_status?.status),
     ).length,
     unparsed: materials.filter((m) =>
-      !['parsed', 'completed', 'success'].includes(m.parse_status.status),
+      !['parsed', 'completed', 'success'].includes(m.parse_status?.status),
     ).length,
     total: materials.length,
   };

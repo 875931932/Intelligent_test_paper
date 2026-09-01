@@ -26,8 +26,12 @@ def _course_id_column() -> Column[str]:
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (UniqueConstraint("username", name="uq_users_username"),)
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    # 鉴权字段：真实账号必须填写；历史/测试种子行可缺省（登录路径会强制校验）
+    username: Mapped[str | None] = mapped_column(String(120))
+    password_hash: Mapped[str | None] = mapped_column(String(255))
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
     role: Mapped[str] = mapped_column(String(50), nullable=False, default="teacher")
 

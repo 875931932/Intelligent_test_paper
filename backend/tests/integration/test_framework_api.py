@@ -176,17 +176,17 @@ def test_framework_api_builds_candidate_and_publishes_structured_confirmation(tm
 
             candidate = client.get(f"/api/v1/courses/course/framework-runs/{run_id}/candidate")
             assert candidate.status_code == 200
-            assert candidate.json()["payload"]["anchors"][0]["exam_weight"] == 100
-            assert candidate.json()["payload"]["exam_points"][0]["code"] == "core-understanding"
-            assert candidate.json()["payload"]["final_exam_rules"]["question_type_weights"]["single_choice"] == 100
+            assert candidate.json()["anchors"][0]["exam_weight"] == 100
+            assert candidate.json()["exam_points"][0]["code"] == "core-understanding"
+            assert candidate.json()["final_exam_rules"]["question_type_weights"]["single_choice"] == 100
 
-            confirmed_exam_points = candidate.json()["payload"]["exam_points"]
+            confirmed_exam_points = candidate.json()["exam_points"]
             confirmed_exam_points[0]["priority"] = "high"
 
             empty_confirmation = client.post(
                 f"/api/v1/courses/course/framework-runs/{run_id}/confirm",
                 json={
-                    "anchors": candidate.json()["payload"]["anchors"],
+                    "anchors": candidate.json()["anchors"],
                     "exam_points": [],
                     "conflict_resolutions": {},
                     "teacher_exclusions": [],
@@ -209,7 +209,7 @@ def test_framework_api_builds_candidate_and_publishes_structured_confirmation(tm
             confirmed = client.post(
                 f"/api/v1/courses/course/framework-runs/{run_id}/confirm",
                 json={
-                    "anchors": candidate.json()["payload"]["anchors"],
+                    "anchors": candidate.json()["anchors"],
                     "exam_points": confirmed_exam_points,
                     "conflict_resolutions": {},
                     "teacher_exclusions": [],

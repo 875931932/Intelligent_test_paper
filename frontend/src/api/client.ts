@@ -1,4 +1,5 @@
 import { request, uploadBinary } from './http';
+import { authApi } from './domains/auth';
 import { coursesApi } from './domains/courses';
 import { blueprintsApi, generationApi } from './domains/blueprints';
 import { knowledgeRunApi } from './domains/knowledgeRun';
@@ -11,6 +12,7 @@ import { paperVersionsApi } from './domains/paperVersions';
 
 export const api = {
   health: () => request('/health'),
+  auth: authApi,
   courses: coursesApi,
   blueprints: blueprintsApi,
   generation: generationApi,

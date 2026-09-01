@@ -22,10 +22,11 @@ from app.adapters.document.protocol import (
     ParseSubmission,
 )
 from app.config import settings
-from app.db.schema import Base
+from app.db.schema import Base, User
 from app.db.session import get_session
 from app.main import app
 from app.services import parse_service
+from app.services.auth_service import hash_password
 
 
 @pytest.fixture
@@ -34,6 +35,9 @@ def client():
     event.listen(engine, "connect", lambda connection, _: connection.execute("PRAGMA foreign_keys=ON"))
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as session:
+        session.add(User(id="admin", username="admin", password_hash=hash_password("123456"), display_name="System", role="admin"))
+        session.commit()
 
     def override_session():
         with factory() as session:
@@ -41,7 +45,10 @@ def client():
 
     app.dependency_overrides[get_session] = override_session
     try:
-        test_client = TestClient(app)
+        runner = TestClient(app)
+        login = runner.post("/api/v1/auth/login", json={"username": "admin", "password": "123456"})
+        assert login.status_code == 200, login.text
+        test_client = TestClient(app, headers={"Authorization": "Bearer " + login.json()["token"]})
         test_client.app.state.test_engine = engine
         yield test_client
     finally:
@@ -220,7 +227,8 @@ def test_published_knowledge_requires_published_catalog(client):
 
     response = client.get(f"/api/v1/courses/{course['id']}/published-knowledge")
 
-    assert response.status_code == 404
+    assert response.status_code == 200
+    assert response.json()["published"] is False
 
 
 def test_published_knowledge_returns_cards_units_and_exam_points(client):

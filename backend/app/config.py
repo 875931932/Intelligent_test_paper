@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     s3_secret_key: str = "minio-dev-password"
     s3_bucket: str = "exam-materials"
     s3_region: str = "us-east-1"
+    # 登录令牌 HMAC 签名密钥，生产环境务必通过环境变量改写
+    auth_secret: str = "exam-auth-dev-secret-change-me"
+    auth_token_ttl_seconds: int = 7 * 24 * 3600
 
 
 settings = Settings()

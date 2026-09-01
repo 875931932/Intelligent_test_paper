@@ -1,6 +1,8 @@
 import { useState, type FormEvent } from 'react';
 import { BookOpen } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { api } from '@/api/client';
+import { ApiError } from '@/api/errors';
 import { useAuthStore } from '../../stores/auth';
 import { useToastStore } from '../../stores/toast';
 import { Button } from '../../components/ui/Button';
@@ -36,22 +38,20 @@ export function LoginPage() {
     if (!valid) return;
 
     setLoading(true);
-
-    await new Promise((resolve) => setTimeout(resolve, 800));
-
-    if (username.trim() && password.trim()) {
-      const name = username.trim();
+    try {
+      const { token, user } = await api.auth.login(username.trim(), password);
       setAuth(
-        { id: '1', username: name, name, role: 'teacher' },
-        'mock-token-' + Date.now()
+        { id: user.id, username: user.username, name: user.name, role: user.role === 'admin' ? 'admin' : 'teacher' },
+        token
       );
       addToast('登录成功，欢迎回来！', 'success');
       navigate('/courses', { replace: true });
-    } else {
-      addToast('用户名或密码错误，请重试', 'error');
+    } catch (err) {
+      const msg = err instanceof ApiError ? err.message : '登录失败，请稍后再试';
+      addToast(msg, 'error');
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   };
 
   return (
@@ -104,7 +104,7 @@ export function LoginPage() {
         </form>
 
         <p className="login-hint">
-          输入任意用户名和密码即可体验
+          测试账号：admin / 123456
         </p>
       </div>
 

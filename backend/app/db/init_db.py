@@ -11,7 +11,11 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session
 
-from app.db.schema import Base, Course, User
+from app.db.schema import Base, User
+from app.services.auth_service import hash_password
+
+ADMIN_USER_ID = "admin"
+LEGACY_DEV_OWNER_ID = "owner-dev"
 
 
 def _engine(database_url: str) -> Engine:
@@ -21,22 +25,58 @@ def _engine(database_url: str) -> Engine:
     return create_engine(database_url, future=True, connect_args=connect_args)
 
 
+def _migrate_user_columns(engine: Engine) -> None:
+    """Idempotently add auth columns to an existing users table (no legacy migration layer)."""
+
+    insp = inspect(engine)
+    if not insp.has_table("users"):
+        return
+    existing = {c["name"] for c in insp.get_columns("users")}
+    to_add = [name for name, _ddl in (("username", "VARCHAR(120)"), ("password_hash", "VARCHAR(255)")) if name not in existing]
+    if not to_add:
+        return
+    with engine.begin() as conn:
+        if engine.dialect.name == "postgresql":
+            for name, ddl in (("username", "VARCHAR(120)"), ("password_hash", "VARCHAR(255)")):
+                if name in to_add:
+                    conn.execute(text(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {name} {ddl}"))
+        else:
+            for name, ddl in (("username", "VARCHAR(120)"), ("password_hash", "VARCHAR(255)")):
+                if name in to_add:
+                    conn.execute(text(f"ALTER TABLE users ADD COLUMN {name} {ddl}"))
+
+
 def _seed_dev_data(bind: Engine | Connection) -> None:
-    """Insert development records atomically, without a read-before-write race."""
+    """Upsert the admin test account and fold any legacy 'owner-dev' data into it."""
 
     dialect_name = bind.dialect.name
     insert = postgresql_insert if dialect_name == "postgresql" else sqlite_insert
+    admin_password_hash = hash_password("123456")
     with Session(bind=bind) as session:
-        session.execute(
+        stmt = (
             insert(User)
-            .values(id="owner-dev", display_name="Development Owner", role="teacher")
-            .on_conflict_do_nothing(index_elements=["id"])
+            .values(
+                id=ADMIN_USER_ID,
+                username="admin",
+                password_hash=admin_password_hash,
+                display_name="系统管理员",
+                role="admin",
+            )
+            .on_conflict_do_update(
+                index_elements=["id"],
+                set_={
+                    "username": "admin",
+                    "password_hash": admin_password_hash,
+                    "display_name": "系统管理员",
+                    "role": "admin",
+                },
+            )
         )
-        session.execute(
-            insert(Course)
-            .values(id="course-dev", owner_id="owner-dev", slug="sample-course", name="示例课程", description="开发种子课程")
-            .on_conflict_do_nothing(index_elements=["id"])
-        )
+        session.execute(stmt)
+        # 保留历史 owner-dev 名下的课程，统一归属到 admin
+        session.execute(text("UPDATE courses SET owner_id=:admin WHERE owner_id=:legacy"), {"admin": ADMIN_USER_ID, "legacy": LEGACY_DEV_OWNER_ID})
+        session.execute(text("UPDATE paper_versions SET created_by=:admin WHERE created_by=:legacy"), {"admin": ADMIN_USER_ID, "legacy": LEGACY_DEV_OWNER_ID})
+        session.execute(text("DELETE FROM users WHERE id=:legacy"), {"legacy": LEGACY_DEV_OWNER_ID})
         session.commit()
 
 
@@ -61,10 +101,12 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             with engine.begin() as conn:
                 conn.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": 824036462})
                 Base.metadata.create_all(conn)
+                _migrate_user_columns(engine)
                 if seed:
                     _seed_dev_data(conn)
         else:
             Base.metadata.create_all(engine)
+            _migrate_user_columns(engine)
             if seed:
                 _seed_dev_data(engine)
     finally:

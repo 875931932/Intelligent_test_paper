@@ -52,8 +52,8 @@ def test_bootstrap_seed_is_idempotent(database_url):
     engine = create_engine(database_url)
     try:
         with engine.connect() as connection:
-            assert connection.exec_driver_sql("SELECT COUNT(*) FROM users WHERE id='owner-dev'").scalar_one() == 1
-            assert connection.exec_driver_sql("SELECT COUNT(*) FROM courses WHERE id='course-dev'").scalar_one() == 1
+            assert connection.exec_driver_sql("SELECT COUNT(*) FROM users WHERE id='admin'").scalar_one() == 1
+            assert connection.exec_driver_sql("SELECT COUNT(*) FROM users WHERE id='owner-dev'").scalar_one() == 0
     finally:
         engine.dispose()
 
@@ -149,7 +149,7 @@ def test_main_uses_seed_environment_when_seed_flag_is_omitted(monkeypatch, tmp_p
     engine = create_engine(database_url)
     try:
         with engine.connect() as connection:
-            assert connection.exec_driver_sql("SELECT COUNT(*) FROM users WHERE id='owner-dev'").scalar_one() == 1
+            assert connection.exec_driver_sql("SELECT COUNT(*) FROM users WHERE id='admin'").scalar_one() == 1
     finally:
         engine.dispose()
 
@@ -346,6 +346,12 @@ def test_postgresql_bootstrap_uses_transactional_advisory_lock(monkeypatch):
         def execute(self, statement, *_args, **_kwargs):
             executed_sql.append(str(statement))
 
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
     class Transaction:
         def __enter__(self):
             return Connection()
@@ -356,6 +362,9 @@ def test_postgresql_bootstrap_uses_transactional_advisory_lock(monkeypatch):
     class Engine:
         dialect = type("Dialect", (), {"name": "postgresql"})()
 
+        def connect(self):
+            return Transaction()
+
         def begin(self):
             return Transaction()
 
@@ -364,6 +373,7 @@ def test_postgresql_bootstrap_uses_transactional_advisory_lock(monkeypatch):
 
     monkeypatch.setattr(init_db, "_engine", lambda _: Engine())
     monkeypatch.setattr(Base.metadata, "create_all", lambda *_: None)
+    monkeypatch.setattr(init_db, "_migrate_user_columns", lambda _: None)
 
     init_db.bootstrap_database("postgresql+psycopg://example/exam", seed=False)
 

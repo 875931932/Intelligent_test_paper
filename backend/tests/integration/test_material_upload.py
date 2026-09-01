@@ -10,12 +10,13 @@ from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.db.schema import Base
+from app.db.schema import Base, User
 from app.db.session import get_session
 from app.adapters.model.embedding_gateway import OpenAICompatibleEmbeddingGateway
 from app.config import settings
 from app.main import app
 from app.api.v1 import materials as materials_api
+from app.services.auth_service import hash_password
 
 
 @pytest.fixture
@@ -24,6 +25,9 @@ def client():
     event.listen(engine, "connect", lambda connection, _: connection.execute("PRAGMA foreign_keys=ON"))
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as session:
+        session.add(User(id="admin", username="admin", password_hash=hash_password("123456"), display_name="System", role="admin"))
+        session.commit()
 
     def override_session():
         with factory() as session:
@@ -31,17 +35,20 @@ def client():
 
     app.dependency_overrides[get_session] = override_session
     try:
-        test_client = TestClient(app)
-        test_client.app.state.test_engine = engine
-        yield test_client
+        # 登录 admin 并用默认鉴权头包裹 client，避免每个用例重复登录
+        runner = TestClient(app)
+        login = runner.post("/api/v1/auth/login", json={"username": "admin", "password": "123456"})
+        assert login.status_code == 200, login.text
+        auth_client = TestClient(app, headers={"Authorization": "Bearer " + login.json()["token"]})
+        auth_client.app.state.test_engine = engine
+        yield auth_client
     finally:
         app.dependency_overrides.clear()
         Base.metadata.drop_all(engine)
         engine.dispose()
 
 
-def test_course_create_and_list_are_scoped_to_development_owner(client):
-
+def test_course_create_and_list_are_scoped_to_owner(client):
     created = client.post(
         "/api/v1/courses",
         json={"name": "数据结构", "slug": "data-structures", "description": "核心课程"},
@@ -49,11 +56,17 @@ def test_course_create_and_list_are_scoped_to_development_owner(client):
 
     assert created.status_code == 201
     payload = created.json()
-    assert payload["owner_id"] == "owner-dev"
+    assert payload["owner_id"] == "admin"
     assert payload["slug"] == "data-structures"
     listed = client.get("/api/v1/courses")
     assert listed.status_code == 200
     assert [course["id"] for course in listed.json()] == [payload["id"]]
+
+
+def test_course_endpoints_reject_unauthenticated_request(client):
+    bare = TestClient(app)
+    assert bare.get("/api/v1/courses").status_code == 401
+    assert bare.post("/api/v1/courses", json={"name": "x", "slug": "x"}).status_code == 401
 
 
 @pytest.mark.parametrize(
@@ -304,6 +317,9 @@ def test_concurrent_complete_requests_create_one_staged_version_and_return_the_s
     event.listen(engine, "connect", lambda connection, _: connection.execute("PRAGMA foreign_keys=ON"))
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as session:
+        session.add(User(id="admin", username="admin", password_hash=hash_password("123456"), display_name="System", role="admin"))
+        session.commit()
 
     def override_session():
         with factory() as session:
@@ -322,7 +338,11 @@ def test_concurrent_complete_requests_create_one_staged_version_and_return_the_s
     app.dependency_overrides[get_session] = override_session
     app.state.storage = storage
     try:
-        with TestClient(app) as setup_client:
+        runner = TestClient(app)
+        login = runner.post("/api/v1/auth/login", json={"username": "admin", "password": "123456"})
+        assert login.status_code == 200, login.text
+        token = login.json()["token"]
+        with TestClient(app, headers={"Authorization": "Bearer " + token}) as setup_client:
             course = _course(setup_client)
             body = b"pdf"
             request = _upload_request(size_bytes=len(body), sha256=hashlib.sha256(body).hexdigest())
@@ -332,7 +352,7 @@ def test_concurrent_complete_requests_create_one_staged_version_and_return_the_s
         }
 
         def complete_from_independent_client():
-            with TestClient(app, raise_server_exceptions=False) as request_client:
+            with TestClient(app, headers={"Authorization": "Bearer " + token}, raise_server_exceptions=False) as request_client:
                 response = request_client.post(f"/api/v1/courses/{course['id']}/upload-sessions/{upload['session_id']}/complete")
                 return response.status_code, response.json() if response.status_code == 200 else response.text
 

@@ -17,7 +17,7 @@ def test_create_course_does_not_report_unrelated_integrity_error_as_slug_conflic
         monkeypatch.setattr(session, "commit", fail_commit)
 
         with pytest.raises(IntegrityError):
-            course_service.create_course(session, name="Course", slug="course", description=None)
+            course_service.create_course(session, owner_id="owner", name="Course", slug="course", description=None)
     engine.dispose()
 
 
@@ -25,7 +25,7 @@ def test_update_course_does_not_report_unrelated_integrity_error_as_slug_conflic
     engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
     with Session(engine) as session:
-        course = course_service.create_course(session, name="Course", slug="course", description=None)
+        course = course_service.create_course(session, owner_id="owner", name="Course", slug="course", description=None)
 
         def fail_commit():
             raise IntegrityError("UPDATE", {}, RuntimeError("unrelated constraint"))
@@ -33,5 +33,5 @@ def test_update_course_does_not_report_unrelated_integrity_error_as_slug_conflic
         monkeypatch.setattr(session, "commit", fail_commit)
 
         with pytest.raises(IntegrityError):
-            course_service.update_course(session, course.id, name="Changed")
+            course_service.update_course(session, "owner", course.id, name="Changed")
     engine.dispose()

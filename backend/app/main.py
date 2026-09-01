@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 
 from app.config import settings
+from app.api.v1.auth import router as auth_router
 from app.api.v1.courses import router as courses_router
 from app.api.v1.framework import router as framework_router
 from app.api.v1.blueprints import router as blueprints_router
@@ -71,6 +72,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(auth_router)
 app.include_router(courses_router)
 app.include_router(materials_router)
 app.include_router(framework_router)
