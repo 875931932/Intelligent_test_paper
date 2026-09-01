@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import {
-  Upload, RefreshCw, Trash2, FileText, Loader2,
+  Upload, RefreshCw, Trash2, FileText,
   Folder, FolderOpen, BookOpen, ClipboardCheck, BookMarked, X,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
@@ -373,8 +373,10 @@ export default function MaterialsPage() {
               <Badge variant={MATERIAL_TYPE_VARIANTS[m.material_type] || 'default'}>
                 {MATERIAL_TYPE_LABELS[m.material_type] || m.material_type}
               </Badge>
-              <Badge variant={(m.parse_status && PARSE_STATUS_VARIANTS[m.parse_status.status]) || 'default'}>
-                {m.parse_status ? (PARSE_STATUS_LABELS[m.parse_status.status] || m.parse_status.status) : '未解析'}
+              <Badge variant={parsingIds.has(m.id) ? 'warning' : ((m.parse_status && PARSE_STATUS_VARIANTS[m.parse_status.status]) || 'default')}>
+                {parsingIds.has(m.id)
+                  ? '解析中'
+                  : (m.parse_status ? (PARSE_STATUS_LABELS[m.parse_status.status] || m.parse_status.status) : '未解析')}
               </Badge>
             </div>
 
@@ -384,10 +386,11 @@ export default function MaterialsPage() {
                 size="sm"
                 onClick={() => handleParse(m)}
                 disabled={parsingIds.has(m.id)}
-                icon={parsingIds.has(m.id) ? <Loader2 size={14} /> : <RefreshCw size={14} />}
+                loading={parsingIds.has(m.id)}
+                icon={<RefreshCw size={14} />}
                 style={{ flex: 1 }}
               >
-                解析
+                {parsingIds.has(m.id) ? '解析中…' : '解析'}
               </Button>
               <Button
                 variant="danger"
