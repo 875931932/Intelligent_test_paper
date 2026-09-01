@@ -8,6 +8,11 @@ LOG_DIR="$ROOT_DIR/var/log"
 PID_DIR="$ROOT_DIR/var/run"
 mkdir -p "$LOG_DIR" "$PID_DIR"
 
+MINIO_BIN="${MINIO_BIN:-/usr/local/bin/minio}"
+MINIO_DATA="${MINIO_DATA:-/opt/minio/data}"
+MINIO_PORT="${MINIO_PORT:-9000}"
+MINIO_CONSOLE_PORT="${MINIO_CONSOLE_PORT:-9001}"
+
 if [[ ! -x "$VENV/bin/python" ]]; then
   echo "Missing virtualenv: $VENV" >&2
   exit 1
@@ -22,7 +27,7 @@ source "$ROOT_DIR/.env"
 set +a
 
 cd "$BACKEND_DIR"
-PYTHONPATH=. "$VENV/bin/python" -m app.db.init_db
+PYTHONPATH=. "$VENV/bin/python" -m app.db.init_db --seed
 
 start_process() {
   local name="$1"; shift
@@ -36,6 +41,33 @@ start_process() {
   echo $! >"$pid_file"
   echo "started $name (pid $!)"
 }
+
+ensure_minio() {
+  if systemctl list-unit-files minio.service >/dev/null 2>&1; then
+    if systemctl is-active --quiet minio.service; then
+      echo "minio already running (systemd)"
+    else
+      systemctl start minio.service
+      echo "started minio via systemd"
+    fi
+    return 0
+  fi
+
+  # 无 systemd 时回退到 nohup 自管理模式
+  local pid_file="$PID_DIR/minio.pid"
+  if [[ -f "$pid_file" ]] && kill -0 "$(cat "$pid_file")" 2>/dev/null; then
+    echo "minio already running (pid $(cat "$pid_file"))"
+    return
+  fi
+  rm -f "$pid_file"
+  nohup "$MINIO_BIN" server "$MINIO_DATA" \
+    --address ":$MINIO_PORT" --console-address ":$MINIO_CONSOLE_PORT" \
+    >>"$LOG_DIR/minio.log" 2>&1 &
+  echo $! >"$pid_file"
+  echo "started minio (pid $!)"
+}
+
+ensure_minio
 
 start_process api "$VENV/bin/uvicorn" app.main:app --host 127.0.0.1 --port "${API_PORT:-8000}"
 start_process worker "$VENV/bin/celery" -A app.infrastructure.tasks.celery_app worker --loglevel="${CELERY_LOGLEVEL:-INFO}" --concurrency="${CELERY_CONCURRENCY:-2}"
