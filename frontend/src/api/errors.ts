@@ -46,6 +46,9 @@ export function getErrorMessage(err: unknown): string {
         }
         return '操作冲突，请刷新后重试。';
       case 422:
+        // 422 除用于参数校验外，也用于表达业务前置条件（如“大纲未解析完成”）。
+        // 有后端 detail 时优先透传，避免误导为“参数填写错误”。
+        if (err.message) return err.message;
         return '提交的参数有误，请检查输入。';
       case 410:
         return '上传会话已过期，请重新上传。';

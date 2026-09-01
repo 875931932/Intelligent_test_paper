@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { RefreshCw, Check, X, ChevronRight, AlertTriangle, Target, Anchor } from 'lucide-react';
 import { api } from '@/api/client';
+import { getErrorMessage } from '@/api/errors';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
 import { Modal, Select, Badge, Spinner } from '@/components/ui';
@@ -123,8 +124,8 @@ export default function FrameworkPage() {
       } else {
         startPolling();
       }
-    } catch {
-      addToast('构建框架失败', 'error');
+    } catch (err) {
+      addToast(getErrorMessage(err), 'error');
       setBuildState('idle');
     } finally {
       setBuilding(false);
