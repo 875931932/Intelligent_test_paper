@@ -38,15 +38,29 @@ class StoragePort(Protocol):
 class MinioStorage:
     """A narrow boto3 adapter that also works with MinIO's S3 endpoint."""
 
-    def __init__(self, *, endpoint: str, access_key: str, secret_key: str, bucket: str, region: str) -> None:
+    def __init__(
+        self, *, endpoint: str, access_key: str, secret_key: str, bucket: str, region: str, internal_endpoint: str | None = None
+    ) -> None:
         import boto3
         from botocore.client import Config
 
         self.bucket = bucket
         self.region = region
+        # 后端自身访问对象存储用内网地址（可回环直连，避免公网/nginx 反代触发重定向）；
+        # 生成给浏览器直传的预签名 URL 则始终走 public endpoint（签名主机需与浏览器一致）。
+        operation_endpoint = internal_endpoint or endpoint
+        self._public_endpoint = endpoint.rstrip("/")
         self.client = boto3.client(
             "s3",
-            endpoint_url=endpoint,
+            endpoint_url=operation_endpoint,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name=region,
+            config=Config(signature_version="s3v4", s3={"addressing_style": "path"}),
+        )
+        self._presigner = boto3.client(
+            "s3",
+            endpoint_url=self._public_endpoint,
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
             region_name=region,
@@ -59,7 +73,8 @@ class MinioStorage:
             self.client.head_bucket(Bucket=self.bucket)
             return
         except Exception as exc:
-            error_code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+            response = getattr(exc, "response", None) or {}
+            error_code = (response.get("Error") or {}).get("Code")
             if error_code not in {"404", "NoSuchBucket", "NotFound"}:
                 raise StorageUnavailableError from exc
         create_args = {"Bucket": self.bucket}
@@ -71,7 +86,7 @@ class MinioStorage:
             raise StorageUnavailableError from exc
 
     def presign_put(self, *, object_key: str, content_type: str, sha256: str, expires_in: int) -> str:
-        return self.client.generate_presigned_url(
+        return self._presigner.generate_presigned_url(
             "put_object",
             Params={"Bucket": self.bucket, "Key": object_key, "ContentType": content_type, "Metadata": {"sha256": sha256}},
             ExpiresIn=expires_in,

@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     seed_dev_data: bool = False
     upload_max_bytes: int = 209715200
     s3_endpoint: str = "http://localhost:9000"
+    # 后端自身访问对象存储的内网地址（例如 http://127.0.0.1:9000）。
+    # 为空时后端直接使用 s3_endpoint；生成给浏览器直传的预签名 URL 始终使用 s3_endpoint。
+    # 当 s3_endpoint 填的是公网地址（经 nginx 反代）却无法回环访问自身公网 IP 时，
+    # 需要配置此变量为 MinIO 实际监听的内网地址，避免 head_bucket 等操作触发 301/重定向循环。
+    s3_internal_endpoint: str = ""
     s3_access_key: str = "minio-dev"
     s3_secret_key: str = "minio-dev-password"
     s3_bucket: str = "exam-materials"

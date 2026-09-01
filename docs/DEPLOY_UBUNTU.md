@@ -67,6 +67,10 @@ EMBEDDING_BASE_URL=https://ws-jn5396bzqr92vf9r.cn-beijing.maas.aliyuncs.com/api/
 EMBEDDING_MODEL=qwen3.7-text-embedding
 EMBEDDING_API_FORMAT=dashscope
 S3_ENDPOINT=http://<minio-or-s3-host>:9000
+# 可选：后端自身访问 MinIO 的内网地址（如 http://127.0.0.1:9000）。
+# 当 S3_ENDPOINT 为公网地址且服务器无法回环访问自身公网 IP（未开启 NAT 回环）时必须填写，
+# 否则后端 head_bucket 等操作经公网反代会触发 301/重定向循环；浏览器直传仍走 S3_ENDPOINT。
+S3_INTERNAL_ENDPOINT=
 S3_ACCESS_KEY=<access_key>
 S3_SECRET_KEY=<secret_key>
 S3_BUCKET=exam-materials
@@ -246,11 +250,13 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # MinIO/S3 直传反代（同域避免 CORS）。S3_ENDPOINT 填站点同源地址：
-    # 有域名填 https://<域名>/s3，只有外网 IP 则填 http://<外网IP>/s3
-    location /s3/ {
+    # MinIO/S3 直传反代（同域避免 CORS）。
+    # 注意：S3_ENDPOINT 必须填站点同源根地址且不能带 /s3 前缀，因为预签名 URL
+    # 的签名按完整路径（/exam-materials/...）计算，location 需匹配桶名，
+    # 且用不带结尾斜杠的 proxy_pass 原样转发，保证 MinIO 收到的路径与签名一致。
+    location /exam-materials/ {
         client_max_body_size 210m;
-        proxy_pass http://127.0.0.1:9000/;
+        proxy_pass http://127.0.0.1:9000;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
@@ -267,9 +273,9 @@ sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-资料上传使用 S3 预签名地址，浏览器必须能够访问 `S3_ENDPOINT`。推荐把 `S3_ENDPOINT` 设为站点同源地址并让预签名 URL 走上面的 `/s3/` 反代转发到本机 MinIO（有域名 `https://<域名>/s3`，只有外网 IP 则 `http://<外网IP>/s3`），同源即可直传，无需配置 CORS。
+资料上传使用 S3 预签名地址，浏览器必须能够访问 `S3_ENDPOINT`。推荐把 `S3_ENDPOINT` 设为站点同源**根地址**（有域名 `https://<域名>`，只有外网 IP 则 `http://<外网IP>`，**不能带 `/s3` 前缀**），并让预签名 URL 走上面 `/exam-materials/` 反代原样转发到本机 MinIO，同源即可直传，无需配置 CORS。location 前缀必须与 `S3_BUCKET`（默认 `exam-materials`）一致。
 
-只有外网 IP 时注意：后端初始化 MinIO 时也会通过同一个 `S3_ENDPOINT` 访问（`head_bucket` 等），若服务器无法访问自己的外网 IP（未开启 NAT 回环/hairpin），会判定 MinIO 不可用并回退到本地文件存储，实际上传改走 `/api/v1/_local-storage/`（无需配置 MinIO 也可用）。可在服务器上自测：`curl -i http://<外网IP>/s3/`。
+只有外网 IP 时注意：后端初始化 MinIO 时也会访问对象存储（`head_bucket` 等）。为避免服务器访问自身公网 IP 时未开启 NAT 回环/或经 nginx 反代触发 301 重定向循环，请在 `.env` 中设置 `S3_INTERNAL_ENDPOINT=http://127.0.0.1:9000`，让后端直连本机 MinIO；浏览器直传的预签名 URL 仍使用 `S3_ENDPOINT` 公网地址。可在服务器上自测：`curl -i http://<外网IP>/exam-materials/`；亦可用 `curl -i http://127.0.0.1:9000/exam-materials/` 直连 MinIO。
 
 ## 9. 最小验收
 

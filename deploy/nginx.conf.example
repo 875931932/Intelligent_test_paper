@@ -16,12 +16,16 @@ server {
         proxy_read_timeout 1800s;
     }
 
-    # MinIO/S3 直传反代（同域避免 CORS）。S3_ENDPOINT 填站点同源地址：
-    # 有域名填 https://<域名>/s3，只有外网 IP 则填 http://<外网IP>/s3，
-    # 让预签名 URL 与站点同源，浏览器才能直传 PUT 大文件且无需 CORS。
-    location /s3/ {
+    # MinIO/S3 直传反代（同域避免 CORS）。
+    # 注意：S3_ENDPOINT 必须填站点同源根地址，且不能带 /s3 之类的前缀，
+    # 因为预签名 URL 的签名是按其完整路径（/exam-materials/...）计算的，
+    # location 需匹配桶名且不带结尾斜杠（桶级 head/create bucket 请求路径
+    # /exam-materials 也无斜杠），并用不带结尾斜杠的 proxy_pass 原样转发，
+    # 才能保证 MinIO 收到的路径与签名路径一致（否则 SigV4 校验返回 403）。
+    # 桶名为 S3_BUCKET（默认 exam-materials），location 前缀需与之保持一致。
+    location /exam-materials {
         client_max_body_size 200m;
-        proxy_pass http://127.0.0.1:9000/;
+        proxy_pass http://127.0.0.1:9000;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;

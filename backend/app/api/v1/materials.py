@@ -25,6 +25,7 @@ def get_storage(request: Request) -> StoragePort:
                 storage = MinioStorage(
                     endpoint=settings.s3_endpoint, access_key=settings.s3_access_key, secret_key=settings.s3_secret_key,
                     bucket=settings.s3_bucket, region=settings.s3_region,
+                    internal_endpoint=settings.s3_internal_endpoint or None,
                 )
             except Exception as exc:
                 raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="object storage unavailable") from exc
