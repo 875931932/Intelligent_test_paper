@@ -333,6 +333,22 @@ export default function MaterialsPage() {
 
   const handleParse = async (material: MaterialResponse) => {
     try {
+      // 乐观置为“解析中”，让按钮/标签立即反馈，无需等首次轮询
+      setMaterials((prev) =>
+        prev.map((m) =>
+          m.id === material.id
+            ? {
+                ...m,
+                parse_status: {
+                  id: m.parse_status?.id ?? material.id,
+                  status: 'running',
+                  error_code: undefined,
+                  error_summary: undefined,
+                },
+              }
+            : m
+        )
+      );
       await api.materials.parse(courseId, material.id);
       addToast('开始解析，请稍候...', 'info');
       // 立即启动轮询（首次 poll 会把状态回填为 running/ready 等）
