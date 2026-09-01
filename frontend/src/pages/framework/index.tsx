@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
-import { RefreshCw, Check, X, ChevronRight, AlertTriangle, Target, Anchor } from 'lucide-react';
+import { RefreshCw, Check, X, ChevronRight, ChevronDown, AlertTriangle, Target, Anchor } from 'lucide-react';
 import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
-import { Modal, Select, Badge, Spinner } from '@/components/ui';
+import { Modal, Badge, Spinner } from '@/components/ui';
 import type { FrameworkCandidate, CurrentFrameworkResponse, AssessmentAnchor } from '@/types/api';
 
 type BuildState = 'idle' | 'building' | 'candidate' | 'done';
@@ -13,6 +13,84 @@ type BuildState = 'idle' | 'building' | 'candidate' | 'done';
 interface SyllabusOption {
   id: string;
   label: string;
+  /** 大纲该版本未解析完成（status !== 'ready'）时不可选 */
+  disabled?: boolean;
+}
+
+/**
+ * 自定义下拉：未解析(disabled)的选项置灰不可点，hover 时在右侧浮出
+ * “未解析”小提示，满足“能查到是否解析、未解析不能选”的要求。
+ * 原生 <select> 无法对 disabled option 提供悬停提示，故自绘。
+ */
+function SyllabusSelect({ label, value, options, onChange }: {
+  label: string;
+  value: string;
+  options: SyllabusOption[];
+  onChange: (v: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = options.find((o) => o.id === value);
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', position: 'relative' }}>
+      <label style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)' }}>{label}</label>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        onBlur={() => setTimeout(() => setOpen(false), 120)}
+        style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
+          width: '100%', padding: '10px 12px', borderRadius: '10px',
+          background: 'var(--surface)', border: '1px solid rgba(0,0,0,0.1)',
+          fontSize: '0.875rem', color: selected ? 'var(--text-primary)' : 'var(--text-tertiary)',
+          cursor: 'pointer', textAlign: 'left',
+        }}
+      >
+        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {selected ? selected.label : '选择版本'}
+        </span>
+        <ChevronDown size={16} style={{ flexShrink: 0, opacity: 0.6, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }} />
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 30, marginTop: 4,
+          background: 'var(--surface)', border: '1px solid rgba(0,0,0,0.1)',
+          borderRadius: '10px', boxShadow: '0 10px 30px rgba(0,0,0,0.12)', padding: 4,
+          maxHeight: 220, overflowY: 'auto',
+        }}>
+          {options.map((o) => (
+            <div
+              key={o.id}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                if (o.disabled) return;
+                onChange(o.id);
+                setOpen(false);
+              }}
+              style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                padding: '9px 10px', borderRadius: 8, cursor: o.disabled ? 'not-allowed' : 'pointer',
+                background: value === o.id ? 'rgba(0,113,227,0.08)' : 'transparent',
+                color: o.disabled ? 'var(--text-tertiary)' : 'var(--text-primary)',
+                fontSize: '0.8125rem', opacity: o.disabled ? 0.7 : 1,
+              }}
+            >
+              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{o.label}</span>
+              {o.disabled && (
+                <span
+                  title="未解析"
+                  style={{
+                    flexShrink: 0, fontSize: '0.6875rem', padding: '2px 6px', borderRadius: 6,
+                    background: 'rgba(0,0,0,0.06)', color: 'var(--text-tertiary)',
+                  }}
+                >未解析</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function FrameworkPage() {
@@ -83,6 +161,8 @@ export default function FrameworkPage() {
         const option: SyllabusOption = {
           id: m.latest_version.id,
           label: m.logical_name + ' (v' + m.latest_version.version_no + ')',
+          // 只有解析完成(ready)的大纲才能用于构建框架，未解析/解析中/失败均不可选
+          disabled: m.parse_status?.status !== 'ready',
         };
         if (m.material_type === 'teaching_syllabus') teaching.push(option);
         if (m.material_type === 'assessment_syllabus') assessment.push(option);
@@ -287,23 +367,17 @@ export default function FrameworkPage() {
             选择教学大纲和考核大纲的版本以生成命题框架。
           </p>
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-            <Select
+            <SyllabusSelect
               label="教学大纲"
               value={teachingVersionId}
-              onChange={(e) => setTeachingVersionId(e.target.value)}
-              options={[
-                { value: '', label: '选择版本' },
-                ...teachingVersions.map((v) => ({ value: v.id, label: v.label })),
-              ]}
+              options={teachingVersions}
+              onChange={setTeachingVersionId}
             />
-            <Select
+            <SyllabusSelect
               label="考核大纲"
               value={assessmentVersionId}
-              onChange={(e) => setAssessmentVersionId(e.target.value)}
-              options={[
-                { value: '', label: '选择版本' },
-                ...assessmentVersions.map((v) => ({ value: v.id, label: v.label })),
-              ]}
+              options={assessmentVersions}
+              onChange={setAssessmentVersionId}
             />
           </div>
           {(teachingVersions.length === 0 || assessmentVersions.length === 0) && (
@@ -343,7 +417,6 @@ export default function FrameworkPage() {
 }
 
 // ─── Candidate View ───
-
 function CandidateView({ candidate, rejecting, onReject, onOpenConfirm }: {
   candidate: FrameworkCandidate;
   rejecting: boolean;
