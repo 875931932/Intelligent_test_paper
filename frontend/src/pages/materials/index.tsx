@@ -51,18 +51,40 @@ const MATERIAL_TYPE_VARIANTS: Record<string, string> = {
 };
 
 const PARSE_STATUS_LABELS: Record<string, string> = {
-  pending: '待解析',
-  parsing: '解析中',
-  completed: '已完成',
+  queued: '排队中',
+  submitted: '解析中',
+  waiting_file: '解析中',
+  pending: '等待中',
+  running: '解析中',
+  converting: '转换中',
+  ready: '已完成',
   failed: '失败',
 };
 
 const PARSE_STATUS_VARIANTS: Record<string, string> = {
+  queued: 'default',
+  submitted: 'warning',
+  waiting_file: 'warning',
   pending: 'default',
-  parsing: 'warning',
-  completed: 'success',
+  running: 'warning',
+  converting: 'warning',
+  ready: 'success',
   failed: 'error',
 };
+
+// document_parse_runs 的进行中状态；terminal 为 ready / failed
+const RUNNING_PARSE_STATES = new Set([
+  'queued',
+  'submitted',
+  'waiting_file',
+  'pending',
+  'running',
+  'converting',
+]);
+
+// 以后端 parse_status.status 为唯一状态源，跨页面导航仍能恢复
+const isParsing = (m: MaterialResponse): boolean =>
+  !!m.parse_status && RUNNING_PARSE_STATES.has(m.parse_status.status);
 
 const FOLDER_GROUPS: FolderMeta[] = [
   {
@@ -127,7 +149,6 @@ export default function MaterialsPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  const [parsingIds, setParsingIds] = useState<Set<string>>(new Set());
   const pollingRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
 
   const loadMaterials = useCallback(async () => {
@@ -257,45 +278,65 @@ export default function MaterialsPage() {
   };
 
   // ── 解析 ──
-  const handleParse = async (material: MaterialResponse) => {
-    const materialId = material.id;
-    try {
-      await api.materials.parse(courseId, materialId);
-      setParsingIds((prev) => new Set(prev).add(materialId));
-      addToast('开始解析，请稍候...', 'info');
-
-      if (pollingRef.current.has(materialId)) {
-        clearInterval(pollingRef.current.get(materialId)!);
-      }
-
+  // 轮询推进解析状态机，直到 terminal（ready/failed）。幂等：同一资料只启动一个定时器。
+  const startPolling = useCallback(
+    (materialId: string) => {
+      if (!courseId || pollingRef.current.has(materialId)) return;
       const timer = setInterval(async () => {
         try {
-          const updated = await api.materials.pollParse(courseId, materialId);
-          const status = (updated as Record<string, unknown>)?.parse_status;
-          const statusValue = (status as Record<string, unknown>)?.status as string | undefined;
-          if (statusValue === 'completed' || statusValue === 'failed') {
+          const updated = (await api.materials.pollParse(
+            courseId,
+            materialId
+          )) as { status?: string; error_code?: string; error_summary?: string };
+          const next = updated?.status || '';
+          // 回填最新状态到列表，badge 立即反映“解析中/已完成/失败”
+          setMaterials((prev) =>
+            prev.map((m) =>
+              m.id === materialId
+                ? {
+                    ...m,
+                    parse_status: {
+                      id: m.parse_status?.id ?? materialId,
+                      status: next || m.parse_status?.status || 'pending',
+                      error_code: updated?.error_code,
+                      error_summary: updated?.error_summary,
+                    },
+                  }
+                : m
+            )
+          );
+          if (next === 'ready' || next === 'failed') {
             clearInterval(timer);
             pollingRef.current.delete(materialId);
-            setParsingIds((prev) => {
-              const next = new Set(prev);
-              next.delete(materialId);
-              return next;
-            });
-            addToast(statusValue === 'completed' ? '解析完成' : '解析失败', statusValue === 'completed' ? 'success' : 'error');
+            addToast(
+              next === 'ready' ? '解析完成' : '解析失败',
+              next === 'ready' ? 'success' : 'error'
+            );
             loadMaterials();
           }
         } catch {
           clearInterval(timer);
           pollingRef.current.delete(materialId);
-          setParsingIds((prev) => {
-            const next = new Set(prev);
-            next.delete(materialId);
-            return next;
-          });
         }
       }, 2000);
-
       pollingRef.current.set(materialId, timer);
+    },
+    [courseId, addToast, loadMaterials]
+  );
+
+  // 进入页面即恢复仍在解析的资料轮询（持久化：切换页面/文件夹后回来仍显示“解析中”并继续跑）
+  useEffect(() => {
+    for (const m of materials) {
+      if (isParsing(m)) startPolling(m.id);
+    }
+  }, [materials, startPolling]);
+
+  const handleParse = async (material: MaterialResponse) => {
+    try {
+      await api.materials.parse(courseId, material.id);
+      addToast('开始解析，请稍候...', 'info');
+      // 立即启动轮询（首次 poll 会把状态回填为 running/ready 等）
+      startPolling(material.id);
     } catch {
       addToast('触发解析失败', 'error');
     }
@@ -373,8 +414,8 @@ export default function MaterialsPage() {
               <Badge variant={MATERIAL_TYPE_VARIANTS[m.material_type] || 'default'}>
                 {MATERIAL_TYPE_LABELS[m.material_type] || m.material_type}
               </Badge>
-              <Badge variant={parsingIds.has(m.id) ? 'warning' : ((m.parse_status && PARSE_STATUS_VARIANTS[m.parse_status.status]) || 'default')}>
-                {parsingIds.has(m.id)
+              <Badge variant={isParsing(m) ? 'warning' : ((m.parse_status && PARSE_STATUS_VARIANTS[m.parse_status.status]) || 'default')}>
+                {isParsing(m)
                   ? '解析中'
                   : (m.parse_status ? (PARSE_STATUS_LABELS[m.parse_status.status] || m.parse_status.status) : '未解析')}
               </Badge>
@@ -385,12 +426,12 @@ export default function MaterialsPage() {
                 variant="secondary"
                 size="sm"
                 onClick={() => handleParse(m)}
-                disabled={parsingIds.has(m.id)}
-                loading={parsingIds.has(m.id)}
+                disabled={isParsing(m)}
+                loading={isParsing(m)}
                 icon={<RefreshCw size={14} />}
                 style={{ flex: 1 }}
               >
-                {parsingIds.has(m.id) ? '解析中…' : '解析'}
+                {isParsing(m) ? '解析中…' : '解析'}
               </Button>
               <Button
                 variant="danger"
