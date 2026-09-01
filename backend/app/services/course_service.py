@@ -19,8 +19,19 @@ class CourseConflictError(Exception):
     pass
 
 
+class CourseNameConflictError(Exception):
+    pass
+
+
 def _slug_is_taken(session: Session, owner_id: str, slug: str, *, excluding_course_id: str | None = None) -> bool:
     statement = select(Course.id).where(Course.owner_id == owner_id, Course.slug == slug)
+    if excluding_course_id is not None:
+        statement = statement.where(Course.id != excluding_course_id)
+    return session.scalar(statement) is not None
+
+
+def _name_is_taken(session: Session, owner_id: str, name: str, *, excluding_course_id: str | None = None) -> bool:
+    statement = select(Course.id).where(Course.owner_id == owner_id, Course.name == name)
     if excluding_course_id is not None:
         statement = statement.where(Course.id != excluding_course_id)
     return session.scalar(statement) is not None
@@ -35,6 +46,8 @@ def create_course(session: Session, *, owner_id: str, name: str, slug: str, desc
         session.commit()
     except IntegrityError as exc:
         session.rollback()
+        if _name_is_taken(session, owner_id, name):
+            raise CourseNameConflictError from exc
         if _slug_is_taken(session, owner_id, slug):
             raise CourseConflictError from exc
         raise
@@ -64,12 +77,15 @@ def get_owned_course(session: Session, owner_id: str, course_id: str) -> Course:
 def update_course(session: Session, owner_id: str, course_id: str, **changes: object) -> Course:
     course = get_owned_course(session, owner_id, course_id)
     requested_slug = changes.get("slug", course.slug)
+    requested_name = changes.get("name", course.name)
     for field, value in changes.items():
         setattr(course, field, value)
     try:
         session.commit()
     except IntegrityError as exc:
         session.rollback()
+        if _name_is_taken(session, owner_id, requested_name, excluding_course_id=course_id):
+            raise CourseNameConflictError from exc
         if _slug_is_taken(session, owner_id, requested_slug, excluding_course_id=course_id):
             raise CourseConflictError from exc
         raise

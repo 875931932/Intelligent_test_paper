@@ -40,6 +40,7 @@ class Course(Base):
     __tablename__ = "courses"
     __table_args__ = (
         UniqueConstraint("owner_id", "slug", name="uq_courses_owner_slug"),
+        UniqueConstraint("owner_id", "name", name="uq_courses_owner_name"),
         Index("ix_courses_owner_id", "owner_id"),
     )
 

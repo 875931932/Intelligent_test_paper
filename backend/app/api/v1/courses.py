@@ -24,6 +24,8 @@ def create(
 ) -> CourseResponse:
     try:
         return course_service.create_course(session, owner_id=current_user.id, **payload.model_dump())
+    except course_service.CourseNameConflictError:
+        raise HTTPException(status_code=409, detail="同名课程已存在，请更换课程名称")
     except course_service.CourseConflictError:
         raise HTTPException(status_code=409, detail="course slug already exists")
 
@@ -59,5 +61,7 @@ def patch(
         return course_service.update_course(session, current_user.id, course_id, **payload.model_dump(exclude_unset=True))
     except course_service.CourseNotFoundError:
         raise _not_found()
+    except course_service.CourseNameConflictError:
+        raise HTTPException(status_code=409, detail="同名课程已存在，请更换课程名称")
     except course_service.CourseConflictError:
         raise HTTPException(status_code=409, detail="course slug already exists")

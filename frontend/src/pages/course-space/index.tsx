@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { BookOpen, Plus, ChevronRight, LogOut } from 'lucide-react';
 import { useCourseStore } from '@/stores/course';
@@ -10,13 +10,33 @@ import { Modal, Input } from '@/components/ui';
 export default function CourseSpacePage() {
   const navigate = useNavigate();
   const courses = useCourseStore((s) => s.courses);
+  const setCourses = useCourseStore((s) => s.setCourses);
   const setActiveCourse = useCourseStore((s) => s.setActiveCourse);
   const logout = useAuthStore((s) => s.logout);
   const addToast = useToastStore((s) => s.addToast);
 
+  const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
+
+  // 挂载时从后端加载当前登录用户的课程（登录/刷新后也能看到历史课程）
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await api.courses.list();
+        if (!cancelled) setCourses(list);
+      } catch {
+        if (!cancelled) addToast('课程加载失败，请重试', 'error');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const handleSelectCourse = (courseId: string) => {
     setActiveCourse(courseId);
@@ -96,6 +116,10 @@ export default function CourseSpacePage() {
           <div style={{
             display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '20px',
           }}>
+            {loading ? (
+              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9375rem', padding: '24px 4px' }}>加载课程中…</p>
+            ) : (
+              <>
             {courses.map((course) => (
               <div
                 key={course.id}
@@ -157,6 +181,8 @@ export default function CourseSpacePage() {
               </div>
               新建课程
             </button>
+            </>
+            )}
           </div>
         </div>
       </main>

@@ -80,8 +80,21 @@ def _seed_dev_data(bind: Engine | Connection) -> None:
         session.commit()
 
 
-def bootstrap_database(database_url: str | None = None, seed: bool | None = None) -> None:
-    """Create extensions, tables, indexes and optional idempotent dev seed."""
+def _drop_all(engine: Engine) -> None:
+    """Drop every table (and the pg schema) so a fresh bootstrap is possible."""
+    if engine.dialect.name == "postgresql":
+        with engine.begin() as conn:
+            conn.execute(text("DROP SCHEMA public CASCADE"))
+            conn.execute(text("CREATE SCHEMA public"))
+    else:
+        Base.metadata.drop_all(engine)
+
+
+def bootstrap_database(database_url: str | None = None, seed: bool | None = None, drop: bool = False) -> None:
+    """Create extensions, tables, indexes and optional idempotent dev seed.
+
+    When ``drop`` is true the current schema is fully wiped first.
+    """
 
     database_url = database_url or os.getenv("DATABASE_URL")
     if not database_url:
@@ -91,6 +104,11 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
     try:
         # A transaction-scoped advisory lock serializes fresh PostgreSQL initialization.
         if engine.dialect.name == "postgresql":
+            with engine.begin() as conn:
+                if drop:
+                    conn.execute(text("DROP SCHEMA public CASCADE"))
+                    conn.execute(text("CREATE SCHEMA public"))
+                conn.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": 824036462})
             # pgvector 扩展可选：失败时跳过（schema 用 JSON 存 embedding）
             with engine.connect() as ext_conn:
                 try:
@@ -99,12 +117,13 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
                 except Exception:
                     ext_conn.rollback()
             with engine.begin() as conn:
-                conn.execute(text("SELECT pg_advisory_xact_lock(:lock_key)"), {"lock_key": 824036462})
                 Base.metadata.create_all(conn)
                 _migrate_user_columns(engine)
                 if seed:
                     _seed_dev_data(conn)
         else:
+            if drop:
+                _drop_all(engine)
             Base.metadata.create_all(engine)
             _migrate_user_columns(engine)
             if seed:
@@ -140,8 +159,14 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="insert idempotent development owner and sample course; omitted uses SEED_DEV_DATA",
     )
+    parser.add_argument(
+        "--drop-all",
+        action="store_true",
+        default=False,
+        help="drop the entire schema and all data before bootstrapping",
+    )
     args = parser.parse_args(argv)
-    bootstrap_database(seed=args.seed)
+    bootstrap_database(seed=args.seed, drop=args.drop_all)
     return 0
 
 
