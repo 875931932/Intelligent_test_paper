@@ -178,6 +178,10 @@ export interface CurrentFrameworkResponse {
   detail?: string;
   id?: string;
   candidate_id?: string;
+  /** 无已发布版本时返回最近未确认候选作为草稿 */
+  draft?: boolean;
+  /** 草稿对应的构建 run id，用于继续确认/驳回 */
+  run_id?: string;
   payload?: Record<string, unknown>;
 }
 

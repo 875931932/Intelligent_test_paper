@@ -129,12 +129,17 @@ export default function FrameworkPage() {
     if (!courseId) return;
     try {
       const data = await api.framework.getCurrent(courseId) as CurrentFrameworkResponse;
-      if (data.published === false || !data.payload) {
+      if (!data.payload) {
         setPublished(null);
         setBuildState('idle');
-      } else {
+      } else if (data.published) {
         setPublished(data.payload as unknown as FrameworkCandidate);
         setBuildState('done');
+      } else {
+        // 未确认草稿：恢复候选视图，教师可继续确认/驳回，避免重复构建浪费算力
+        setCandidate(data.payload as unknown as FrameworkCandidate);
+        setRunId(data.run_id ?? null);
+        setBuildState('candidate');
       }
     } catch {
       setPublished(null);

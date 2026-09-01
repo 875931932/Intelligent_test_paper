@@ -390,9 +390,26 @@ def get_current_framework(session: Session, *, course_id: str) -> dict:
             framework_versions.c.status == "published",
         ).order_by(framework_versions.c.version_no.desc()).limit(1)
     ).mappings().one_or_none()
-    if row is None:
-        raise FrameworkNotFoundError
-    return dict(row)
+    if row is not None:
+        return dict(row)
+    # 无已发布版本时，返回最近一次未确认的候选框架作为草稿，
+    # 教师刷新/重进页面仍能看到，避免重复构建浪费算力。
+    draft = session.execute(
+        select(framework_versions).where(
+            framework_versions.c.course_id == course_id,
+            framework_versions.c.status == "candidate",
+        ).order_by(framework_versions.c.created_at.desc()).limit(1)
+    ).mappings().one_or_none()
+    if draft is not None:
+        draft = dict(draft)
+        return {
+            "published": False,
+            "draft": True,
+            "id": draft["id"],
+            "run_id": draft["framework_build_run_id"],
+            "payload": draft["payload"],
+        }
+    raise FrameworkNotFoundError
 
 
 def _ready_blocks(session: Session, course_id: str, material_version_id: str, expected_type: str) -> list[str]:
