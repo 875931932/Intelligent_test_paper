@@ -32,7 +32,7 @@ function SyllabusSelect({ label, value, options, onChange }: {
   const selected = options.find((o) => o.id === value);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', position: 'relative', minWidth: 0 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', position: 'relative', minWidth: 0, maxWidth: '100%', overflow: 'hidden' }}>
       <label style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)' }}>{label}</label>
       <button
         type="button"
@@ -40,13 +40,16 @@ function SyllabusSelect({ label, value, options, onChange }: {
         onBlur={() => setTimeout(() => setOpen(false), 120)}
         style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
-          width: '100%', minWidth: 0, padding: '10px 12px', borderRadius: '10px',
+          width: '100%', maxWidth: '100%', minWidth: 0, padding: '10px 12px', borderRadius: '10px',
           background: 'var(--surface)', border: '1px solid rgba(0,0,0,0.1)',
           fontSize: '0.875rem', color: selected ? 'var(--text-primary)' : 'var(--text-tertiary)',
           cursor: 'pointer', textAlign: 'left', overflow: 'hidden',
         }}
       >
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <span
+          title={selected?.label}
+          style={{ flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+        >
           {selected ? selected.label : '选择版本'}
         </span>
         <ChevronDown size={16} style={{ flexShrink: 0, opacity: 0.6, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }} />
@@ -371,7 +374,7 @@ export default function FrameworkPage() {
           <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
             选择教学大纲和考核大纲的版本以生成命题框架。
           </p>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '12px' }}>
             <SyllabusSelect
               label="教学大纲"
               value={teachingVersionId}
