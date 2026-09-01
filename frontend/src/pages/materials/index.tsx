@@ -86,6 +86,11 @@ const RUNNING_PARSE_STATES = new Set([
 const isParsing = (m: MaterialResponse): boolean =>
   !!m.parse_status && RUNNING_PARSE_STATES.has(m.parse_status.status);
 
+// 解析已结束（terminal：已完成/失败），此时按钮应显示“重新解析”
+const isParsed = (m: MaterialResponse): boolean =>
+  !!m.parse_status &&
+  (m.parse_status.status === 'ready' || m.parse_status.status === 'failed');
+
 const FOLDER_GROUPS: FolderMeta[] = [
   {
     key: 'syllabus',
@@ -332,6 +337,8 @@ export default function MaterialsPage() {
   }, [materials, startPolling]);
 
   const handleParse = async (material: MaterialResponse) => {
+    // 记住乐观覆盖前的原始状态，请求失败时回退，避免卡死在 running
+    const prevStatus = material.parse_status;
     try {
       // 乐观置为“解析中”，让按钮/标签立即反馈，无需等首次轮询
       setMaterials((prev) =>
@@ -354,6 +361,10 @@ export default function MaterialsPage() {
       // 立即启动轮询（首次 poll 会把状态回填为 running/ready 等）
       startPolling(material.id);
     } catch {
+      // 触发失败：恢复原状态，避免残留“解析中”
+      setMaterials((prev) =>
+        prev.map((m) => (m.id === material.id ? { ...m, parse_status: prevStatus } : m))
+      );
       addToast('触发解析失败', 'error');
     }
   };
@@ -447,7 +458,7 @@ export default function MaterialsPage() {
                 icon={<RefreshCw size={14} />}
                 style={{ flex: 1 }}
               >
-                {isParsing(m) ? '解析中…' : '解析'}
+                {isParsing(m) ? '解析中…' : (isParsed(m) ? '重新解析' : '解析')}
               </Button>
               <Button
                 variant="danger"
