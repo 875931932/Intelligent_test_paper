@@ -91,10 +91,16 @@ def build_framework_graph(extractor: SyllabusExtractor, repository: FrameworkRep
     def merge_assessment_led_framework(state: FrameworkState):
         teaching = [TeachingTopic.model_validate(item) for item in state["teaching_topics"]]
         assessment = AssessmentOutline.model_validate(state["assessment_outline"])
-        teaching_keys = {topic.key for topic in teaching}
         conflicts = []
         for anchor in assessment.anchors:
-            if not teaching_keys.intersection(anchor.alignment_keys):
+            # 教学覆盖判断：不依赖模型填写的 alignment_keys（常为空/命名不一致），
+            # 用“精确 key → 归一化 key → 标题归一化子串”三级确定性对齐兜底。
+            topic = _teaching_topic_for_keys(
+                teaching,
+                [anchor.key, *anchor.alignment_keys],
+                anchor.title,
+            )
+            if topic is None:
                 conflicts.append(
                     FrameworkConflict(
                         key=f"coverage:{anchor.key}",
@@ -138,16 +144,16 @@ def build_framework_graph(extractor: SyllabusExtractor, repository: FrameworkRep
 
     def align_exam_points_with_teaching(state: FrameworkState):
         candidate = FrameworkCandidate.model_validate(state["candidate"])
-        topics_by_key = {topic.key: topic for topic in candidate.teaching_topics}
         conflicts = list(candidate.conflicts)
         conflict_keys = {conflict.key for conflict in conflicts}
         for point in candidate.exam_points:
-            aligned_topics = [
-                topics_by_key[key]
-                for key in point.teaching_anchor_keys
-                if key in topics_by_key
-            ]
-            if not aligned_topics:
+            # 考点对齐：同样用确定性匹配，而不要求 teaching_anchor_keys 精确命中
+            topic = _teaching_topic_for_keys(
+                candidate.teaching_topics,
+                point.teaching_anchor_keys,
+                point.title,
+            )
+            if topic is None:
                 key = f"exam-point-coverage:{point.code}"
                 if key not in conflict_keys:
                     conflicts.append(
@@ -159,9 +165,7 @@ def build_framework_graph(extractor: SyllabusExtractor, repository: FrameworkRep
                     )
                     conflict_keys.add(key)
                 continue
-            if _has_unrecognized_depth(point.cognitive_targets) or any(
-                _has_unrecognized_depth([topic.depth]) for topic in aligned_topics
-            ):
+            if _has_unrecognized_depth(point.cognitive_targets) or _has_unrecognized_depth([topic.depth]):
                 key = f"exam-point-depth:{point.code}"
                 if key not in conflict_keys:
                     conflicts.append(
@@ -174,12 +178,7 @@ def build_framework_graph(extractor: SyllabusExtractor, repository: FrameworkRep
                     conflict_keys.add(key)
                 continue
             point_depth = _highest_depth(point.cognitive_targets)
-            teaching_depths = [
-                depth
-                for topic in aligned_topics
-                if (depth := _highest_depth([topic.depth, *topic.requirements])) is not None
-            ]
-            teaching_depth = max(teaching_depths, default=None)
+            teaching_depth = _highest_depth([topic.depth, *topic.requirements])
             if point_depth is not None and teaching_depth is not None and point_depth > teaching_depth:
                 key = f"exam-point-depth:{point.code}"
                 if key not in conflict_keys:
@@ -286,6 +285,49 @@ def _highest_depth(values: list[str]) -> int | None:
         if term in value.strip().lower()
     ]
     return max(ranks) if ranks else None
+
+
+def _norm(text: str) -> str:
+    """归一化用于对齐的文本：去掉下划线/空格/标点等非字母数字字符，统一小写。
+
+    e.g. "chapter_1" -> "chapter1"，"第1章 开源大模型" -> "第1章开源大模型"
+    """
+    return "".join(ch for ch in str(text).lower() if ch.isalnum())
+
+
+def _teaching_topic_for_keys(
+    teaching_topics: list[TeachingTopic],
+    keys: list[str] | None,
+    title: str = "",
+) -> TeachingTopic | None:
+    """把考核侧范围/考点确定性地对齐到教学主题，不依赖模型填写的对齐 key。
+
+    三级匹配：
+    1. keys 精确命中 teaching.key
+    2. keys 归一化后命中 teaching.key（如 chapter_1 vs chapter1）
+    3. 标题归一化后互相包含（如 “第1章 开源大模型…” vs “开源大模型…”）
+    """
+    keys = keys or []
+    exact = {topic.key: topic for topic in teaching_topics}
+    normalized = {_norm(topic.key): topic for topic in teaching_topics}
+    for key in keys:
+        if key in exact:
+            return exact[key]
+    for key in keys:
+        topic = normalized.get(_norm(key))
+        if topic is not None:
+            return topic
+    if title:
+        norm_title = _norm(title)
+        for topic in teaching_topics:
+            norm_topic_title = _norm(topic.title)
+            if (
+                norm_title
+                and norm_topic_title
+                and (norm_title in norm_topic_title or norm_topic_title in norm_title)
+            ):
+                return topic
+    return None
 
 
 def _has_unrecognized_depth(values: list[str]) -> bool:
