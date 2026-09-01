@@ -35,7 +35,8 @@ function jsSha256(bytes: Uint8Array): string {
   const l = bytes.length;
   const bitLenHi = Math.floor(l / 0x20000000);
   const bitLenLo = (l << 3) >>> 0;
-  const totalLen = l + 1 + (((l + 9) >>> 6) << 6);
+  // 填充后长度 = 消息 + 0x80 + 8 字节位长，向上取整到 64 的倍数
+  const totalLen = ((l + 9 + 63) >>> 6) << 6;
   const padded = new Uint8Array(totalLen);
   padded.set(bytes);
   padded[l] = 0x80;
