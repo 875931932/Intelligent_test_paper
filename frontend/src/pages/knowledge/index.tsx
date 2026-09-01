@@ -63,7 +63,7 @@ export default function KnowledgePage() {
   const [runId, setRunId] = useState<string | null>(null);
   const [reviewedTopicCodes, setReviewedTopicCodes] = useState<string[]>([]);
   const [reviewedExamPointCodes, setReviewedExamPointCodes] = useState<string[]>([]);
-  const [teacherExclusions, setTeacherExclusions] = useState<string[]>([]);
+  const [teacherExclusions] = useState<string[]>([]);
 
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<EvidenceChunk[]>([]);

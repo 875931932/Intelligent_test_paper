@@ -54,7 +54,7 @@ export default function FrameworkPage() {
         setPublished(null);
         setBuildState('idle');
       } else {
-        setPublished(data.payload as FrameworkCandidate);
+        setPublished(data.payload as unknown as FrameworkCandidate);
         setBuildState('done');
       }
     } catch {
