@@ -243,9 +243,12 @@ export default function MaterialsPage() {
       setUploadOpen(false);
       setUploadItems([]);
       loadMaterials();
-    } catch {
+    } catch (err) {
+      // 如实暴露错误，便于排障（先前只弹 toast 导致控制台无任何信息）
+      const reason = err instanceof Error ? err.message : String(err);
+      console.error('[upload] 上传失败:', err);
       addToast(
-        successCount > 0 ? `部分上传失败（成功 ${successCount} 份）` : '上传失败，请重试',
+        successCount > 0 ? `部分上传失败（成功 ${successCount} 份）` : `上传失败：${reason}`,
         successCount > 0 ? 'info' : 'error'
       );
     } finally {
