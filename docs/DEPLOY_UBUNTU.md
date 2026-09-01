@@ -81,9 +81,11 @@ S3_BUCKET=exam-materials
 ```bash
 cd /opt/intelligent-test-paper/backend
 source ../.venv/bin/activate
-PYTHONPATH=. python -m app.db.init_db
+set -a && . ../.env && set +a
+PYTHONPATH=. python -m app.db.init_db --seed
 ```
 
+`--seed` 会（幂等）创建默认测试账号 `admin / 123456`，并把旧版 `owner-dev` 名下的课程迁移到该账号。**务必先 `source ../.env` 加载 `DATABASE_URL`，并加上 `--seed`**，否则不写入用户，登录会报「找不到用户」。
 该命令会创建当前版本表结构并尝试启用 `vector` 扩展；它不是历史迁移工具。数据库用户需要建表和创建扩展的权限，或者由 DBA 预先执行：
 
 ```sql
