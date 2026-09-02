@@ -204,20 +204,34 @@ export default function KnowledgePage() {
 
   // Build flow
   const handleOpenBuild = useCallback(async () => {
+    // 知识目录基于「已发布命题框架」组织考点，先校验框架已发布
+    try {
+      const framework = await api.framework.getCurrent(courseId) as { published?: boolean };
+      if (!framework?.published) {
+        addToast('请先构建并发布命题框架，再构建知识目录', 'error');
+        return;
+      }
+    } catch {
+      addToast('请先构建并发布命题框架，再构建知识目录', 'error');
+      return;
+    }
     setBuildOpen(true);
     try {
       const data = await api.materials.list(courseId);
       const list = Array.isArray(data) ? data : [];
       const versions: MaterialVersionOption[] = [];
       list.forEach((m) => {
-        if (m.latest_version) {
-          versions.push({
-            id: m.latest_version.id,
-            name: m.logical_name || '未命名',
-            type: m.material_type,
-            version: 'v' + m.latest_version.version_no,
-          });
-        }
+        // 知识目录的考点/锚点来自已发布命题框架，教学资料只作为证据来源。
+        // 因此只允许选择教学资料/习题，排除教学大纲与考核大纲（大纲已用于生成框架）。
+        if (m.material_type !== 'teaching_material' && m.material_type !== 'exercise') return;
+        if (!m.latest_version) return;
+        if (m.parse_status?.status !== 'ready') return;
+        versions.push({
+          id: m.latest_version.id,
+          name: m.logical_name || '未命名',
+          type: m.material_type,
+          version: 'v' + m.latest_version.version_no,
+        });
       });
       setSelectableVersions(versions);
     } catch {
@@ -450,11 +464,11 @@ export default function KnowledgePage() {
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
-            选择用于构建知识目录的资料版本（可多选）：
+            知识目录将基于已发布的命题框架组织考点，以下教学资料/习题作为证据来源（教学大纲与考核大纲无需重复选择，可多选）：
           </p>
           {selectableVersions.length === 0 ? (
             <p style={{ fontSize: '0.875rem', color: 'var(--text-tertiary)', padding: '24px 0', textAlign: 'center' }}>
-              暂无已上传的资料版本，请先前往「资料库」上传并解析资料。
+              暂无已解析的教学资料，请先前往「资料库」上传并解析教学资料或习题。
             </p>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '320px', overflowY: 'auto' }}>
