@@ -7,33 +7,17 @@ interface ProgressPanelProps {
   messages?: string[];
   /** 0-100 的真实进度；不传或为 null/undefined 时显示不确定动画 */
   progress?: number | null;
-  /** 是否显示已用时计时 */
-  showElapsed?: boolean;
   /** 阶段标签（如后端返回的 stage） */
   stageLabel?: string;
-}
-
-function formatElapsed(totalSeconds: number): string {
-  const s = Math.floor(totalSeconds % 60);
-  const m = Math.floor(totalSeconds / 60);
-  return m > 0 ? `${m} 分 ${s} 秒` : `${s} 秒`;
 }
 
 export function ProgressPanel({
   title = '正在处理，请稍候…',
   messages,
   progress,
-  showElapsed = true,
   stageLabel,
 }: ProgressPanelProps) {
-  const [elapsed, setElapsed] = useState(0);
   const [messageIndex, setMessageIndex] = useState(0);
-
-  useEffect(() => {
-    if (!showElapsed) return;
-    const id = setInterval(() => setElapsed((e) => e + 1), 1000);
-    return () => clearInterval(id);
-  }, [showElapsed]);
 
   useEffect(() => {
     if (!messages || messages.length === 0) return;
@@ -72,14 +56,6 @@ export function ProgressPanel({
         )}
       </div>
 
-      <div className="progress-track" style={{ width: 'min(420px, 100%)' }}>
-        {determinate ? (
-          <div className="progress-fill" style={{ width: `${pct}%` }} />
-        ) : (
-          <div className="progress-fill progress-indeterminate" />
-        )}
-      </div>
-
       <div
         style={{
           display: 'flex',
@@ -92,7 +68,6 @@ export function ProgressPanel({
       >
         {determinate && <span>{pct}%</span>}
         {stageLabel && <span>{stageLabel}</span>}
-        {showElapsed && <span>已用时 {formatElapsed(elapsed)}</span>}
       </div>
     </div>
   );
