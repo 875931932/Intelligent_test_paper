@@ -1,12 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
-import { RefreshCw, Check, X, ChevronRight, ChevronDown, AlertTriangle, Target, Anchor } from 'lucide-react';
+import { RefreshCw, Check, X, ChevronRight, ChevronDown, AlertTriangle, Target } from 'lucide-react';
 import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
 import { Modal, Badge, Spinner, ProgressPanel } from '@/components/ui';
-import type { FrameworkCandidate, CurrentFrameworkResponse, AssessmentAnchor } from '@/types/api';
+import type { FrameworkCandidate, CurrentFrameworkResponse, AssessmentAnchor, FrameworkExamPoint } from '@/types/api';
 
 type BuildState = 'idle' | 'building' | 'candidate' | 'done';
 
@@ -273,10 +273,12 @@ export default function FrameworkPage() {
     if (!runId || !candidate) return;
     try {
       setConfirming(true);
-      // 回传候选 anchors / exam_points；为每个 open conflict 提供教师确认的 resolution
-      const openConflicts = (candidate.conflicts || []).filter((c) => c.status !== 'resolved');
+      // 只需裁决 blocking 冲突；advisory（教学深度提示）以考核大纲为准，无需处理
+      const blockingConflicts = (candidate.conflicts || []).filter(
+        (c) => c.status !== 'resolved' && (c.severity ?? 'blocking') === 'blocking',
+      );
       const conflictResolutions: Record<string, string> = {};
-      openConflicts.forEach((c) => { conflictResolutions[c.key] = '教师确认接受'; });
+      blockingConflicts.forEach((c) => { conflictResolutions[c.key] = '教师确认接受'; });
       await api.framework.confirm(courseId, runId, {
         anchors: (candidate.anchors || []).map((a) => ({ ...a })),
         exam_points: candidate.exam_points || [],
@@ -452,17 +454,19 @@ function CandidateView({ candidate, rejecting, onReject, onOpenConfirm }: {
 }) {
   const anchors = candidate.anchors || [];
   const points = candidate.exam_points || [];
-  const conflicts = (candidate.conflicts || []).filter((c) => c.status !== 'resolved');
+  const allConflicts = (candidate.conflicts || []).filter((c) => c.status !== 'resolved');
+  const blocking = allConflicts.filter((c) => (c.severity ?? 'blocking') === 'blocking');
+  const advisory = allConflicts.filter((c) => (c.severity ?? 'blocking') === 'advisory');
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      {conflicts.length > 0 && (
+      {blocking.length > 0 && (
         <div className="glass-card" style={{ padding: '16px', borderLeft: '4px solid var(--warning)' }}>
           <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '12px', color: 'var(--warning)', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <AlertTriangle size={16} /> 检测到 {conflicts.length} 个冲突
+            <AlertTriangle size={16} /> 需处理的冲突（{blocking.length}）
           </h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {conflicts.map((c, i) => (
+            {blocking.map((c, i) => (
               <div key={i} style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,149,0,0.06)', fontSize: '0.875rem' }}>
                 <p style={{ fontWeight: 500 }}>{c.message || c.key}</p>
               </div>
@@ -471,54 +475,25 @@ function CandidateView({ candidate, rejecting, onReject, onOpenConfirm }: {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-        {/* Anchors */}
-        <div className="glass-card" style={{ padding: '16px' }}>
-          <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Anchor size={16} style={{ color: 'var(--purple)' }} /> 考核范围
-          </h3>
-          {anchors.length === 0 ? (
-            <p style={{ fontSize: '0.875rem', color: 'var(--text-tertiary)' }}>暂无锚点</p>
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '360px', overflowY: 'auto' }}>
-              {anchors.map((anchor, i) => (
-                <AnchorItem key={i} anchor={anchor} />
-              ))}
-            </div>
-          )}
-        </div>
+      {advisory.length > 0 && (
+        <details className="glass-card" style={{ padding: '16px', borderLeft: '4px solid var(--info)' }}>
+          <summary style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--info)', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', listStyle: 'none' }}>
+            <span>参考提示（{advisory.length}）· 以考核大纲为准，无需处理</span>
+          </summary>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '12px' }}>
+            {advisory.map((c, i) => (
+              <div key={i} style={{ padding: '10px 12px', borderRadius: '10px', background: 'var(--info-subtle)', fontSize: '0.875rem' }}>
+                <p>{c.message || c.key}</p>
+              </div>
+            ))}
+          </div>
+          <p style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)', marginTop: '8px' }}>
+            命题以考核大纲为准，教学大纲仅用于界定教学覆盖；此类提示在确认发布时会自动以考核大纲为准处理，可折叠忽略。
+          </p>
+        </details>
+      )}
 
-        {/* Exam points */}
-        <div className="glass-card" style={{ padding: '16px' }}>
-          <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Target size={16} style={{ color: 'var(--accent)' }} /> 考点详情
-          </h3>
-          {points.length === 0 ? (
-            <p style={{ fontSize: '0.875rem', color: 'var(--text-tertiary)' }}>暂无考点</p>
-          ) : (
-            <div style={{ overflow: 'auto', maxHeight: '360px' }}>
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>编号</th>
-                    <th>考点名称</th>
-                    <th>权重</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {points.map((pt) => (
-                    <tr key={pt.id}>
-                      <td style={{ fontSize: '0.8125rem' }}>{pt.code}</td>
-                      <td style={{ fontWeight: 500, fontSize: '0.875rem' }}>{pt.title}</td>
-                      <td style={{ fontSize: '0.875rem' }}>{pt.weight_value}%</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      </div>
+      <FrameworkBreakdown anchors={anchors} points={points} />
 
       {/* Actions: 固定在视口底部，内容较多时无需滚到页面最下方 */}
       <div style={{
@@ -542,20 +517,92 @@ function CandidateView({ candidate, rejecting, onReject, onOpenConfirm }: {
   );
 }
 
-function AnchorItem({ anchor }: { anchor: AssessmentAnchor }) {
+// 考点表格（同一章节/未归类共用一个渲染）
+function PointsTable({ points }: { points: FrameworkExamPoint[] }) {
   return (
-    <div style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(0,0,0,0.02)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <ChevronRight size={14} style={{ color: 'var(--purple)', flexShrink: 0 }} />
-        <p style={{ fontWeight: 500, fontSize: '0.875rem' }}>{anchor.title}</p>
-        <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>{anchor.exam_weight}%</span>
-      </div>
-      {(anchor.ability_requirements || []).length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginLeft: '22px' }}>
-          {(anchor.ability_requirements || []).map((sub, j) => (
-            <Badge key={j} variant="info">{sub}</Badge>
+    <div style={{ overflowX: 'auto' }}>
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>编号</th>
+            <th>考点名称</th>
+            <th>权重</th>
+            <th>认知要求</th>
+            <th>允许题型</th>
+          </tr>
+        </thead>
+        <tbody>
+          {points.map((pt) => (
+            <tr key={pt.id}>
+              <td style={{ fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>{pt.code}</td>
+              <td style={{ fontWeight: 500, fontSize: '0.875rem' }}>{pt.title}</td>
+              <td style={{ fontSize: '0.875rem', whiteSpace: 'nowrap' }}>{pt.weight_value}%</td>
+              <td style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
+                {(pt.cognitive_targets || []).join('、') || '-'}
+              </td>
+              <td style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
+                {(pt.allowed_question_types || []).join('、') || '-'}
+              </td>
+            </tr>
           ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// 考核范围（章节）与考点合并展示：每个章节作为分组头，其下挂属于该章节的考点。
+function FrameworkBreakdown({ anchors, points }: {
+  anchors: AssessmentAnchor[];
+  points: FrameworkExamPoint[];
+}) {
+  const anchorKeys = new Set(anchors.map((a) => a.key));
+  const groups = anchors.map((anchor) => ({
+    anchor,
+    points: points.filter((p) => p.anchor_key === anchor.key),
+  }));
+  const orphanPoints = points.filter((p) => !anchorKeys.has(p.anchor_key));
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+      {groups.map(({ anchor, points: pts }, gi) => (
+        <div key={gi} className="glass-card" style={{ padding: '14px 16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+            <ChevronRight size={14} style={{ color: 'var(--purple)', flexShrink: 0 }} />
+            <p style={{ fontWeight: 600, fontSize: '0.9rem' }}>{anchor.title}</p>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginLeft: 'auto', whiteSpace: 'nowrap' }}>
+              {anchor.exam_weight}%
+            </span>
+          </div>
+          {(anchor.ability_requirements || []).length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', marginLeft: '22px', marginBottom: '8px' }}>
+              {(anchor.ability_requirements || []).map((sub, j) => (
+                <Badge key={j} variant="info">{sub}</Badge>
+              ))}
+            </div>
+          )}
+          {pts.length === 0 ? (
+            <p style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)', marginLeft: '22px', marginTop: '4px' }}>
+              本章暂无考点
+            </p>
+          ) : (
+            <PointsTable points={pts} />
+          )}
         </div>
+      ))}
+
+      {orphanPoints.length > 0 && (
+        <div className="glass-card" style={{ padding: '14px 16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+            <ChevronRight size={14} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
+            <p style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-secondary)' }}>未归类考点</p>
+          </div>
+          <PointsTable points={orphanPoints} />
+        </div>
+      )}
+
+      {anchors.length === 0 && points.length === 0 && (
+        <p style={{ fontSize: '0.875rem', color: 'var(--text-tertiary)' }}>暂无考核范围与考点</p>
       )}
     </div>
   );
@@ -569,52 +616,7 @@ function PublishedView({ candidate }: { candidate: FrameworkCandidate }) {
 
   return (
     <div className="glass-card" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      {/* Anchors */}
-      {anchors.length > 0 && (
-        <div>
-          <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Anchor size={16} style={{ color: 'var(--purple)' }} /> 考核范围
-          </h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            {anchors.map((anchor, i) => (
-              <AnchorItem key={i} anchor={anchor} />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Exam points */}
-      {points.length > 0 && (
-        <div>
-          <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <Target size={16} style={{ color: 'var(--accent)' }} /> 考点详情
-          </h3>
-          <div style={{ overflowX: 'auto' }}>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>编号</th>
-                  <th>考点名称</th>
-                  <th>权重</th>
-                  <th>关联锚点</th>
-                  <th>允许题型</th>
-                </tr>
-              </thead>
-              <tbody>
-                {points.map((pt) => (
-                  <tr key={pt.id}>
-                    <td style={{ fontSize: '0.8125rem' }}>{pt.code}</td>
-                    <td style={{ fontWeight: 500, fontSize: '0.875rem' }}>{pt.title}</td>
-                    <td style={{ fontSize: '0.875rem' }}>{pt.weight_value}%</td>
-                    <td style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>{pt.anchor_key || '-'}</td>
-                    <td style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>{(pt.allowed_question_types || []).join(', ') || '-'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
+      <FrameworkBreakdown anchors={anchors} points={points} />
     </div>
   );
 }

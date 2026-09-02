@@ -96,6 +96,8 @@ export interface FrameworkConflict {
   kind: string;
   message: string;
   status: 'open' | 'resolved';
+  /** blocking=必须裁决；advisory=以考核大纲为准的提示，不阻塞发布 */
+  severity?: 'blocking' | 'advisory';
 }
 
 export interface AssessmentAnchor {

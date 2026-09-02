@@ -243,6 +243,96 @@ def test_framework_api_builds_candidate_and_publishes_structured_confirmation(tm
         engine.dispose()
 
 
+class DepthMismatchExtractor(FakeSyllabusExtractor):
+    """考纲认知层级高于教纲教学深度：应产生 advisory 冲突而非阻塞。"""
+
+    def extract_teaching(self, blocks, *, call_context=None):
+        return [TeachingTopic(key="core", title="核心概念", depth="understand")]
+
+    def extract_assessment(self, blocks, *, call_context=None):
+        outline = super().extract_assessment(blocks, call_context=call_context)
+        outline.exam_points[0].cognitive_targets = ["analyze"]
+        return outline
+
+
+def test_teaching_depth_conflicts_are_advisory_and_do_not_block_publish(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'framework-advisory.db'}", connect_args={"check_same_thread": False})
+    event.listen(engine, "connect", lambda connection, _: connection.execute("PRAGMA foreign_keys=ON"))
+    Base.metadata.create_all(engine)
+    with Session(engine) as setup:
+        setup.add(User(id="owner-dev", display_name="Owner", role="teacher"))
+        setup.flush()
+        setup.add(Course(id="course", owner_id="owner-dev", slug="course", name="Course"))
+        setup.flush()
+        setup.execute(
+            parser_profiles.insert().values(
+                id="mineru-profile",
+                course_id="course",
+                name="mineru",
+                version="1",
+                provider="mineru",
+                configuration={},
+            )
+        )
+        _insert_outline(
+            setup,
+            material_id="teaching",
+            version_id="teaching-v1",
+            run_id="parse-teaching",
+            material_type="teaching_syllabus",
+            text="教学内容与要求：理解核心概念",
+        )
+        _insert_outline(
+            setup,
+            material_id="assessment",
+            version_id="assessment-v1",
+            run_id="parse-assessment",
+            material_type="assessment_syllabus",
+            text="期末考试：核心概念占100%",
+        )
+        setup.commit()
+
+    def session_override():
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = session_override
+    app.state.syllabus_extractor = DepthMismatchExtractor()
+    try:
+        with TestClient(app) as client:
+            created = client.post(
+                "/api/v1/courses/course/framework-runs",
+                json={
+                    "teaching_material_version_id": "teaching-v1",
+                    "assessment_material_version_id": "assessment-v1",
+                },
+            )
+            assert created.status_code == 202, created.text
+            run_id = created.json()["run_id"]
+
+            candidate = client.get(f"/api/v1/courses/course/framework-runs/{run_id}/candidate").json()
+            depth_conflicts = [c for c in candidate["conflicts"] if c["kind"] == "teaching_depth_conflict"]
+            assert depth_conflicts, "expected a teaching_depth_conflict to be raised"
+            assert all(c.get("severity") == "advisory" for c in depth_conflicts)
+
+            # 不带深度冲突裁决也能直接发布
+            confirmed = client.post(
+                f"/api/v1/courses/course/framework-runs/{run_id}/confirm",
+                json={
+                    "anchors": candidate["anchors"],
+                    "exam_points": candidate["exam_points"],
+                    "conflict_resolutions": {},
+                    "teacher_exclusions": [],
+                },
+            )
+            assert confirmed.status_code == 200, confirmed.text
+            assert confirmed.json()["status"] == "published"
+    finally:
+        app.dependency_overrides.clear()
+        del app.state.syllabus_extractor
+        engine.dispose()
+
+
 @pytest.mark.parametrize("missing_setting", ["deepseek_api_key", "deepseek_base_url", "deepseek_model"])
 def test_framework_build_requires_configured_semantic_extractor(tmp_path, monkeypatch, missing_setting):
     engine = create_engine(f"sqlite:///{tmp_path / 'framework-no-model.db'}", connect_args={"check_same_thread": False})

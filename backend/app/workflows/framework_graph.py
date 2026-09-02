@@ -173,6 +173,7 @@ def build_framework_graph(extractor: SyllabusExtractor, repository: FrameworkRep
                             key=key,
                             kind="teaching_depth_conflict",
                             message=f"考点“{point.title}”或其教学覆盖的认知层级无法识别，需要教师确认",
+                            severity="advisory",
                         )
                     )
                     conflict_keys.add(key)
@@ -186,7 +187,8 @@ def build_framework_graph(extractor: SyllabusExtractor, repository: FrameworkRep
                         FrameworkConflict(
                             key=key,
                             kind="teaching_depth_conflict",
-                            message=f"考点“{point.title}”的认知要求高于教学大纲中的教学深度",
+                            message=f"考点“{point.title}”的认知要求高于教学大纲中的教学深度，已按考核大纲为准",
+                            severity="advisory",
                         )
                     )
                     conflict_keys.add(key)
@@ -204,7 +206,12 @@ def build_framework_graph(extractor: SyllabusExtractor, repository: FrameworkRep
     def interrupt_teacher_confirmation(state: FrameworkState):
         decision = interrupt({"candidate_id": state["candidate_id"], "candidate": state["candidate"]})
         confirmation = FrameworkConfirmation.model_validate(decision)
-        open_keys = {item["key"] for item in state["candidate"].get("conflicts", []) if item.get("status") == "open"}
+        # 只有 blocking 冲突需要教师逐条裁决；advisory（教学深度提示）仅展示不阻塞。
+        open_keys = {
+            item["key"]
+            for item in state["candidate"].get("conflicts", [])
+            if item.get("status") == "open" and item.get("severity", "blocking") == "blocking"
+        }
         if open_keys - set(confirmation.conflict_resolutions):
             raise ValueError("every open conflict requires a teacher resolution")
         if set(confirmation.conflict_resolutions) - open_keys:

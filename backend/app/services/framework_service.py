@@ -137,7 +137,13 @@ class DatabaseFrameworkRepository:
                 framework_conflicts.c.status == "open",
             )
         ).mappings().all()
-        open_keys = {conflict["details"].get("key") for conflict in conflicts}
+        # advisory（教学深度提示）以考核大纲为准，不要求教师逐条裁决。
+        blocking_conflicts = [
+            conflict
+            for conflict in conflicts
+            if (conflict["details"] or {}).get("severity", "blocking") == "blocking"
+        ]
+        open_keys = {conflict["details"].get("key") for conflict in blocking_conflicts}
         missing_resolutions = open_keys - set(confirmation.conflict_resolutions)
         if missing_resolutions:
             raise FrameworkInputError("every open conflict requires a teacher resolution")
@@ -216,9 +222,20 @@ class DatabaseFrameworkRepository:
                 )
                 .values(**_exam_point_values(point, status="confirmed"))
             )
-        for conflict in conflicts:
+        for conflict in blocking_conflicts:
             details = dict(conflict["details"])
             details["teacher_resolution"] = confirmation.conflict_resolutions[details["key"]]
+            self.session.execute(
+                update(framework_conflicts)
+                .where(framework_conflicts.c.id == conflict["id"], framework_conflicts.c.course_id == course_id)
+                .values(status="resolved", details=details)
+            )
+        # advisory 冲突：发布时按考核大纲为准自动关闭，不要求教师输入。
+        for conflict in conflicts:
+            if conflict["id"] in {c["id"] for c in blocking_conflicts}:
+                continue
+            details = dict(conflict["details"])
+            details["teacher_resolution"] = "以考核大纲为准（系统自动处理）"
             self.session.execute(
                 update(framework_conflicts)
                 .where(framework_conflicts.c.id == conflict["id"], framework_conflicts.c.course_id == course_id)

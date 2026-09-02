@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.domain.framework.exam_points import ExamPoint, WeightSource
 from app.domain.model_calls import ModelCallContext
@@ -60,6 +60,10 @@ class FrameworkConflict(BaseModel):
     ]
     message: str
     status: Literal["open", "resolved"] = "open"
+    # blocking: 教师必须逐条裁决后才能发布（覆盖缺失、权重不闭合等硬性问题）。
+    # advisory: 以考核大纲为准的提示性信息（如教学深度措辞差异），不阻塞发布，
+    # 展示给教师参考即可。老数据缺省视为 blocking，保持向后兼容。
+    severity: Literal["blocking", "advisory"] = "blocking"
 
 
 class FrameworkCandidate(BaseModel):
@@ -96,6 +100,15 @@ class FrameworkConfirmation(BaseModel):
     exam_points: list[ExamPoint] = Field(min_length=1)
     conflict_resolutions: dict[str, str]
     teacher_exclusions: list[str]
+
+    @field_validator("conflict_resolutions")
+    @classmethod
+    def _advisory_resolutions_rejected(cls, value: dict[str, str]) -> dict[str, str]:
+        # advisory 冲突不再要求教师逐条裁决；确认请求也不应携带其裁决项。
+        for key in value:
+            if key.startswith("exam-point-depth:"):
+                raise ValueError(f"teaching-depth conflict {key} is advisory and requires no resolution")
+        return value
 
     @model_validator(mode="after")
     def validate_weights(self):
