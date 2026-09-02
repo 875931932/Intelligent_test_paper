@@ -689,4 +689,15 @@ body::after {
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+  /* 功能性等待指示器（spinner / 进度条）不受减少动画影响，
+    否则用户无法感知任务仍在进行中 */
+  .spinner,
+  .progress-fill,
+  .progress-indeterminate {
+    animation-duration: 0.8s !important;
+    animation-iteration-count: infinite !important;
+  }
+  .progress-fill:not(.progress-indeterminate) {
+    transition-duration: 0.5s !important;
+  }
 }

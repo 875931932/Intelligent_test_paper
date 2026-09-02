@@ -281,9 +281,11 @@ export default function FrameworkPage() {
       addToast('请选择教学大纲和考核大纲', 'error');
       return;
     }
+    // 点击确认后立即关闭弹窗，让用户回到主区域观看进度动画
+    setBuildOpen(false);
+    setBuilding(true);
+    setBuildState('building');
     try {
-      setBuilding(true);
-      setBuildState('building');
       const run = await api.framework.createRun(courseId, {
         teaching_material_version_id: teachingVersionId,
         assessment_material_version_id: assessmentVersionId,
