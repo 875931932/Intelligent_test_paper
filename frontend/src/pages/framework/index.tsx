@@ -32,7 +32,7 @@ function SyllabusSelect({ label, value, options, onChange }: {
   const selected = options.find((o) => o.id === value);
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', position: 'relative', minWidth: 0, maxWidth: '100%', overflow: 'hidden' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', position: 'relative', minWidth: 0, maxWidth: '100%' }}>
       <label style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)' }}>{label}</label>
       <button
         type="button"
