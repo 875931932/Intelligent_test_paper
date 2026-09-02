@@ -87,14 +87,13 @@ const DashboardPage: FC = () => {
   }
 
   // ── 统计数据 ──
+  // 解析状态机：null(未开始) / queued(排队) / processing(处理中) / ready(已解析) / failed(失败)
+  const isParsed = (m: MaterialResponse) =>
+    ['ready'].includes(m.parse_status?.status as string);
   const materialStats = {
     categories: new Set(materials.map((m) => m.material_type)).size,
-    parsed: materials.filter((m) =>
-      ['parsed', 'completed', 'success'].includes(m.parse_status?.status),
-    ).length,
-    unparsed: materials.filter((m) =>
-      !['parsed', 'completed', 'success'].includes(m.parse_status?.status),
-    ).length,
+    parsed: materials.filter(isParsed).length,
+    unparsed: materials.filter((m) => !isParsed(m)).length,
     total: materials.length,
   };
 
@@ -164,7 +163,7 @@ const DashboardPage: FC = () => {
             </div>
             <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
               <BadgeSuccess>已解析 {materialStats.parsed}</BadgeSuccess>
-              {materialStats.unparsed > 0 && <BadgeWarning>待解析 {materialStats.unparsed}</BadgeWarning>}
+              {materialStats.unparsed > 0 && <BadgeWarning>未解析 {materialStats.unparsed}</BadgeWarning>}
               <span className="badge badge-default">{materialStats.categories} 类资料</span>
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
