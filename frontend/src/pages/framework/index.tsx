@@ -61,6 +61,11 @@ function SyllabusSelect({ label, value, options, onChange }: {
           borderRadius: '10px', boxShadow: '0 10px 30px rgba(0,0,0,0.12)', padding: 4,
           maxHeight: 220, overflowY: 'auto',
         }}>
+          {options.length === 0 && (
+            <div style={{ padding: '10px 10px', fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>
+              暂无可选资料
+            </div>
+          )}
           {options.map((o) => (
             <div
               key={o.id}

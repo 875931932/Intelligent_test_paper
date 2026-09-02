@@ -195,7 +195,13 @@ export default function MaterialsPage() {
     setUploadOpen(true);
   };
 
-  const defaultTypeForNewFile = (): string => activeSubFolder || 'teaching_material';
+  const defaultTypeForNewFile = (): string => {
+    if (activeSubFolder) return activeSubFolder;
+    // 在「课程大纲」父文件夹上传时默认按大纲归类（教学大纲），不再默认成教材；
+    // 教材/习题文件夹保持原默认「教材」。用户仍可在弹窗内逐文件改类型。
+    if (activeFolder === 'syllabus') return 'teaching_syllabus';
+    return 'teaching_material';
+  };
 
   const directPut = async (url: string, file: File, sha256: string, extraHeaders: Record<string, string>) => {
     const controller = new AbortController();
