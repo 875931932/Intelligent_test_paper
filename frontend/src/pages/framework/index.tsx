@@ -557,7 +557,8 @@ function CandidateView({ candidate, rejecting, onReject, onOpenConfirm }: {
   );
 }
 
-// 考点表格（同一章节/未归类共用一个渲染）
+// 考点表格（同一章节/未归类共用一个渲染）。
+// 权重按章节（考核范围）分配，考点不显示权重。
 function PointsTable({ points }: { points: FrameworkExamPoint[] }) {
   return (
     <div style={{ overflowX: 'auto' }}>
@@ -566,7 +567,6 @@ function PointsTable({ points }: { points: FrameworkExamPoint[] }) {
           <tr>
             <th>编号</th>
             <th>考点名称</th>
-            <th>权重</th>
             <th>认知要求</th>
             <th>允许题型</th>
           </tr>
@@ -576,7 +576,6 @@ function PointsTable({ points }: { points: FrameworkExamPoint[] }) {
             <tr key={pt.id}>
               <td style={{ fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>{pt.code}</td>
               <td style={{ fontWeight: 500, fontSize: '0.875rem' }}>{pt.title}</td>
-              <td style={{ fontSize: '0.875rem', whiteSpace: 'nowrap' }}>{pt.weight_value}%</td>
               <td style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
                 {(pt.cognitive_targets || []).join('、') || '-'}
               </td>
