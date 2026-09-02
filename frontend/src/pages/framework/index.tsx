@@ -568,7 +568,6 @@ function PointsTable({ points }: { points: FrameworkExamPoint[] }) {
             <th>编号</th>
             <th>考点名称</th>
             <th>认知要求</th>
-            <th>允许题型</th>
           </tr>
         </thead>
         <tbody>
@@ -578,9 +577,6 @@ function PointsTable({ points }: { points: FrameworkExamPoint[] }) {
               <td style={{ fontWeight: 500, fontSize: '0.875rem' }}>{pt.title}</td>
               <td style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
                 {(pt.cognitive_targets || []).join('、') || '-'}
-              </td>
-              <td style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
-                {(pt.allowed_question_types || []).join('、') || '-'}
               </td>
             </tr>
           ))}
