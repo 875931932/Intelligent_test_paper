@@ -31,14 +31,18 @@ function SyllabusSelect({ label, value, options, onChange }: {
 }) {
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
-  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; width: number; up: boolean } | null>(null);
   const selected = options.find((o) => o.id === value);
 
   const updatePos = useCallback(() => {
     const el = btnRef.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    setPos({ top: r.bottom, left: r.left, width: r.width });
+    // 预估面板高度（含 margin/padding）；若按钮下方空间不足则向上展开，避免盖住底部按钮
+    const panelH = panelRef.current?.offsetHeight || 220;
+    const up = r.bottom + panelH + 8 > window.innerHeight;
+    setPos({ top: up ? r.top - 4 : r.bottom + 4, left: r.left, width: r.width, up });
   }, []);
 
   // 打开时基于按钮当前位置计算面板坐标；滚动/缩放时同步更新
@@ -80,8 +84,9 @@ function SyllabusSelect({ label, value, options, onChange }: {
       {open &&
         createPortal(
           <div
+            ref={panelRef}
             style={{
-              position: 'fixed', top: pos ? pos.top + 4 : 0, left: pos ? pos.left : 0,
+              position: 'fixed', top: pos ? pos.top : 0, left: pos ? pos.left : 0,
               width: pos ? pos.width : '100%', zIndex: 9999, marginTop: 0,
               background: 'var(--surface)', border: '1px solid rgba(0,0,0,0.1)',
               borderRadius: '10px', boxShadow: '0 10px 30px rgba(0,0,0,0.14)', padding: 4,
