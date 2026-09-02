@@ -5,7 +5,7 @@ import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
-import { Modal, Badge, Spinner } from '@/components/ui';
+import { Modal, Badge, Spinner, ProgressPanel } from '@/components/ui';
 import type { FrameworkCandidate, CurrentFrameworkResponse, AssessmentAnchor } from '@/types/api';
 
 type BuildState = 'idle' | 'building' | 'candidate' | 'done';
@@ -128,29 +128,78 @@ export default function FrameworkPage() {
     }
   }, []);
 
+  const loadCandidate = useCallback(async (rid: string) => {
+    if (!rid) return;
+    try {
+      const candidateData = await api.framework.getCandidate(courseId, rid);
+      setCandidate(candidateData);
+      setRunId(rid);
+      setBuildState('candidate');
+    } catch {
+      addToast('获取候选框架失败', 'error');
+      setBuildState('idle');
+    }
+  }, [courseId, addToast]);
+
+  const startPolling = useCallback(() => {
+    clearPolling();
+    pollingRef.current = setInterval(async () => {
+      try {
+        const latest = await api.framework.getLatest(courseId);
+        if (latest.status === 'awaiting_teacher_confirmation' || latest.status === 'published') {
+          clearPolling();
+          await loadCandidate(latest.run_id);
+        } else if (latest.status === 'rejected') {
+          clearPolling();
+          setBuildState('idle');
+          addToast('框架已被拒绝', 'info');
+        } else if (latest.status === 'failed' || latest.status === 'cancelled') {
+          clearPolling();
+          setBuildState('idle');
+          addToast('框架构建失败', 'error');
+        }
+      } catch {
+        // ignore poll errors
+      }
+    }, 3000);
+  }, [courseId, clearPolling, loadCandidate, addToast]);
+
   const loadPublished = useCallback(async () => {
     if (!courseId) return;
+    let hasContent = false;
     try {
       const data = await api.framework.getCurrent(courseId) as CurrentFrameworkResponse;
-      if (!data.payload) {
-        setPublished(null);
-        setBuildState('idle');
-      } else if (data.published) {
-        setPublished(data.payload as unknown as FrameworkCandidate);
-        setBuildState('done');
-      } else {
-        // 未确认草稿：恢复候选视图，教师可继续确认/驳回，避免重复构建浪费算力
-        setCandidate(data.payload as unknown as FrameworkCandidate);
-        setRunId(data.run_id ?? null);
-        setBuildState('candidate');
+      if (data.payload) {
+        hasContent = true;
+        if (data.published) {
+          setPublished(data.payload as unknown as FrameworkCandidate);
+          setBuildState('done');
+        } else {
+          // 未确认草稿：恢复候选视图，教师可继续确认/驳回，避免重复构建浪费算力
+          setCandidate(data.payload as unknown as FrameworkCandidate);
+          setRunId(data.run_id ?? null);
+          setBuildState('candidate');
+        }
       }
     } catch {
       setPublished(null);
-      setBuildState('idle');
-    } finally {
-      setLoading(false);
     }
-  }, [courseId]);
+    if (!hasContent) {
+      setPublished(null);
+      setBuildState('idle');
+      // 刷新后恢复仍在进行的构建：进度不丢失，继续轮询直到候选就绪
+      try {
+        const latest = await api.framework.getLatest(courseId);
+        if (latest && (latest.status === 'running' || latest.status === 'queued')) {
+          setBuildState('building');
+          startPolling();
+        }
+      } catch {
+        // 无历史 run 时忽略
+      }
+    }
+    setLoading(false);
+  }, [courseId, startPolling]);
 
   useEffect(() => {
     loadPublished();
@@ -219,41 +268,6 @@ export default function FrameworkPage() {
       setBuilding(false);
     }
   };
-
-  const loadCandidate = useCallback(async (rid: string) => {
-    try {
-      const candidateData = await api.framework.getCandidate(courseId, rid);
-      setCandidate(candidateData);
-      setRunId(rid);
-      setBuildState('candidate');
-    } catch {
-      addToast('获取候选框架失败', 'error');
-      setBuildState('idle');
-    }
-  }, [courseId, addToast]);
-
-  const startPolling = useCallback(() => {
-    clearPolling();
-    pollingRef.current = setInterval(async () => {
-      try {
-        const latest = await api.framework.getLatest(courseId);
-        if (latest.candidate_id) {
-          clearPolling();
-          await loadCandidate(latest.run_id);
-        } else if (latest.status === 'rejected') {
-          clearPolling();
-          setBuildState('idle');
-          addToast('框架已被拒绝', 'info');
-        } else if (latest.status === 'failed') {
-          clearPolling();
-          setBuildState('idle');
-          addToast('框架构建失败', 'error');
-        }
-      } catch {
-        // ignore poll errors
-      }
-    }, 3000);
-  }, [courseId, clearPolling, loadCandidate, addToast]);
 
   const handleConfirm = async () => {
     if (!runId || !candidate) return;
@@ -326,10 +340,15 @@ export default function FrameworkPage() {
 
       {/* Building */}
       {buildState === 'building' && (
-        <div className="glass-panel" style={{ padding: '64px 20px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
-          <Spinner size="lg" />
-          <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)' }}>正在分析资料并生成框架，请稍候...</p>
-        </div>
+        <ProgressPanel
+          title="正在分析资料并生成框架，请稍候…"
+          messages={[
+            '正在解析教学大纲与考核大纲…',
+            '正在提取考核范围锚点…',
+            '正在生成考点与能力要求…',
+            '正在校验框架一致性…',
+          ]}
+        />
       )}
 
       {/* Candidate */}

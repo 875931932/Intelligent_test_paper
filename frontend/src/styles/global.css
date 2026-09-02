@@ -402,6 +402,31 @@ body::after {
 }
 
 /* ═══════════════════════════════════════════════
+   Progress panel
+   ═══════════════════════════════════════════════ */
+
+.progress-track {
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: rgba(0, 0, 0, 0.08);
+  overflow: hidden;
+  position: relative;
+}
+.progress-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  background: linear-gradient(90deg, var(--accent), #5ac8fa);
+  transition: width 0.5s var(--ease-in-out);
+}
+.progress-indeterminate {
+  width: 40% !important;
+  animation: progressSlide 1.4s var(--ease-in-out) infinite;
+}
+.progress-message {
+  animation: fadeIn 0.4s var(--ease-out-expo);
+}
+
+/* ═══════════════════════════════════════════════
    Modal
    ═══════════════════════════════════════════════ */
 
@@ -572,6 +597,10 @@ body::after {
 @keyframes float {
   0%, 100% { transform: translateY(0); }
   50% { transform: translateY(-6px); }
+}
+@keyframes progressSlide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
 }
 
 /* ── 动画工具类 ── */

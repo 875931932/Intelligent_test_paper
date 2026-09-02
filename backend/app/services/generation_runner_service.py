@@ -148,6 +148,7 @@ def _default_graph_invoke(
         api_key=settings.deepseek_api_key,
         base_url=settings.deepseek_base_url,
         model=settings.deepseek_model,
+        disable_thinking=settings.deepseek_generation_disable_thinking,
         recorder=DatabaseModelCallRecorder(get_session_factory()),
         call_context=ModelCallContext(course_id=course_id, stage="paper_generation"),
     )

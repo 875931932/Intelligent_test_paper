@@ -153,6 +153,61 @@ def test_json_client_uses_injected_http_client_and_records_one_success():
     assert "期末考试" not in repr(recorder.calls[0])
 
 
+def test_json_client_disables_thinking_by_default():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps({"ok": True})}}]},
+        )
+
+    client = DeepSeekJsonClient(
+        api_key="test-key",
+        base_url="https://deepseek.invalid/v1",
+        model="mimo-v2.5-pro",
+        max_attempts=1,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert client.request_json(
+        system_prompt="system",
+        payload={"blocks": ["材料"]},
+        temperature=0,
+    ) == {"ok": True}
+
+    body = json.loads(requests[0].content)
+    assert body["thinking"] == {"type": "disabled"}
+
+
+def test_json_client_can_enable_thinking():
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": json.dumps({"ok": True})}}]},
+        )
+
+    client = DeepSeekJsonClient(
+        api_key="test-key",
+        base_url="https://deepseek.invalid/v1",
+        model="mimo-v2.5-pro",
+        max_attempts=1,
+        disable_thinking=False,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert client.request_json(
+        system_prompt="system",
+        payload={"blocks": ["材料"]},
+        temperature=0,
+    ) == {"ok": True}
+
+    body = json.loads(requests[0].content)
+    assert "thinking" not in body
+
+
 def test_json_client_does_not_retry_success_when_recorder_fails(monkeypatch):
     request_count = 0
 

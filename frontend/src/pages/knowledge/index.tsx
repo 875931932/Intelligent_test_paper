@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { api } from '@/api/client';
 import { useToastStore } from '@/stores/toast';
-import { Button, Modal, Select, Badge, Spinner } from '@/components/ui';
+import { Button, Modal, Select, Badge, Spinner, ProgressPanel } from '@/components/ui';
 import type {
   PublishedKnowledgeResponse, KnowledgeCard, AssessmentUnit, EvidenceChunk,
   FrameworkExamPoint,
@@ -108,7 +108,61 @@ export default function KnowledgePage() {
 
   const filteredCardIds = useMemo(() => new Set(filteredCards.map((c) => c.id)), [filteredCards]);
 
-  // Load published
+  // 候选就绪：拉取候选、同步已审阅的 topic / exam point，进入待确认态
+  const loadCandidate = useCallback(async (rid: string) => {
+    try {
+      const candidate = await api.knowledge.getCandidate(courseId, rid);
+      const payload = (candidate as Record<string, unknown>).payload as Record<string, unknown> | undefined;
+      if (payload) {
+        const topics = (payload.topics || []) as Array<{ code: string; status: string }>;
+        topics.forEach((t) => {
+          if (t.status === 'active') {
+            setReviewedTopicCodes((prev) => prev.includes(t.code) ? prev : [...prev, t.code]);
+          }
+        });
+        const coverage = (payload.coverage || []) as Array<{ exam_point_code: string; status: string }>;
+        coverage.forEach((c) => {
+          if (c.status === 'sufficient') {
+            setReviewedExamPointCodes((prev) => prev.includes(c.exam_point_code) ? prev : [...prev, c.exam_point_code]);
+          }
+        });
+      }
+      setBuildState('candidate');
+      setBuildOpen(false);
+    } catch {
+      addToast('获取候选知识目录失败', 'error');
+      setBuildState('idle');
+    }
+  }, [courseId, addToast]);
+
+  const stopPolling = useCallback(() => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+      pollingRef.current = null;
+    }
+  }, []);
+
+  const startPolling = useCallback((rid: string) => {
+    if (pollingRef.current) clearInterval(pollingRef.current);
+    pollingRef.current = setInterval(async () => {
+      try {
+        const runData = await api.knowledge.getRun(courseId, rid);
+        if (runData?.status === 'awaiting_teacher_confirmation') {
+          stopPolling();
+          setRunId(rid);
+          await loadCandidate(rid);
+          addToast('知识目录构建完成，请确认', 'success');
+        } else if (runData?.status === 'failed') {
+          stopPolling();
+          setBuildState('idle');
+          setBuildOpen(false);
+          addToast((runData.error_message as string) || '构建失败', 'error');
+        }
+      } catch { /* ignore */ }
+    }, 3000);
+  }, [courseId, addToast, loadCandidate, stopPolling]);
+
+  // Load published（并恢复进行中 / 待确认的构建，刷新后进度不丢失）
   const loadPublished = useCallback(async () => {
     if (!courseId) return;
     try {
@@ -127,7 +181,21 @@ export default function KnowledgePage() {
     } finally {
       setLoading(false);
     }
-  }, [courseId]);
+    try {
+      const latest = await api.knowledge.getLatest(courseId);
+      if (latest) {
+        if (latest.status === 'running' || latest.status === 'queued') {
+          setBuildState('building');
+          startPolling(latest.run_id);
+        } else if (latest.status === 'awaiting_teacher_confirmation') {
+          setRunId(latest.run_id);
+          await loadCandidate(latest.run_id);
+        }
+      }
+    } catch {
+      // 无历史 run 时忽略
+    }
+  }, [courseId, startPolling, loadCandidate]);
 
   useEffect(() => {
     loadPublished();
@@ -158,46 +226,6 @@ export default function KnowledgePage() {
     setVersionIds([]);
   }, [courseId, addToast]);
 
-  const startPolling = useCallback((rid: string) => {
-    if (pollingRef.current) clearInterval(pollingRef.current);
-    pollingRef.current = setInterval(async () => {
-      try {
-        const runData = await api.knowledge.getRun(courseId, rid);
-        if (runData?.candidate_id) {
-          const candidate = await api.knowledge.getCandidate(courseId, rid);
-          const payload = (candidate as Record<string, unknown>).payload as Record<string, unknown> | undefined;
-          if (payload) {
-            const topics = (payload.topics || []) as Array<{ code: string; status: string }>;
-            const currentTopicCodes: string[] = [];
-            topics.forEach((t) => {
-              if (t.status === 'active') {
-                currentTopicCodes.push(t.code);
-                setReviewedTopicCodes((prev) => prev.includes(t.code) ? prev : [...prev, t.code]);
-              }
-            });
-            const coverage = (payload.coverage || []) as Array<{ exam_point_code: string; status: string }>;
-            coverage.forEach((c) => {
-              if (c.status === 'sufficient') {
-                setReviewedExamPointCodes((prev) => prev.includes(c.exam_point_code) ? prev : [...prev, c.exam_point_code]);
-              }
-            });
-          }
-          clearInterval(pollingRef.current!);
-          pollingRef.current = null;
-          setBuildState('candidate');
-          setBuildOpen(false);
-          addToast('知识目录构建完成，请确认', 'success');
-        } else if (runData?.status === 'failed') {
-          clearInterval(pollingRef.current!);
-          pollingRef.current = null;
-          setBuildState('idle');
-          setBuildOpen(false);
-          addToast((runData.error_message as string) || '构建失败', 'error');
-        }
-      } catch { /* ignore */ }
-    }, 3000);
-  }, [courseId, addToast]);
-
   const handleBuild = useCallback(async () => {
     if (versionIds.length === 0) {
       addToast('请至少选择一个资料版本', 'error');
@@ -210,8 +238,13 @@ export default function KnowledgePage() {
         material_version_ids: versionIds,
       });
       setRunId(run.run_id);
-      startPolling(run.run_id);
-      addToast('知识目录构建中，请稍候...', 'info');
+      if (run.status === 'awaiting_teacher_confirmation' && run.candidate_id) {
+        await loadCandidate(run.run_id);
+        addToast('知识目录构建完成，请确认', 'success');
+      } else {
+        startPolling(run.run_id);
+        addToast('知识目录构建中，请稍候...', 'info');
+      }
       setBuildOpen(false);
     } catch {
       addToast('启动构建失败', 'error');
@@ -219,7 +252,7 @@ export default function KnowledgePage() {
     } finally {
       setBuilding(false);
     }
-  }, [courseId, versionIds, startPolling, addToast]);
+  }, [courseId, versionIds, startPolling, loadCandidate, addToast]);
 
   const handlePublish = useCallback(async () => {
     if (!runId) return;
@@ -576,11 +609,15 @@ function ViewToggle({ mode, current, onChange, label, icon: Icon }: {
 
 function BuildingPanel() {
   return (
-    <div className="glass-panel" style={{ padding: '64px 20px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
-      <Spinner size="lg" />
-      <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)' }}>正在构建知识目录，正在组织资料与考点...</p>
-      <p style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>此过程通常需要 1-3 分钟，请勿关闭页面</p>
-    </div>
+    <ProgressPanel
+      title="正在构建知识目录，请稍候…"
+      messages={[
+        '正在组织资料与考点…',
+        '正在检索证据与落地关系…',
+        '正在生成知识卡片…',
+        '正在校验目录一致性…',
+      ]}
+    />
   );
 }
 

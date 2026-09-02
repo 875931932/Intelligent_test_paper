@@ -8,7 +8,7 @@ import { api } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
-import { Badge, Input } from '@/components/ui';
+import { Badge, Input, ProgressPanel } from '@/components/ui';
 import { SkeletonCardGrid } from '@/components/ui/Skeleton';
 import type { ContractSnapshot } from '@/api/domains/examProjects';
 import type { ExamProject, PlanItem, PaperVersionItem, TaskRun } from '@/types/api';
@@ -38,9 +38,17 @@ const STATUS_META: Record<string, { label: string; variant: BadgeVariant }> = {
   exported:   { label: '已导出',   variant: 'success' },
 };
 
+const STATUS_TO_STAGE: Record<string, StageKey> = {
+  draft: 'blueprint',
+  blueprint: 'blueprint',
+  contract: 'contract',
+  generating: 'generate',
+  review: 'review',
+  exported: 'export',
+};
+
 function stageFromStatus(status: string): StageKey {
-  const idx = STAGE_ORDER.indexOf(status as StageKey);
-  return idx >= 0 ? STAGE_ORDER[idx] : 'blueprint';
+  return STATUS_TO_STAGE[status] ?? 'blueprint';
 }
 
 // ═══════════════════════════════════════════════
@@ -313,13 +321,17 @@ function renderGenerate({
           </div>
         </div>
       ) : (
-        <div style={{ textAlign: 'center', padding: '48px 20px' }}>
-          <span className="spinner spinner-lg" />
-          <p style={{ marginTop: '16px', fontWeight: 500 }}>正在生成试题...</p>
-          <p style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', marginTop: '4px' }}>
-            阶段: {taskRun.stage || '-'} · 进度: {taskRun.progress ?? 0}%
-          </p>
-        </div>
+        <ProgressPanel
+          title="正在生成试题，请稍候…"
+          messages={[
+            '正在按合同生成题目…',
+            '正在进行答案与解析质检…',
+            '正在校验收分与题型…',
+            '正在整理试卷版本…',
+          ]}
+          progress={taskRun.progress ?? null}
+          stageLabel={taskRun.stage ? `阶段：${taskRun.stage}` : undefined}
+        />
       )}
     </div>
   );
@@ -533,15 +545,15 @@ export default function ExamProjectsPage() {
 
   // 轮询生成任务
   useEffect(() => {
-    if (!taskRun || taskRun.status === 'completed' || taskRun.status === 'failed') return;
+    if (!taskRun || taskRun.status === 'succeeded' || taskRun.status === 'failed') return;
     const id = setInterval(async () => {
       try {
         const tr = await api.examProjects.getTaskRun(courseId, taskRun.id, token ?? undefined);
         setTaskRun(tr);
-        if (tr.status === 'completed' || tr.status === 'failed') {
+        if (tr.status === 'succeeded' || tr.status === 'failed') {
           clearInterval(id);
           setGenerating(false);
-          if (tr.status === 'completed') {
+          if (tr.status === 'succeeded') {
             addToast('试题生成完成', 'success');
           } else {
             addToast('生成失败: ' + (tr.error_message || '未知错误'), 'error');
@@ -556,7 +568,7 @@ export default function ExamProjectsPage() {
 
   // 生成完成后加载试卷版本
   useEffect(() => {
-    if (taskRun?.status === 'completed' && activeProject?.active_paper_version_id) {
+    if (taskRun?.status === 'succeeded' && activeProject?.active_paper_version_id) {
       loadPaperVersion();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -587,6 +599,16 @@ export default function ExamProjectsPage() {
     setExportUrls({});
     if (proj.active_blueprint_version_id) {
       await loadPlanItems(proj);
+    }
+    // 刷新后恢复进行中的生成任务：进度不丢失，继续轮询直到完成
+    if (proj.active_task_run_id && ['queued', 'running', 'waiting_external'].includes(proj.generation_task_status ?? '')) {
+      try {
+        const tr = await api.examProjects.getTaskRun(courseId, proj.active_task_run_id, token ?? undefined);
+        setTaskRun(tr);
+        setGenerating(true);
+      } catch {
+        // 任务查询失败则忽略，保持初始状态
+      }
     }
   };
 

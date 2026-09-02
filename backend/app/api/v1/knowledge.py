@@ -105,6 +105,7 @@ def _get_semantic_json_client(request: Request) -> DeepSeekJsonClient:
             api_key=settings.deepseek_api_key,
             base_url=settings.deepseek_base_url,
             model=settings.deepseek_model,
+            disable_thinking=settings.deepseek_disable_thinking,
             recorder=DatabaseModelCallRecorder(get_session_factory()),
         )
         request.app.state.semantic_json_client = client
@@ -179,6 +180,23 @@ def create_organization_run(
             )
             session.commit()
         raise HTTPException(status_code=502, detail="knowledge organization failed")
+
+
+@router.get("/organization-runs/latest")
+def get_latest_run(course_id: str, session: Session = Depends(get_session)) -> dict:
+    from sqlalchemy import select
+
+    row = session.execute(
+        select(knowledge_publish_service.organization_runs)
+        .where(knowledge_publish_service.organization_runs.c.course_id == course_id)
+        .order_by(knowledge_publish_service.organization_runs.c.created_at.desc())
+        .limit(1)
+    ).mappings().one_or_none()
+    if row is None:
+        raise _not_found()
+    result = dict(row)
+    result["run_id"] = result.get("id")
+    return result
 
 
 @router.get("/organization-runs/{run_id}")

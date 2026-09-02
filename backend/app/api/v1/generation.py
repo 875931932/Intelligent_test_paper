@@ -42,6 +42,7 @@ def get_gateway(request: Request):
             api_key=settings.deepseek_api_key,
             base_url=settings.deepseek_base_url,
             model=settings.deepseek_model,
+            disable_thinking=settings.deepseek_generation_disable_thinking,
         )
         request.app.state.generation_gateway = gateway
         return gateway

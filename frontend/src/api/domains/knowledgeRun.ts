@@ -13,6 +13,9 @@ export const knowledgeRunApi = {
   getRun: (courseId: string, runId: string, token?: string): Promise<Record<string, unknown>> =>
     request('/courses/' + courseId + '/organization-runs/' + runId, undefined, token),
 
+  getLatest: (courseId: string, token?: string): Promise<OrganizationRunResponse> =>
+    request('/courses/' + courseId + '/organization-runs/latest', undefined, token),
+
   getCandidate: (courseId: string, runId: string, token?: string): Promise<Record<string, unknown>> =>
     request('/courses/' + courseId + '/organization-runs/' + runId + '/candidate', undefined, token),
 };

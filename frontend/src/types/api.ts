@@ -251,8 +251,12 @@ export interface KnowledgeTreeConfirmation {
 
 export interface OrganizationRunResponse {
   run_id: string;
-  candidate_id: string;
+  candidate_id?: string;
   status: string;
+  error_code?: string;
+  error_message?: string;
+  created_at?: string;
+  updated_at?: string;
 }
 
 // ── Blueprint / Contract ──
@@ -393,6 +397,11 @@ export interface ExamProject {
   model?: string;
   total_score?: number;
   item_count?: number;
+  active_task_run_id?: string | null;
+  generation_task_status?: string | null;
+  generation_progress?: number | null;
+  generation_stage?: string | null;
+  generation_error?: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -44,6 +44,7 @@ def get_syllabus_extractor(request: Request) -> SyllabusExtractor:
             api_key=settings.deepseek_api_key,
             base_url=settings.deepseek_base_url,
             model=settings.deepseek_model,
+            disable_thinking=settings.deepseek_disable_thinking,
             recorder=DatabaseModelCallRecorder(get_session_factory()),
         )
         extractor = DeepSeekSyllabusExtractor(client)
@@ -112,7 +113,9 @@ def get_latest_framework_run(course_id: str, session: Session = Depends(get_sess
     ).mappings().one_or_none()
     if row is None:
         raise _not_found()
-    return dict(row)
+    result = dict(row)
+    result["run_id"] = result.get("id")
+    return result
 
 
 @router.get("/framework-runs/{run_id}")

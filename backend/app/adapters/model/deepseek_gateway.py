@@ -103,6 +103,7 @@ class DeepSeekJsonClient:
         model: str = "mimo-v2.5-pro",
         timeout: float = 90.0,
         max_attempts: int = 4,
+        disable_thinking: bool = True,
         client: httpx.Client | None = None,
         recorder: ModelCallRecorder | None = None,
     ) -> None:
@@ -119,6 +120,7 @@ class DeepSeekJsonClient:
         self.model = model
         self.timeout = timeout
         self.max_attempts = max_attempts
+        self.disable_thinking = disable_thinking
         self.client = client or httpx.Client(trust_env=False, timeout=timeout)
         self.recorder = recorder
 
@@ -280,20 +282,23 @@ class DeepSeekJsonClient:
         raise DeepSeekGatewayError(last_error.error_code, str(last_error), details=details) from last_error
 
     def _post(self, system_prompt: str, canonical_prompt: str, temperature: float) -> httpx.Response:
+        json_body = {
+            "model": self.model,
+            "temperature": temperature,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": canonical_prompt},
+            ],
+            "response_format": {"type": "json_object"},
+        }
+        if self.disable_thinking:
+            json_body["thinking"] = {"type": "disabled"}
         request = {
             "headers": {
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
             },
-            "json": {
-                "model": self.model,
-                "temperature": temperature,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": canonical_prompt},
-                ],
-                "response_format": {"type": "json_object"},
-            },
+            "json": json_body,
             "timeout": self.timeout,
         }
         if self.client is not None:
@@ -345,6 +350,7 @@ class DeepSeekGateway:
         model: str = "mimo-v2.5-pro",
         timeout: float = 90.0,
         max_attempts: int = 4,
+        disable_thinking: bool = True,
         client: httpx.Client | None = None,
         json_client: DeepSeekJsonClient | None = None,
         recorder: ModelCallRecorder | None = None,
@@ -357,6 +363,7 @@ class DeepSeekGateway:
             model=model,
             timeout=timeout,
             max_attempts=max_attempts,
+            disable_thinking=disable_thinking,
             client=client,
             recorder=recorder,
         )
