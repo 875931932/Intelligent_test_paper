@@ -209,13 +209,16 @@ export default function FrameworkPage() {
       const data = await api.framework.getCurrent(courseId) as CurrentFrameworkResponse;
       if (data.payload) {
         hasContent = true;
-        if (data.published) {
+        // 兼容后端两种返回：显式 published 字段，或旧版返回的 status='published'
+        const isPublished = data.published || (data as unknown as { status?: string }).status === 'published';
+        if (isPublished) {
           setPublished(data.payload as unknown as FrameworkCandidate);
           setBuildState('done');
         } else {
-          // 未确认草稿：恢复候选视图，教师可继续确认/驳回，避免重复构建浪费算力
+          // 未确认草稿：恢复候选视图，教师可继续确认/驳回，避免重复构建浪费算力。
+          // run_id 兜底取 framework_build_run_id，避免旧后端未映射别名导致确认按钮静默失效。
           setCandidate(data.payload as unknown as FrameworkCandidate);
-          setRunId(data.run_id ?? null);
+          setRunId(data.run_id ?? (data as unknown as { framework_build_run_id?: string | null }).framework_build_run_id ?? null);
           setBuildState('candidate');
         }
       }
@@ -310,7 +313,21 @@ export default function FrameworkPage() {
   };
 
   const handleConfirm = async () => {
-    if (!runId || !candidate) return;
+    // runId 缺失（如旧后端未返回别名）时从 getCurrent 兜底恢复，避免静默失败
+    let rid = runId;
+    if (!rid || !candidate) {
+      try {
+        const data = await api.framework.getCurrent(courseId) as CurrentFrameworkResponse;
+        rid = data.run_id ?? (data as unknown as { framework_build_run_id?: string | null }).framework_build_run_id ?? null;
+        if (rid) setRunId(rid);
+      } catch {
+        // ignore
+      }
+    }
+    if (!rid || !candidate) {
+      addToast('候选框架信息不完整，请刷新页面后重试', 'error');
+      return;
+    }
     try {
       setConfirming(true);
       // 只需裁决 blocking 冲突；advisory（教学深度提示）以考核大纲为准，无需处理
@@ -319,7 +336,7 @@ export default function FrameworkPage() {
       );
       const conflictResolutions: Record<string, string> = {};
       blockingConflicts.forEach((c) => { conflictResolutions[c.key] = '教师确认接受'; });
-      await api.framework.confirm(courseId, runId, {
+      await api.framework.confirm(courseId, rid, {
         anchors: (candidate.anchors || []).map((a) => ({ ...a })),
         exam_points: candidate.exam_points || [],
         conflict_resolutions: conflictResolutions,
