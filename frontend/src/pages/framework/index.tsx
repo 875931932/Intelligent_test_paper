@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useParams } from 'react-router-dom';
 import { RefreshCw, Check, X, ChevronRight, ChevronDown, AlertTriangle, Target } from 'lucide-react';
 import { api } from '@/api/client';
@@ -18,9 +19,9 @@ interface SyllabusOption {
 }
 
 /**
- * 自定义下拉：未解析(disabled)的选项置灰不可点，hover 时在右侧浮出
- * “未解析”小提示，满足“能查到是否解析、未解析不能选”的要求。
- * 原生 <select> 无法对 disabled option 提供悬停提示，故自绘。
+ * 自定义下拉：未解析(disabled)的选项置灰不可点，hover 时右侧浮出“未解析”提示。
+ * 下拉面板通过 Portal 渲染到 body 顶部并固定定位（基于触发按钮的矩形坐标），
+ * 彻底脱离 Modal 的 overflow 滚动容器，长文件名不会撑开选择框，选项也不会被裁剪。
  */
 function SyllabusSelect({ label, value, options, onChange }: {
   label: string;
@@ -29,12 +30,34 @@ function SyllabusSelect({ label, value, options, onChange }: {
   onChange: (v: string) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
   const selected = options.find((o) => o.id === value);
 
+  const updatePos = useCallback(() => {
+    const el = btnRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setPos({ top: r.bottom, left: r.left, width: r.width });
+  }, []);
+
+  // 打开时基于按钮当前位置计算面板坐标；滚动/缩放时同步更新
+  useEffect(() => {
+    if (!open) return;
+    updatePos();
+    window.addEventListener('resize', updatePos);
+    window.addEventListener('scroll', updatePos, true);
+    return () => {
+      window.removeEventListener('resize', updatePos);
+      window.removeEventListener('scroll', updatePos, true);
+    };
+  }, [open, updatePos]);
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', position: 'relative', minWidth: 0, maxWidth: '100%' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0, maxWidth: '100%' }}>
       <label style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)' }}>{label}</label>
       <button
+        ref={btnRef}
         type="button"
         onClick={() => setOpen((o) => !o)}
         onBlur={() => setTimeout(() => setOpen(false), 120)}
@@ -54,49 +77,54 @@ function SyllabusSelect({ label, value, options, onChange }: {
         </span>
         <ChevronDown size={16} style={{ flexShrink: 0, opacity: 0.6, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }} />
       </button>
-      {open && (
-        <div style={{
-          position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 30, marginTop: 4,
-          background: 'var(--surface)', border: '1px solid rgba(0,0,0,0.1)',
-          borderRadius: '10px', boxShadow: '0 10px 30px rgba(0,0,0,0.12)', padding: 4,
-          maxHeight: 220, overflowY: 'auto',
-        }}>
-          {options.length === 0 && (
-            <div style={{ padding: '10px 10px', fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>
-              暂无可选资料
-            </div>
-          )}
-          {options.map((o) => (
-            <div
-              key={o.id}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                if (o.disabled) return;
-                onChange(o.id);
-                setOpen(false);
-              }}
-              style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-                padding: '9px 10px', borderRadius: 8, cursor: o.disabled ? 'not-allowed' : 'pointer',
-                background: value === o.id ? 'rgba(0,113,227,0.08)' : 'transparent',
-                color: o.disabled ? 'var(--text-tertiary)' : 'var(--text-primary)',
-                fontSize: '0.8125rem', opacity: o.disabled ? 0.7 : 1, overflow: 'hidden',
-              }}
-            >
-              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{o.label}</span>
-              {o.disabled && (
-                <span
-                  title="未解析"
-                  style={{
-                    flexShrink: 0, fontSize: '0.6875rem', padding: '2px 6px', borderRadius: 6,
-                    background: 'rgba(0,0,0,0.06)', color: 'var(--text-tertiary)',
-                  }}
-                >未解析</span>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+      {open &&
+        createPortal(
+          <div
+            style={{
+              position: 'fixed', top: pos ? pos.top + 4 : 0, left: pos ? pos.left : 0,
+              width: pos ? pos.width : '100%', zIndex: 9999, marginTop: 0,
+              background: 'var(--surface)', border: '1px solid rgba(0,0,0,0.1)',
+              borderRadius: '10px', boxShadow: '0 10px 30px rgba(0,0,0,0.14)', padding: 4,
+              maxHeight: 220, overflowY: 'auto',
+            }}
+          >
+            {options.length === 0 && (
+              <div style={{ padding: '10px 10px', fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>
+                暂无可选资料
+              </div>
+            )}
+            {options.map((o) => (
+              <div
+                key={o.id}
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  if (o.disabled) return;
+                  onChange(o.id);
+                  setOpen(false);
+                }}
+                style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                  padding: '9px 10px', borderRadius: 8, cursor: o.disabled ? 'not-allowed' : 'pointer',
+                  background: value === o.id ? 'rgba(0,113,227,0.08)' : 'transparent',
+                  color: o.disabled ? 'var(--text-tertiary)' : 'var(--text-primary)',
+                  fontSize: '0.8125rem', opacity: o.disabled ? 0.7 : 1,
+                }}
+              >
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>{o.label}</span>
+                {o.disabled && (
+                  <span
+                    title="未解析"
+                    style={{
+                      flexShrink: 0, fontSize: '0.6875rem', padding: '2px 6px', borderRadius: 6,
+                      background: 'rgba(0,0,0,0.06)', color: 'var(--text-tertiary)',
+                    }}
+                  >未解析</span>
+                )}
+              </div>
+            ))}
+          </div>,
+          document.body
+        )}
     </div>
   );
 }
