@@ -408,7 +408,11 @@ def get_current_framework(session: Session, *, course_id: str) -> dict:
         ).order_by(framework_versions.c.version_no.desc()).limit(1)
     ).mappings().one_or_none()
     if row is not None:
-        return dict(row)
+        result = dict(row)
+        # 显式标记已发布，供前端区分“已发布 / 待确认草稿”
+        result["published"] = True
+        result["run_id"] = result.get("framework_build_run_id")
+        return result
     # 无已发布版本时，返回最近一次未确认的候选框架作为草稿，
     # 教师刷新/重进页面仍能看到，避免重复构建浪费算力。
     draft = session.execute(
