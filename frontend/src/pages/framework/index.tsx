@@ -330,6 +330,8 @@ export default function FrameworkPage() {
     }
     try {
       setConfirming(true);
+      // 点击确认后立即关闭弹窗，回到主界面查看发布结果
+      setConfirmOpen(false);
       // 只需裁决 blocking 冲突；advisory（教学深度提示）以考核大纲为准，无需处理
       const blockingConflicts = (candidate.conflicts || []).filter(
         (c) => c.status !== 'resolved' && (c.severity ?? 'blocking') === 'blocking',
@@ -343,7 +345,6 @@ export default function FrameworkPage() {
         teacher_exclusions: [],
       });
       addToast('框架已确认发布', 'success');
-      setConfirmOpen(false);
       loadPublished();
     } catch {
       addToast('确认失败', 'error');

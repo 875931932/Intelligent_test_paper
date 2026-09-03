@@ -250,6 +250,8 @@ export default function KnowledgePage() {
     try {
       setBuilding(true);
       setBuildState('building');
+      // 点击确认后立即关闭弹窗，回到主界面查看构建进度
+      setBuildOpen(false);
       const run = await api.knowledge.createOrganizationRun(courseId, {
         material_version_ids: versionIds,
       });
@@ -261,7 +263,6 @@ export default function KnowledgePage() {
         startPolling(run.run_id);
         addToast('知识目录构建中，请稍候...', 'info');
       }
-      setBuildOpen(false);
     } catch {
       addToast('启动构建失败', 'error');
       setBuildState('idle');
