@@ -375,6 +375,19 @@ export default function MaterialsPage() {
     }
   };
 
+  // 一键解析：批量解析当前文件夹下所有“未解析 / 已失败”的文件
+  const handleParseAll = useCallback(() => {
+    const pending = filteredMaterials.filter(
+      (m) => !isParsing(m) && m.parse_status?.status !== 'ready'
+    );
+    if (pending.length === 0) {
+      addToast('当前文件夹没有需要解析的文件', 'info');
+      return;
+    }
+    pending.forEach((m) => handleParse(m));
+    addToast(`已对 ${pending.length} 份文件发起解析`, 'info');
+  }, [filteredMaterials, handleParse, addToast]);
+
   const handleDelete = async () => {
     if (!deleteId) return;
     try {
@@ -583,6 +596,16 @@ export default function MaterialsPage() {
             <span style={{ fontSize: '0.85rem', color: 'var(--text-tertiary)' }}>
               ({filteredMaterials.length} 份)
             </span>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleParseAll}
+                icon={<RefreshCw size={14} />}
+              >
+                一键解析
+              </Button>
+            </div>
           </div>
           {fileGrid()}
         </div>
