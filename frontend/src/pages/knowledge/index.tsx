@@ -204,10 +204,12 @@ export default function KnowledgePage() {
 
   // Build flow
   const handleOpenBuild = useCallback(async () => {
-    // 知识目录基于「已发布命题框架」组织考点，先校验框架已发布
+    // 知识目录基于「已发布命题框架」组织考点，先校验框架已发布。
+    // 兼容后端两种返回：显式 published 字段，或旧版返回的 status='published'。
     try {
-      const framework = await api.framework.getCurrent(courseId) as { published?: boolean };
-      if (!framework?.published) {
+      const framework = await api.framework.getCurrent(courseId) as { published?: boolean; status?: string };
+      const isPublished = framework?.published || framework?.status === 'published';
+      if (!isPublished) {
         addToast('请先构建并发布命题框架，再构建知识目录', 'error');
         return;
       }
