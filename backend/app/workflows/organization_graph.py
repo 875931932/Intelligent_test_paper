@@ -35,6 +35,12 @@ from app.workflows.knowledge_catalog_subgraph import (
     validate_consolidated_units,
 )
 
+# 分类单次调用可稳定覆盖的 (考点, chunk) 对数上限；超过则拆批，避免模型
+# 输出规模违规，同时杜绝“每考点一次调用”带来的重复 chunk 传递与 token 爆炸。
+_CLASSIFY_MAX_PAIRS_PER_CALL = 80
+# 分类单次调用允许的最大去重 chunk 数（单考点自身超限时独立成批，交由模型尽力覆盖）。
+_CLASSIFY_MAX_CHUNKS_PER_CALL = 120
+
 
 class OrganizationState(TypedDict, total=False):
     course_id: str
@@ -283,24 +289,57 @@ def build_organization_graph(
         def classify_material(
             material_version_id: str, material_pairs: list[dict]
         ) -> list[ExamPointFileDecision]:
-            # 按考点分组，逐考点单独调用分类，避免把某资料的全部考点
-            # 拼进一次调用导致 expected_pairs(考点×chunk) 巨大、模型无法一次覆盖，
-            # 从而触发布类输出规模违规(scope violation)。
+            # 把同资料内的考点按 expected_pairs(考点数×chunk 并集) 做贪心打包，
+            # 每批控制在分类模型单次可稳定覆盖的规模内：
+            #   - 若像最初那样“整份资料一次调用”，expected_pairs 会达到几百上千，
+            #     模型单次输出无法覆盖每一个 (考点, chunk) 对 → model_output_scope_violation；
+            #   - 若像逐考点那样“一次只放 1 个考点”，调用次数会爆炸(资料×考点)，
+            #     且同一 chunk 文本在多个批次里被重复传递 → token 消耗剧增。
+            # 打包可在避免 scope violation 的同时复用 chunks、削减调用次数与重复 token。
             pairs_by_point: dict[str, list[dict]] = defaultdict(list)
             for pair in material_pairs:
                 pairs_by_point[pair["exam_point_code"]].append(pair)
-            scoped_decisions: list[ExamPointFileDecision] = []
-            for point_code in sorted(pairs_by_point):
-                point_pairs = pairs_by_point[point_code]
-                point = points[point_code]
-                union_ids = sorted(
+
+            # 预处理每个考点的召回 chunk 并集
+            point_chunk_ids: dict[str, list[str]] = {
+                code: sorted(
                     {
                         chunk_id
                         for pair in point_pairs
                         for chunk_id in pair["evidence_chunk_ids"]
                     }
                 )
-                chunks = [chunks_by_id[chunk_id] for chunk_id in union_ids]
+                for code, point_pairs in pairs_by_point.items()
+            }
+
+            # 贪心分批：累计的 chunk 去重并集 × 批内考点数 = expected_pairs
+            batches: list[list[str]] = []
+            for code in sorted(pairs_by_point):
+                if len(point_chunk_ids[code]) > _CLASSIFY_MAX_CHUNKS_PER_CALL:
+                    # 单个考点自身的 chunk 数就已超限，独立成批，交由模型尽力覆盖
+                    batches.append([code])
+                    continue
+                if batches:
+                    head = batches[-1]
+                    head_chunks = set().union(
+                        *(point_chunk_ids[c] for c in head)
+                    )
+                    head_chunks.update(point_chunk_ids[code])
+                    if (
+                        len(head_chunks) * (len(head) + 1)
+                        <= _CLASSIFY_MAX_PAIRS_PER_CALL
+                    ):
+                        head.append(code)
+                        continue
+                batches.append([code])
+
+            scoped_decisions: list[ExamPointFileDecision] = []
+            for batch_codes in batches:
+                batch_points = [points[code] for code in batch_codes]
+                batch_chunk_ids = sorted(
+                    set().union(*(point_chunk_ids[c] for c in batch_codes))
+                )
+                chunks = [chunks_by_id[chunk_id] for chunk_id in batch_chunk_ids]
                 if any(
                     chunk.material_version_id != material_version_id for chunk in chunks
                 ):
@@ -308,7 +347,7 @@ def build_organization_graph(
                         "classification pair contains chunks from another material"
                     )
                 file_decisions = classifier.classify_file(
-                    exam_points=[point],
+                    exam_points=batch_points,
                     material_version_id=material_version_id,
                     chunks=chunks,
                     call_context=ModelCallContext(
@@ -321,33 +360,39 @@ def build_organization_graph(
                     item.exam_point_code: ExamPointFileDecision.model_validate(item)
                     for item in file_decisions
                 }
-                if set(by_point) != {point_code}:
+                if set(by_point) != set(batch_codes):
                     raise ValueError(
                         "classification response does not match its material points"
                     )
-                validated = by_point[point_code]
-                if validated.material_version_id != material_version_id:
-                    raise ValueError("classification response does not match its pair")
-                for pair in point_pairs:
-                    allowed_ids = set(pair["evidence_chunk_ids"])
-                    scoped = [
-                        item
-                        for item in validated.decisions
-                        if item.evidence_chunk_id in allowed_ids
-                    ]
-                    admitted = [admit_evidence_decision(point, item) for item in scoped]
-                    decision_ids = [item.evidence_chunk_id for item in scoped]
-                    if len(decision_ids) != len(set(decision_ids)):
+                for code in batch_codes:
+                    validated = by_point[code]
+                    if validated.material_version_id != material_version_id:
                         raise ValueError(
-                            "classification response contains duplicate evidence decisions"
+                            "classification response does not match its pair"
                         )
-                    if set(decision_ids) != allowed_ids:
-                        raise ValueError(
-                            "classification response must cover every recalled evidence chunk"
+                    for pair in pairs_by_point[code]:
+                        allowed_ids = set(pair["evidence_chunk_ids"])
+                        scoped = [
+                            item
+                            for item in validated.decisions
+                            if item.evidence_chunk_id in allowed_ids
+                        ]
+                        admitted = [
+                            admit_evidence_decision(points[code], item)
+                            for item in scoped
+                        ]
+                        decision_ids = [item.evidence_chunk_id for item in scoped]
+                        if len(decision_ids) != len(set(decision_ids)):
+                            raise ValueError(
+                                "classification response contains duplicate evidence decisions"
+                            )
+                        if set(decision_ids) != allowed_ids:
+                            raise ValueError(
+                                "classification response must cover every recalled evidence chunk"
+                            )
+                        scoped_decisions.append(
+                            validated.model_copy(update={"decisions": admitted})
                         )
-                    scoped_decisions.append(
-                        validated.model_copy(update={"decisions": admitted})
-                    )
             return scoped_decisions
 
         decisions: list[ExamPointFileDecision] = []
