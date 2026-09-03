@@ -154,26 +154,28 @@ export default function MaterialsPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
-  const pollingRef = useRef<Map<string, ReturnType<typeof setInterval>>>(new Map());
+  // 单一批量轮询定时器：多文件解析共享一个定时器，一次静默 list 返回全部状态，避免 N 个定时器各查一次库
+  const pollingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const loadMaterials = useCallback(async () => {
+  const loadMaterials = useCallback(async (silent = false) => {
     if (!courseId) return;
     try {
-      setLoading(true);
+      // 静默刷新用于批量轮询/单文件完成：不置 loading，避免整页闪烁
+      if (!silent) setLoading(true);
       const data = await api.materials.list(courseId);
       setMaterials(Array.isArray(data) ? data : []);
     } catch {
       addToast('加载资料列表失败', 'error');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, [courseId, addToast]);
 
   useEffect(() => {
     loadMaterials();
     return () => {
-      pollingRef.current.forEach((timer) => clearInterval(timer));
-      pollingRef.current.clear();
+      if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
+      pollingTimerRef.current = null;
     };
   }, [loadMaterials]);
 
@@ -289,58 +291,43 @@ export default function MaterialsPage() {
   };
 
   // ── 解析 ──
-  // 轮询推进解析状态机，直到 terminal（ready/failed）。幂等：同一资料只启动一个定时器。
-  const startPolling = useCallback(
-    (materialId: string) => {
-      if (!courseId || pollingRef.current.has(materialId)) return;
-      const timer = setInterval(async () => {
-        try {
-          const updated = (await api.materials.pollParse(
-            courseId,
-            materialId
-          )) as { status?: string; error_code?: string; error_summary?: string };
-          const next = updated?.status || '';
-          // 回填最新状态到列表，badge 立即反映“解析中/已完成/失败”
-          setMaterials((prev) =>
-            prev.map((m) =>
-              m.id === materialId
-                ? {
-                    ...m,
-                    parse_status: {
-                      id: m.parse_status?.id ?? materialId,
-                      status: next || m.parse_status?.status || 'pending',
-                      error_code: updated?.error_code,
-                      error_summary: updated?.error_summary,
-                    },
-                  }
-                : m
-            )
-          );
-          if (next === 'ready' || next === 'failed') {
-            clearInterval(timer);
-            pollingRef.current.delete(materialId);
-            addToast(
-              next === 'ready' ? '解析完成' : '解析失败',
-              next === 'ready' ? 'success' : 'error'
-            );
-            loadMaterials();
-          }
-        } catch {
-          clearInterval(timer);
-          pollingRef.current.delete(materialId);
-        }
-      }, 2000);
-      pollingRef.current.set(materialId, timer);
-    },
-    [courseId, addToast, loadMaterials]
-  );
+  // 单一批量轮询：所有解析中的文件共享一个定时器，每次静默 list 一次拿到全部 parse_status，
+  // 相比每文件一个定时器各查一次接口，显著减少数据库查询。全部 terminal 即停止并提示一次。
+  const startPolling = useCallback(() => {
+    if (!courseId || pollingTimerRef.current) return;
+    pollingTimerRef.current = setInterval(async () => {
+      // 静默刷新（不置 loading），避免整页闪烁
+      await loadMaterials(true);
+    }, 2000);
+  }, [courseId, loadMaterials]);
 
-  // 进入页面即恢复仍在解析的资料轮询（持久化：切换页面/文件夹后回来仍显示“解析中”并继续跑）
+  // 状态变化时判定是否还有解析中的文件：无则停掉批量轮询；在解析中则确保轮询已启动。
+  // 仅在发生一次“进行中 → 全部结束”的转变时提示结果，避免反复弹 toast。
   useEffect(() => {
-    for (const m of materials) {
-      if (isParsing(m)) startPolling(m.id);
+    const hasParsing = materials.some(isParsing);
+    if (hasParsing) {
+      startPolling();
+      return;
+    }
+    if (pollingTimerRef.current) {
+      clearInterval(pollingTimerRef.current);
+      pollingTimerRef.current = null;
     }
   }, [materials, startPolling]);
+
+  // 解析结果提示：跟踪上一次“是否有解析中”的状态，一次完成态变化只提示一次
+  const hadParsingRef = useRef(false);
+  useEffect(() => {
+    const hasParsing = materials.some(isParsing);
+    if (hadParsingRef.current && !hasParsing) {
+      const anyFailed = materials.some((m) => m.parse_status?.status === 'failed');
+      addToast(anyFailed ? '部分文件解析失败' : '全部解析完成', anyFailed ? 'error' : 'success');
+    }
+    hadParsingRef.current = hasParsing;
+  }, [materials, addToast]);
+
+  // 标记是否已发起过解析，供批量完成提示判断（避免页面加载后默认弹出的“全部解析完成”）
+  const handleParseAllStarted = useRef(false);
 
   const handleParse = async (material: MaterialResponse) => {
     // 记住乐观覆盖前的原始状态，请求失败时回退，避免卡死在 running
@@ -363,9 +350,9 @@ export default function MaterialsPage() {
         )
       );
       await api.materials.parse(courseId, material.id);
-      addToast('开始解析，请稍候...', 'info');
-      // 立即启动轮询（首次 poll 会把状态回填为 running/ready 等）
-      startPolling(material.id);
+      handleParseAllStarted.current = true;
+      // 由统一 effect 根据“是否有解析中”启动单个批量轮询，一次查询全部状态
+      startPolling();
     } catch {
       // 触发失败：恢复原状态，避免残留“解析中”
       setMaterials((prev) =>
