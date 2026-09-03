@@ -5,6 +5,7 @@ import {
   AlertTriangle, Eye, RefreshCw, Plus, BookOpen, Target, CheckCircle2, Layers,
 } from 'lucide-react';
 import { api } from '@/api/client';
+import { getErrorMessage } from '@/api/errors';
 import { useToastStore } from '@/stores/toast';
 import { Button, Modal, Select, Badge, Spinner, ProgressPanel } from '@/components/ui';
 import type {
@@ -283,8 +284,8 @@ export default function KnowledgePage() {
       addToast('知识目录已发布', 'success');
       setBuildState('published');
       loadPublished();
-    } catch {
-      addToast('发布失败', 'error');
+    } catch (err) {
+      addToast(`发布失败：${getErrorMessage(err)}`, 'error');
     }
   }, [courseId, runId, loadPublished, addToast, reviewedTopicCodes, reviewedExamPointCodes, teacherExclusions]);
 

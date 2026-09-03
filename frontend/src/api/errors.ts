@@ -39,11 +39,13 @@ export function getErrorMessage(err: unknown): string {
       case 404:
         return '请求的资源不存在。';
       case 409:
-        // 后端 detail 可能携带 { message, item_indices }
+        // 后端 detail 可能为字符串（如 "every active topic requires teacher review"）
+        // 或携带 { message, item_indices } 的对象结构
         if (err.body && typeof err.body === 'object') {
           const m = (err.body as Record<string, unknown>).message;
           if (typeof m === 'string') return m;
         }
+        if (err.message) return err.message;
         return '操作冲突，请刷新后重试。';
       case 422:
         // 422 除用于参数校验外，也用于表达业务前置条件（如“大纲未解析完成”）。
