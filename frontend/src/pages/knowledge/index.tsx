@@ -473,7 +473,29 @@ export default function KnowledgePage() {
               暂无已解析的教学资料，请先前往「资料库」上传并解析教学资料或习题。
             </p>
           ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '320px', overflowY: 'auto' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>
+                  已选 {versionIds.length} / {selectableVersions.length}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const all = selectableVersions.every((v) => versionIds.includes(v.id));
+                    setVersionIds(all ? [] : selectableVersions.map((v) => v.id));
+                  }}
+                  style={{
+                    background: 'none', border: 'none', cursor: 'pointer',
+                    fontSize: '0.8125rem', fontWeight: 500, color: 'var(--accent)',
+                    padding: '4px 6px', borderRadius: '6px',
+                  }}
+                >
+                  {selectableVersions.length > 0 && selectableVersions.every((v) => versionIds.includes(v.id))
+                    ? '取消全选'
+                    : '全选'}
+                </button>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '300px', overflowY: 'auto' }}>
               {selectableVersions.map((v) => {
                 const checked = versionIds.includes(v.id);
                 return (
@@ -501,6 +523,7 @@ export default function KnowledgePage() {
                   </label>
                 );
               })}
+              </div>
             </div>
           )}
         </div>
