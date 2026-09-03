@@ -283,59 +283,71 @@ def build_organization_graph(
         def classify_material(
             material_version_id: str, material_pairs: list[dict]
         ) -> list[ExamPointFileDecision]:
-            point_codes = sorted({pair["exam_point_code"] for pair in material_pairs})
-            material_points = [points[code] for code in point_codes]
-            union_ids = sorted(
-                {
-                    chunk_id
-                    for pair in material_pairs
-                    for chunk_id in pair["evidence_chunk_ids"]
-                }
-            )
-            chunks = [chunks_by_id[chunk_id] for chunk_id in union_ids]
-            if any(chunk.material_version_id != material_version_id for chunk in chunks):
-                raise ValueError("classification pair contains chunks from another material")
-            file_decisions = classifier.classify_file(
-                exam_points=material_points,
-                material_version_id=material_version_id,
-                chunks=chunks,
-                call_context=ModelCallContext(
-                    course_id=state["course_id"],
-                    organization_run_id=state["run_id"],
-                    stage="classify_exam_point_file_pair",
-                ),
-            )
-            by_point = {
-                item.exam_point_code: ExamPointFileDecision.model_validate(item)
-                for item in file_decisions
-            }
-            if set(by_point) != set(point_codes):
-                raise ValueError("classification response does not match its material points")
-            scoped_decisions: list[ExamPointFileDecision] = []
+            # 按考点分组，逐考点单独调用分类，避免把某资料的全部考点
+            # 拼进一次调用导致 expected_pairs(考点×chunk) 巨大、模型无法一次覆盖，
+            # 从而触发布类输出规模违规(scope violation)。
+            pairs_by_point: dict[str, list[dict]] = defaultdict(list)
             for pair in material_pairs:
-                point = points[pair["exam_point_code"]]
-                validated = by_point[pair["exam_point_code"]]
+                pairs_by_point[pair["exam_point_code"]].append(pair)
+            scoped_decisions: list[ExamPointFileDecision] = []
+            for point_code in sorted(pairs_by_point):
+                point_pairs = pairs_by_point[point_code]
+                point = points[point_code]
+                union_ids = sorted(
+                    {
+                        chunk_id
+                        for pair in point_pairs
+                        for chunk_id in pair["evidence_chunk_ids"]
+                    }
+                )
+                chunks = [chunks_by_id[chunk_id] for chunk_id in union_ids]
+                if any(
+                    chunk.material_version_id != material_version_id for chunk in chunks
+                ):
+                    raise ValueError(
+                        "classification pair contains chunks from another material"
+                    )
+                file_decisions = classifier.classify_file(
+                    exam_points=[point],
+                    material_version_id=material_version_id,
+                    chunks=chunks,
+                    call_context=ModelCallContext(
+                        course_id=state["course_id"],
+                        organization_run_id=state["run_id"],
+                        stage="classify_exam_point_file_pair",
+                    ),
+                )
+                by_point = {
+                    item.exam_point_code: ExamPointFileDecision.model_validate(item)
+                    for item in file_decisions
+                }
+                if set(by_point) != {point_code}:
+                    raise ValueError(
+                        "classification response does not match its material points"
+                    )
+                validated = by_point[point_code]
                 if validated.material_version_id != material_version_id:
                     raise ValueError("classification response does not match its pair")
-                allowed_ids = set(pair["evidence_chunk_ids"])
-                scoped = [
-                    item
-                    for item in validated.decisions
-                    if item.evidence_chunk_id in allowed_ids
-                ]
-                admitted = [admit_evidence_decision(point, item) for item in scoped]
-                decision_ids = [item.evidence_chunk_id for item in scoped]
-                if len(decision_ids) != len(set(decision_ids)):
-                    raise ValueError(
-                        "classification response contains duplicate evidence decisions"
+                for pair in point_pairs:
+                    allowed_ids = set(pair["evidence_chunk_ids"])
+                    scoped = [
+                        item
+                        for item in validated.decisions
+                        if item.evidence_chunk_id in allowed_ids
+                    ]
+                    admitted = [admit_evidence_decision(point, item) for item in scoped]
+                    decision_ids = [item.evidence_chunk_id for item in scoped]
+                    if len(decision_ids) != len(set(decision_ids)):
+                        raise ValueError(
+                            "classification response contains duplicate evidence decisions"
+                        )
+                    if set(decision_ids) != allowed_ids:
+                        raise ValueError(
+                            "classification response must cover every recalled evidence chunk"
+                        )
+                    scoped_decisions.append(
+                        validated.model_copy(update={"decisions": admitted})
                     )
-                if set(decision_ids) != allowed_ids:
-                    raise ValueError(
-                        "classification response must cover every recalled evidence chunk"
-                    )
-                scoped_decisions.append(
-                    validated.model_copy(update={"decisions": admitted})
-                )
             return scoped_decisions
 
         decisions: list[ExamPointFileDecision] = []
