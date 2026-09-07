@@ -402,6 +402,24 @@ def _without_products(
     )
 
 
+_CONTENT_KIND_TO_EVIDENCE_ROLE: dict[ContentKind, str] = {
+    ContentKind.CONCEPT: "fact_or_definition",
+    ContentKind.DEFINITION: "definition",
+    ContentKind.PRINCIPLE: "principle",
+    ContentKind.MECHANISM: "principle",
+    ContentKind.RULE: "constraint",
+    ContentKind.RELATIONSHIP: "relationship",
+    ContentKind.FACT: "fact",
+    ContentKind.CONSTRAINT: "constraint",
+    ContentKind.FORMULA: "formula",
+    ContentKind.DERIVATION: "derivation",
+    ContentKind.COMPARISON: "comparison_basis",
+    ContentKind.CASE: "worked_example",
+    ContentKind.SCENARIO: "worked_example",
+    ContentKind.DIAGNOSTIC: "diagnostic_basis",
+}
+
+
 def admit_evidence_decision(
     point: ExamPoint,
     decision: EvidenceDecision,
@@ -457,6 +475,17 @@ def admit_evidence_decision(
             decision,
             relevance_class=RelevanceClass.SUPPORTING,
             keep_prompt_material=True,
+        )
+
+    # 分类阶段不再要求模型输出 evidence_role；从 content_kind 确定性推导事实/答案角色，
+    # 避免 direct 决策因缺失 evidence_role 被准入校验误拒。
+    if not decision.evidence_role:
+        decision = decision.model_copy(
+            update={
+                "evidence_role": _CONTENT_KIND_TO_EVIDENCE_ROLE.get(
+                    decision.content_kind, "fact"
+                )
+            }
         )
 
     validate_direct_evidence_decision(decision, exam_point_code=point.code)

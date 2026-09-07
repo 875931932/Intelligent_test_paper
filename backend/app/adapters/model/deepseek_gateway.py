@@ -137,6 +137,7 @@ class DeepSeekJsonClient:
         temperature: float,
         call_context: ModelCallContext | None = None,
         response_validator: Callable[[dict], None] | None = None,
+        tool: dict[str, Any] | None = None,
     ) -> dict:
         prompt = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else dict(payload)
         canonical_prompt = json.dumps(prompt, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -165,7 +166,7 @@ class DeepSeekJsonClient:
             final_http_status = None
             should_retry = True
             try:
-                response = self._post(system_prompt, canonical_prompt, temperature)
+                response = self._post(system_prompt, canonical_prompt, temperature, tool)
                 headers = getattr(response, "headers", {})
                 request_id = headers.get("x-request-id") if hasattr(headers, "get") else None
                 status_code = getattr(response, "status_code", None)
@@ -179,21 +180,31 @@ class DeepSeekJsonClient:
                 input_tokens = _optional_int(usage.get("prompt_tokens"))
                 output_tokens = _optional_int(usage.get("completion_tokens"))
                 try:
-                    content = body["choices"][0]["message"]["content"]
+                    message = body["choices"][0]["message"]
                 except (KeyError, IndexError, TypeError):
                     raise DeepSeekModelError(
                         "model_invalid_envelope",
                         "model response is missing message content",
                     ) from None
-                if not isinstance(content, str) or not content.strip():
-                    raise DeepSeekModelError("model_empty_response", "model returned empty content")
-                try:
-                    result = json.loads(content)
-                except json.JSONDecodeError:
+                if not isinstance(message, dict):
                     raise DeepSeekModelError(
-                        "model_non_json_response",
-                        "model returned content that is not valid JSON",
-                    ) from None
+                        "model_invalid_envelope", "model message is invalid"
+                    )
+                if tool is not None:
+                    result = _extract_tool_arguments(message)
+                else:
+                    content = message.get("content")
+                    if not isinstance(content, str) or not content.strip():
+                        raise DeepSeekModelError(
+                            "model_empty_response", "model returned empty content"
+                        )
+                    try:
+                        result = json.loads(content)
+                    except json.JSONDecodeError:
+                        raise DeepSeekModelError(
+                            "model_non_json_response",
+                            "model returned content that is not valid JSON",
+                        ) from None
                 if not isinstance(result, dict):
                     raise DeepSeekModelError(
                         "model_non_object_response",
@@ -293,16 +304,26 @@ class DeepSeekJsonClient:
         )
         raise DeepSeekGatewayError(last_error.error_code, str(last_error), details=details) from last_error
 
-    def _post(self, system_prompt: str, canonical_prompt: str, temperature: float) -> httpx.Response:
-        json_body = {
+    def _post(
+        self,
+        system_prompt: str,
+        canonical_prompt: str,
+        temperature: float,
+        tool: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        json_body: dict[str, Any] = {
             "model": self.model,
             "temperature": temperature,
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": canonical_prompt},
             ],
-            "response_format": {"type": "json_object"},
         }
+        if tool is not None:
+            json_body["tools"] = [{"type": "function", "function": tool}]
+            json_body["tool_choice"] = "required"
+        else:
+            json_body["response_format"] = {"type": "json_object"}
         if self.disable_thinking:
             json_body["thinking"] = {"type": "disabled"}
         request = {
@@ -447,6 +468,29 @@ def _optional_text(value: Any) -> str | None:
 
 def _optional_int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _extract_tool_arguments(message: dict[str, Any]) -> dict:
+    """Parse the first function-tool call's JSON arguments out of a chat message."""
+
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list) or not tool_calls:
+        raise DeepSeekModelError("model_invalid_envelope", "model returned no tool call")
+    first = tool_calls[0]
+    if not isinstance(first, dict):
+        raise DeepSeekModelError("model_invalid_envelope", "tool call entry is invalid")
+    function = first.get("function")
+    if not isinstance(function, dict):
+        raise DeepSeekModelError("model_invalid_envelope", "tool call function is invalid")
+    arguments = function.get("arguments")
+    if not isinstance(arguments, str) or not arguments.strip():
+        raise DeepSeekModelError("model_empty_response", "model returned empty tool arguments")
+    try:
+        return json.loads(arguments)
+    except json.JSONDecodeError:
+        raise DeepSeekModelError(
+            "model_non_json_response", "tool arguments are not valid JSON"
+        ) from None
 
 
 def _is_retryable_http_status(status_code: int) -> bool:

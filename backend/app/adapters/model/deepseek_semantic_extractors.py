@@ -18,7 +18,6 @@ from pydantic import (
 
 from app.adapters.model.deepseek_gateway import DeepSeekJsonClient, DeepSeekModelError
 from app.domain.framework.exam_points import ExamPoint
-from app.domain.generation.semantic_diversity import AnswerRelation, InstanceCarrier
 from app.domain.framework.models import AssessmentAnchor, AssessmentOutline, TeachingTopic
 from app.domain.knowledge.models import AssessmentUnitDraft
 from app.domain.knowledge.relevance import (
@@ -43,6 +42,7 @@ class JsonRequester(Protocol):
         temperature: float,
         call_context: ModelCallContext | None = None,
         response_validator=None,
+        tool: dict[str, Any] | None = None,
     ) -> dict: ...
 
 
@@ -264,10 +264,88 @@ def _split_multi_clause_atoms(values: Any) -> list[str]:
     return pieces
 
 
+_CARD_FIELDS = {
+    "name",
+    "performance_statement",
+    "assessable_content",
+    "scope_boundary",
+    "cognitive_targets",
+    "allowed_question_types",
+    "importance",
+    "evidence_chunk_ids",
+    "prompt_material",
+    "status",
+}
+
+
+# function calling 的 tool 描述：把归并输出 Schema 下发给 MiMo，改用 tools 通道
+# 强制模型产出结构（tool_choice=required），而非 json_object 模式靠事后校验兜底。
+# 单元层级（code/title/exam_point_code/performance_statement）仍由代码确定性组装，
+# 故此处只约束卡片必需字段；MiMo 偶发漏掉 required 字段由 _normalize_consolidation_response 兜底。
+_CONSOLIDATION_TOOL = {
+    "name": "submit_knowledge_cards",
+    "description": "提交一个考试考点的归并知识卡结果",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "exam_point_code": {"type": "string"},
+            "cards": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "performance_statement": {"type": "string"},
+                        "assessable_content": {"type": "array", "items": {"type": "string"}},
+                        "prompt_material": {"type": "array", "items": {"type": "string"}},
+                        "evidence_chunk_ids": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": [
+                        "name",
+                        "performance_statement",
+                        "assessable_content",
+                        "evidence_chunk_ids",
+                    ],
+                },
+            },
+        },
+        "required": ["exam_point_code", "cards"],
+    },
+}
+
+
 def _normalize_consolidation_response(
     raw: dict[str, Any], exam_point: ExamPoint, admitted: list[EvidenceDecision]
 ) -> dict[str, Any]:
-    """Accept the provider's flat-card variant without weakening evidence checks."""
+    """Accept the provider's flat-card variant without weakening evidence checks.
+
+    归并只要求模型输出扁平知识卡（顶层 cards 数组）；单元层面的 code/title/
+    exam_point_code/performance_statement 由代码确定性组装，避免模型产出嵌套
+    assessment_units 时因缺单元必填字段触发 schema 校验失败。同时保留对旧
+    assessment_units 输出的解析，防止重构期间回归。
+    """
+
+    def card_with_defaults(card: dict[str, Any]) -> dict[str, Any]:
+        out = {key: value for key, value in card.items() if key in _CARD_FIELDS}
+        out["assessable_content"] = _split_multi_clause_atoms(
+            out.get(
+                "assessable_content",
+                out.get("content", out.get("facts", out.get("knowledge_points", []))),
+            )
+        )
+        out["evidence_chunk_ids"] = out.get("evidence_chunk_ids", out.get("evidence_ids", []))
+        if not isinstance(out.get("name"), str) or not out.get("name").strip():
+            facts = [
+                item for item in out.get("assessable_content", [])
+                if isinstance(item, str) and item.strip()
+            ]
+            out["name"] = facts[0][:40] if facts else exam_point.title
+        if (
+            not isinstance(out.get("performance_statement"), str)
+            or not out.get("performance_statement").strip()
+        ):
+            out["performance_statement"] = exam_point.assessment_requirement
+        return out
 
     normalized = dict(raw)
     normalized.setdefault("exam_point_code", exam_point.code)
@@ -277,6 +355,14 @@ def _normalize_consolidation_response(
         if isinstance(raw_locations, list)
         else []
     )
+
+    raw_cards = normalized.get("cards")
+    if isinstance(raw_cards, list):
+        normalized["cards"] = [
+            card_with_defaults(card) for card in raw_cards if isinstance(card, dict)
+        ]
+        return normalized
+
     units = normalized.get("assessment_units")
     if not isinstance(units, list):
         return normalized
@@ -289,54 +375,15 @@ def _normalize_consolidation_response(
             unit = dict(raw_unit)
             cards = unit.get("cards")
             if isinstance(cards, list):
-                card_fields = {
-                    "name",
-                    "performance_statement",
-                    "assessable_content",
-                    "scope_boundary",
-                    "cognitive_targets",
-                    "allowed_question_types",
-                    "importance",
-                    "evidence_chunk_ids",
-                    "prompt_material",
-                    "concept_cluster",
-                    "answer_proposition",
-                    "required_propositions",
-                    "relation_edges",
-                    "instance_carriers",
-                    "status",
-                }
                 unit["cards"] = [
-                    {
-                        **{
-                            key: value
-                            for key, value in card.items()
-                            if key in card_fields
-                        },
-                        "assessable_content": _split_multi_clause_atoms(card.get(
-                            "assessable_content",
-                            card.get("content", card.get("facts", card.get("knowledge_points", []))),
-                        )),
-                        "evidence_chunk_ids": card.get(
-                            "evidence_chunk_ids", card.get("evidence_ids", [])
-                        ),
-                    }
-                    for card in cards
-                    if isinstance(card, dict)
+                    card_with_defaults(card) for card in cards if isinstance(card, dict)
                 ]
             converted.append(unit)
             continue
         if "name" not in raw_unit or "assessable_content" not in raw_unit:
             converted.append(raw_unit)
             continue
-        card = dict(raw_unit)
-        card["assessable_content"] = _split_multi_clause_atoms(card.get(
-            "assessable_content",
-            card.get("content", card.get("facts", card.get("knowledge_points", []))),
-        ))
-        card["evidence_chunk_ids"] = card.get(
-            "evidence_chunk_ids", card.get("evidence_ids", [])
-        )
+        card = card_with_defaults(dict(raw_unit))
         card.pop("title", None)
         card.pop("code", None)
         card.pop("exam_point_code", None)
@@ -376,7 +423,7 @@ class _AssessmentAnchorResponse(BaseModel):
 
 
 class _KnowledgeCardResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     name: _Text
     performance_statement: _Text
@@ -387,11 +434,6 @@ class _KnowledgeCardResponse(BaseModel):
     importance: int = Field(default=1, ge=1, le=5)
     evidence_chunk_ids: _TextList = Field(default_factory=list)
     prompt_material: _TextList = Field(default_factory=list)
-    concept_cluster: str = ""
-    answer_proposition: str = ""
-    required_propositions: _TextList = Field(default_factory=list)
-    relation_edges: list[AnswerRelation] = Field(default_factory=list)
-    instance_carriers: list[InstanceCarrier] = Field(default_factory=list)
     status: Literal["active", "excluded", "material_only", "needs_teacher_review"] = "active"
 
     @model_validator(mode="after")
@@ -402,7 +444,7 @@ class _KnowledgeCardResponse(BaseModel):
 
 
 class _AssessmentUnitResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     code: _Text
     title: _Text
@@ -470,10 +512,17 @@ class _FileClassificationResponse(BaseModel):
 
 
 class _ConsolidationResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
     exam_point_code: _Text
-    assessment_units: list[_AssessmentUnitResponse]
+    cards: list[_KnowledgeCardResponse] = Field(default_factory=list)
+    assessment_units: list[_AssessmentUnitResponse] = Field(default_factory=list)
     source_locations: list[dict[str, Any]] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def require_output_form(self):
+        if not self.cards and not self.assessment_units:
+            raise ValueError("consolidation must output cards or assessment_units")
+        return self
 
 
 class DeepSeekSyllabusExtractor:
@@ -664,11 +713,10 @@ class DeepSeekExamPointEvidenceClassifier:
                 "background 判定只需把 evidence_chunk_id 列入 background_chunk_ids，"
                 "out_of_scope 判定只需把 evidence_chunk_id 列入 out_of_scope_chunk_ids，两者均不得输出其他字段。"
                 "relevance_class 仅允许 direct、supporting、background、out_of_scope；"
-                "direct 必须能直接支撑可评分事实、答案或评分点，support_claim 必须是一条自包含的可迁移事实："
-                "明确归属主体，说明该参数/命令/概念属于哪个框架、工具、模型或流程"
-                "（如写'ms-swift 的 eval_batch_size 参数…'而非'eval_batch_size 参数…'），"
-                "归属信息可结合 chunk 内容与 locator 的 heading_path 推断，禁止输出无主语的参数、命令或数值罗列；"
-                "否则降级为 supporting 或 background。"
+                "direct 表示该 chunk 直接提供了能支撑该考点考核内容的事实或依据，"
+                "support_claim 用一句话概括该 chunk 提供的具体事实即可，无需补全归属或写成自包含命题；"
+                "归属补全与命题化由后续归并环节完成。"
+                "仅当 chunk 确实直接支撑该考点时判 direct，否则降级为 supporting 或 background。"
                 "supporting 只用于设问语境；background/out_of_scope 不产出知识事实。"
                 "遵守各考点 operational_detail_policy，不使用任何课程专属黑名单。"
                 "来源页码和标题仅用于教师追溯，不得写入 support_claim 的正文。返回严格 JSON。"
@@ -768,45 +816,53 @@ class DeepSeekExamPointKnowledgeConsolidator:
                     "model_output_scope_violation",
                     "consolidation output belongs to another exam point",
                 )
-            _validate_consolidated_units(
-                exam_point,
-                admitted,
-                [
-                    AssessmentUnitDraft.model_validate(unit.model_dump(mode="json"))
-                    for unit in response.assessment_units
-                ],
-            )
-            parsed.append(
-                [
+            if response.cards:
+                units = [
+                    AssessmentUnitDraft.model_validate(
+                        {
+                            "code": f"{exam_point.code}-U1",
+                            "title": exam_point.title,
+                            "performance_statement": exam_point.assessment_requirement,
+                            "exam_point_code": exam_point.code,
+                            "scope_boundary": {},
+                            "cards": [
+                                card.model_dump(mode="json") for card in response.cards
+                            ],
+                        }
+                    )
+                ]
+            else:
+                units = [
                     AssessmentUnitDraft.model_validate(unit.model_dump(mode="json"))
                     for unit in response.assessment_units
                 ]
-            )
+            _validate_consolidated_units(exam_point, admitted, units)
+            parsed.append(units)
 
         self.client.request_json(
             system_prompt=(
-                "你只归并一个考试考点已经准入的 direct 和 supporting 决策。按可评分表现合并同义事实，"
-                "同时保留不同答案边界；不得按文件名、章节、页码或来源数量拆分知识卡。知识卡的每条"
-                "assessable_content 都必须被其 evidence_chunk_ids 引用的 direct 证据支持。supporting 内容"
-                "只能进入 prompt_material。"
+                "你只归并一个考试考点已经准入的 direct 和 supporting 证据，产出该考点的可评分知识卡。"
+                "按可评分表现合并同义事实、保留不同答案边界；不得按文件名、章节、页码或来源数量拆分卡片。"
+                "每条 assessable_content 都必须被其 evidence_chunk_ids 引用的 direct 证据逐条支撑；"
+                "supporting 内容只能进入 prompt_material。"
                 "每条 assessable_content 必须是可迁移的通用知识：案例讲解只抽取其承载的通用结论，"
-                "剥离绑定特定实验运行的叙述背景——不得出现'上一轮训练''本次实验''我们的实验'等"
-                "情境表述（'失衡问题出现在上一轮训练中'不是知识点，"
-                "'混合数据集用于解决思考与非思考数据失衡'才是）；知识卡会进入检索库，"
-                "案例叙述会污染检索且消耗资源。"
-                "assessable_content 的每条事实必须自包含：脱离卡片名和单元名即可独立理解；"
-                "证据事实缺主语时必须补全归属限定（说明参数、命令、概念属于哪个框架、工具、模型或流程，"
-                "如证据为'eval_batch_size参数用于控制评测批大小'时归并为'ms-swift框架中，eval_batch_size参数用于控制评测批大小'），"
-                "归属限定只能来自证据本身、同考点其他证据或考点语境，禁止编造归属；"
-                "禁止输出无主语的参数、命令或数值罗列。"
-                "输出严格 JSON 对象，包含 exam_point_code、assessment_units，可另带 source_locations"
-                "供教师查看，但来源信息不得进入卡片 name、performance_statement 或 assessable_content。每张 active 卡还要输出"
-                "来源无关的 concept_cluster、answer_proposition、required_propositions、relation_edges 和 instance_carriers。"
-                "concept_cluster 按共同考核能力聚合；relation_edges 仅描述等价、上下位、组成、对比、汇总和前置关系；"
-                "instance_carriers 标记具体对象是考纲要求主体还是可替代示例，不得使用课程专属黑名单。"
-                "输入还包含 chunks（准入证据对应的原文切片与 locator），仅用于理解语境与补全归属限定"
-                "（heading_path、页码等），使 assessable_content 自包含；事实命题仍须逐条被对应"
-                "direct 决策的 support_claim 支撑，不得从 chunk 原文引入 support_claim 之外的新事实。"
+                "剥离绑定特定实验运行的叙述背景——不得出现'上一轮训练''本次实验''我们的实验'等情境表述"
+                "（'失衡问题出现在上一轮训练中'不是知识点，'混合数据集用于解决思考与非思考数据失衡'才是）。"
+                "每条事实必须自包含：脱离卡片名即可独立理解；缺主语时补全归属限定，说明参数、命令、概念"
+                "属于哪个框架、工具、模型或流程（如'eval_batch_size参数用于控制评测批大小'归并为"
+                "'ms-swift框架中，eval_batch_size参数用于控制评测批大小'）；归属只能来自证据或考点语境，"
+                "禁止编造，禁止输出无主语的参数或命令罗列。"
+                "严格输出 JSON 对象，只含两个顶层字段 exam_point_code 和 cards。cards 是扁平数组，"
+                "每项字段仅为：name（卡片名）、performance_statement（一句话可评分表现说明）、"
+                "assessable_content（字符串数组，每条一个可评分事实）、prompt_material（字符串数组，可空）、"
+                "evidence_chunk_ids（字符串数组，引用 direct 证据的 chunk id，不得为空）。"
+                "不要输出 assessment_units、code、title、source_locations、importance 等其它字段。"
+                "示例：{\"exam_point_code\":\"EP-01\",\"cards\":[{\"name\":\"混合数据集与数据失衡\","
+                "\"performance_statement\":\"能说明混合数据集如何解决思考与非思考数据失衡\","
+                "\"assessable_content\":[\"混合数据集用于解决思考与非思考数据失衡\"],"
+                "\"prompt_material\":[],\"evidence_chunk_ids\":[\"chunk-12\"]}]}。"
+                "输入还包含 chunks（准入证据的原文切片），仅用于理解语境与补全归属限定；"
+                "事实命题仍须逐条被 direct 决策的 support_claim 支撑，不得引入 support_claim 之外的新事实。"
             ),
             payload={
                 "exam_point": exam_point.model_dump(mode="json"),
@@ -824,6 +880,7 @@ class DeepSeekExamPointKnowledgeConsolidator:
             temperature=0.0,
             call_context=call_context,
             response_validator=validate_response,
+            tool=_CONSOLIDATION_TOOL,
         )
         return parsed[0]
 
