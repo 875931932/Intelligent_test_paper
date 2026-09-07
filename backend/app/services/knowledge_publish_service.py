@@ -870,6 +870,68 @@ def _validated_embeddings(
     return vectors
 
 
+# 小 block 聚合目标：把解析产出的碎块（标题/短段落，实测平均仅 54 字符）
+# 合并到该长度附近再作为一个 evidence chunk。碎块的 JSON 包装开销
+# （evidence_chunk_id/material_version_id/locator ≈ 50-100 token/chunk）
+# 会超过其内容本身，导致分类阶段的输入 token 被结构性放大。
+_EVIDENCE_MERGE_TARGET_CHARS = 1200
+# 短于该值的 block 视为碎块，与后续 block 聚合；超长 block 保持独立。
+_EVIDENCE_MERGE_MIN_CHARS = 200
+
+
+def _merged_evidence_blocks(blocks: list[dict]) -> list[tuple[dict, list[dict]]]:
+    """把相邻碎 block 聚合为更长的 evidence chunk。
+
+    返回 [(merged_block, source_blocks)]。聚合沿用首个 block 的定位信息，
+    并保留 heading_path 的并集，供教师溯源与模型归属推断。
+    """
+
+    merged: list[tuple[dict, list[dict]]] = []
+    buffer: list[dict] = []
+    buffer_chars = 0
+
+    def flush() -> None:
+        nonlocal buffer, buffer_chars
+        if not buffer:
+            return
+        heading_path: list = []
+        for block in buffer:
+            for part in block.get("heading_path") or []:
+                if part not in heading_path:
+                    heading_path.append(part)
+        head = buffer[0]
+        merged.append(
+            (
+                {
+                    **head,
+                    "text": "\n".join(block["text"].strip() for block in buffer),
+                    "heading_path": heading_path,
+                    "content_hash": None,
+                },
+                list(buffer),
+            )
+        )
+        buffer = []
+        buffer_chars = 0
+
+    for block in blocks:
+        text = block["text"].strip()
+        text_len = len(text)
+        if text_len >= _EVIDENCE_MERGE_MIN_CHARS:
+            # 长块自成 chunk：先把已聚合的碎块冲刷出去，再独立冲刷本块，
+            # 避免长语义块被前面的碎块标题污染。
+            flush()
+            buffer.append(block)
+            flush()
+            continue
+        buffer.append(block)
+        buffer_chars += text_len
+        if buffer_chars >= _EVIDENCE_MERGE_TARGET_CHARS:
+            flush()
+    flush()
+    return merged
+
+
 def create_organization_state(
     session: Session,
     course_id: str,
@@ -946,10 +1008,14 @@ def create_organization_state(
             raise KnowledgePublishError("selected material has no ready parsed content")
         selected_blocks.append((version_id, blocks))
 
-    embedded_blocks: list[tuple[str, dict, list[float]]] = []
+    # 先按阅读顺序聚合碎块，再对聚合后的文本嵌入：
+    # 1) 嵌入对 1200 字符级别的语义块更稳定，短碎块（如孤立标题）向量噪声大；
+    # 2) evidence chunk 数量从上千降到数百，分类阶段的 JSON 包装开销同步缩小。
+    embedded_blocks: list[tuple[str, dict, list[float], list[dict]]] = []
     embedding_dimension: int | None = None
     for version_id, blocks in selected_blocks:
-        texts = [block["text"].strip() for block in blocks]
+        merged_blocks = _merged_evidence_blocks(blocks)
+        texts = [merged_block["text"].strip() for merged_block, _ in merged_blocks]
         try:
             vectors = _validated_embeddings(
                 embedder.embed(texts),
@@ -961,7 +1027,10 @@ def create_organization_state(
         except Exception as exc:
             raise KnowledgePublishError("embedding service is unavailable") from exc
         embedding_dimension = len(vectors[0])
-        embedded_blocks.extend(zip([version_id] * len(blocks), blocks, vectors, strict=True))
+        embedded_blocks.extend(
+            (version_id, merged_block, vector, source_blocks)
+            for (merged_block, source_blocks), vector in zip(merged_blocks, vectors, strict=True)
+        )
 
     run_id = uuid4().hex
     frozen_input = {
@@ -981,26 +1050,28 @@ def create_organization_state(
                 input_snapshot=frozen_input,
             )
         )
-        for chunk_index, (version_id, block, vector) in enumerate(embedded_blocks):
+        for chunk_index, (version_id, merged_block, vector, source_blocks) in enumerate(embedded_blocks):
             evidence_id = uuid4().hex
             evidence_ids.append(evidence_id)
             locator = {
-                "page_index": block["page_index"],
-                "bbox": block["bbox"],
-                "heading_path": block["heading_path"] or [],
-                "reading_order": block["reading_order"],
-                "block_type": block["block_type"],
+                "page_index": merged_block["page_index"],
+                "bbox": merged_block["bbox"],
+                "heading_path": merged_block["heading_path"] or [],
+                "reading_order": merged_block["reading_order"],
+                "block_type": merged_block["block_type"],
+                "source_block_count": len(source_blocks),
             }
+            merged_text = merged_block["text"].strip()
             session.execute(
                 evidence_chunks.insert().values(
                     id=evidence_id,
                     course_id=course_id,
                     organization_run_id=run_id,
                     material_version_id=version_id,
-                    content_block_id=block["id"],
+                    content_block_id=merged_block["id"],
                     chunk_index=chunk_index,
-                    content=block["text"].strip(),
-                    content_hash=block["content_hash"] or sha256(block["text"].encode()).hexdigest(),
+                    content=merged_text,
+                    content_hash=sha256(merged_text.encode()).hexdigest(),
                     locator=locator,
                     embedding=vector,
                 )

@@ -539,6 +539,7 @@ def test_create_organization_state_snapshots_ready_blocks_without_putting_text_i
             "heading_path": ["RAG"],
             "reading_order": 0,
             "block_type": "text",
+            "source_block_count": 1,
         }
         assert row["embedding"] == [1.0, 1.0]
     finally:
@@ -558,6 +559,9 @@ def test_create_organization_state_rejects_invalid_snapshot_embeddings(
 ):
     engine, session = _session(tmp_path)
     try:
+        # 合并策略：短碎块会聚合为长 chunk，因此用超长文本强制其独立成块，
+        # 保证 embedder 收到两个独立文本以校验向量合法性。
+        long_text = "RAG生成阶段使用检索上下文" + "细节补充说明。" * 60
         session.execute(
             content_blocks.insert().values(
                 id="block-material-v1-2",
@@ -566,7 +570,7 @@ def test_create_organization_state_rejects_invalid_snapshot_embeddings(
                 material_version_id="material-v1",
                 block_index=1,
                 block_type="text",
-                text="RAG生成阶段使用检索上下文",
+                text=long_text,
                 page_index=4,
                 bbox=[1, 2, 3, 4],
                 heading_path=["RAG"],

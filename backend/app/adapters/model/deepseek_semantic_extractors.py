@@ -113,19 +113,39 @@ def _normalize_assessment_outline(raw: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+_COMPACT_CLASS_ARRAY_KEYS = {
+    "background_chunk_ids": "background",
+    "backgroundChunkIds": "background",
+    "out_of_scope_chunk_ids": "out_of_scope",
+    "outOfScopeChunkIds": "out_of_scope",
+}
+
+
 def _normalize_classification_response(raw: dict[str, Any]) -> dict[str, Any]:
-    """Normalize provider-neutral aliases without admitting incomplete direct evidence."""
+    """Normalize provider-neutral aliases without admitting incomplete direct evidence.
+
+    允许模型用紧凑数组汇报 background/out_of_scope 判定（每条只需 evidence_chunk_id），
+    在此展开为完整 decision；direct/supporting 仍必须逐条输出完整字段。
+    """
 
     normalized = dict(raw)
     decisions = normalized.get("decisions")
     if not isinstance(decisions, list):
-        return normalized
+        # 只有紧凑数组、没有 decisions 键时仍需展开；两者皆缺则原样返回，交由校验失败闭环。
+        if not any(
+            isinstance(normalized.get(key), list) for key in _COMPACT_CLASS_ARRAY_KEYS
+        ):
+            return normalized
+        decisions = []
+    point_code = normalized.get("exam_point_code")
     normalized_decisions: list[Any] = []
     for raw_decision in decisions:
         if not isinstance(raw_decision, dict):
             normalized_decisions.append(raw_decision)
             continue
         decision = dict(raw_decision)
+        if "exam_point_code" not in decision and isinstance(point_code, str):
+            decision["exam_point_code"] = point_code
         if "evidence_chunk_id" not in decision:
             decision["evidence_chunk_id"] = decision.pop("chunk_id", decision.pop("id", None))
         confidence = decision.get("confidence")
@@ -183,6 +203,23 @@ def _normalize_classification_response(raw: dict[str, Any]) -> dict[str, Any]:
                 else "background"
             )
         normalized_decisions.append(decision)
+    for array_key, relevance_class in _COMPACT_CLASS_ARRAY_KEYS.items():
+        chunk_ids = normalized.pop(array_key, None)
+        if not isinstance(chunk_ids, list):
+            continue
+        for chunk_id in chunk_ids:
+            if not isinstance(chunk_id, str) or not chunk_id.strip():
+                continue
+            normalized_decisions.append(
+                {
+                    "exam_point_code": point_code,
+                    "evidence_chunk_id": chunk_id.strip(),
+                    "relevance_class": relevance_class,
+                    "support_claim": "（未提供说明）",
+                    "content_kind": "background",
+                    "confidence": 100,
+                }
+            )
     normalized["decisions"] = normalized_decisions
     return normalized
 
@@ -547,6 +584,23 @@ class DeepSeekExamPointEvidenceClassifier:
                 "model_input_scope_violation",
                 "classification input contains another material version",
             )
+
+        def compact_point_payload(point: ExamPoint) -> dict[str, Any]:
+            # 分类只需要判断证据关系所需字段。完整 model_dump 会把
+            # scope_boundary / required_evidence_roles / teaching_anchor_keys 等
+            # 长字段一并传给模型：每考点约 300-600 token，且与分类决策无关，
+            # 批次内多考点时被重复计费，是分类输入膨胀的主要来源之一。
+            return {
+                "code": point.code,
+                "title": point.title,
+                "assessment_requirement": point.assessment_requirement,
+                "cognitive_targets": point.cognitive_targets,
+                "assessment_orientations": point.assessment_orientations,
+                "allowed_question_types": point.allowed_question_types,
+                "operational_detail_policy": point.operational_detail_policy.value,
+                "retrieval_intent": point.retrieval_intent,
+            }
+
         expected_pairs = {
             (point.code, chunk.id) for point in exam_points for chunk in chunks
         }
@@ -598,10 +652,13 @@ class DeepSeekExamPointEvidenceClassifier:
             system_prompt=(
                 "你判断一份教学资料文件与多个考试考点的证据关系。输入包含 exam_points 数组与该文件全部召回的 chunks。"
                 "必须返回 JSON 对象，顶层字段 file_decisions 为数组；每个元素对应一个考点，"
-                "包含 exam_point_code、material_version_id、decisions。"
-                "每个考点必须对其与该文件相关的全部输入 chunks 逐一判定，不得遗漏；"
-                "每条 decisions 必须一一对应输入的 evidence_chunk_id，且必须包含 exam_point_code、"
-                "evidence_chunk_id、relevance_class、support_claim、content_kind、confidence。"
+                "包含 exam_point_code、material_version_id、decisions、background_chunk_ids、out_of_scope_chunk_ids。"
+                "每个输入 chunk 必须被该考点恰好判定一次：decisions、background_chunk_ids、out_of_scope_chunk_ids "
+                "三者合计无遗漏、无重复地覆盖全部输入 chunks。"
+                "direct/supporting 判定写入 decisions 数组，每条包含 evidence_chunk_id、relevance_class、"
+                "support_claim、content_kind、confidence（无需重复 exam_point_code）；"
+                "background 判定只需把 evidence_chunk_id 列入 background_chunk_ids，"
+                "out_of_scope 判定只需把 evidence_chunk_id 列入 out_of_scope_chunk_ids，两者均不得输出其他字段。"
                 "relevance_class 仅允许 direct、supporting、background、out_of_scope；"
                 "direct 必须能直接支撑可评分事实、答案或评分点，且必须提供 candidate_assessment_unit 与 "
                 "candidate_card_content，否则降级为 supporting 或 background；"
@@ -613,7 +670,7 @@ class DeepSeekExamPointEvidenceClassifier:
                 "来源页码和标题仅用于教师追溯，不得写入 candidate_card_content 的正文。返回严格 JSON。"
             ),
             payload={
-                "exam_points": [point.model_dump(mode="json") for point in exam_points],
+                "exam_points": [compact_point_payload(point) for point in exam_points],
                 "material_version_id": material_version_id,
                 "chunks": [
                     {

@@ -103,6 +103,11 @@ class DeepSeekJsonClient:
         model: str = "mimo-v2.5-pro",
         timeout: float = 90.0,
         max_attempts: int = 4,
+        # 大 prompt（如知识目录分类批）失败重试非常昂贵：单次输入即数万 token，
+        # 校验失败（模型漏判某对）时整批重发只会等额再烧一遍。超过该字符数的
+        # 请求把重试上限收紧到 large_prompt_max_attempts。
+        large_prompt_max_attempts: int = 2,
+        large_prompt_threshold_chars: int = 60_000,
         disable_thinking: bool = True,
         client: httpx.Client | None = None,
         recorder: ModelCallRecorder | None = None,
@@ -120,6 +125,8 @@ class DeepSeekJsonClient:
         self.model = model
         self.timeout = timeout
         self.max_attempts = max_attempts
+        self.large_prompt_max_attempts = max(1, large_prompt_max_attempts)
+        self.large_prompt_threshold_chars = large_prompt_threshold_chars
         self.disable_thinking = disable_thinking
         self.client = client or httpx.Client(trust_env=False, timeout=timeout)
         self.recorder = recorder
@@ -145,8 +152,14 @@ class DeepSeekJsonClient:
         final_http_status: int | None = None
         last_retry_error_code: str | None = None
         attempt_count = 0
+        # 大 prompt 收紧重试：避免数万 token 的批在多次重试中重复计费。
+        effective_max_attempts = self.max_attempts
+        if len(canonical_prompt) > self.large_prompt_threshold_chars:
+            effective_max_attempts = min(
+                self.max_attempts, self.large_prompt_max_attempts
+            )
 
-        for attempt in range(1, self.max_attempts + 1):
+        for attempt in range(1, effective_max_attempts + 1):
             attempt_count = attempt
             request_id = None
             input_tokens = None
@@ -253,7 +266,7 @@ class DeepSeekJsonClient:
 
             if not should_retry:
                 break
-            if attempt < self.max_attempts:
+            if attempt < effective_max_attempts:
                 time.sleep(min(2 ** (attempt - 1), 8))
 
         assert last_error is not None
@@ -261,6 +274,7 @@ class DeepSeekJsonClient:
         details = {
             "attempt_count": attempt_count,
             "retry_count": attempt_count - 1,
+            "effective_max_attempts": effective_max_attempts,
             "final_http_status": final_http_status,
             "last_error_code": _persistence_error(last_error)[0],
             "attempts": attempts,

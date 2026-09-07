@@ -754,8 +754,8 @@ class Settings(BaseSettings):
     embedding_api_format: str = "openai"
     
     # 组织/检索配置
-    organization_retrieval_top_k: int = 24
-    organization_retrieval_min_score: float = 0.25
+    organization_retrieval_top_k: int = 12
+    organization_retrieval_min_score: float = 0.30
     organization_max_workers: int = 16
     
     # 上传配置

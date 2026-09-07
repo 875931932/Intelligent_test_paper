@@ -466,8 +466,8 @@ def test_organization_retrieval_settings_have_safe_defaults(monkeypatch):
     assert settings.embedding_api_key == ""
     assert settings.embedding_model == "qwen3.7-text-embedding"
     assert settings.embedding_api_format == "openai"
-    assert settings.organization_retrieval_top_k == 24
-    assert settings.organization_retrieval_min_score == 0.25
+    assert settings.organization_retrieval_top_k == 12
+    assert settings.organization_retrieval_min_score == 0.30
     assert settings.organization_max_workers == 16
 
 

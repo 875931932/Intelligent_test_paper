@@ -32,8 +32,10 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""
     embedding_model: str = "qwen3.7-text-embedding"
     embedding_api_format: str = "openai"
-    organization_retrieval_top_k: int = Field(default=24, gt=0)
-    organization_retrieval_min_score: float = Field(default=0.25, ge=0, le=1)
+    # 召回规模直接决定分类阶段的 (考点, chunk) 对数量与模型 token 消耗：
+    # top_k 24→12 且 min_score 0.25→0.30，削减重复 chunk 传递与无效分类输出。
+    organization_retrieval_top_k: int = Field(default=12, gt=0)
+    organization_retrieval_min_score: float = Field(default=0.30, ge=0, le=1)
     organization_max_workers: int = Field(default=16, gt=0)
     seed_dev_data: bool = False
     upload_max_bytes: int = 209715200

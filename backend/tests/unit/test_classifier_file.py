@@ -18,10 +18,12 @@ class FakeJsonClient:
     def __init__(self, response):
         self.response = response
         self.payloads = []
+        self.system_prompts = []
 
     def request_json(self, *, system_prompt, payload, temperature,
                      call_context=None, response_validator=None):
         self.payloads.append(payload)
+        self.system_prompts.append(system_prompt)
         if response_validator:
             response_validator(self.response)
         return self.response
@@ -157,3 +159,102 @@ def test_classify_file_rejects_chunks_from_another_material():
         )
 
     assert caught.value.error_code == "model_input_scope_violation"
+
+
+def _supporting(chunk_id) -> dict:
+    return {
+        "evidence_chunk_id": chunk_id,
+        "relevance_class": "supporting",
+        "support_claim": "设问语境支撑",
+        "content_kind": "fact",
+        "confidence": 70,
+    }
+
+
+def test_classify_file_expands_compact_class_arrays():
+    response = {
+        "file_decisions": [
+            {
+                "exam_point_code": "EP1",
+                "material_version_id": "M1",
+                "decisions": [_supporting("c1")],
+                "background_chunk_ids": ["c2"],
+                "out_of_scope_chunk_ids": ["c3"],
+            },
+            {
+                "exam_point_code": "EP2",
+                "material_version_id": "M1",
+                "background_chunk_ids": ["c1", "c2"],
+                "out_of_scope_chunk_ids": ["c3"],
+            },
+        ]
+    }
+    client = FakeJsonClient(response)
+    classifier = DeepSeekExamPointEvidenceClassifier(client)
+
+    decisions = classifier.classify_file(
+        exam_points=[_point("EP1"), _point("EP2")],
+        material_version_id="M1",
+        chunks=[_chunk("c1"), _chunk("c2"), _chunk("c3")],
+    )
+
+    by_point = {item.exam_point_code: item for item in decisions}
+    ep1 = {d.evidence_chunk_id: d for d in by_point["EP1"].decisions}
+    assert ep1["c1"].relevance_class.value == "supporting"
+    assert ep1["c1"].exam_point_code == "EP1"
+    assert ep1["c2"].relevance_class.value == "background"
+    assert ep1["c2"].support_claim
+    assert ep1["c2"].confidence == 100
+    assert ep1["c3"].relevance_class.value == "out_of_scope"
+    ep2 = {d.evidence_chunk_id: d for d in by_point["EP2"].decisions}
+    assert set(ep2) == {"c1", "c2", "c3"}
+    assert all(d.relevance_class.value in {"background", "out_of_scope"} for d in ep2.values())
+    system = client.system_prompts[0]
+    assert "background_chunk_ids" in system
+    assert "out_of_scope_chunk_ids" in system
+
+
+def test_classify_file_rejects_compact_array_duplication():
+    response = {
+        "file_decisions": [
+            {
+                "exam_point_code": "EP1",
+                "material_version_id": "M1",
+                "decisions": [_supporting("c1"), _background("EP1", "c1")],
+                "out_of_scope_chunk_ids": ["c2"],
+            }
+        ]
+    }
+    classifier = DeepSeekExamPointEvidenceClassifier(FakeJsonClient(response))
+
+    with pytest.raises(DeepSeekModelError) as caught:
+        classifier.classify_file(
+            exam_points=[_point("EP1")],
+            material_version_id="M1",
+            chunks=[_chunk("c1"), _chunk("c2")],
+        )
+
+    assert caught.value.error_code == "model_output_scope_violation"
+
+
+def test_classify_file_rejects_compact_array_missing_chunk():
+    response = {
+        "file_decisions": [
+            {
+                "exam_point_code": "EP1",
+                "material_version_id": "M1",
+                "decisions": [_supporting("c1")],
+                "out_of_scope_chunk_ids": ["c2"],
+            }
+        ]
+    }
+    classifier = DeepSeekExamPointEvidenceClassifier(FakeJsonClient(response))
+
+    with pytest.raises(DeepSeekModelError) as caught:
+        classifier.classify_file(
+            exam_points=[_point("EP1")],
+            material_version_id="M1",
+            chunks=[_chunk("c1"), _chunk("c2"), _chunk("c3")],
+        )
+
+    assert caught.value.error_code == "model_output_scope_violation"
