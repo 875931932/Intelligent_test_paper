@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.framework.exam_points import ExamPoint
 from app.domain.generation.semantic_diversity import AnswerRelation, InstanceCarrier
-from app.domain.knowledge.relevance import EvidenceDecision, ExamPointCoverage
+from app.domain.knowledge.relevance import EvidenceDecision, ExamPointCoverage, StagingChunk
 from app.domain.model_calls import ModelCallContext
 
 
@@ -53,6 +53,7 @@ class ExamPointKnowledgeConsolidator(Protocol):
         *,
         exam_point: ExamPoint,
         admitted_decisions: list[EvidenceDecision],
+        chunks_by_id: dict[str, "StagingChunk"],
         call_context: ModelCallContext | None = None,
     ) -> list[AssessmentUnitDraft]:
         raise NotImplementedError

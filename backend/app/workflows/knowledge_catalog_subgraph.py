@@ -56,26 +56,15 @@ def _claim_polarity_key(value: str) -> tuple[str, bool]:
 
 def _has_conflicting_direct_claims(decisions: list[EvidenceDecision]) -> bool:
     polarities: dict[str, set[bool]] = defaultdict(set)
-    answer_boundaries: dict[tuple[str, str], set[str]] = defaultdict(set)
     for decision in decisions:
         if decision.relevance_class is not RelevanceClass.DIRECT:
             continue
-        card = decision.candidate_card_content
-        unit = decision.candidate_assessment_unit
-        if card is None or unit is None:
-            continue
-        for fact in card.assessable_content:
-            base, negative = _claim_polarity_key(fact)
-            if base:
-                polarities[base].add(negative)
-        boundary = card.scope_boundary.get("answer_boundary")
-        if boundary is not None:
-            answer_boundaries[(semantic_text_key(unit.title), semantic_text_key(card.name))].add(
-                semantic_text_key(str(boundary))
-            )
-    return any(len(values) > 1 for values in polarities.values()) or any(
-        len(values) > 1 for values in answer_boundaries.values()
-    )
+        # 分类瘦身后 direct 决策不再携带候选卡；support_claim 就是该证据
+        # 所落地的自包含可迁移事实锚点，直接以它做极性冲突判定。
+        base, negative = _claim_polarity_key(decision.support_claim)
+        if base:
+            polarities[base].add(negative)
+    return any(len(values) > 1 for values in polarities.values())
 
 
 def _coverage(
@@ -140,12 +129,7 @@ def validate_consolidated_units(
             for evidence_id in card.evidence_chunk_ids:
                 evidence_facts: set[str] = set()
                 for decision in decisions_by_evidence.get(evidence_id, []):
-                    if decision.candidate_card_content is not None:
-                        evidence_facts.update(
-                            assessable_fact_keys(
-                                decision.candidate_card_content.assessable_content
-                            )
-                        )
+                    evidence_facts.update(assessable_fact_keys([decision.support_claim]))
                 if not evidence_facts or not any(
                     fact_key_supported(published, evidence_facts)
                     for published in published_facts

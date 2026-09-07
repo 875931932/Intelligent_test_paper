@@ -642,10 +642,15 @@ class DeepSeekExamPointEvidenceClassifier:
                         for d in item.decisions
                     ],
                 )
-            if len(seen) != len(set(seen)) or set(seen) != expected_pairs:
+            if not (set(seen) <= expected_pairs):
                 raise DeepSeekModelError(
                     "model_output_scope_violation",
-                    "classification output must cover every (exam_point, chunk) pair exactly once",
+                    "classification output references an unknown chunk",
+                )
+            if len(seen) != len(set(seen)):
+                raise DeepSeekModelError(
+                    "model_output_scope_violation",
+                    "classification output contains duplicate evidence decisions",
                 )
 
         self.client.request_json(
@@ -653,21 +658,20 @@ class DeepSeekExamPointEvidenceClassifier:
                 "你判断一份教学资料文件与多个考试考点的证据关系。输入包含 exam_points 数组与该文件全部召回的 chunks。"
                 "必须返回 JSON 对象，顶层字段 file_decisions 为数组；每个元素对应一个考点，"
                 "包含 exam_point_code、material_version_id、decisions、background_chunk_ids、out_of_scope_chunk_ids。"
-                "每个输入 chunk 必须被该考点恰好判定一次：decisions、background_chunk_ids、out_of_scope_chunk_ids "
-                "三者合计无遗漏、无重复地覆盖全部输入 chunks。"
+                "尽量覆盖全部 (考点, chunk) 组合；未明确判定的组合会被系统默认为 out_of_scope。"
                 "direct/supporting 判定写入 decisions 数组，每条包含 evidence_chunk_id、relevance_class、"
                 "support_claim、content_kind、confidence（无需重复 exam_point_code）；"
                 "background 判定只需把 evidence_chunk_id 列入 background_chunk_ids，"
                 "out_of_scope 判定只需把 evidence_chunk_id 列入 out_of_scope_chunk_ids，两者均不得输出其他字段。"
                 "relevance_class 仅允许 direct、supporting、background、out_of_scope；"
-                "direct 必须能直接支撑可评分事实、答案或评分点，且必须提供 candidate_assessment_unit 与 "
-                "candidate_card_content，否则降级为 supporting 或 background；"
-                "candidate_card_content.assessable_content 的每条事实必须自包含：明确归属主体，"
-                "说明该参数/命令/概念属于哪个框架、工具、模型或流程（如写'ms-swift 的 eval_batch_size 参数…'而非'eval_batch_size 参数…'），"
+                "direct 必须能直接支撑可评分事实、答案或评分点，support_claim 必须是一条自包含的可迁移事实："
+                "明确归属主体，说明该参数/命令/概念属于哪个框架、工具、模型或流程"
+                "（如写'ms-swift 的 eval_batch_size 参数…'而非'eval_batch_size 参数…'），"
                 "归属信息可结合 chunk 内容与 locator 的 heading_path 推断，禁止输出无主语的参数、命令或数值罗列；"
-                "supporting 只用于设问语境；background/out_of_scope 不得生成知识卡。"
+                "否则降级为 supporting 或 background。"
+                "supporting 只用于设问语境；background/out_of_scope 不产出知识事实。"
                 "遵守各考点 operational_detail_policy，不使用任何课程专属黑名单。"
-                "来源页码和标题仅用于教师追溯，不得写入 candidate_card_content 的正文。返回严格 JSON。"
+                "来源页码和标题仅用于教师追溯，不得写入 support_claim 的正文。返回严格 JSON。"
             ),
             payload={
                 "exam_points": [compact_point_payload(point) for point in exam_points],
@@ -686,6 +690,40 @@ class DeepSeekExamPointEvidenceClassifier:
             call_context=call_context,
             response_validator=validate_response,
         )
+        # 兜底补全：模型漏判的 (考点, chunk) 对默认 out_of_scope。
+        # 分类阶段不再要求模型输出完整候选卡，故豁免规则的遗漏应由确定性补全承担，
+        # 保证每个输入 pair 都有且仅有一条决定，下游仍按完全覆盖校验。
+        for point in exam_points:
+            existing = collected.get(point.code)
+            existing_ids = (
+                {item.evidence_chunk_id for item in existing.decisions}
+                if existing is not None
+                else set()
+            )
+            missing = [
+                EvidenceDecision(
+                    exam_point_code=point.code,
+                    evidence_chunk_id=chunk.id,
+                    relevance_class=RelevanceClass.OUT_OF_SCOPE,
+                    support_claim="（未提供说明）",
+                    content_kind=ContentKind.BACKGROUND,
+                    confidence=100,
+                )
+                for chunk in chunks
+                if chunk.id not in existing_ids
+            ]
+            if not missing:
+                continue
+            if existing is None:
+                collected[point.code] = ExamPointFileDecision(
+                    exam_point_code=point.code,
+                    material_version_id=material_version_id,
+                    decisions=missing,
+                )
+            else:
+                collected[point.code] = existing.model_copy(
+                    update={"decisions": [*existing.decisions, *missing]}
+                )
         return list(collected.values())
 
 
@@ -698,6 +736,7 @@ class DeepSeekExamPointKnowledgeConsolidator:
         *,
         exam_point: ExamPoint,
         admitted_decisions: list[EvidenceDecision],
+        chunks_by_id: dict[str, StagingChunk],
         call_context: ModelCallContext | None = None,
     ) -> list[AssessmentUnitDraft]:
         admitted = [
@@ -710,6 +749,11 @@ class DeepSeekExamPointKnowledgeConsolidator:
                 "model_input_scope_violation",
                 "consolidation input contains another exam point",
             )
+        admitted_chunk_ids = {decision.evidence_chunk_id for decision in admitted}
+        grounding_chunks = sorted(
+            (chunk for chunk in chunks_by_id.values() if chunk.id in admitted_chunk_ids),
+            key=lambda item: item.id,
+        )
         parsed: list[list[AssessmentUnitDraft]] = []
 
         def validate_response(result: dict) -> None:
@@ -760,10 +804,22 @@ class DeepSeekExamPointKnowledgeConsolidator:
                 "来源无关的 concept_cluster、answer_proposition、required_propositions、relation_edges 和 instance_carriers。"
                 "concept_cluster 按共同考核能力聚合；relation_edges 仅描述等价、上下位、组成、对比、汇总和前置关系；"
                 "instance_carriers 标记具体对象是考纲要求主体还是可替代示例，不得使用课程专属黑名单。"
+                "输入还包含 chunks（准入证据对应的原文切片与 locator），仅用于理解语境与补全归属限定"
+                "（heading_path、页码等），使 assessable_content 自包含；事实命题仍须逐条被对应"
+                "direct 决策的 support_claim 支撑，不得从 chunk 原文引入 support_claim 之外的新事实。"
             ),
             payload={
                 "exam_point": exam_point.model_dump(mode="json"),
                 "admitted_decisions": [item.model_dump(mode="json") for item in admitted],
+                "chunks": [
+                    {
+                        "evidence_chunk_id": chunk.id,
+                        "material_version_id": chunk.material_version_id,
+                        "content": chunk.content,
+                        "locator": chunk.locator,
+                    }
+                    for chunk in grounding_chunks
+                ],
             },
             temperature=0.0,
             call_context=call_context,
@@ -803,10 +859,6 @@ def _validate_consolidated_units(
             supported_facts = set()
             for evidence_id in evidence_ids:
                 decision = direct_by_id[evidence_id]
-                if decision.candidate_card_content is not None:
-                    supported_facts.update(
-                        assessable_fact_keys(decision.candidate_card_content.assessable_content)
-                    )
                 supported_facts.update(assessable_fact_keys([decision.support_claim]))
             if not all_facts_supported(
                 assessable_fact_keys(card.assessable_content), supported_facts

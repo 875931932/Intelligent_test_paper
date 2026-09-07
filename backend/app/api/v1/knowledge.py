@@ -75,7 +75,9 @@ def get_exam_point_classifier(request: Request) -> ExamPointEvidenceClassifier:
             return classifier
         if not _deepseek_configured():
             raise HTTPException(status_code=503, detail="semantic classifier is not configured")
-        client = _get_semantic_json_client(request)
+        client = _get_semantic_json_client(
+            request, settings.deepseek_classify_model or settings.deepseek_model
+        )
         classifier = DeepSeekExamPointEvidenceClassifier(client)
         request.app.state.exam_point_evidence_classifier = classifier
         return classifier
@@ -91,29 +93,35 @@ def get_exam_point_consolidator(request: Request) -> ExamPointKnowledgeConsolida
             return consolidator
         if not _deepseek_configured():
             raise HTTPException(status_code=503, detail="knowledge consolidator is not configured")
-        client = _get_semantic_json_client(request)
+        client = _get_semantic_json_client(
+            request, settings.deepseek_consolidate_model or settings.deepseek_model
+        )
         consolidator = DeepSeekExamPointKnowledgeConsolidator(client)
         request.app.state.exam_point_knowledge_consolidator = consolidator
         return consolidator
 
 
-def _get_semantic_json_client(request: Request) -> DeepSeekJsonClient:
-    client = getattr(request.app.state, "semantic_json_client", None)
+def _get_semantic_json_client(request: Request, model: str) -> DeepSeekJsonClient:
+    clients = getattr(request.app.state, "semantic_json_clients", None)
+    if clients is None:
+        clients = {}
+        request.app.state.semantic_json_clients = clients
+    client = clients.get(model)
     if client is not None:
         return client
     with _organization_state_lock:
-        client = getattr(request.app.state, "semantic_json_client", None)
+        client = clients.get(model)
         if client is not None:
             return client
         client = DeepSeekJsonClient(
             api_key=settings.deepseek_api_key,
             base_url=settings.deepseek_base_url,
-            model=settings.deepseek_model,
+            model=model,
             disable_thinking=settings.deepseek_disable_thinking,
             timeout=settings.organization_model_timeout,
             recorder=DatabaseModelCallRecorder(get_session_factory()),
         )
-        request.app.state.semantic_json_client = client
+        clients[model] = client
         return client
 
 

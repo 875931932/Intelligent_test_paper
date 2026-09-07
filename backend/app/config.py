@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.xiaomimimo.com/v1"
     deepseek_model: str = "mimo-v2.5-pro"
+    # 知识目录组织阶段按能力分层选模：分类只做相关性判断，可换经济模型；
+    # 归并做知识抽取，需更强模型。两者留空时回退到 deepseek_model，不受影响。
+    deepseek_classify_model: str = ""
+    deepseek_consolidate_model: str = ""
     # 关闭 MiMo 思考模式（thinking）：结构化抽取不需要长链路推理，关闭可避免
     # 推理链消耗输出额度导致 JSON 内容为空/被截断，并节省推理 token。true=关闭。
     deepseek_disable_thinking: bool = True

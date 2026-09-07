@@ -485,9 +485,14 @@ def build_organization_graph(
             )
             if not admitted:
                 return point.code, []
+            evidence_chunk_ids = sorted({item.evidence_chunk_id for item in admitted})
+            chunks_by_id = {
+                chunk.id: chunk for chunk in _chunks(state, evidence_chunk_ids)
+            }
             units = consolidator.consolidate(
                 exam_point=point,
                 admitted_decisions=admitted,
+                chunks_by_id=chunks_by_id,
                 call_context=ModelCallContext(
                     course_id=state["course_id"],
                     organization_run_id=state["run_id"],

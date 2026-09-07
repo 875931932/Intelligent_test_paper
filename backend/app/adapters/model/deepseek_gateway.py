@@ -32,8 +32,6 @@ _PERSISTED_VALIDATION_FIELDS = {
     "assessment_orientations",
     "assessment_requirement",
     "assessment_units",
-    "candidate_assessment_unit",
-    "candidate_card_content",
     "cards",
     "code",
     "cognitive_targets",

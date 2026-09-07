@@ -163,13 +163,6 @@ def validate_publishable_tree(
                 if normalized_decision.relevance_class is not RelevanceClass.DIRECT:
                     continue
             elif decision.relevance_class is not RelevanceClass.DIRECT:
-                if (
-                    decision.candidate_assessment_unit is not None
-                    or decision.candidate_card_content is not None
-                ):
-                    raise KnowledgeTreeValidationError(
-                        "non-direct evidence cannot produce a publishable unit or card"
-                    )
                 continue
             if normalized_decision.exam_point_code not in strict_exam_point_codes:
                 continue
@@ -212,13 +205,10 @@ def validate_publishable_tree(
                             if (
                                 decision.exam_point_code != unit.exam_point_code
                                 or decision.evidence_chunk_id != evidence_id
-                                or decision.candidate_card_content is None
                             ):
                                 continue
                             evidence_facts.update(
-                                assessable_fact_keys(
-                                    decision.candidate_card_content.assessable_content
-                                )
+                                assessable_fact_keys([decision.support_claim])
                             )
                         if not evidence_facts or not any(
                             fact_key_supported(published, evidence_facts)

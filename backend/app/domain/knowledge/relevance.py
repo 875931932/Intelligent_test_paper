@@ -113,50 +113,6 @@ _CONTENT_KIND_ALIASES = {
 }
 
 
-class AssessmentUnitCandidate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    code: str
-    title: str
-    performance_statement: str
-    scope_boundary: dict[str, Any] = Field(default_factory=dict)
-
-    @field_validator("code", "title", "performance_statement")
-    @classmethod
-    def validate_required_text(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("must not be blank")
-        return value
-
-
-class KnowledgeCardCandidate(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    name: str
-    performance_statement: str
-    assessable_content: list[str]
-    scope_boundary: dict[str, Any] = Field(default_factory=dict)
-    cognitive_targets: list[str] = Field(default_factory=list)
-    allowed_question_types: list[str] = Field(default_factory=list)
-
-    @field_validator("name", "performance_statement")
-    @classmethod
-    def validate_required_text(cls, value: str) -> str:
-        value = value.strip()
-        if not value:
-            raise ValueError("must not be blank")
-        return value
-
-    @field_validator("assessable_content")
-    @classmethod
-    def validate_assessable_content(cls, values: list[str]) -> list[str]:
-        normalized = [value.strip() for value in values]
-        if not normalized or any(not value for value in normalized):
-            raise ValueError("assessable_content must contain non-blank facts")
-        return normalized
-
-
 class EvidenceDecision(BaseModel):
     exam_point_code: str
     evidence_chunk_id: str
@@ -164,8 +120,6 @@ class EvidenceDecision(BaseModel):
     support_claim: str
     evidence_role: str | None = None
     content_kind: ContentKind
-    candidate_assessment_unit: AssessmentUnitCandidate | None = None
-    candidate_card_content: KnowledgeCardCandidate | None = None
     prompt_material: str | None = None
     confidence: int = Field(ge=0, le=100)
 
@@ -273,10 +227,6 @@ def validate_direct_evidence_decision(
         raise ValueError("direct evidence requires an evidence chunk id")
     if not decision.support_claim.strip():
         raise ValueError("direct evidence requires a support claim and content kind")
-    if not decision.candidate_assessment_unit:
-        raise ValueError("direct evidence requires an assessment unit candidate")
-    if not decision.candidate_card_content:
-        raise ValueError("direct evidence requires a card candidate")
     normalized_role = (decision.evidence_role or "").strip().casefold()
     if normalized_role not in DIRECT_EVIDENCE_ROLES:
         raise ValueError("direct evidence requires a fact or rubric evidence role")
@@ -445,8 +395,6 @@ def _without_products(
     return decision.model_copy(
         update={
             "relevance_class": relevance_class,
-            "candidate_assessment_unit": None,
-            "candidate_card_content": None,
             "prompt_material": (
                 decision.prompt_material if keep_prompt_material else None
             ),
