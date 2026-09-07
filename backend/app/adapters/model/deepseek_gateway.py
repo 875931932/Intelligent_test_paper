@@ -471,26 +471,39 @@ def _optional_int(value: Any) -> int | None:
 
 
 def _extract_tool_arguments(message: dict[str, Any]) -> dict:
-    """Parse the first function-tool call's JSON arguments out of a chat message."""
+    """Parse the first function-tool call's JSON arguments out of a chat message.
+
+    MiMo 在 tool_choice=required 下偶发不触发 tool_calls 而直接回 content JSON，
+    此时兜底解析 content，避免一次抖动导致整批重试烧 token。
+    """
 
     tool_calls = message.get("tool_calls")
-    if not isinstance(tool_calls, list) or not tool_calls:
-        raise DeepSeekModelError("model_invalid_envelope", "model returned no tool call")
-    first = tool_calls[0]
-    if not isinstance(first, dict):
-        raise DeepSeekModelError("model_invalid_envelope", "tool call entry is invalid")
-    function = first.get("function")
-    if not isinstance(function, dict):
-        raise DeepSeekModelError("model_invalid_envelope", "tool call function is invalid")
-    arguments = function.get("arguments")
-    if not isinstance(arguments, str) or not arguments.strip():
-        raise DeepSeekModelError("model_empty_response", "model returned empty tool arguments")
-    try:
-        return json.loads(arguments)
-    except json.JSONDecodeError:
-        raise DeepSeekModelError(
-            "model_non_json_response", "tool arguments are not valid JSON"
-        ) from None
+    if isinstance(tool_calls, list) and tool_calls:
+        first = tool_calls[0]
+        if isinstance(first, dict):
+            function = first.get("function")
+            if isinstance(function, dict):
+                arguments = function.get("arguments")
+                if isinstance(arguments, str) and arguments.strip():
+                    try:
+                        return json.loads(arguments)
+                    except json.JSONDecodeError:
+                        raise DeepSeekModelError(
+                            "model_non_json_response",
+                            "tool arguments are not valid JSON",
+                        ) from None
+    content = message.get("content")
+    if isinstance(content, str) and content.strip():
+        try:
+            parsed = json.loads(content)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+    raise DeepSeekModelError(
+        "model_invalid_envelope",
+        "model returned no tool call or JSON content",
+    )
 
 
 def _is_retryable_http_status(status_code: int) -> bool:

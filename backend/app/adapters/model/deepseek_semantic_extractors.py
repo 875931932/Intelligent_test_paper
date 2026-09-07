@@ -843,8 +843,9 @@ class DeepSeekExamPointKnowledgeConsolidator:
             system_prompt=(
                 "你只归并一个考试考点已经准入的 direct 和 supporting 证据，产出该考点的可评分知识卡。"
                 "按可评分表现合并同义事实、保留不同答案边界；不得按文件名、章节、页码或来源数量拆分卡片。"
-                "每条 assessable_content 都必须被其 evidence_chunk_ids 引用的 direct 证据逐条支撑；"
-                "supporting 内容只能进入 prompt_material。"
+                "每条 assessable_content 都必须被 direct 证据逐条支撑；supporting 内容只能进入 prompt_material。"
+                "evidence_chunk_ids 只能从 payload 的 citable_chunk_ids（direct 证据的 chunk id）中选择，"
+                "不得为空；其余 chunks 均为 supporting，仅供理解语境与补全归属，禁止引用。"
                 "每条 assessable_content 必须是可迁移的通用知识：案例讲解只抽取其承载的通用结论，"
                 "剥离绑定特定实验运行的叙述背景——不得出现'上一轮训练''本次实验''我们的实验'等情境表述"
                 "（'失衡问题出现在上一轮训练中'不是知识点，'混合数据集用于解决思考与非思考数据失衡'才是）。"
@@ -855,7 +856,7 @@ class DeepSeekExamPointKnowledgeConsolidator:
                 "严格输出 JSON 对象，只含两个顶层字段 exam_point_code 和 cards。cards 是扁平数组，"
                 "每项字段仅为：name（卡片名）、performance_statement（一句话可评分表现说明）、"
                 "assessable_content（字符串数组，每条一个可评分事实）、prompt_material（字符串数组，可空）、"
-                "evidence_chunk_ids（字符串数组，引用 direct 证据的 chunk id，不得为空）。"
+                "evidence_chunk_ids（字符串数组，从 citable_chunk_ids 中选择，不得为空）。"
                 "不要输出 assessment_units、code、title、source_locations、importance 等其它字段。"
                 "示例：{\"exam_point_code\":\"EP-01\",\"cards\":[{\"name\":\"混合数据集与数据失衡\","
                 "\"performance_statement\":\"能说明混合数据集如何解决思考与非思考数据失衡\","
@@ -867,12 +868,26 @@ class DeepSeekExamPointKnowledgeConsolidator:
             payload={
                 "exam_point": exam_point.model_dump(mode="json"),
                 "admitted_decisions": [item.model_dump(mode="json") for item in admitted],
+                "citable_chunk_ids": sorted(
+                    decision.evidence_chunk_id
+                    for decision in admitted
+                    if decision.relevance_class is RelevanceClass.DIRECT
+                ),
                 "chunks": [
                     {
                         "evidence_chunk_id": chunk.id,
                         "material_version_id": chunk.material_version_id,
                         "content": chunk.content,
                         "locator": chunk.locator,
+                        "role": (
+                            "direct"
+                            if any(
+                                decision.evidence_chunk_id == chunk.id
+                                and decision.relevance_class is RelevanceClass.DIRECT
+                                for decision in admitted
+                            )
+                            else "supporting"
+                        ),
                     }
                     for chunk in grounding_chunks
                 ],
@@ -895,6 +910,12 @@ def _validate_consolidated_units(
         for decision in admitted
         if decision.relevance_class is RelevanceClass.DIRECT
     }
+    # 支撑池取该考点全部 direct 主张：模型偶发把知识点挂到错误的 chunk id 上
+    # 时，只要事实本身仍被考点的直接证据支撑即可放行；真正无证据支撑的编造
+    # 内容依旧被拒。误引的 supporting id 在下方确定性剔除，不参与入库。
+    point_evidence_keys = assessable_fact_keys(
+        [decision.support_claim for decision in direct_by_id.values()]
+    )
     for unit in units:
         if unit.exam_point_code != exam_point.code:
             raise DeepSeekModelError(
@@ -907,18 +928,19 @@ def _validate_consolidated_units(
                 "active assessment unit requires at least one knowledge card",
             )
         for card in unit.cards:
-            evidence_ids = card.evidence_chunk_ids
-            if not evidence_ids or set(evidence_ids) - set(direct_by_id):
+            evidence_ids = [
+                evidence_id
+                for evidence_id in card.evidence_chunk_ids
+                if evidence_id in direct_by_id
+            ]
+            if not evidence_ids:
                 raise DeepSeekModelError(
                     "model_output_evidence_gap",
-                    "knowledge card references evidence outside admitted direct decisions",
+                    "knowledge card references no admitted direct evidence",
                 )
-            supported_facts = set()
-            for evidence_id in evidence_ids:
-                decision = direct_by_id[evidence_id]
-                supported_facts.update(assessable_fact_keys([decision.support_claim]))
+            card.evidence_chunk_ids = evidence_ids
             if not all_facts_supported(
-                assessable_fact_keys(card.assessable_content), supported_facts
+                assessable_fact_keys(card.assessable_content), point_evidence_keys
             ):
                 raise DeepSeekModelError(
                     "model_output_evidence_gap",
