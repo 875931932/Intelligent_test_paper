@@ -932,11 +932,76 @@ def _merged_evidence_blocks(blocks: list[dict]) -> list[tuple[dict, list[dict]]]
     return merged
 
 
+def validate_organization_run_inputs(
+    session: Session,
+    *,
+    course_id: str,
+    material_version_ids: list[str],
+) -> None:
+    """轻量前置校验：课程/框架/考点/材料可组织性，不读取内容块、不嵌入。
+
+    供异步创建组织 run 的端点快速失败，把耗时（嵌入、模型调用）全部放到后台。
+    """
+    from app.services.course_service import get_course
+
+    get_course(session, course_id)
+    framework = session.execute(
+        select(framework_versions)
+        .where(
+            framework_versions.c.course_id == course_id,
+            framework_versions.c.status == "published",
+        )
+        .order_by(framework_versions.c.version_no.desc())
+        .limit(1)
+    ).mappings().one_or_none()
+    if framework is None:
+        raise KnowledgePublishError("published framework is required")
+    point_rows = _confirmed_exam_point_rows(
+        session,
+        course_id=course_id,
+        framework_version_id=framework["id"],
+    )
+    if not point_rows:
+        raise KnowledgePublishError("published framework has no confirmed exam points")
+    if not material_version_ids or len(material_version_ids) != len(set(material_version_ids)):
+        raise KnowledgePublishError("at least one unique material version is required")
+    for version_id in material_version_ids:
+        version = session.execute(
+            select(material_versions.c.id, materials.c.material_type)
+            .join(materials, material_versions.c.material_id == materials.c.id)
+            .where(
+                material_versions.c.id == version_id,
+                material_versions.c.course_id == course_id,
+                material_versions.c.status == "staged",
+                materials.c.course_id == course_id,
+                materials.c.status == "staged",
+            )
+        ).mappings().one_or_none()
+        if version is None:
+            raise KnowledgePublishError("selected material version is not available")
+        if version["material_type"] not in {"teaching_material", "exercise"}:
+            raise KnowledgePublishError("only teaching materials or exercises can be organized")
+        parse_run_id = session.execute(
+            select(document_parse_runs.c.id)
+            .where(
+                document_parse_runs.c.course_id == course_id,
+                document_parse_runs.c.material_version_id == version_id,
+                document_parse_runs.c.status == "ready",
+            )
+            .order_by(document_parse_runs.c.completed_at.desc(), document_parse_runs.c.id.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        if parse_run_id is None:
+            raise KnowledgePublishError("selected material has no ready parsed content")
+
+
 def create_organization_state(
     session: Session,
+    *,
     course_id: str,
     material_version_ids: list[str],
     embedder,
+    run_id: str | None = None,
 ) -> dict:
     from app.services.course_service import get_course
 
@@ -1032,7 +1097,8 @@ def create_organization_state(
             for (merged_block, source_blocks), vector in zip(merged_blocks, vectors, strict=True)
         )
 
-    run_id = uuid4().hex
+    run_id = run_id or uuid4().hex
+
     frozen_input = {
         "organization_schema_version": ORGANIZATION_SCHEMA_VERSION,
         "framework_version_id": framework["id"],

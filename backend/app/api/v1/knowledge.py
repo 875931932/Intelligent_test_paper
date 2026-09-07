@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
+import threading
+import time
 from threading import RLock
-
+from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, ConfigDict, Field
@@ -30,6 +33,7 @@ from app.workflows.organization_graph import build_organization_graph
 
 router = APIRouter(prefix="/api/v1/courses/{course_id}", tags=["knowledge"])
 _organization_state_lock = RLock()
+_logger = logging.getLogger("organization")
 
 
 class OrganizationRunCreate(BaseModel):
@@ -106,6 +110,7 @@ def _get_semantic_json_client(request: Request) -> DeepSeekJsonClient:
             base_url=settings.deepseek_base_url,
             model=settings.deepseek_model,
             disable_thinking=settings.deepseek_disable_thinking,
+            timeout=settings.organization_model_timeout,
             recorder=DatabaseModelCallRecorder(get_session_factory()),
         )
         request.app.state.semantic_json_client = client
@@ -127,22 +132,54 @@ def _not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="knowledge resource not found")
 
 
-@router.post("/organization-runs", status_code=status.HTTP_202_ACCEPTED)
-def create_organization_run(
+def _mark_organization_run_failed(
+    session: Session, *, course_id: str, run_id: str, message: str
+) -> None:
+    try:
+        session.execute(
+            knowledge_publish_service.organization_runs.update()
+            .where(
+                knowledge_publish_service.organization_runs.c.id == run_id,
+                knowledge_publish_service.organization_runs.c.course_id == course_id,
+            )
+            .values(
+                status="failed",
+                error_code="organization_invariant_error",
+                error_message=message,
+            )
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+
+
+def _run_organization_pipeline(
+    *,
     course_id: str,
-    payload: OrganizationRunCreate,
-    session: Session = Depends(get_session),
-    embedder: EmbeddingClient = Depends(get_organization_embedder),
-    classifier: ExamPointEvidenceClassifier = Depends(get_exam_point_classifier),
-    consolidator: ExamPointKnowledgeConsolidator = Depends(get_exam_point_consolidator),
-) -> dict:
-    state = None
+    run_id: str,
+    material_version_ids: list[str],
+    embedder: EmbeddingClient,
+    classifier: ExamPointEvidenceClassifier,
+    consolidator: ExamPointKnowledgeConsolidator,
+    session_factory,
+) -> None:
+    """后台执行知识目录构建；失败时把 run 标记为 failed，不影响 HTTP 响应。"""
+    _logger.info("run %s started: course=%s materials=%d", run_id, course_id, len(material_version_ids))
+    started = time.monotonic()
+    session = session_factory()
     try:
         state = knowledge_publish_service.create_organization_state(
             session,
             course_id=course_id,
-            material_version_ids=payload.material_version_ids,
+            material_version_ids=material_version_ids,
             embedder=embedder,
+            run_id=run_id,
+        )
+        _logger.info(
+            "run %s state ready: exam_points=%d evidence_chunks=%d",
+            run_id,
+            len(state["exam_points"]),
+            len(state["evidence_chunk_ids"]),
         )
         retriever = HybridStagingRetriever(
             embedder=embedder,
@@ -156,30 +193,61 @@ def create_organization_run(
             knowledge_publish_service.DatabaseKnowledgeRepository(session),
             checkpointer=InMemorySaver(),
         )
-        paused = graph.invoke(state, config={"configurable": {"thread_id": state["run_id"]}})
-        return {"run_id": state["run_id"], "candidate_id": paused["candidate_id"], "status": "awaiting_teacher_confirmation"}
+        graph.invoke(state, {"configurable": {"thread_id": state["run_id"]}})
+        _logger.info("run %s pipeline finished in %.1fs", run_id, time.monotonic() - started)
+    except knowledge_publish_service.KnowledgePublishError as exc:
+        _logger.error("run %s failed (publish error): %s", run_id, str(exc)[:500])
+        _mark_organization_run_failed(session, course_id=course_id, run_id=run_id, message=str(exc)[:500])
+    except Exception as exc:
+        message = "knowledge organization stopped because an invariant failed"
+        if str(exc).strip():
+            message = f"{message}: {str(exc)[:300]}"
+        _logger.exception("run %s failed", run_id)
+        _mark_organization_run_failed(session, course_id=course_id, run_id=run_id, message=message)
+    finally:
+        session.close()
+
+
+@router.post("/organization-runs", status_code=status.HTTP_202_ACCEPTED)
+def create_organization_run(
+    course_id: str,
+    payload: OrganizationRunCreate,
+    session: Session = Depends(get_session),
+    embedder: EmbeddingClient = Depends(get_organization_embedder),
+    classifier: ExamPointEvidenceClassifier = Depends(get_exam_point_classifier),
+    consolidator: ExamPointKnowledgeConsolidator = Depends(get_exam_point_consolidator),
+) -> dict:
+    # 轻量前置校验快速失败；耗时（嵌入、检索、分类、归并、建卡）全部在后台执行，
+    # HTTP 立即返回，避免长时间占用连接被网关按 504 掐断、前端误判为启动失败。
+    try:
+        knowledge_publish_service.validate_organization_run_inputs(
+            session,
+            course_id=course_id,
+            material_version_ids=payload.material_version_ids,
+        )
     except course_service.CourseNotFoundError:
         raise _not_found()
     except knowledge_publish_service.KnowledgePublishError as exc:
         if "embedding" in str(exc).casefold():
             raise HTTPException(status_code=503, detail="embedding service is unavailable")
         raise HTTPException(status_code=422, detail=str(exc))
-    except Exception:
-        if state is not None:
-            session.execute(
-                knowledge_publish_service.organization_runs.update()
-                .where(
-                    knowledge_publish_service.organization_runs.c.id == state["run_id"],
-                    knowledge_publish_service.organization_runs.c.course_id == course_id,
-                )
-                .values(
-                    status="failed",
-                    error_code="organization_invariant_error",
-                    error_message="knowledge organization stopped because an invariant failed",
-                )
-            )
-            session.commit()
-        raise HTTPException(status_code=502, detail="knowledge organization failed")
+    run_id = uuid4().hex
+    _logger.info("run %s queued: course=%s materials=%d", run_id, course_id, len(payload.material_version_ids))
+    thread = threading.Thread(
+        target=_run_organization_pipeline,
+        kwargs={
+            "course_id": course_id,
+            "run_id": run_id,
+            "material_version_ids": payload.material_version_ids,
+            "embedder": embedder,
+            "classifier": classifier,
+            "consolidator": consolidator,
+            "session_factory": get_session_factory(),
+        },
+        daemon=True,
+    )
+    thread.start()
+    return {"run_id": run_id, "candidate_id": None, "status": "queued"}
 
 
 @router.get("/organization-runs/latest")

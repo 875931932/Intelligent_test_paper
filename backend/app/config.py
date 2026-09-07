@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     organization_retrieval_top_k: int = Field(default=12, gt=0)
     organization_retrieval_min_score: float = Field(default=0.30, ge=0, le=1)
     organization_max_workers: int = Field(default=16, gt=0)
+    # 知识目录组织阶段的模型调用超时（秒）。分类/归并 prompt 较大（数万 token），
+    # 默认 90s 超时在 MiMo 上不足以完成响应，超时失败会整材料放弃并烧掉 token；
+    # 该阶段已异步化，放长超时不影响前端体验。
+    organization_model_timeout: float = Field(default=240.0, gt=0)
     seed_dev_data: bool = False
     upload_max_bytes: int = 209715200
     s3_endpoint: str = "http://localhost:9000"

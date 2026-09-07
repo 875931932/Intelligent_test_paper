@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import re
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import TypedDict
 
+from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
@@ -34,6 +37,8 @@ from app.workflows.knowledge_catalog_subgraph import (
     build_knowledge_catalog_candidate,
     validate_consolidated_units,
 )
+
+log = logging.getLogger("organization")
 
 # 分类单次调用可稳定覆盖的 (考点, chunk) 对数上限；超过则拆批，避免模型
 # 输出规模违规，同时杜绝“每考点一次调用”带来的重复 chunk 传递与 token 爆炸。
@@ -290,7 +295,7 @@ def build_organization_graph(
 
         def classify_material(
             material_version_id: str, material_pairs: list[dict]
-        ) -> list[ExamPointFileDecision]:
+        ) -> tuple[list[ExamPointFileDecision], list[tuple[str, Exception]]]:
             # 把同资料内的考点按 expected_pairs(考点数×chunk 并集) 做贪心打包，
             # 每批控制在分类模型单次可稳定覆盖的规模内：
             #   - 若像最初那样“整份资料一次调用”，expected_pairs 会达到几百上千，
@@ -335,8 +340,8 @@ def build_organization_graph(
                         continue
                 batches.append([code])
 
-            scoped_decisions: list[ExamPointFileDecision] = []
-            for batch_codes in batches:
+            def classify_batch(batch_codes: list[str]) -> list[ExamPointFileDecision]:
+                # 调用一次分类并完成校验与 scope 过滤；失败时由调用方决定是否拆批重试。
                 batch_points = [points[code] for code in batch_codes]
                 batch_chunk_ids = sorted(
                     set().union(*(point_chunk_ids[c] for c in batch_codes))
@@ -366,6 +371,7 @@ def build_organization_graph(
                     raise ValueError(
                         "classification response does not match its material points"
                     )
+                results: list[ExamPointFileDecision] = []
                 for code in batch_codes:
                     validated = by_point[code]
                     if validated.material_version_id != material_version_id:
@@ -392,10 +398,29 @@ def build_organization_graph(
                             raise ValueError(
                                 "classification response must cover every recalled evidence chunk"
                             )
-                        scoped_decisions.append(
+                        results.append(
                             validated.model_copy(update={"decisions": admitted})
                         )
-            return scoped_decisions
+                return results
+
+            scoped_decisions: list[ExamPointFileDecision] = []
+            point_failures: list[tuple[str, Exception]] = []
+            for batch_codes in batches:
+                try:
+                    scoped_decisions.extend(classify_batch(batch_codes))
+                except Exception as exc:
+                    if len(batch_codes) == 1:
+                        point_failures.append((batch_codes[0], exc))
+                        continue
+                    # 多考点批次失败时拆成单考点重试：expected_pairs 与输入规模
+                    # 同时缩小，可显著降低 model_output_scope_violation / 传输超时；
+                    # 单考点重试失败的考点才记失败，不再整份材料整体放弃。
+                    for code in batch_codes:
+                        try:
+                            scoped_decisions.extend(classify_batch([code]))
+                        except Exception as single_exc:
+                            point_failures.append((code, single_exc))
+            return scoped_decisions, point_failures
 
         decisions: list[ExamPointFileDecision] = []
         failures: list[dict] = list(state.get("failed_pairs") or [])
@@ -412,22 +437,19 @@ def build_organization_graph(
                 for material_version_id, material_pairs in sorted(pairs_by_material.items())
             }
             for future in as_completed(future_materials):
-                material_version_id, material_pairs = future_materials[future]
-                try:
-                    decisions.extend(future.result())
-                except Exception as exc:
-                    for pair in material_pairs:
-                        failures.append(
-                            _failure(
-                                stage="classification",
-                                point_code=pair["exam_point_code"],
-                                material_version_id=material_version_id,
-                                exc=exc,
-                            )
+                material_version_id, _ = future_materials[future]
+                scoped, point_failures = future.result()
+                decisions.extend(scoped)
+                for code, exc in point_failures:
+                    failures.append(
+                        _failure(
+                            stage="classification",
+                            point_code=code,
+                            material_version_id=material_version_id,
+                            exc=exc,
                         )
-                        coverage_reasons.setdefault(
-                            pair["exam_point_code"], []
-                        ).append("classification_failed")
+                    )
+                    coverage_reasons.setdefault(code, []).append("classification_failed")
         decisions.sort(key=lambda item: (item.exam_point_code, item.material_version_id))
         failures.sort(
             key=lambda item: (
@@ -613,17 +635,32 @@ def build_organization_graph(
             "index_version_id": result["index_version_id"],
         }
 
+    def _logged(name: str, fn):
+        def wrapped(state):
+            started = time.monotonic()
+            try:
+                result = fn(state)
+                log.info("node %s ok (%.1fs)", name, time.monotonic() - started)
+                return result
+            except GraphInterrupt:
+                log.info("node %s interrupted (%.1fs): waiting for teacher review", name, time.monotonic() - started)
+                raise
+            except Exception:
+                log.exception("node %s failed (%.1fs)", name, time.monotonic() - started)
+                raise
+        return wrapped
+
     graph = StateGraph(OrganizationState)
-    graph.add_node("validate_inputs", validate_inputs)
-    graph.add_node("freeze_selected_materials", freeze_selected_materials)
-    graph.add_node("retrieve_per_exam_point", retrieve_per_exam_point)
-    graph.add_node("classify_exam_point_file_pairs", classify_exam_point_file_pairs)
-    graph.add_node("consolidate_per_exam_point", consolidate_per_exam_point)
-    graph.add_node("build_catalog_candidate", build_catalog_candidate)
-    graph.add_node("audit_exam_point_coverage", audit_exam_point_coverage)
-    graph.add_node("persist_candidate", persist_candidate)
-    graph.add_node("interrupt_teacher_review", interrupt_teacher_review)
-    graph.add_node("publish_catalog_and_index", publish_catalog_and_index)
+    graph.add_node("validate_inputs", _logged("validate_inputs", validate_inputs))
+    graph.add_node("freeze_selected_materials", _logged("freeze_selected_materials", freeze_selected_materials))
+    graph.add_node("retrieve_per_exam_point", _logged("retrieve_per_exam_point", retrieve_per_exam_point))
+    graph.add_node("classify_exam_point_file_pairs", _logged("classify_exam_point_file_pairs", classify_exam_point_file_pairs))
+    graph.add_node("consolidate_per_exam_point", _logged("consolidate_per_exam_point", consolidate_per_exam_point))
+    graph.add_node("build_catalog_candidate", _logged("build_catalog_candidate", build_catalog_candidate))
+    graph.add_node("audit_exam_point_coverage", _logged("audit_exam_point_coverage", audit_exam_point_coverage))
+    graph.add_node("persist_candidate", _logged("persist_candidate", persist_candidate))
+    graph.add_node("interrupt_teacher_review", _logged("interrupt_teacher_review", interrupt_teacher_review))
+    graph.add_node("publish_catalog_and_index", _logged("publish_catalog_and_index", publish_catalog_and_index))
     graph.add_edge(START, "validate_inputs")
     graph.add_edge("validate_inputs", "freeze_selected_materials")
     graph.add_edge("freeze_selected_materials", "retrieve_per_exam_point")

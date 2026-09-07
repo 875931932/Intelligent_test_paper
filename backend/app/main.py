@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from sqlalchemy import create_engine, text
 
 from fastapi import FastAPI, Request
@@ -18,6 +20,12 @@ from app.api.v1.knowledge import router as knowledge_router
 from app.api.v1.materials import router as materials_router
 from app.api.v1.exam_projects import router as exam_projects_router
 from app.api.v1.paper_versions import router as paper_versions_router
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 
 
 def _configured(value: str) -> bool:
