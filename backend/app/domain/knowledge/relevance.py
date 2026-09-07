@@ -402,21 +402,25 @@ def _without_products(
     )
 
 
+# 分类阶段不再要求模型输出 evidence_role；direct 决策的 evidence_role 由 content_kind
+# 确定性推导。凡被准入为 direct 的证据，其 support_claim 本身就是该考点的答案事实依据，
+# 统一落为 answer_basis，使覆盖判定（_ANSWER_BASIS_ROLES / missing_answer_or_rubric_basis）
+# 不会因缺 answer/rubric 类角色而误判"覆盖不足"。
 _CONTENT_KIND_TO_EVIDENCE_ROLE: dict[ContentKind, str] = {
-    ContentKind.CONCEPT: "fact_or_definition",
-    ContentKind.DEFINITION: "definition",
-    ContentKind.PRINCIPLE: "principle",
-    ContentKind.MECHANISM: "principle",
-    ContentKind.RULE: "constraint",
-    ContentKind.RELATIONSHIP: "relationship",
-    ContentKind.FACT: "fact",
-    ContentKind.CONSTRAINT: "constraint",
-    ContentKind.FORMULA: "formula",
-    ContentKind.DERIVATION: "derivation",
-    ContentKind.COMPARISON: "comparison_basis",
-    ContentKind.CASE: "worked_example",
-    ContentKind.SCENARIO: "worked_example",
-    ContentKind.DIAGNOSTIC: "diagnostic_basis",
+    ContentKind.CONCEPT: "answer_basis",
+    ContentKind.DEFINITION: "answer_basis",
+    ContentKind.PRINCIPLE: "answer_basis",
+    ContentKind.MECHANISM: "answer_basis",
+    ContentKind.RULE: "answer_basis",
+    ContentKind.RELATIONSHIP: "answer_basis",
+    ContentKind.FACT: "answer_basis",
+    ContentKind.CONSTRAINT: "answer_basis",
+    ContentKind.FORMULA: "answer_basis",
+    ContentKind.DERIVATION: "answer_basis",
+    ContentKind.COMPARISON: "answer_basis",
+    ContentKind.CASE: "answer_basis",
+    ContentKind.SCENARIO: "answer_basis",
+    ContentKind.DIAGNOSTIC: "answer_basis",
 }
 
 
@@ -477,13 +481,13 @@ def admit_evidence_decision(
             keep_prompt_material=True,
         )
 
-    # 分类阶段不再要求模型输出 evidence_role；从 content_kind 确定性推导事实/答案角色，
+    # 分类阶段不再要求模型输出 evidence_role；从 content_kind 确定性推导答案角色，
     # 避免 direct 决策因缺失 evidence_role 被准入校验误拒。
     if not decision.evidence_role:
         decision = decision.model_copy(
             update={
                 "evidence_role": _CONTENT_KIND_TO_EVIDENCE_ROLE.get(
-                    decision.content_kind, "fact"
+                    decision.content_kind, "answer_basis"
                 )
             }
         )
