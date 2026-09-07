@@ -58,6 +58,8 @@ export default function KnowledgePage() {
 
   const [buildState, setBuildState] = useState<BuildState>('idle');
   const [buildOpen, setBuildOpen] = useState(false);
+  const [rejectOpen, setRejectOpen] = useState(false);
+  const [rejecting, setRejecting] = useState(false);
   const [selectableVersions, setSelectableVersions] = useState<MaterialVersionOption[]>([]);
   const [versionIds, setVersionIds] = useState<string[]>([]);
   const [building, setBuilding] = useState(false);
@@ -293,6 +295,25 @@ export default function KnowledgePage() {
     }
   }, [courseId, runId, loadPublished, addToast, reviewedTopicCodes, reviewedExamPointCodes, teacherExclusions]);
 
+  const handleReject = useCallback(async () => {
+    if (!runId) return;
+    setRejecting(true);
+    try {
+      await api.knowledge.reject(courseId, runId);
+      addToast('已放弃该知识目录，候选已标记为驳回', 'success');
+      setBuildState('idle');
+      setRunId(null);
+      setCandidatePayload(null);
+      setReviewedTopicCodes([]);
+      setReviewedExamPointCodes([]);
+    } catch (err) {
+      addToast(`取消失败：${getErrorMessage(err)}`, 'error');
+    } finally {
+      setRejecting(false);
+      setRejectOpen(false);
+    }
+  }, [courseId, runId, addToast]);
+
   // Evidence
   const loadEvidence = useCallback(async (cardId: string) => {
     setEvidenceLoading(true);
@@ -430,9 +451,31 @@ export default function KnowledgePage() {
         <CandidatePanel
           candidate={candidatePayload}
           onPublish={handlePublish}
-          onReset={() => { setBuildState('idle'); setRunId(null); setCandidatePayload(null); }}
+          onReset={() => setRejectOpen(true)}
         />
       )}
+
+      <Modal
+        open={rejectOpen}
+        onClose={() => { if (!rejecting) setRejectOpen(false); }}
+        title="放弃本次知识目录构建？"
+        maxWidth="480px"
+        footer={
+          <>
+            <Button variant="secondary" disabled={rejecting} onClick={() => setRejectOpen(false)}>
+              返回
+            </Button>
+            <Button variant="danger" disabled={rejecting} onClick={handleReject}>
+              {rejecting ? '正在取消...' : '确认放弃'}
+            </Button>
+          </>
+        }
+      >
+        <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+          放弃后，本次知识目录候选将被标记为「已驳回」，无法再次发布；如需重新生成需重新构建。
+          该操作不会删除教学资料。
+        </p>
+      </Modal>
       {buildState === 'published' && (
         <div className="glass-card" style={{ padding: '16px', overflow: 'hidden' }}>
           {viewMode === 'tree' && (
@@ -697,7 +740,7 @@ function CandidatePanel({ candidate, onPublish, onReset }: {
           </p>
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
-          <Button variant="secondary" onClick={onReset}>暂不发布</Button>
+          <Button variant="secondary" onClick={onReset}>放弃并取消</Button>
           <Button onClick={onPublish}>确认并发布</Button>
         </div>
       </div>

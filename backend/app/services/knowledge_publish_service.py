@@ -1173,3 +1173,35 @@ def get_organization_candidate(session: Session, *, course_id: str, run_id: str)
     ]
     result["payload"] = payload
     return result
+
+
+def reject_organization_run(session: Session, *, course_id: str, run_id: str) -> dict:
+    """驳回（取消）一个仍在待确认态的知识目录候选。
+
+    教师确认前放弃构建结果时，把候选版本与组织 run 一并标记为 rejected，
+    避免不想要的知识目录永远停留在 awaiting_teacher_confirmation 而囤积数据库。
+    """
+    candidate = get_organization_candidate(session, course_id=course_id, run_id=run_id)
+    if candidate["status"] != "candidate":
+        raise KnowledgePublishError(
+            "knowledge catalogue candidate is no longer awaiting confirmation"
+        )
+    now = datetime.now(UTC)
+    session.execute(
+        update(knowledge_catalog_versions)
+        .where(
+            knowledge_catalog_versions.c.id == candidate["id"],
+            knowledge_catalog_versions.c.course_id == course_id,
+        )
+        .values(status="rejected")
+    )
+    session.execute(
+        update(organization_runs)
+        .where(
+            organization_runs.c.id == run_id,
+            organization_runs.c.course_id == course_id,
+        )
+        .values(status="rejected", updated_at=now, completed_at=now)
+    )
+    session.commit()
+    return get_organization_run(session, course_id=course_id, run_id=run_id)

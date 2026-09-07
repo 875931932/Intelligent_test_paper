@@ -18,4 +18,8 @@ export const knowledgeRunApi = {
 
   getCandidate: (courseId: string, runId: string, token?: string): Promise<Record<string, unknown>> =>
     request('/courses/' + courseId + '/organization-runs/' + runId + '/candidate', undefined, token),
+
+  reject: (courseId: string, runId: string, token?: string): Promise<Record<string, unknown>> =>
+    request('/courses/' + courseId + '/organization-runs/' + runId + '/reject',
+      { method: 'POST' }, token),
 };

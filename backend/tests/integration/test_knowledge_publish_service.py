@@ -43,6 +43,7 @@ from app.services.knowledge_publish_service import (
     KnowledgePublishError,
     create_organization_state,
     get_organization_candidate,
+    reject_organization_run,
 )
 from app.services.material_service import delete_material
 
@@ -344,6 +345,29 @@ def test_database_repository_publishes_catalog_and_index_atomically(tmp_path):
         ).scalar_one()
         assert published_payload["organization_schema_version"] == ORGANIZATION_SCHEMA_VERSION
         assert published_payload["frozen_input"] == _frozen_input()
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_reject_organization_run_marks_candidate_and_run_rejected(tmp_path):
+    engine, session = _session(tmp_path)
+    try:
+        repository = DatabaseKnowledgeRepository(session)
+        tree = _tree()
+        state = _organization_state(tree)
+        candidate_id = repository.persist_candidate(state, tree)
+
+        result = reject_organization_run(session, course_id="course", run_id="organization-run")
+
+        assert session.scalar(select(knowledge_catalog_versions.c.status).where(knowledge_catalog_versions.c.id == candidate_id)) == "rejected"
+        assert session.scalar(select(organization_runs.c.status).where(organization_runs.c.id == "organization-run")) == "rejected"
+        assert result["status"] == "rejected"
+        assert result["completed_at"] is not None
+
+        # 已驳回的候选不能再次驳回
+        with pytest.raises(KnowledgePublishError):
+            reject_organization_run(session, course_id="course", run_id="organization-run")
     finally:
         session.close()
         engine.dispose()

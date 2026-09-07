@@ -225,6 +225,14 @@ def publish_tree(course_id: str, run_id: str, confirmation: KnowledgeTreeConfirm
         raise HTTPException(status_code=409, detail=str(exc))
 
 
+@router.post("/organization-runs/{run_id}/reject")
+def reject_tree(course_id: str, run_id: str, session: Session = Depends(get_session)) -> dict:
+    try:
+        return knowledge_publish_service.reject_organization_run(session, course_id=course_id, run_id=run_id)
+    except knowledge_publish_service.KnowledgePublishError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
 @router.get("/published-knowledge")
 def get_published_knowledge(course_id: str, session: Session = Depends(get_session)) -> dict:
     """当前已发布知识目录的命题输入视图：考点 / 单元 / 知识卡。
