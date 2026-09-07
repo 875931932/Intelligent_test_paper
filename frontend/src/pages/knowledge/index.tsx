@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   GitBranch, Search, Network, TreePine, ChevronRight, ChevronDown, Circle,
-  AlertTriangle, Eye, RefreshCw, Plus, BookOpen, Target, CheckCircle2, Layers,
+  AlertTriangle, Eye, RefreshCw, Plus, BookOpen, Target, CheckCircle2, Layers, Folder,
 } from 'lucide-react';
 import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
@@ -10,7 +10,7 @@ import { useToastStore } from '@/stores/toast';
 import { Button, Modal, Select, Badge, Spinner, ProgressPanel } from '@/components/ui';
 import type {
   PublishedKnowledgeResponse, KnowledgeCard, AssessmentUnit, EvidenceChunk,
-  FrameworkExamPoint,
+  FrameworkExamPoint, KnowledgeCandidatePayload, CandidateKnowledgeTopic,
 } from '@/types/api';
 
 type ViewMode = 'tree' | 'graph';
@@ -62,6 +62,7 @@ export default function KnowledgePage() {
   const [versionIds, setVersionIds] = useState<string[]>([]);
   const [building, setBuilding] = useState(false);
   const [runId, setRunId] = useState<string | null>(null);
+  const [candidatePayload, setCandidatePayload] = useState<KnowledgeCandidatePayload | null>(null);
   const [reviewedTopicCodes, setReviewedTopicCodes] = useState<string[]>([]);
   const [reviewedExamPointCodes, setReviewedExamPointCodes] = useState<string[]>([]);
   const [teacherExclusions] = useState<string[]>([]);
@@ -115,6 +116,8 @@ export default function KnowledgePage() {
       const candidate = await api.knowledge.getCandidate(courseId, rid);
       const payload = (candidate as Record<string, unknown>).payload as Record<string, unknown> | undefined;
       if (payload) {
+        // 保存完整候选数据供预览渲染（topics → units → cards）
+        setCandidatePayload(payload as unknown as KnowledgeCandidatePayload);
         const topics = (payload.topics || []) as Array<{ code: string; status: string }>;
         topics.forEach((t) => {
           if (t.status === 'active') {
@@ -283,6 +286,7 @@ export default function KnowledgePage() {
       });
       addToast('知识目录已发布', 'success');
       setBuildState('published');
+      setCandidatePayload(null);
       loadPublished();
     } catch (err) {
       addToast(`发布失败：${getErrorMessage(err)}`, 'error');
@@ -423,7 +427,11 @@ export default function KnowledgePage() {
       {/* Content */}
       {buildState === 'building' && <BuildingPanel />}
       {buildState === 'candidate' && (
-        <CandidatePanel onPublish={handlePublish} onReset={() => { setBuildState('idle'); setRunId(null); }} />
+        <CandidatePanel
+          candidate={candidatePayload}
+          onPublish={handlePublish}
+          onReset={() => { setBuildState('idle'); setRunId(null); setCandidatePayload(null); }}
+        />
       )}
       {buildState === 'published' && (
         <div className="glass-card" style={{ padding: '16px', overflow: 'hidden' }}>
@@ -662,22 +670,167 @@ function BuildingPanel() {
   );
 }
 
-function CandidatePanel({ onPublish, onReset }: { onPublish: () => void; onReset: () => void }) {
+function CandidatePanel({ candidate, onPublish, onReset }: {
+  candidate: KnowledgeCandidatePayload | null;
+  onPublish: () => void;
+  onReset: () => void;
+}) {
+  const topics = candidate?.topics || [];
+  const coverage = candidate?.coverage || [];
+  const totalUnits = topics.reduce((acc, t) => acc + (t.units?.length || 0), 0);
+  const totalCards = topics.reduce((acc, t) => acc + (t.units || []).reduce((a, u) => a + (u.cards?.length || 0), 0), 0);
+  const needsReview = topics.filter((t) => t.status !== 'active').length
+    + topics.reduce((acc, t) => acc + (t.units || []).filter((u) => u.status !== 'active').length, 0);
+
   return (
-    <div className="glass-panel" style={{ padding: '48px 24px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px', textAlign: 'center' }}>
-      <div style={{ width: 56, height: 56, borderRadius: '18px', background: 'var(--info-subtle)', color: 'var(--info)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <CheckCircle2 size={28} />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      {/* 顶部操作区 */}
+      <div className="glass-card" style={{ padding: '20px', display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+        <div style={{ width: 44, height: 44, borderRadius: '14px', background: 'var(--info-subtle)', color: 'var(--info)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+          <CheckCircle2 size={24} />
+        </div>
+        <div style={{ flex: '1 1 240px', minWidth: 0 }}>
+          <h3 style={{ fontSize: '1.125rem', fontWeight: 600 }}>知识目录构建完成，待确认</h3>
+          <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
+            {topics.length} 个主题 · {totalUnits} 个考核单元 · {totalCards} 张知识卡
+            {needsReview > 0 && <span style={{ color: 'var(--warning)' }}> · {needsReview} 项需审阅</span>}
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <Button variant="secondary" onClick={onReset}>暂不发布</Button>
+          <Button onClick={onPublish}>确认并发布</Button>
+        </div>
       </div>
-      <h3 style={{ fontSize: '1.125rem', fontWeight: 600 }}>知识目录构建完成</h3>
-      <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', maxWidth: '420px' }}>
-        系统已完成知识组织。确认无误后发布，发布后即可用于蓝图与合同命题阶段。
-      </p>
-      <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
-        <Button variant="secondary" onClick={onReset}>暂不发布</Button>
-        <Button onClick={onPublish}>确认并发布</Button>
+
+      {/* 预览树 */}
+      <div className="glass-card" style={{ padding: '16px', overflow: 'hidden' }}>
+        <CandidateTreePreview topics={topics} coverage={coverage} />
       </div>
     </div>
   );
+}
+
+function CandidateTreePreview({ topics, coverage }: {
+  topics: CandidateKnowledgeTopic[];
+  coverage: KnowledgeCandidatePayload['coverage'];
+}) {
+  const [expandedTopics, setExpandedTopics] = useState<Set<string>>(new Set());
+  const [expandedUnits, setExpandedUnits] = useState<Set<string>>(new Set());
+  const [selectedCard, setSelectedCard] = useState<{ name: string; unit: string; topic: string } | null>(null);
+
+  const coverageByCode = new Map((coverage || []).map((c) => [c.exam_point_code, c]));
+
+  if (topics.length === 0) {
+    return (
+      <div style={{ padding: '48px 0', textAlign: 'center', color: 'var(--text-tertiary)' }}>
+        <BookOpen size={40} style={{ margin: '0 auto 12px', opacity: 0.4 }} />
+        <p style={{ fontSize: '0.875rem' }}>候选知识目录为空</p>
+      </div>
+    );
+  }
+
+  const toggleTopic = (code: string) => setExpandedTopics((prev) => {
+    const next = new Set(prev);
+    if (next.has(code)) next.delete(code); else next.add(code);
+    return next;
+  });
+  const toggleUnit = (key: string) => setExpandedUnits((prev) => {
+    const next = new Set(prev);
+    if (next.has(key)) next.delete(key); else next.add(key);
+    return next;
+  });
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      {topics.map((topic) => {
+        const isExp = expandedTopics.has(topic.code);
+        const units = topic.units || [];
+        return (
+          <div key={topic.code}>
+            <div
+              style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderRadius: '10px', cursor: 'pointer', background: 'rgba(0,0,0,0.02)' }}
+              onClick={() => toggleTopic(topic.code)}
+            >
+              <span style={{ color: 'var(--text-tertiary)' }}>{isExp ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
+              <span style={{ color: '#5856d6' }}><Folder size={14} /></span>
+              <span style={{ fontWeight: 600, fontSize: '0.875rem' }}>{topic.name || topic.code}</span>
+              <span style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>({topic.code})</span>
+              {topic.status !== 'active' && <Badge variant="warning">需审阅</Badge>}
+              <span style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>{units.length} 单元</span>
+            </div>
+            {isExp && (
+              <div style={{ marginLeft: '24px', marginTop: '4px' }}>
+                {units.map((unit) => {
+                  const unitKey = topic.code + '::' + unit.code;
+                  const isUExp = expandedUnits.has(unitKey);
+                  const cov = coverageByCode.get(unit.exam_point_code);
+                  return (
+                    <div key={unitKey}>
+                      <div
+                        style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', borderRadius: '10px', cursor: 'pointer' }}
+                        onClick={() => toggleUnit(unitKey)}
+                      >
+                        <span style={{ color: 'var(--text-tertiary)' }}>{isUExp ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
+                        <span style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>{unit.code}</span>
+                        <span style={{ fontSize: '0.875rem', fontWeight: 500 }}>{unit.title}</span>
+                        {unit.status !== 'active' && <Badge variant="warning">需审阅</Badge>}
+                        {cov && <CoverageBadge status={cov.status} />}
+                        <span style={{ fontSize: '0.8125rem', marginLeft: 'auto', color: 'var(--text-tertiary)' }}>{(unit.cards || []).length}卡</span>
+                      </div>
+                      {isUExp && (unit.cards || []).length > 0 && (
+                        <div style={{ marginLeft: '24px' }}>
+                          {(unit.cards || []).map((card, ci) => (
+                            <div
+                              key={card.name + ci}
+                              style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', borderRadius: '8px', cursor: 'pointer' }}
+                              onClick={() => setSelectedCard({ name: card.name, unit: unit.title, topic: topic.name || topic.code })}
+                            >
+                              <span style={{ color: card.status === 'active' ? '#34c759' : '#ff9500' }}>
+                                <Circle size={8} fill="currentColor" />
+                              </span>
+                              <span style={{ fontSize: '0.875rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{card.name}</span>
+                              {card.status !== 'active' && <Badge variant="warning">需审阅</Badge>}
+                              <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>{card.importance || 1}</span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      {/* 卡片详情弹窗 */}
+      <Modal
+        open={!!selectedCard}
+        onClose={() => setSelectedCard(null)}
+        title={selectedCard?.name || '知识卡详情'}
+        maxWidth="560px"
+        footer={<Button variant="secondary" onClick={() => setSelectedCard(null)}>关闭</Button>}
+      >
+        {selectedCard && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <p style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>
+              {selectedCard.topic} · {selectedCard.unit}
+            </p>
+            <p style={{ fontSize: '0.875rem', lineHeight: 1.6, color: 'var(--text)' }}>
+              知识卡「{selectedCard.name}」的详细内容（性能表述、可评分内容、认知目标等）可在发布后于「知识目录」树形视图中点击查看。
+            </p>
+          </div>
+        )}
+      </Modal>
+    </div>
+  );
+}
+
+function CoverageBadge({ status }: { status: string }) {
+  if (status === 'sufficient') return <Badge variant="success">覆盖充足</Badge>;
+  if (status === 'conflicting') return <Badge variant="error">覆盖冲突</Badge>;
+  return <Badge variant="warning">覆盖不足</Badge>;
 }
 
 function IdlePanel({ onBuild }: { onBuild: () => void }) {

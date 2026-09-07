@@ -251,6 +251,65 @@ export interface KnowledgeTreeConfirmation {
   teacher_exclusions: string[];
 }
 
+// ── 知识目录候选（待确认）嵌套结构 ──
+export interface CandidateKnowledgeCard {
+  name: string;
+  performance_statement: string;
+  assessable_content: string[];
+  cognitive_targets: string[];
+  allowed_question_types: string[];
+  importance: number;
+  concept_cluster: string;
+  answer_proposition: string;
+  evidence_chunk_ids: string[];
+  status: string;
+}
+
+export interface CandidateAssessmentUnit {
+  code: string;
+  title: string;
+  performance_statement: string;
+  exam_point_code: string;
+  cards: CandidateKnowledgeCard[];
+  status: string;
+  origin: string;
+}
+
+export interface CandidateKnowledgeTopic {
+  code: string;
+  name: string;
+  framework_anchor_key: string;
+  units: CandidateAssessmentUnit[];
+  status: string;
+}
+
+export interface CandidateCoverage {
+  exam_point_code: string;
+  direct_count: number;
+  supporting_count: number;
+  background_count: number;
+  out_of_scope_count: number;
+  status: string;
+  reasons: string[];
+}
+
+export interface KnowledgeCandidatePayload {
+  framework_version_id: string;
+  topics: CandidateKnowledgeTopic[];
+  coverage: CandidateCoverage[];
+  relevance_counts?: Record<string, number>;
+  evidence_sources?: Array<{
+    evidence_chunk_id: string;
+    exam_point_code: string;
+    material_version_id: string;
+    locator: Record<string, unknown>;
+    relevance_class: string;
+    support_claim: string;
+    evidence_role: string;
+    confidence: number;
+  }>;
+}
+
 export interface OrganizationRunResponse {
   run_id: string;
   candidate_id?: string;
