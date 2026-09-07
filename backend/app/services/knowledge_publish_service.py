@@ -1076,22 +1076,65 @@ def create_organization_state(
     # 先按阅读顺序聚合碎块，再对聚合后的文本嵌入：
     # 1) 嵌入对 1200 字符级别的语义块更稳定，短碎块（如孤立标题）向量噪声大；
     # 2) evidence chunk 数量从上千降到数百，分类阶段的 JSON 包装开销同步缩小。
+    # 3) 合并是确定性的：同一资料版本产出同一批文本，向量可跨 run 复用
+    #    （ix_evidence_chunks_course_material_hash 索引即为此设计）。
+    #    仅对新增/变化的块调用嵌入 API；嵌入模型更换（维度不一致）时整批重嵌。
     embedded_blocks: list[tuple[str, dict, list[float], list[dict]]] = []
     embedding_dimension: int | None = None
     for version_id, blocks in selected_blocks:
         merged_blocks = _merged_evidence_blocks(blocks)
         texts = [merged_block["text"].strip() for merged_block, _ in merged_blocks]
-        try:
-            vectors = _validated_embeddings(
-                embedder.embed(texts),
-                expected=len(texts),
-                expected_dimension=embedding_dimension,
-            )
-        except KnowledgePublishError:
-            raise
-        except Exception as exc:
-            raise KnowledgePublishError("embedding service is unavailable") from exc
-        embedding_dimension = len(vectors[0])
+        hashes = [sha256(text.encode()).hexdigest() for text in texts]
+        cached: dict[str, list[float]] = {}
+        if hashes:
+            for row in session.execute(
+                select(evidence_chunks.c.content_hash, evidence_chunks.c.embedding)
+                .where(
+                    evidence_chunks.c.course_id == course_id,
+                    evidence_chunks.c.material_version_id == version_id,
+                    evidence_chunks.c.content_hash.in_(hashes),
+                    evidence_chunks.c.embedding.is_not(None),
+                )
+            ).mappings():
+                cached.setdefault(row["content_hash"], row["embedding"])
+        vectors: list[list[float]] = []
+        missing: list[tuple[int, str]] = []
+        for index, (text, digest) in enumerate(zip(texts, hashes, strict=True)):
+            hit = cached.get(digest)
+            if hit is None:
+                missing.append((index, text))
+                vectors.append([])
+            else:
+                vectors.append(hit)
+        if missing:
+            try:
+                fresh = _validated_embeddings(
+                    embedder.embed([text for _, text in missing]),
+                    expected=len(missing),
+                    expected_dimension=embedding_dimension,
+                )
+            except KnowledgePublishError:
+                raise
+            except Exception as exc:
+                raise KnowledgePublishError("embedding service is unavailable") from exc
+            for (index, _text), vector in zip(missing, fresh, strict=True):
+                vectors[index] = vector
+            embedding_dimension = len(fresh[0])
+        if vectors and embedding_dimension is None:
+            embedding_dimension = len(vectors[0])
+        if vectors and any(len(vector) != embedding_dimension for vector in vectors):
+            # 嵌入模型更换导致缓存向量维度不一致：放弃缓存整批重嵌。
+            try:
+                vectors = _validated_embeddings(
+                    embedder.embed(texts),
+                    expected=len(texts),
+                    expected_dimension=None,
+                )
+            except KnowledgePublishError:
+                raise
+            except Exception as exc:
+                raise KnowledgePublishError("embedding service is unavailable") from exc
+            embedding_dimension = len(vectors[0]) if vectors else embedding_dimension
         embedded_blocks.extend(
             (version_id, merged_block, vector, source_blocks)
             for (merged_block, source_blocks), vector in zip(merged_blocks, vectors, strict=True)
