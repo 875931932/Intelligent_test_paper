@@ -38,8 +38,17 @@ start_process() {
   fi
   rm -f "$pid_file"
   nohup "$@" >>"$LOG_DIR/$name.log" 2>&1 &
-  echo $! >"$pid_file"
-  echo "started $name (pid $!)"
+  local new_pid=$!
+  echo "$new_pid" >"$pid_file"
+  # 启动后验证进程仍存活：端口占用等原因会让新进程瞬间退出，
+  # 此时必须显式报错，而不是静默留下一个失效的 pid 文件继续对外服务。
+  sleep 3
+  if ! kill -0 "$new_pid" 2>/dev/null; then
+    echo "ERROR: $name failed to start (pid $new_pid), see $LOG_DIR/$name.log" >&2
+    rm -f "$pid_file"
+    return 1
+  fi
+  echo "started $name (pid $new_pid)"
 }
 
 ensure_minio() {
