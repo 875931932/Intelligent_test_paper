@@ -138,6 +138,7 @@ class DeepSeekJsonClient:
         call_context: ModelCallContext | None = None,
         response_validator: Callable[[dict], None] | None = None,
         tool: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
     ) -> dict:
         prompt = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else dict(payload)
         canonical_prompt = json.dumps(prompt, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -166,7 +167,7 @@ class DeepSeekJsonClient:
             final_http_status = None
             should_retry = True
             try:
-                response = self._post(system_prompt, canonical_prompt, temperature, tool)
+                response = self._post(system_prompt, canonical_prompt, temperature, tool, max_tokens)
                 headers = getattr(response, "headers", {})
                 request_id = headers.get("x-request-id") if hasattr(headers, "get") else None
                 status_code = getattr(response, "status_code", None)
@@ -313,6 +314,7 @@ class DeepSeekJsonClient:
         canonical_prompt: str,
         temperature: float,
         tool: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
     ) -> httpx.Response:
         json_body: dict[str, Any] = {
             "model": self.model,
@@ -322,6 +324,8 @@ class DeepSeekJsonClient:
                 {"role": "user", "content": canonical_prompt},
             ],
         }
+        if max_tokens is not None:
+            json_body["max_tokens"] = max_tokens
         if tool is not None:
             json_body["tools"] = [{"type": "function", "function": tool}]
             json_body["tool_choice"] = "required"

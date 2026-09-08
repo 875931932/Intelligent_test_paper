@@ -489,6 +489,22 @@ def build_organization_graph(
             chunks_by_id = {
                 chunk.id: chunk for chunk in _chunks(state, evidence_chunk_ids)
             }
+            # 分类对部分考点判不出 direct 时，聚焦该考点做一次 direct 复核，
+            # 从已准入的 supporting 证据中提升真正直接支撑的，避免整考点无卡。
+            if not any(
+                item.relevance_class is RelevanceClass.DIRECT for item in admitted
+            ):
+                promoted = consolidator.recheck_direct(
+                    exam_point=point,
+                    admitted_decisions=admitted,
+                    chunks_by_id=chunks_by_id,
+                    call_context=ModelCallContext(
+                        course_id=state["course_id"],
+                        organization_run_id=state["run_id"],
+                        stage="consolidate_exam_point",
+                    ),
+                )
+                admitted = [*promoted, *admitted]
             units = consolidator.consolidate(
                 exam_point=point,
                 admitted_decisions=admitted,

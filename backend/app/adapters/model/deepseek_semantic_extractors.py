@@ -44,6 +44,7 @@ class JsonRequester(Protocol):
         call_context: ModelCallContext | None = None,
         response_validator=None,
         tool: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
     ) -> dict: ...
 
 
@@ -279,40 +280,12 @@ _CARD_FIELDS = {
 }
 
 
-# function calling 的 tool 描述：把归并输出 Schema 下发给 MiMo，改用 tools 通道
-# 强制模型产出结构（tool_choice=required），而非 json_object 模式靠事后校验兜底。
-# 单元层级（code/title/exam_point_code/performance_statement）仍由代码确定性组装，
-# 故此处只约束卡片必需字段；MiMo 偶发漏掉 required 字段由 _normalize_consolidation_response 兜底。
-_CONSOLIDATION_TOOL = {
-    "name": "submit_knowledge_cards",
-    "description": "提交一个考试考点的归并知识卡结果",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "exam_point_code": {"type": "string"},
-            "cards": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "name": {"type": "string"},
-                        "performance_statement": {"type": "string"},
-                        "assessable_content": {"type": "array", "items": {"type": "string"}},
-                        "prompt_material": {"type": "array", "items": {"type": "string"}},
-                        "evidence_chunk_ids": {"type": "array", "items": {"type": "string"}},
-                    },
-                    "required": [
-                        "name",
-                        "performance_statement",
-                        "assessable_content",
-                        "evidence_chunk_ids",
-                    ],
-                },
-            },
-        },
-        "required": ["exam_point_code", "cards"],
-    },
-}
+# 归并分批：每批最多 4 条 direct 证据、总证据 ≤6，控制单次输出规模，
+# 规避 MiMo 大 JSON 输出被截断导致的格式失败。
+# 归并输出上限：给足余量避免截断，但不必过大（每批仅 1~3 张卡）。
+_BATCH_DIRECT_MAX = 4
+_BATCH_TOTAL_MAX = 6
+_CONSOLIDATION_MAX_TOKENS = 4096
 
 
 def _normalize_consolidation_response(
@@ -776,15 +749,77 @@ class DeepSeekExamPointEvidenceClassifier:
         return list(collected.values())
 
 
-# 归并分批：每批最多 4 条 direct 证据、总证据 ≤6，控制单次输出规模，
-# 规避 MiMo 大 JSON 输出被截断导致的格式失败。
-_BATCH_DIRECT_MAX = 4
-_BATCH_TOTAL_MAX = 6
-
-
 class DeepSeekExamPointKnowledgeConsolidator:
     def __init__(self, client: JsonRequester) -> None:
         self.client = client
+
+    def recheck_direct(
+        self,
+        *,
+        exam_point: ExamPoint,
+        admitted_decisions: list[EvidenceDecision],
+        chunks_by_id: dict[str, StagingChunk],
+        call_context: ModelCallContext | None = None,
+    ) -> list[EvidenceDecision]:
+        """考点无 direct 证据时，聚焦该考点对 supporting 证据做一次 direct 复核。
+
+        MiMo 在大批量分类里判 direct 偏保守，导致部分考点 0 direct；复核只针对
+        单个考点，从已准入的 supporting 证据中挑出确实直接支撑考核内容的，提升
+        为 direct。复核后仍无 direct 的考点维持无证据状态。
+        """
+        chunk_ids = sorted({decision.evidence_chunk_id for decision in admitted_decisions})
+        grounding = sorted(
+            (chunk for chunk in chunks_by_id.values() if chunk.id in chunk_ids),
+            key=lambda item: item.id,
+        )
+        if not grounding:
+            return []
+        by_id = {chunk.id: chunk for chunk in grounding}
+
+        def validate_response(result: dict) -> None:
+            ids = result.get("direct_chunk_ids")
+            if not isinstance(ids, list) or any(not isinstance(item, str) for item in ids):
+                raise DeepSeekModelError(
+                    "model_schema_validation_failed",
+                    "direct recheck output must contain direct_chunk_ids string array",
+                )
+            unknown = [item for item in ids if item not in by_id]
+            if unknown:
+                raise DeepSeekModelError(
+                    "model_output_scope_violation",
+                    "direct recheck references unknown chunk id",
+                )
+
+        result = self.client.request_json(
+            system_prompt=(
+                "你复核一个考试考点的证据判定。以下 chunks 此前被判为 supporting，"
+                "现在请判断其中哪些 chunk 直接提供了能支撑该考点考核内容的事实或依据。"
+                "只输出 JSON 对象 {\"direct_chunk_ids\": [chunk_id, ...]}；"
+                "仅列出确实直接支撑该考点的 chunk id，拿不准的不要列入，可输出空数组。"
+            ),
+            payload={
+                "exam_point": exam_point.model_dump(mode="json"),
+                "chunks": [
+                    {
+                        "evidence_chunk_id": chunk.id,
+                        "material_version_id": chunk.material_version_id,
+                        "content": chunk.content,
+                        "locator": chunk.locator,
+                    }
+                    for chunk in grounding
+                ],
+            },
+            temperature=0.0,
+            call_context=call_context,
+            response_validator=validate_response,
+            max_tokens=1024,
+        )
+        promoted_ids = set(result.get("direct_chunk_ids") or [])
+        return [
+            decision.model_copy(update={"relevance_class": RelevanceClass.DIRECT})
+            for decision in admitted_decisions
+            if decision.evidence_chunk_id in promoted_ids
+        ]
 
     def consolidate(
         self,
@@ -934,7 +969,7 @@ class DeepSeekExamPointKnowledgeConsolidator:
             temperature=0.0,
             call_context=call_context,
             response_validator=validate_response,
-            tool=_CONSOLIDATION_TOOL,
+            max_tokens=_CONSOLIDATION_MAX_TOKENS,
         )
 
         # 合并各批卡片并去重（跨批语义键相同的卡片只保留一张）。

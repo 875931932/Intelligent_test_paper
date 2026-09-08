@@ -58,6 +58,16 @@ class ExamPointKnowledgeConsolidator(Protocol):
     ) -> list[AssessmentUnitDraft]:
         raise NotImplementedError
 
+    def recheck_direct(
+        self,
+        *,
+        exam_point: ExamPoint,
+        admitted_decisions: list[EvidenceDecision],
+        chunks_by_id: dict[str, "StagingChunk"],
+        call_context: ModelCallContext | None = None,
+    ) -> list[EvidenceDecision]:
+        raise NotImplementedError
+
 
 class KnowledgeTopicDraft(BaseModel):
     code: str
