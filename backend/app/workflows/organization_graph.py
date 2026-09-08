@@ -489,22 +489,36 @@ def build_organization_graph(
             chunks_by_id = {
                 chunk.id: chunk for chunk in _chunks(state, evidence_chunk_ids)
             }
-            # 分类对部分考点判不出 direct 时，聚焦该考点做一次 direct 复核，
-            # 从已准入的 supporting 证据中提升真正直接支撑的，避免整考点无卡。
+            # 分类对部分考点判不出 direct 时，聚焦该考点做一次 direct 复核：
+            # 对召回但被判为 supporting/background 的 chunks 逐个布尔判定，
+            # 把内容本身就是考点考核知识的 chunk 提升回 direct，避免整考点无卡。
             if not any(
                 item.relevance_class is RelevanceClass.DIRECT for item in admitted
             ):
-                promoted = consolidator.recheck_direct(
+                candidate_chunks = list(chunks_by_id.values())
+                promoted_ids = consolidator.recheck_direct(
                     exam_point=point,
-                    admitted_decisions=admitted,
-                    chunks_by_id=chunks_by_id,
+                    candidate_chunks=candidate_chunks,
                     call_context=ModelCallContext(
                         course_id=state["course_id"],
                         organization_run_id=state["run_id"],
                         stage="consolidate_exam_point",
                     ),
                 )
-                admitted = [*promoted, *admitted]
+                promoted_decisions = [
+                    decision.model_copy(
+                        update={"relevance_class": RelevanceClass.DIRECT}
+                    )
+                    for decision in admitted
+                    if decision.evidence_chunk_id in promoted_ids
+                ]
+                admitted = [*promoted_decisions, *admitted]
+            if not any(
+                item.relevance_class is RelevanceClass.DIRECT for item in admitted
+            ):
+                # 复核后仍无 direct：无直接证据可支撑知识卡，跳过归并，
+                # 由覆盖审计标记 no_direct_evidence，避免空跑模型调用。
+                return point.code, []
             units = consolidator.consolidate(
                 exam_point=point,
                 admitted_decisions=admitted,

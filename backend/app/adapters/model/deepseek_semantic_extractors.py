@@ -757,45 +757,43 @@ class DeepSeekExamPointKnowledgeConsolidator:
         self,
         *,
         exam_point: ExamPoint,
-        admitted_decisions: list[EvidenceDecision],
-        chunks_by_id: dict[str, StagingChunk],
+        candidate_chunks: list[StagingChunk],
         call_context: ModelCallContext | None = None,
-    ) -> list[EvidenceDecision]:
-        """考点无 direct 证据时，聚焦该考点对 supporting 证据做一次 direct 复核。
+    ) -> set[str]:
+        """对候选 chunks 逐个判定是否直接支撑考点，返回应提升为 direct 的 id 集合。
 
-        MiMo 在大批量分类里判 direct 偏保守，导致部分考点 0 direct；复核只针对
-        单个考点，从已准入的 supporting 证据中挑出确实直接支撑考核内容的，提升
-        为 direct。复核后仍无 direct 的考点维持无证据状态。
+        分类在大批量判定里判 direct 偏保守，导致部分考点 0 direct；复核只针对
+        单个考点，对召回但被判为 supporting/background 的 chunks 逐个布尔判定，
+        把内容本身就是考点考核知识的 chunk 提回 direct。
         """
-        chunk_ids = sorted({decision.evidence_chunk_id for decision in admitted_decisions})
-        grounding = sorted(
-            (chunk for chunk in chunks_by_id.values() if chunk.id in chunk_ids),
-            key=lambda item: item.id,
-        )
+        grounding = sorted(candidate_chunks, key=lambda item: item.id)
         if not grounding:
-            return []
-        by_id = {chunk.id: chunk for chunk in grounding}
+            return set()
 
         def validate_response(result: dict) -> None:
-            ids = result.get("direct_chunk_ids")
-            if not isinstance(ids, list) or any(not isinstance(item, str) for item in ids):
+            flags = result.get("is_direct")
+            if not isinstance(flags, list) or any(
+                not isinstance(item, bool) for item in flags
+            ):
                 raise DeepSeekModelError(
                     "model_schema_validation_failed",
-                    "direct recheck output must contain direct_chunk_ids string array",
+                    "direct recheck output must contain is_direct boolean array",
                 )
-            unknown = [item for item in ids if item not in by_id]
-            if unknown:
+            if len(flags) != len(grounding):
                 raise DeepSeekModelError(
                     "model_output_scope_violation",
-                    "direct recheck references unknown chunk id",
+                    "direct recheck flag count does not match chunk count",
                 )
 
         result = self.client.request_json(
             system_prompt=(
-                "你复核一个考试考点的证据判定。以下 chunks 此前被判为 supporting，"
-                "现在请判断其中哪些 chunk 直接提供了能支撑该考点考核内容的事实或依据。"
-                "只输出 JSON 对象 {\"direct_chunk_ids\": [chunk_id, ...]}；"
-                "仅列出确实直接支撑该考点的 chunk id，拿不准的不要列入，可输出空数组。"
+                "你复核一个考试考点的证据判定。以下 chunks 是从教学资料中召回的相关片段，"
+                "逐个判断：若 chunk 的内容本身就是该考点考核知识的直接事实或依据"
+                "（概念、定义、原理、机制、规则、公式、关系、比较、约束等知识本身，"
+                "或案例承载的通用结论），判 true；仅当 chunk 是设问/练习语境、"
+                "背景铺垫或与考点无关时才判 false。"
+                "is_direct 数组与 chunks 顺序一一对应，只输出 JSON 对象"
+                " {\"is_direct\": [true, false, ...]}。"
             ),
             payload={
                 "exam_point": exam_point.model_dump(mode="json"),
@@ -812,14 +810,10 @@ class DeepSeekExamPointKnowledgeConsolidator:
             temperature=0.0,
             call_context=call_context,
             response_validator=validate_response,
-            max_tokens=1024,
+            max_tokens=512,
         )
-        promoted_ids = set(result.get("direct_chunk_ids") or [])
-        return [
-            decision.model_copy(update={"relevance_class": RelevanceClass.DIRECT})
-            for decision in admitted_decisions
-            if decision.evidence_chunk_id in promoted_ids
-        ]
+        flags = result.get("is_direct") or []
+        return {chunk.id for chunk, flag in zip(grounding, flags) if flag}
 
     def consolidate(
         self,

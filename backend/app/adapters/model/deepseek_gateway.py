@@ -152,6 +152,7 @@ class DeepSeekJsonClient:
         final_http_status: int | None = None
         last_retry_error_code: str | None = None
         attempt_count = 0
+        raw_snapshot: str | None = None
         # 大 prompt 收紧重试：避免数万 token 的批在多次重试中重复计费。
         effective_max_attempts = self.max_attempts
         if len(canonical_prompt) > self.large_prompt_threshold_chars:
@@ -165,6 +166,7 @@ class DeepSeekJsonClient:
             input_tokens = None
             output_tokens = None
             final_http_status = None
+            raw_snapshot = None
             should_retry = True
             try:
                 response = self._post(system_prompt, canonical_prompt, temperature, tool, max_tokens)
@@ -173,6 +175,7 @@ class DeepSeekJsonClient:
                 status_code = getattr(response, "status_code", None)
                 final_http_status = status_code if isinstance(status_code, int) else 200
                 response.raise_for_status()
+                raw_snapshot = response.content.decode("utf-8", errors="replace")[:2000]
                 body = response.json()
                 if not isinstance(body, dict):
                     raise DeepSeekModelError("model_invalid_envelope", "model response envelope is invalid")
@@ -295,6 +298,8 @@ class DeepSeekJsonClient:
         message_shape = last_error.details.get("message_shape") if last_error.details else None
         if message_shape is not None:
             details["message_shape"] = message_shape
+        if raw_snapshot:
+            details["raw_response_snapshot"] = raw_snapshot
         self._record(
             context=call_context,
             status="failed",
