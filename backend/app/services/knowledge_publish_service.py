@@ -510,12 +510,37 @@ class DatabaseKnowledgeRepository:
                     point_rows=point_rows,
                     publishable_exam_point_codes=publishable_exam_point_codes,
                 )
+                chunk_ids = sorted(
+                    {decision.evidence_chunk_id for decision in tree.evidence_decisions}
+                )
+                chunks_by_id: dict[str, StagingChunk] = {}
+                if chunk_ids:
+                    chunk_rows = self.session.execute(
+                        select(
+                            evidence_chunks.c.id,
+                            evidence_chunks.c.material_version_id,
+                            evidence_chunks.c.content,
+                        ).where(
+                            evidence_chunks.c.course_id == course_id,
+                            evidence_chunks.c.organization_run_id == state["run_id"],
+                            evidence_chunks.c.id.in_(chunk_ids),
+                        )
+                    ).mappings()
+                    chunks_by_id = {
+                        row["id"]: StagingChunk(
+                            id=row["id"],
+                            material_version_id=row["material_version_id"],
+                            content=row["content"],
+                        )
+                        for row in chunk_rows
+                    }
                 try:
                     validate_publishable_tree(
                         tree,
                         allowed_anchor_keys=allowed,
                         allowed_exam_point_codes=set(points_by_code),
                         exam_points_by_code=points_by_code,
+                        chunks_by_id=chunks_by_id,
                     )
                 except KnowledgeTreeValidationError as exc:
                     raise KnowledgePublishError(

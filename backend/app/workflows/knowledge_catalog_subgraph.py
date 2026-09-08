@@ -272,5 +272,6 @@ def build_knowledge_catalog_candidate(
             allowed_anchor_keys=allowed_anchor_keys,
             allowed_exam_point_codes=set(points_by_code),
             exam_points_by_code=points_by_code,
+            chunks_by_id=chunks_by_id,
         )
     return tree

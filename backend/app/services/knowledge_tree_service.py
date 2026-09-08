@@ -15,6 +15,7 @@ from app.domain.knowledge.relevance import (
     ContentKind,
     EvidenceDecision,
     RelevanceClass,
+    StagingChunk,
     admit_evidence_decision,
     all_facts_supported,
     assessable_fact_keys,
@@ -127,6 +128,7 @@ def validate_publishable_tree(
     allowed_anchor_keys: set[str],
     allowed_exam_point_codes: set[str] | None = None,
     exam_points_by_code: dict[str, ExamPoint] | None = None,
+    chunks_by_id: dict[str, StagingChunk] | None = None,
 ) -> None:
     if not tree.topics:
         raise KnowledgeTreeValidationError("knowledge tree has no assessable topics")
@@ -216,12 +218,23 @@ def validate_publishable_tree(
             if not active_cards:
                 raise KnowledgeTreeValidationError("active assessment unit requires a knowledge card")
             # 该考点全部可迁移准入证据的 claim 聚合为支撑池（direct + supporting，
-            # 操作细节已在准入循环排除）。
+            # 操作细节已在准入循环排除）；若传入 chunks_by_id，则把准入证据对应的
+            # chunk 原文一并纳入（与归并阶段 _validate_consolidated_units 口径一致，
+            # 模型对原句浓缩成可评分事实时仍可放行）。
             point_evidence_keys = assessable_fact_keys(
                 [
-                    decision.support_claim
-                    for decision in admitted_decisions
-                    if decision.exam_point_code == unit.exam_point_code
+                    *(
+                        decision.support_claim
+                        for decision in admitted_decisions
+                        if decision.exam_point_code == unit.exam_point_code
+                    ),
+                    *(
+                        chunks_by_id[decision.evidence_chunk_id].content
+                        for decision in admitted_decisions
+                        if decision.exam_point_code == unit.exam_point_code
+                        and chunks_by_id is not None
+                        and decision.evidence_chunk_id in chunks_by_id
+                    ),
                 ]
             )
             for card in active_cards:
