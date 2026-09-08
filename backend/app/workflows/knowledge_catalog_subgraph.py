@@ -130,8 +130,13 @@ def validate_consolidated_units(
             published_facts = assessable_fact_keys(card.assessable_content)
             supported_facts: set[str] = set()
             for evidence_id in card.evidence_chunk_ids:
-                evidence_facts = assessable_fact_keys(
-                    [decision.support_claim for decision in decisions_by_evidence.get(evidence_id, [])]
+                evidence_facts = set(
+                    assessable_fact_keys(
+                        [
+                            decision.support_claim
+                            for decision in decisions_by_evidence.get(evidence_id, [])
+                        ]
+                    )
                 )
                 # 证据支撑池补充 direct chunk 原文：模型归并时常用自己的措辞
                 # 重述或浓缩 chunk 原句，若只拿支持 claim 概括句做逐字配对会误判
