@@ -17,6 +17,7 @@ from app.domain.knowledge.relevance import (
     ExamPointCoverage,
     ExamPointFileDecision,
     RelevanceClass,
+    StagingChunk,
     admit_evidence_decision,
     all_facts_supported,
     assessable_fact_keys,
@@ -114,6 +115,8 @@ def validate_consolidated_units(
     point: ExamPoint,
     units: list[AssessmentUnitDraft],
     admitted_direct: list[EvidenceDecision],
+    *,
+    chunks_by_id: dict[str, StagingChunk] | None = None,
 ) -> None:
     decisions_by_evidence: dict[str, list[EvidenceDecision]] = defaultdict(list)
     for decision in admitted_direct:
@@ -127,9 +130,16 @@ def validate_consolidated_units(
             published_facts = assessable_fact_keys(card.assessable_content)
             supported_facts: set[str] = set()
             for evidence_id in card.evidence_chunk_ids:
-                evidence_facts: set[str] = set()
-                for decision in decisions_by_evidence.get(evidence_id, []):
-                    evidence_facts.update(assessable_fact_keys([decision.support_claim]))
+                evidence_facts = assessable_fact_keys(
+                    [decision.support_claim for decision in decisions_by_evidence.get(evidence_id, [])]
+                )
+                # 证据支撑池补充 direct chunk 原文：模型归并时常用自己的措辞
+                # 重述或浓缩 chunk 原句，若只拿支持 claim 概括句做逐字配对会误判
+                # "未覆盖"。原文 + 双向子串匹配可放行措辞变体，仍拒绝凭空编造。
+                if chunks_by_id is not None:
+                    chunk = chunks_by_id.get(evidence_id)
+                    if chunk is not None and chunk.content:
+                        evidence_facts.update(assessable_fact_keys([chunk.content]))
                 if not evidence_facts or not any(
                     fact_key_supported(published, evidence_facts)
                     for published in published_facts
@@ -193,6 +203,7 @@ def build_knowledge_catalog_candidate(
     file_decisions: list[ExamPointFileDecision],
     consolidated_units: dict[str, list[AssessmentUnitDraft]],
     coverage_reasons: dict[str, list[str]] | None = None,
+    chunks_by_id: dict[str, StagingChunk] | None = None,
 ) -> KnowledgeTreeCandidate:
     """Build one deterministic candidate from already selected exam-point/file pairs."""
 
@@ -224,7 +235,7 @@ def build_knowledge_catalog_candidate(
             for item in admitted_by_point.get(point.code, [])
             if item.relevance_class is RelevanceClass.DIRECT
         ]
-        validate_consolidated_units(point, units, direct)
+        validate_consolidated_units(point, units, direct, chunks_by_id=chunks_by_id)
         if not units:
             continue
         candidates.append(

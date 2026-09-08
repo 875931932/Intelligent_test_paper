@@ -896,7 +896,7 @@ class DeepSeekExamPointKnowledgeConsolidator:
                     AssessmentUnitDraft.model_validate(unit.model_dump(mode="json"))
                     for unit in response.assessment_units
                 ]
-            _validate_consolidated_units(exam_point, admitted, units)
+            _validate_consolidated_units(exam_point, admitted, units, chunks_by_id=chunks_by_id)
             parsed.append(units)
 
         for batch in batches:
@@ -991,7 +991,7 @@ class DeepSeekExamPointKnowledgeConsolidator:
                 }
             )
         ]
-        _validate_consolidated_units(exam_point, admitted, units)
+        _validate_consolidated_units(exam_point, admitted, units, chunks_by_id=chunks_by_id)
         return units
 
 
@@ -999,17 +999,32 @@ def _validate_consolidated_units(
     exam_point: ExamPoint,
     admitted: list[EvidenceDecision],
     units: list[AssessmentUnitDraft],
+    *,
+    chunks_by_id: dict[str, "StagingChunk"],
 ) -> None:
     direct_by_id = {
         decision.evidence_chunk_id: decision
         for decision in admitted
         if decision.relevance_class is RelevanceClass.DIRECT
     }
-    # 支撑池取该考点全部 direct 主张：模型偶发把知识点挂到错误的 chunk id 上
-    # 时，只要事实本身仍被考点的直接证据支撑即可放行；真正无证据支撑的编造
-    # 内容依旧被拒。误引的 supporting id 在下方确定性剔除，不参与入库。
+    # 支撑池取该考点全部 direct 证据：既含分类阶段 support_claim 概括，也含
+    # 其对应 teaching chunk 的原文（经 assessable_fact_keys 按可评分事实边界
+    # 切分为规范化 key）。模型归并时虽被要求逐字落在 support_claim，但 MiMo
+    # 实际会用自己的措辞重述事实或把某条 chunk 原句浓缩成更短可评分句；把
+    # 原文一并纳入支撑池，配合 fact_key_supported 的双向子串判定，可放行
+    # 措辞变体而仍拒绝凭空编造。误引的 supporting id 在下方确定性剔除。
     point_evidence_keys = assessable_fact_keys(
-        [decision.support_claim for decision in direct_by_id.values()]
+        [
+            *(
+                decision.support_claim
+                for decision in direct_by_id.values()
+            ),
+            *(
+                chunks_by_id[evidence_id].content
+                for evidence_id in direct_by_id
+                if evidence_id in chunks_by_id
+            ),
+        ]
     )
     for unit in units:
         if unit.exam_point_code != exam_point.code:

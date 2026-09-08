@@ -578,18 +578,30 @@ def build_organization_graph(
         }
 
     def build_catalog_candidate(state: OrganizationState):
+        file_decisions = [
+            ExamPointFileDecision.model_validate(item)
+            for item in state.get("file_decisions", [])
+        ]
+        evidence_ids = sorted(
+            {
+                decision.evidence_chunk_id
+                for file_decision in file_decisions
+                for decision in file_decision.decisions
+            }
+        )
+        chunks_by_id = {
+            chunk.id: chunk for chunk in _chunks(state, evidence_ids)
+        }
         tree = build_knowledge_catalog_candidate(
             framework_version_id=state["framework_version_id"],
             exam_points=_points(state),
-            file_decisions=[
-                ExamPointFileDecision.model_validate(item)
-                for item in state.get("file_decisions", [])
-            ],
+            file_decisions=file_decisions,
             consolidated_units={
                 code: [AssessmentUnitDraft.model_validate(item) for item in units]
                 for code, units in state.get("consolidated_units", {}).items()
             },
             coverage_reasons=state.get("coverage_reasons") or {},
+            chunks_by_id=chunks_by_id,
         )
         return {"tree": tree.model_dump(mode="json")}
 

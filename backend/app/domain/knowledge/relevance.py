@@ -356,24 +356,131 @@ def assessable_fact_keys(values: list[str]) -> frozenset[str]:
 # 只有足够长的证据事实才允许作为被包裹的核心参与包含判定。
 _MIN_WRAPPED_EVIDENCE_KEY_LENGTH = 6
 
+# 语义兜底的最小实词长度：更短的连续汉字/词条（如"中""的""用"）作比对噪声
+# 会稀释覆盖率，造成误判。低于该长度的词条不参与语义覆盖率判定。
+_MIN_SEMANTIC_TOKEN_LEN = 2
+# 卡片事实语义词条被证据覆盖的最小占比：低于该比例即视为未被支撑（编造）。
+# 0.66 在容忍措辞变体（措辞不同但实词重叠）与拒绝编造（新增实词过多）间折中。
+_SEMANTIC_COVERAGE_MIN = 0.66
+
+
+_CJK_TOKEN_PATTERN = re.compile(r"[\u3400-\u9fff]{2,}")
+_ASCII_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_]{2,}")
+# 2字子串覆盖率阈值：容忍归并阶段插入的字（"步骤可将""参数"）与措辞变体，
+# 又足以区分凭空编造（编造句与证据仅有"用于"这类高频泛动词重叠）。
+_SEMANTIC_BIGRAM_COVERAGE_MIN = 0.5
+
+
+def _semantic_token_set(value: str) -> set[str]:
+    """抽取句子中的语义词条集合（连续汉字串 + 字母数字标识符）。
+
+    用于证据语义覆盖率的近似判定：中文不做分词，直接取连续汉字串为
+    一个实词（如"模型调用"），拉丁标识符（如"swift"、"infer"）原样保留。
+    这样"swift infer命令用于进行模型调用"与"swift infer 命令用于模型调用"
+    虽措辞细节不同，但共享的实词 token 高度重叠。
+    """
+    normalized = _normalize_semantic_width(value)
+    tokens: set[str] = set()
+    tokens.update(
+        match.group(0) for match in _CJK_TOKEN_PATTERN.finditer(normalized)
+    )
+    tokens.update(
+        match.group(0) for match in _ASCII_TOKEN_PATTERN.finditer(normalized)
+    )
+    return {token for token in tokens if len(token) >= _MIN_SEMANTIC_TOKEN_LEN}
+
+
+def _semantic_bigram_set(value: str) -> set[str]:
+    """抽取纯中文的 2 字子串集合。
+
+    拉丁标识符（如 "swift"）的本质字面已由 ASCII token 层保障，中文连续汉字
+    串做 2-gram 可容忍归并阶段在句中插入若干字（"步骤可将""参数"），仍能
+    高比例保留原句字面；编造句则与证据仅有零星泛动词重叠。
+    """
+    normalized = _normalize_semantic_width(value)
+    characters: list[str] = []
+    buffer: list[str] = []
+    for character in normalized:
+        if "\u3400" <= character <= "\u9fff":
+            buffer.append(character)
+        else:
+            if len(buffer) >= 2:
+                characters.extend(buffer)
+            buffer.clear()
+    if len(buffer) >= 2:
+        characters.extend(buffer)
+    return {
+        characters[index] + characters[index + 1]
+        for index in range(len(characters) - 1)
+    }
+
+
+def fact_semantically_supported(atom_key: str, evidence_keys: frozenset[str]) -> bool:
+    """语义兜底：卡片事实是否被证据集合中任一原文语义覆盖。
+
+    两层宽松判定，任一命中即支撑：
+    1. 语义词条覆盖率：卡片事实的实词 token 被任一证据原文覆盖；对拉丁
+       标识符（swift/infer/LoRA）敏感。
+    2. 中文 2-gram 覆盖率：卡片事实的连续字面 2 元组被任一证据覆盖；对
+       归并阶段插入字/措辞变体稳健。
+    两层都拒绝：卡片事实大量实词在证据中找不到，且字面连续性不匹配——
+       即凭空编造。
+    """
+    atom_tokens = _semantic_token_set(atom_key)
+    atom_bigrams = _semantic_bigram_set(atom_key)
+    if not atom_tokens and not atom_bigrams:
+        return False
+    best_token_coverage = 0.0
+    best_bigram_coverage = 0.0
+    for evidence_key in evidence_keys:
+        evidence_tokens = _semantic_token_set(evidence_key)
+        if atom_tokens and evidence_tokens:
+            overlap = atom_tokens & evidence_tokens
+            best_token_coverage = max(
+                best_token_coverage, len(overlap) / len(atom_tokens)
+            )
+        evidence_bigrams = _semantic_bigram_set(evidence_key)
+        if atom_bigrams and evidence_bigrams:
+            overlap = atom_bigrams & evidence_bigrams
+            best_bigram_coverage = max(
+                best_bigram_coverage, len(overlap) / len(atom_bigrams)
+            )
+    if best_token_coverage >= _SEMANTIC_COVERAGE_MIN:
+        return True
+    return best_bigram_coverage >= _SEMANTIC_BIGRAM_COVERAGE_MIN
+
 
 def fact_key_supported(atom_key: str, evidence_keys: frozenset[str] | set[str]) -> bool:
     """判定一条归并原子是否被直接证据落地。
 
-    两种落地方式：
-    1. 与证据事实的规范化 key 完全相等（原有严格口径）；
-    2. 证据事实 key 是原子 key 的子串——允许归并阶段为碎片事实补全
-       归属限定语（如 "ms-swift框架中，eval_batch_size参数用于控制评测批大小"
-       落在证据 "eval_batch_size参数用于控制评测批大小" 上），
-       核心事实仍须逐字出现，编造内容依旧被拒。
+    落地方式（命中任一即放行）：
+    1. 与证据事实的规范化 key 完全相等（严格口径）；
+    2. 证据事实 key 是原子 key 的子串——归并阶段为碎片事实补全归属限定语
+       （"ms-swift框架中，eval_batch_size参数用于控制评测批大小" 落在证据
+       "eval_batch_size参数用于控制评测批大小"）；核心事实仍须逐字出现。
+    3. 原子 key 是证据（chunk 原文长句）的子串——模型把教材原句浓缩成
+       更短可评分事实（"swift infer 命令用于模型调用" 落在 chunk 原文句
+       "ms-swift 中 swift infer 命令用于进行模型调用和多模态输入验证"）。
+       浓缩不改变事实归属，仍被证据原文支撑；凭空编造不受任何长句包含。
+    4. 语义兜底：任一证据原文能覆盖卡片事实 >=66% 的语义词条。措辞变体
+       至此放行，但新增实词过多的编造依旧被拒。
     """
 
     if atom_key in evidence_keys:
         return True
-    return any(
-        len(evidence_key) >= _MIN_WRAPPED_EVIDENCE_KEY_LENGTH and evidence_key in atom_key
+    if any(
+        (
+            len(evidence_key) >= _MIN_WRAPPED_EVIDENCE_KEY_LENGTH
+            and evidence_key in atom_key
+        )
+        or (
+            len(atom_key) >= _MIN_WRAPPED_EVIDENCE_KEY_LENGTH
+            and atom_key in evidence_key
+        )
         for evidence_key in evidence_keys
-    )
+    ):
+        return True
+    return fact_semantically_supported(atom_key, frozenset(evidence_keys))
 
 
 def all_facts_supported(
