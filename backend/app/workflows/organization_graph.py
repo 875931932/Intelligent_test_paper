@@ -507,7 +507,7 @@ def build_organization_graph(
                 raise ValueError(
                     "consolidator returned no assessment units for admitted direct evidence"
                 )
-            validate_consolidated_units(point, validated_units, admitted)
+            validate_consolidated_units(point, validated_units, admitted, chunks_by_id=chunks_by_id)
             return point.code, validated_units
 
         consolidated: dict[str, list[dict]] = {}

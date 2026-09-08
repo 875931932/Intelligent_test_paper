@@ -106,23 +106,24 @@ def _coverage(
 def validate_consolidated_units(
     point: ExamPoint,
     units: list[AssessmentUnitDraft],
-    admitted_direct: list[EvidenceDecision],
+    admitted_decisions: list[EvidenceDecision],
     *,
     chunks_by_id: dict[str, StagingChunk] | None = None,
 ) -> None:
-    # 支撑池取该考点全部 direct 证据（与归并阶段 _validate_consolidated_units
-    # 口径一致），而非仅卡片引用的那几个 evidence_id：模型偶发少挂一个 id 时
-    # 归并能过、这里也能过；真正无 direct 支撑的编造仍被拒。卡片误引的
-    # 非 direct id 已在归并阶段确定性剔除。
+    # 支撑池取该考点全部准入证据（direct + supporting）：既含分类阶段
+    # support_claim 概括，也含其对应 teaching chunk 的原文（经
+    # assessable_fact_keys 按可评分事实边界切分为规范化 key）。该口径与
+    # 归并阶段 _validate_consolidated_units 完全一致，避免"归并通过、此处
+    # 凭 claim 池反而失败"的错配。
     point_evidence_keys = assessable_fact_keys(
         [
             *(
                 decision.support_claim
-                for decision in admitted_direct
+                for decision in admitted_decisions
             ),
             *(
                 chunks_by_id[decision.evidence_chunk_id].content
-                for decision in admitted_direct
+                for decision in admitted_decisions
                 if chunks_by_id is not None
                 and decision.evidence_chunk_id in chunks_by_id
             ),
