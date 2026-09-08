@@ -143,6 +143,35 @@ class DeepSeekJsonClient:
         prompt = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else dict(payload)
         canonical_prompt = json.dumps(prompt, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         prompt_hash = hashlib.sha256(f"{system_prompt}\n{canonical_prompt}".encode()).hexdigest()
+        # temperature=0 的确定性调用（知识目录分类/归并/提取等）可安全复用
+        # 历史成功响应：同 (model, prompt) 的重建（如资料未变的重复构建）不再
+        # 触发真实模型调用，模型消耗趋近于零。出题类 temperature>0 调用不缓存。
+        if temperature <= 0 and self.recorder is not None:
+            lookup = getattr(self.recorder, "lookup_response", None)
+            if lookup is not None:
+                try:
+                    cached = lookup(model=self.model, prompt_hash=prompt_hash)
+                except Exception:
+                    cached = None
+                if cached is not None:
+                    try:
+                        if response_validator is not None:
+                            response_validator(cached)
+                    except Exception:
+                        cached = None
+                if cached is not None:
+                    self._record(
+                        context=call_context,
+                        status="succeeded",
+                        prompt_hash=prompt_hash,
+                        input_tokens=0,
+                        output_tokens=0,
+                        duration_ms=0,
+                        error=None,
+                        request_id=None,
+                        details={"cache_hit": True},
+                    )
+                    return cached
         started = time.perf_counter()
         attempts: list[dict[str, Any]] = []
         last_error: DeepSeekModelError | None = None
@@ -273,6 +302,7 @@ class DeepSeekJsonClient:
                         "final_http_status": final_http_status,
                         "last_error_code": last_retry_error_code,
                         "attempts": attempts,
+                        "response": result,
                     },
                 )
                 return result

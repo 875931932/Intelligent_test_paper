@@ -6,6 +6,7 @@ from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.db.schema import model_calls
@@ -62,3 +63,48 @@ class DatabaseModelCallRecorder:
             session.commit()
         finally:
             session.close()
+
+    def lookup_response(
+        self,
+        *,
+        model: str,
+        prompt_hash: str,
+    ) -> dict[str, Any] | None:
+        """按 (model, prompt_hash) 查找历史成功响应。
+
+        仅用于 temperature=0 的确定性调用（分类/归并/提取等知识构建类），
+        命中返回完整响应 dict；查询异常一律视为未命中，不阻断真实调用。
+        命中记录的 details 中会写入 cache_hit=True，不作为后续缓存的源。
+        """
+        session = self.session_factory()
+        try:
+            row = session.execute(
+                text(
+                    """
+                    SELECT details->>'response' AS response
+                    FROM model_calls
+                    WHERE model = :model
+                      AND prompt_hash = :prompt_hash
+                      AND status = 'succeeded'
+                      AND details->>'response' IS NOT NULL
+                      AND (details->>'cache_hit') IS NULL
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {"model": model, "prompt_hash": prompt_hash},
+            ).scalar_one_or_none()
+        except Exception:
+            session.rollback()
+            return None
+        finally:
+            session.close()
+        if not isinstance(row, str):
+            return None
+        try:
+            import json
+
+            parsed = json.loads(row)
+        except (ValueError, TypeError):
+            return None
+        return parsed if isinstance(parsed, dict) else None
