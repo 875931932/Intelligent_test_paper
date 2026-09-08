@@ -21,7 +21,6 @@ from app.domain.knowledge.relevance import (
     admit_evidence_decision,
     all_facts_supported,
     assessable_fact_keys,
-    fact_key_supported,
     semantic_text_key,
 )
 from app.services.knowledge_tree_service import (
@@ -118,9 +117,24 @@ def validate_consolidated_units(
     *,
     chunks_by_id: dict[str, StagingChunk] | None = None,
 ) -> None:
-    decisions_by_evidence: dict[str, list[EvidenceDecision]] = defaultdict(list)
-    for decision in admitted_direct:
-        decisions_by_evidence[decision.evidence_chunk_id].append(decision)
+    # 支撑池取该考点全部 direct 证据（与归并阶段 _validate_consolidated_units
+    # 口径一致），而非仅卡片引用的那几个 evidence_id：模型偶发少挂一个 id 时
+    # 归并能过、这里也能过；真正无 direct 支撑的编造仍被拒。卡片误引的
+    # 非 direct id 已在归并阶段确定性剔除。
+    point_evidence_keys = assessable_fact_keys(
+        [
+            *(
+                decision.support_claim
+                for decision in admitted_direct
+            ),
+            *(
+                chunks_by_id[decision.evidence_chunk_id].content
+                for decision in admitted_direct
+                if chunks_by_id is not None
+                and decision.evidence_chunk_id in chunks_by_id
+            ),
+        ]
+    )
     for unit in units:
         if unit.exam_point_code != point.code:
             raise KnowledgeTreeValidationError(
@@ -128,32 +142,7 @@ def validate_consolidated_units(
             )
         for card in unit.cards:
             published_facts = assessable_fact_keys(card.assessable_content)
-            supported_facts: set[str] = set()
-            for evidence_id in card.evidence_chunk_ids:
-                evidence_facts = set(
-                    assessable_fact_keys(
-                        [
-                            decision.support_claim
-                            for decision in decisions_by_evidence.get(evidence_id, [])
-                        ]
-                    )
-                )
-                # 证据支撑池补充 direct chunk 原文：模型归并时常用自己的措辞
-                # 重述或浓缩 chunk 原句，若只拿支持 claim 概括句做逐字配对会误判
-                # "未覆盖"。原文 + 双向子串匹配可放行措辞变体，仍拒绝凭空编造。
-                if chunks_by_id is not None:
-                    chunk = chunks_by_id.get(evidence_id)
-                    if chunk is not None and chunk.content:
-                        evidence_facts.update(assessable_fact_keys([chunk.content]))
-                if not evidence_facts or not any(
-                    fact_key_supported(published, evidence_facts)
-                    for published in published_facts
-                ):
-                    raise KnowledgeTreeValidationError(
-                        "knowledge card requires direct evidence admitted for the same exam point"
-                    )
-                supported_facts.update(evidence_facts)
-            if not all_facts_supported(published_facts, supported_facts):
+            if not all_facts_supported(published_facts, point_evidence_keys):
                 raise KnowledgeTreeValidationError(
                     "knowledge card requires direct evidence admitted for the same exam point"
                 )
