@@ -29,6 +29,7 @@ from app.domain.knowledge.relevance import (
     all_facts_supported,
     assessable_fact_keys,
     is_transferable_fact,
+    semantic_text_key,
 )
 from app.domain.model_calls import ModelCallContext
 
@@ -775,6 +776,12 @@ class DeepSeekExamPointEvidenceClassifier:
         return list(collected.values())
 
 
+# 归并分批：每批最多 4 条 direct 证据、总证据 ≤6，控制单次输出规模，
+# 规避 MiMo 大 JSON 输出被截断导致的格式失败。
+_BATCH_DIRECT_MAX = 4
+_BATCH_TOTAL_MAX = 6
+
+
 class DeepSeekExamPointKnowledgeConsolidator:
     def __init__(self, client: JsonRequester) -> None:
         self.client = client
@@ -802,6 +809,30 @@ class DeepSeekExamPointKnowledgeConsolidator:
             (chunk for chunk in chunks_by_id.values() if chunk.id in admitted_chunk_ids),
             key=lambda item: item.id,
         )
+        # 分批归并：一次只让模型产出一个小批，避免单次输出过长触发 MiMo 截断
+        # 或格式漂移。direct 证据按 support_claim 语义键排序后每批 ≤4 条；
+        # supporting 只用于语境，按批补足。各批结果合并后统一校验与去重。
+        direct = [
+            decision
+            for decision in admitted
+            if decision.relevance_class is RelevanceClass.DIRECT
+        ]
+        supporting = [
+            decision
+            for decision in admitted
+            if decision.relevance_class is RelevanceClass.SUPPORTING
+        ]
+        direct.sort(key=lambda decision: semantic_text_key(decision.support_claim))
+        batches: list[list[EvidenceDecision]] = [
+            direct[index : index + _BATCH_DIRECT_MAX]
+            for index in range(0, len(direct), _BATCH_DIRECT_MAX)
+        ]
+        if not batches:
+            batches.append([])
+        for index, decision in enumerate(supporting):
+            batch = batches[index % len(batches)]
+            if len(batch) < _BATCH_TOTAL_MAX:
+                batch.append(decision)
         parsed: list[list[AssessmentUnitDraft]] = []
 
         def validate_response(result: dict) -> None:
@@ -839,8 +870,14 @@ class DeepSeekExamPointKnowledgeConsolidator:
             _validate_consolidated_units(exam_point, admitted, units)
             parsed.append(units)
 
-        self.client.request_json(
-            system_prompt=(
+        for batch in batches:
+            batch_chunk_ids = {decision.evidence_chunk_id for decision in batch}
+            batch_grounding = sorted(
+                (chunk for chunk in grounding_chunks if chunk.id in batch_chunk_ids),
+                key=lambda item: item.id,
+            )
+            self.client.request_json(
+                system_prompt=(
                 "你只归并一个考试考点已经准入的 direct 和 supporting 证据，产出该考点的可评分知识卡。"
                 "按可评分表现合并同义事实、保留不同答案边界；不得按文件名、章节、页码或来源数量拆分卡片。"
                 "每条 assessable_content 都必须被 direct 证据逐条支撑；supporting 内容只能进入 prompt_material。"
@@ -867,10 +904,12 @@ class DeepSeekExamPointKnowledgeConsolidator:
             ),
             payload={
                 "exam_point": exam_point.model_dump(mode="json"),
-                "admitted_decisions": [item.model_dump(mode="json") for item in admitted],
+                "admitted_decisions": [
+                    item.model_dump(mode="json") for item in batch
+                ],
                 "citable_chunk_ids": sorted(
                     decision.evidence_chunk_id
-                    for decision in admitted
+                    for decision in batch
                     if decision.relevance_class is RelevanceClass.DIRECT
                 ),
                 "chunks": [
@@ -884,12 +923,12 @@ class DeepSeekExamPointKnowledgeConsolidator:
                             if any(
                                 decision.evidence_chunk_id == chunk.id
                                 and decision.relevance_class is RelevanceClass.DIRECT
-                                for decision in admitted
+                                for decision in batch
                             )
                             else "supporting"
                         ),
                     }
-                    for chunk in grounding_chunks
+                    for chunk in batch_grounding
                 ],
             },
             temperature=0.0,
@@ -897,7 +936,34 @@ class DeepSeekExamPointKnowledgeConsolidator:
             response_validator=validate_response,
             tool=_CONSOLIDATION_TOOL,
         )
-        return parsed[0]
+
+        # 合并各批卡片并去重（跨批语义键相同的卡片只保留一张）。
+        merged_cards: list[dict[str, Any]] = []
+        seen_names: set[str] = set()
+        for units in parsed:
+            for unit in units:
+                for card in unit.cards:
+                    name_key = semantic_text_key(card.name)
+                    if name_key in seen_names:
+                        continue
+                    seen_names.add(name_key)
+                    merged_cards.append(card.model_dump(mode="json"))
+        if not merged_cards:
+            return []
+        units = [
+            AssessmentUnitDraft.model_validate(
+                {
+                    "code": f"{exam_point.code}-U1",
+                    "title": exam_point.title,
+                    "performance_statement": exam_point.assessment_requirement,
+                    "exam_point_code": exam_point.code,
+                    "scope_boundary": {},
+                    "cards": merged_cards,
+                }
+            )
+        ]
+        _validate_consolidated_units(exam_point, admitted, units)
+        return units
 
 
 def _validate_consolidated_units(

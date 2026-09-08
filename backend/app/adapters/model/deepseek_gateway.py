@@ -506,6 +506,16 @@ def _extract_tool_arguments(message: dict[str, Any]) -> dict:
                 return parsed
         except json.JSONDecodeError:
             pass
+        # 模型偶发把 JSON 包在 markdown 代码块或说明文字里：取首个 { 到末个 } 再试一次。
+        first = content.find("{")
+        last = content.rfind("}")
+        if 0 <= first < last:
+            try:
+                parsed = json.loads(content[first : last + 1])
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
     # 采样真实的 message 结构，帮助定位 MiMo 到底回了什么（只取键名，不取长内容）。
     shape: dict[str, object] = {}
     for key in ("role", "content", "tool_calls", "refusal"):
