@@ -718,6 +718,36 @@ def test_strict_publish_allows_supporting_evidence_id_on_direct_grounded_card():
     )
 
 
+def test_strict_publish_allows_supporting_fact_on_card_with_direct_anchor():
+    direct_fact = "召回遗漏会削弱回答的事实覆盖"
+    supporting_fact = "重排可以改善候选上下文的相关性顺序"
+    tree = _strict_tree(
+        card_content=[direct_fact, supporting_fact],
+        evidence_ids=("direct-evidence", "supporting-evidence"),
+        decisions=[
+            _direct_decision(
+                evidence_chunk_id="direct-evidence",
+                support_claim=direct_fact,
+            ),
+            {
+                "exam_point_code": "EP-1",
+                "evidence_chunk_id": "supporting-evidence",
+                "relevance_class": "supporting",
+                "support_claim": supporting_fact,
+                "evidence_role": "context_only",
+                "content_kind": "fact",
+                "confidence": 80,
+            },
+        ],
+    )
+
+    validate_publishable_tree(
+        tree,
+        allowed_anchor_keys={"rag"},
+        allowed_exam_point_codes={"EP-1"},
+    )
+
+
 def test_strict_publish_reapplies_supporting_only_operational_policy():
     tree = _strict_tree_with_direct_role(
         "fact_or_constraint",

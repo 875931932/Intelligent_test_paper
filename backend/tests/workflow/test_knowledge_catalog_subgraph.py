@@ -89,12 +89,12 @@ def test_catalog_subgraph_merges_same_point_units_across_files_and_keeps_direct_
     assert tree.coverage[0].direct_count == 2
 
 
-def test_catalog_subgraph_rejects_card_evidence_not_admitted_direct_for_same_point():
+def test_catalog_subgraph_rejects_card_evidence_not_admitted_for_same_point():
     decisions = [
         ExamPointFileDecision(
             exam_point_code="EP-1",
             material_version_id="material-1",
-            decisions=[_decision("e1", relevance=RelevanceClass.SUPPORTING)],
+            decisions=[_decision("e1", relevance=RelevanceClass.OUT_OF_SCOPE)],
         )
     ]
 
@@ -105,6 +105,31 @@ def test_catalog_subgraph_rejects_card_evidence_not_admitted_direct_for_same_poi
             file_decisions=decisions,
             consolidated_units={"EP-1": [_unit(["e1"])]},
         )
+
+
+def test_catalog_subgraph_accepts_card_citing_supporting_evidence_with_direct_anchor():
+    decisions = [
+        ExamPointFileDecision(
+            exam_point_code="EP-1",
+            material_version_id="material-1",
+            decisions=[_decision("e1", relevance=RelevanceClass.SUPPORTING)],
+        ),
+        ExamPointFileDecision(
+            exam_point_code="EP-1",
+            material_version_id="material-2",
+            decisions=[_decision("e2")],
+        ),
+    ]
+
+    tree = build_knowledge_catalog_candidate(
+        framework_version_id="framework-v1",
+        exam_points=[_point()],
+        file_decisions=decisions,
+        consolidated_units={"EP-1": [_unit(["e1", "e2"])]},
+    )
+
+    assert tree.topics[0].units[0].cards[0].evidence_chunk_ids == ["e1", "e2"]
+    assert tree.coverage[0].status == "sufficient"
 
 
 def test_catalog_subgraph_accepts_owner_qualified_atom_wrapping_evidence_fact():

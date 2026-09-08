@@ -12,6 +12,7 @@ from app.domain.knowledge.models import (
     UnmatchedCandidate,
 )
 from app.domain.knowledge.relevance import (
+    ContentKind,
     EvidenceDecision,
     RelevanceClass,
     admit_evidence_decision,
@@ -153,7 +154,11 @@ def validate_publishable_tree(
     # 事实仍必须由该考点的 direct 证据落地，避免 supporting/操作细节被当成
     # 可直接考核的依据（operational_detail_policy 降级在准入时已生效）。
     admitted_decisions: list[EvidenceDecision] = []
-    admitted_direct: list[EvidenceDecision] = []
+    # 归并支撑池 = 全部准入证据中可迁移事实的 claim（direct + supporting）。
+    # 被 operational_detail_policy 降级为 supporting 的操作细节（安装步骤/命令
+    # 参数等）不作为可评分依据，从支撑池剔除；DIRECTLY_ASSESSABLE 策略下保持
+    # direct 的操作细节仍可作评分依据。该 pool 与归并阶段 consolidate 的支撑池
+    # 口径对齐，避免"归并通过、发布校验拦死"的不一致。
     if strict_exam_point_codes is not None:
         for decision in tree.evidence_decisions:
             normalized_decision = decision
@@ -172,16 +177,24 @@ def validate_publishable_tree(
                 RelevanceClass.SUPPORTING,
             }:
                 continue
-            if normalized_decision.relevance_class is RelevanceClass.DIRECT:
-                if exam_points_by_code is None:
-                    try:
-                        validate_direct_evidence_decision(
-                            normalized_decision,
-                            exam_point_code=normalized_decision.exam_point_code,
-                        )
-                    except ValueError:
-                        continue
-                admitted_direct.append(normalized_decision)
+            # 操作细节仅在 DIRECTLY_ASSESSABLE 策略下保持 direct 时可作评分依据；
+            # 被降级为 supporting 的操作细节（SUPPORTING_ONLY 策略）从支撑池剔除。
+            if (
+                normalized_decision.content_kind is ContentKind.OPERATIONAL_DETAIL
+                and normalized_decision.relevance_class is not RelevanceClass.DIRECT
+            ):
+                continue
+            if (
+                exam_points_by_code is None
+                and normalized_decision.relevance_class is RelevanceClass.DIRECT
+            ):
+                try:
+                    validate_direct_evidence_decision(
+                        normalized_decision,
+                        exam_point_code=normalized_decision.exam_point_code,
+                    )
+                except ValueError:
+                    continue
             admitted_decisions.append(normalized_decision)
 
     for topic in tree.topics:
@@ -202,10 +215,12 @@ def validate_publishable_tree(
             active_cards = [card for card in unit.cards if card.status == "active"]
             if not active_cards:
                 raise KnowledgeTreeValidationError("active assessment unit requires a knowledge card")
-            point_direct_keys = assessable_fact_keys(
+            # 该考点全部可迁移准入证据的 claim 聚合为支撑池（direct + supporting，
+            # 操作细节已在准入循环排除）。
+            point_evidence_keys = assessable_fact_keys(
                 [
                     decision.support_claim
-                    for decision in admitted_direct
+                    for decision in admitted_decisions
                     if decision.exam_point_code == unit.exam_point_code
                 ]
             )
@@ -239,7 +254,7 @@ def validate_publishable_tree(
                             raise KnowledgeTreeValidationError(
                                 "knowledge card requires a valid direct evidence relation"
                             )
-                    if not all_facts_supported(published_facts, point_direct_keys):
+                    if not all_facts_supported(published_facts, point_evidence_keys):
                         raise KnowledgeTreeValidationError(
                             "knowledge card requires a valid direct evidence relation"
                         )
