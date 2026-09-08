@@ -290,6 +290,7 @@ class DeepSeekJsonClient:
             "effective_max_attempts": effective_max_attempts,
             "final_http_status": final_http_status,
             "last_error_code": _persistence_error(last_error)[0],
+            "error_message": str(last_error),
             "attempts": attempts,
         }
         validation_details = _sanitized_validation_details(last_error)
