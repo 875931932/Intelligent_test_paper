@@ -253,13 +253,18 @@ def validate_publishable_tree(
                             raise KnowledgeTreeValidationError(
                                 "knowledge card requires a valid direct evidence relation"
                             )
-                        direct_facts_for_id = assessable_fact_keys(
-                            [
-                                decision.support_claim
-                                for decision in matching
-                                if decision.relevance_class is RelevanceClass.DIRECT
-                            ]
-                        )
+                        direct_basis = [
+                            decision.support_claim
+                            for decision in matching
+                            if decision.relevance_class is RelevanceClass.DIRECT
+                        ]
+                        # 与归并阶段一致：direct 判定基准同时纳入 chunk 原文，
+                        # 容忍模型把原句浓缩成可评分事实但措辞偏离 support_claim。
+                        if direct_basis and chunks_by_id is not None:
+                            chunk = chunks_by_id.get(evidence_id)
+                            if chunk is not None:
+                                direct_basis.append(chunk.content)
+                        direct_facts_for_id = assessable_fact_keys(direct_basis)
                         if direct_facts_for_id and not any(
                             fact_key_supported(published, direct_facts_for_id)
                             for published in published_facts
