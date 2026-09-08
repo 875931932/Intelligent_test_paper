@@ -291,6 +291,9 @@ class DeepSeekJsonClient:
         validation_details = _sanitized_validation_details(last_error)
         if validation_details is not None:
             details["validation"] = validation_details
+        message_shape = last_error.details.get("message_shape") if last_error.details else None
+        if message_shape is not None:
+            details["message_shape"] = message_shape
         self._record(
             context=call_context,
             status="failed",
@@ -484,6 +487,9 @@ def _extract_tool_arguments(message: dict[str, Any]) -> dict:
             function = first.get("function")
             if isinstance(function, dict):
                 arguments = function.get("arguments")
+                # MiMo 偶尔返回已解析的 JSON 对象，而非字符串：两者都接受。
+                if isinstance(arguments, dict):
+                    return arguments
                 if isinstance(arguments, str) and arguments.strip():
                     try:
                         return json.loads(arguments)
@@ -500,9 +506,28 @@ def _extract_tool_arguments(message: dict[str, Any]) -> dict:
                 return parsed
         except json.JSONDecodeError:
             pass
+    # 采样真实的 message 结构，帮助定位 MiMo 到底回了什么（只取键名，不取长内容）。
+    shape: dict[str, object] = {}
+    for key in ("role", "content", "tool_calls", "refusal"):
+        if key in message:
+            value = message[key]
+            if isinstance(value, list):
+                shape[key] = {  # noqa: SIM118
+                    "count": len(value),
+                    "first_keys": sorted(
+                        value[0].keys() if value and isinstance(value[0], dict) else []
+                    ),
+                }
+            elif isinstance(value, dict):
+                shape[key] = {"keys": sorted(value.keys())}
+            else:
+                shape[key] = (
+                    (value[:80] + "...") if isinstance(value, str) and len(value) > 80 else value
+                )
     raise DeepSeekModelError(
         "model_invalid_envelope",
         "model returned no tool call or JSON content",
+        details={"message_shape": shape},
     )
 
 
