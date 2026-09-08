@@ -15,11 +15,9 @@ from app.domain.knowledge.models import (
     KnowledgeTreeCandidate,
 )
 from app.domain.knowledge.relevance import (
-    AssessmentUnitCandidate,
     ContentKind,
     EvidenceDecision,
     ExamPointCoverage,
-    KnowledgeCardCandidate,
     RelevanceClass,
     admit_evidence_decision,
     assessable_fact_keys,
@@ -62,26 +60,6 @@ def _exam_point(
     )
 
 
-def _unit_candidate(**overrides):
-    payload = {
-        "code": "unit-retrieval-quality",
-        "title": "分析检索质量",
-        "performance_statement": "能够根据现象分析检索质量",
-    }
-    payload.update(overrides)
-    return payload
-
-
-def _card_candidate(**overrides):
-    payload = {
-        "name": "检索质量的影响",
-        "performance_statement": "能够说明检索质量对事实覆盖的影响",
-        "assessable_content": ["召回遗漏会削弱回答的事实覆盖"],
-    }
-    payload.update(overrides)
-    return payload
-
-
 def _decision(**overrides) -> EvidenceDecision:
     payload = {
         "exam_point_code": "EP-1",
@@ -90,8 +68,6 @@ def _decision(**overrides) -> EvidenceDecision:
         "support_claim": "该证据给出了能够评分的检索质量判断依据",
         "evidence_role": "fact_or_constraint",
         "content_kind": "fact",
-        "candidate_assessment_unit": _unit_candidate(),
-        "candidate_card_content": _card_candidate(),
         "confidence": 90,
     }
     payload.update(overrides)
@@ -162,42 +138,6 @@ def test_unknown_content_kind_fails_closed_before_direct_admission():
         EvidenceDecision.model_validate(payload)
 
 
-@pytest.mark.parametrize(
-    ("field", "candidate"),
-    [
-        ("candidate_assessment_unit", {"code": "only-code"}),
-        (
-            "candidate_assessment_unit",
-            _unit_candidate(performance_statement=" "),
-        ),
-        ("candidate_card_content", {"name": "only-name"}),
-        (
-            "candidate_card_content",
-            _card_candidate(assessable_content=[]),
-        ),
-        (
-            "candidate_card_content",
-            _card_candidate(assessable_content=[" "]),
-        ),
-    ],
-)
-def test_malformed_candidate_payload_is_rejected_during_model_validation(
-    field, candidate
-):
-    payload = _decision().model_dump()
-    payload[field] = candidate
-
-    with pytest.raises(ValidationError, match=field):
-        EvidenceDecision.model_validate(payload)
-
-
-def test_candidate_dicts_are_parsed_into_structured_models():
-    decision = _decision()
-
-    assert isinstance(decision.candidate_assessment_unit, AssessmentUnitCandidate)
-    assert isinstance(decision.candidate_card_content, KnowledgeCardCandidate)
-
-
 def test_supporting_only_operational_detail_downgrades_direct_and_clears_products():
     admitted = admit_evidence_decision(
         _exam_point(policy=OperationalDetailPolicy.SUPPORTING_ONLY),
@@ -208,19 +148,13 @@ def test_supporting_only_operational_detail_downgrades_direct_and_clears_product
     )
 
     assert admitted.relevance_class is RelevanceClass.SUPPORTING
-    assert admitted.candidate_assessment_unit is None
-    assert admitted.candidate_card_content is None
     assert admitted.prompt_material == "给定一个模型配置场景，比较参数选择的影响"
 
 
 def test_operational_policy_downgrade_does_not_require_forbidden_direct_products():
     admitted = admit_evidence_decision(
         _exam_point(policy=OperationalDetailPolicy.SUPPORTING_ONLY),
-        _decision(
-            content_kind="operational_detail",
-            candidate_assessment_unit=None,
-            candidate_card_content=None,
-        ),
+        _decision(content_kind="operational_detail"),
     )
 
     assert admitted.relevance_class is RelevanceClass.SUPPORTING
@@ -233,8 +167,6 @@ def test_directly_assessable_operational_detail_remains_direct():
     )
 
     assert admitted.relevance_class is RelevanceClass.DIRECT
-    assert admitted.candidate_assessment_unit is not None
-    assert admitted.candidate_card_content is not None
 
 
 def test_forbidden_operational_detail_becomes_out_of_scope_without_products():
@@ -244,8 +176,6 @@ def test_forbidden_operational_detail_becomes_out_of_scope_without_products():
     )
 
     assert admitted.relevance_class is RelevanceClass.OUT_OF_SCOPE
-    assert admitted.candidate_assessment_unit is None
-    assert admitted.candidate_card_content is None
     assert admitted.prompt_material is None
 
 
@@ -255,15 +185,11 @@ def test_forbidden_operational_detail_overrides_supporting_class_and_clears_prom
         _decision(
             relevance_class=RelevanceClass.SUPPORTING,
             content_kind="command",
-            candidate_assessment_unit=None,
-            candidate_card_content=None,
             prompt_material="运行安装命令",
         ),
     )
 
     assert admitted.relevance_class is RelevanceClass.OUT_OF_SCOPE
-    assert admitted.candidate_assessment_unit is None
-    assert admitted.candidate_card_content is None
     assert admitted.prompt_material is None
 
 
@@ -278,8 +204,6 @@ def test_background_content_kind_overrides_claimed_direct_class_and_clears_produ
     )
 
     assert admitted.relevance_class is RelevanceClass.BACKGROUND
-    assert admitted.candidate_assessment_unit is None
-    assert admitted.candidate_card_content is None
     assert admitted.prompt_material is None
 
 
@@ -294,8 +218,6 @@ def test_background_content_kind_does_not_promote_out_of_scope_evidence():
     )
 
     assert admitted.relevance_class is RelevanceClass.OUT_OF_SCOPE
-    assert admitted.candidate_assessment_unit is None
-    assert admitted.candidate_card_content is None
     assert admitted.prompt_material is None
 
 
@@ -310,14 +232,10 @@ def test_background_and_out_of_scope_decisions_never_keep_generation_products(
         _exam_point(),
         _decision(
             relevance_class=relevance_class,
-            candidate_assessment_unit=_unit_candidate(title="不应保留"),
-            candidate_card_content=_card_candidate(name="不应保留"),
             prompt_material="不应进入生成载荷",
         ),
     )
 
-    assert admitted.candidate_assessment_unit is None
-    assert admitted.candidate_card_content is None
     assert admitted.prompt_material is None
 
 
@@ -327,23 +245,16 @@ def test_supporting_decision_keeps_only_source_free_prompt_material():
         _decision(
             relevance_class=RelevanceClass.SUPPORTING,
             evidence_role=None,
-            candidate_assessment_unit=_unit_candidate(title="不能形成单元"),
-            candidate_card_content=_card_candidate(name="不能形成知识卡"),
             prompt_material="比较两种检索结果在事实覆盖上的差异",
         ),
     )
 
-    assert admitted.candidate_assessment_unit is None
-    assert admitted.candidate_card_content is None
     assert admitted.prompt_material == "比较两种检索结果在事实覆盖上的差异"
 
 
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"candidate_assessment_unit": None}, "assessment unit"),
-        ({"candidate_card_content": None}, "card"),
-        ({"evidence_role": None}, "evidence role"),
         ({"evidence_role": "context_only"}, "evidence role"),
         ({"exam_point_code": "EP-OTHER"}, "exam point"),
         ({"confidence": 49}, "confidence"),
@@ -383,17 +294,10 @@ def test_config_filename_is_governed_by_operational_policy_not_a_text_blacklist(
         _decision(
             content_kind="operational_detail",
             support_claim="config.json 中的参数可作为场景条件",
-            candidate_assessment_unit=_unit_candidate(
-                code="config.json",
-                title="config.json",
-            ),
-            candidate_card_content=_card_candidate(name="config.json"),
         ),
     )
 
     assert admitted.relevance_class is RelevanceClass.SUPPORTING
-    assert admitted.candidate_assessment_unit is None
-    assert admitted.candidate_card_content is None
 
 
 def test_exam_point_declared_custom_fact_role_can_admit_direct_evidence():

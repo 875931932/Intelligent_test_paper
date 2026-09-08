@@ -8,11 +8,9 @@ from app.domain.framework.exam_points import (
 )
 from app.domain.knowledge.models import AssessmentUnitDraft, KnowledgeCardDraft
 from app.domain.knowledge.relevance import (
-    AssessmentUnitCandidate,
     ContentKind,
     EvidenceDecision,
     ExamPointFileDecision,
-    KnowledgeCardCandidate,
     RelevanceClass,
     admit_evidence_decision,
 )
@@ -52,8 +50,6 @@ def _decision(
     fact: str = "RAG 包括检索、上下文构造和生成三个阶段",
     relevance: RelevanceClass = RelevanceClass.DIRECT,
     content_kind: ContentKind = ContentKind.FACT,
-    unit_title: str = "分析 RAG 流程",
-    card_name: str = "RAG 基本流程",
     prompt_material: str | None = None,
 ) -> EvidenceDecision:
     return EvidenceDecision(
@@ -63,18 +59,6 @@ def _decision(
         support_claim=fact,
         evidence_role="answer_or_rubric_basis",
         content_kind=content_kind,
-        candidate_assessment_unit=AssessmentUnitCandidate(
-            code=f"unit-{point_code}",
-            title=unit_title,
-            performance_statement="能够说明并分析 RAG 流程",
-        ),
-        candidate_card_content=KnowledgeCardCandidate(
-            name=card_name,
-            performance_statement="能够说明 RAG 的组成及各阶段作用",
-            assessable_content=[fact],
-            cognitive_targets=["understand", "analyze"],
-            allowed_question_types=["single_choice", "short_answer"],
-        ),
         prompt_material=prompt_material,
         confidence=90,
     )
@@ -117,8 +101,6 @@ def _build_tree(*, operational_material_count: int):
                     f"operation-{index:02d}",
                     fact=f"运行脚本并提交第 {index} 份截图",
                     content_kind=ContentKind.OPERATIONAL_DETAIL,
-                    unit_title=f"操作步骤 {index}",
-                    card_name=f"实验操作 {index}",
                     prompt_material=f"场景条件 {index}",
                 )
             ],
@@ -232,15 +214,11 @@ def test_low_relevance_and_single_point_failure_do_not_create_fallback_cards():
                     fact="课程建设历史背景",
                     relevance=RelevanceClass.BACKGROUND,
                     content_kind=ContentKind.BACKGROUND,
-                    unit_title="课程背景",
-                    card_name="课程建设历史",
                 ),
                 _decision(
                     "outside",
                     fact="竞赛报名与材料提交说明",
                     relevance=RelevanceClass.OUT_OF_SCOPE,
-                    unit_title="附件目录",
-                    card_name="提交文件清单",
                 ),
             ],
         ),
@@ -253,8 +231,6 @@ def test_low_relevance_and_single_point_failure_do_not_create_fallback_cards():
                     point_code=failed_point.code,
                     fact="文件封面、命名和截图提交要求",
                     relevance=RelevanceClass.OUT_OF_SCOPE,
-                    unit_title="实验报告封面",
-                    card_name="附件目录",
                 )
             ],
         ),
@@ -283,8 +259,7 @@ def test_low_relevance_and_single_point_failure_do_not_create_fallback_cards():
         if item.relevance_class in {RelevanceClass.BACKGROUND, RelevanceClass.OUT_OF_SCOPE}
     ]
     assert quarantined
-    assert all(item.candidate_assessment_unit is None for item in quarantined)
-    assert all(item.candidate_card_content is None for item in quarantined)
+    assert all(item.prompt_material is None for item in quarantined)
 
 
 def test_operational_policy_controls_admission_without_course_specific_blacklists():
@@ -296,8 +271,6 @@ def test_operational_policy_controls_admission_without_course_specific_blacklist
             "conceptual-file-term",
             fact=same_surface_fact,
             content_kind=ContentKind.FACT,
-            unit_title="实验报告封面",
-            card_name="config.json 文件名",
         ),
     )
     operational = admit_evidence_decision(
@@ -306,14 +279,10 @@ def test_operational_policy_controls_admission_without_course_specific_blacklist
             "operational-file-term",
             fact=same_surface_fact,
             content_kind=ContentKind.OPERATIONAL_DETAIL,
-            unit_title="实验报告封面",
-            card_name="config.json 文件名",
             prompt_material="给定一份配置错误场景",
         ),
     )
 
     assert conceptual.relevance_class is RelevanceClass.DIRECT
-    assert conceptual.candidate_card_content is not None
     assert operational.relevance_class is RelevanceClass.SUPPORTING
-    assert operational.candidate_card_content is None
     assert operational.prompt_material == "给定一份配置错误场景"

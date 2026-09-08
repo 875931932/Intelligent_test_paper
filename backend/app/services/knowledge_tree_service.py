@@ -148,7 +148,12 @@ def validate_publishable_tree(
             else strict_exam_point_codes & mapping_codes
         )
 
-    admitted_direct_decisions: list[EvidenceDecision] = []
+    # 归并阶段准入池已放宽为 direct + supporting（supporting 进入 prompt_material
+    # 与证据引用池），发布校验同步放宽卡片证据 id 的准入判定；但知识卡可评分
+    # 事实仍必须由该考点的 direct 证据落地，避免 supporting/操作细节被当成
+    # 可直接考核的依据（operational_detail_policy 降级在准入时已生效）。
+    admitted_decisions: list[EvidenceDecision] = []
+    admitted_direct: list[EvidenceDecision] = []
     if strict_exam_point_codes is not None:
         for decision in tree.evidence_decisions:
             normalized_decision = decision
@@ -160,20 +165,24 @@ def validate_publishable_tree(
                     normalized_decision = admit_evidence_decision(point, decision)
                 except ValueError:
                     continue
-                if normalized_decision.relevance_class is not RelevanceClass.DIRECT:
-                    continue
-            elif decision.relevance_class is not RelevanceClass.DIRECT:
-                continue
             if normalized_decision.exam_point_code not in strict_exam_point_codes:
                 continue
-            try:
-                validate_direct_evidence_decision(
-                    normalized_decision,
-                    exam_point_code=normalized_decision.exam_point_code,
-                )
-            except ValueError:
+            if normalized_decision.relevance_class not in {
+                RelevanceClass.DIRECT,
+                RelevanceClass.SUPPORTING,
+            }:
                 continue
-            admitted_direct_decisions.append(normalized_decision)
+            if normalized_decision.relevance_class is RelevanceClass.DIRECT:
+                if exam_points_by_code is None:
+                    try:
+                        validate_direct_evidence_decision(
+                            normalized_decision,
+                            exam_point_code=normalized_decision.exam_point_code,
+                        )
+                    except ValueError:
+                        continue
+                admitted_direct.append(normalized_decision)
+            admitted_decisions.append(normalized_decision)
 
     for topic in tree.topics:
         if topic.framework_anchor_key not in allowed_anchor_keys:
@@ -193,32 +202,44 @@ def validate_publishable_tree(
             active_cards = [card for card in unit.cards if card.status == "active"]
             if not active_cards:
                 raise KnowledgeTreeValidationError("active assessment unit requires a knowledge card")
+            point_direct_keys = assessable_fact_keys(
+                [
+                    decision.support_claim
+                    for decision in admitted_direct
+                    if decision.exam_point_code == unit.exam_point_code
+                ]
+            )
             for card in active_cards:
                 if not card.evidence_chunk_ids:
                     raise KnowledgeTreeValidationError("knowledge card requires fact evidence")
                 if strict_exam_point_codes is not None:
                     published_facts = assessable_fact_keys(card.assessable_content)
-                    supported_facts: set[str] = set()
                     for evidence_id in card.evidence_chunk_ids:
-                        evidence_facts: set[str] = set()
-                        for decision in admitted_direct_decisions:
-                            if (
-                                decision.exam_point_code != unit.exam_point_code
-                                or decision.evidence_chunk_id != evidence_id
-                            ):
-                                continue
-                            evidence_facts.update(
-                                assessable_fact_keys([decision.support_claim])
+                        matching = [
+                            decision
+                            for decision in admitted_decisions
+                            if decision.exam_point_code == unit.exam_point_code
+                            and decision.evidence_chunk_id == evidence_id
+                        ]
+                        if not matching:
+                            raise KnowledgeTreeValidationError(
+                                "knowledge card requires a valid direct evidence relation"
                             )
-                        if not evidence_facts or not any(
-                            fact_key_supported(published, evidence_facts)
+                        direct_facts_for_id = assessable_fact_keys(
+                            [
+                                decision.support_claim
+                                for decision in matching
+                                if decision.relevance_class is RelevanceClass.DIRECT
+                            ]
+                        )
+                        if direct_facts_for_id and not any(
+                            fact_key_supported(published, direct_facts_for_id)
                             for published in published_facts
                         ):
                             raise KnowledgeTreeValidationError(
                                 "knowledge card requires a valid direct evidence relation"
                             )
-                        supported_facts.update(evidence_facts)
-                    if not all_facts_supported(published_facts, supported_facts):
+                    if not all_facts_supported(published_facts, point_direct_keys):
                         raise KnowledgeTreeValidationError(
                             "knowledge card requires a valid direct evidence relation"
                         )

@@ -478,49 +478,17 @@ def build_organization_graph(
                 if item.relevance_class in {RelevanceClass.DIRECT, RelevanceClass.SUPPORTING}
             )
 
-        def consolidate_point(point: ExamPoint) -> tuple[str, list[AssessmentUnitDraft], set[str]]:
+        def consolidate_point(point: ExamPoint) -> tuple[str, list[AssessmentUnitDraft]]:
             admitted = sorted(
                 admitted_by_point.get(point.code, []),
                 key=lambda item: (item.relevance_class.value, item.evidence_chunk_id),
             )
             if not admitted:
-                return point.code, [], set()
+                return point.code, []
             evidence_chunk_ids = sorted({item.evidence_chunk_id for item in admitted})
             chunks_by_id = {
                 chunk.id: chunk for chunk in _chunks(state, evidence_chunk_ids)
             }
-            # 分类对部分考点判不出 direct 时，聚焦该考点做一次 direct 复核：
-            # 对召回但被判为 supporting/background 的 chunks 逐个布尔判定，
-            # 把内容本身就是考点考核知识的 chunk 提升回 direct，避免整考点无卡。
-            promoted_ids: set[str] = set()
-            if not any(
-                item.relevance_class is RelevanceClass.DIRECT for item in admitted
-            ):
-                candidate_chunks = list(chunks_by_id.values())
-                promoted_ids = consolidator.recheck_direct(
-                    exam_point=point,
-                    candidate_chunks=candidate_chunks,
-                    call_context=ModelCallContext(
-                        course_id=state["course_id"],
-                        organization_run_id=state["run_id"],
-                        stage="consolidate_exam_point",
-                    ),
-                )
-                promoted_decisions = [
-                    decision.model_copy(
-                        update={"relevance_class": RelevanceClass.DIRECT}
-                    )
-                    for decision in admitted
-                    if decision.evidence_chunk_id in promoted_ids
-                ]
-                if promoted_decisions:
-                    admitted = [*promoted_decisions, *admitted]
-            if not any(
-                item.relevance_class is RelevanceClass.DIRECT for item in admitted
-            ):
-                # 复核后仍无 direct：无直接证据可支撑知识卡，跳过归并，
-                # 由覆盖审计标记 no_direct_evidence，避免空跑模型调用。
-                return point.code, [], promoted_ids
             units = consolidator.consolidate(
                 exam_point=point,
                 admitted_decisions=admitted,
@@ -539,8 +507,8 @@ def build_organization_graph(
                 raise ValueError(
                     "consolidator returned no assessment units for admitted direct evidence"
                 )
-            validate_consolidated_units(point, validated_units, direct)
-            return point.code, validated_units, promoted_ids
+            validate_consolidated_units(point, validated_units, admitted)
+            return point.code, validated_units
 
         consolidated: dict[str, list[dict]] = {}
         failures = list(state.get("failed_pairs") or [])
@@ -548,18 +516,13 @@ def build_organization_graph(
             code: list(values)
             for code, values in (state.get("coverage_reasons") or {}).items()
         }
-        # 记录 recheck 阶段由 supporting/background 提升为 direct 的证据，归并
-        # 完成后写回 file_decisions，使 build_catalog 二次校验与归并口径一致。
-        promoted_by_point: dict[str, set[str]] = defaultdict(set)
         with ThreadPoolExecutor(max_workers=settings.organization_max_workers) as executor:
             future_points = {executor.submit(consolidate_point, point): point for point in points}
             for future in as_completed(future_points):
                 point = future_points[future]
                 try:
-                    code, units, promoted_ids = future.result()
+                    code, units = future.result()
                     consolidated[code] = [item.model_dump(mode="json") for item in units]
-                    if promoted_ids:
-                        promoted_by_point[code] = set(promoted_ids)
                 except Exception as exc:
                     consolidated[point.code] = []
                     failures.append(
@@ -571,33 +534,7 @@ def build_organization_graph(
                         )
                     )
                     coverage_reasons.setdefault(point.code, []).append("consolidation_failed")
-
-        # 把 recheck 提升的 direct 写回 file_decisions（仅把对应 evidence 的
-        # relevance_class 置为 DIRECT，其余判定不变），供 build_catalog 阶段
-        # 重建与归并一致的 direct 证据集合。
-        promoted_ids_by_point: dict[str, set[str]] = {
-            code: set(ids) for code, ids in promoted_by_point.items()
-        }
-        promoted_file_decisions: list[dict] = []
-        for file_decision in decisions:
-            promoted = promoted_ids_by_point.get(file_decision.exam_point_code, set())
-            rewritten = [
-                (
-                    item.model_copy(update={"relevance_class": RelevanceClass.DIRECT})
-                    if item.evidence_chunk_id in promoted
-                    else item
-                )
-                for item in file_decision.decisions
-            ]
-            promoted_file_decisions.append(
-                ExamPointFileDecision(
-                    exam_point_code=file_decision.exam_point_code,
-                    material_version_id=file_decision.material_version_id,
-                    decisions=rewritten,
-                ).model_dump(mode="json")
-            )
         return {
-            "file_decisions": promoted_file_decisions,
             "consolidated_units": dict(sorted(consolidated.items())),
             "failed_pairs": sorted(
                 failures,

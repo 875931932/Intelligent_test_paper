@@ -5,11 +5,9 @@ import pytest
 from app.domain.framework.exam_points import ExamPoint, WeightSource
 from app.domain.knowledge.models import AssessmentUnitDraft, KnowledgeCardDraft
 from app.domain.knowledge.relevance import (
-    AssessmentUnitCandidate,
     ContentKind,
     EvidenceDecision,
     ExamPointFileDecision,
-    KnowledgeCardCandidate,
     RelevanceClass,
 )
 from app.services.knowledge_tree_service import KnowledgeTreeValidationError
@@ -45,14 +43,6 @@ def _decision(
         support_claim=fact,
         evidence_role=role,
         content_kind=ContentKind.FACT,
-        candidate_assessment_unit=AssessmentUnitCandidate(
-            code=f"unit-{point}", title="分析RAG流程", performance_statement="能够分析RAG流程"
-        ) if relevance is RelevanceClass.DIRECT else None,
-        candidate_card_content=KnowledgeCardCandidate(
-            name="RAG基本流程",
-            performance_statement="能够说明RAG基本流程",
-            assessable_content=[fact],
-        ) if relevance is RelevanceClass.DIRECT else None,
         prompt_material="可用于设问的场景" if relevance is RelevanceClass.SUPPORTING else None,
         confidence=90,
     )
@@ -171,19 +161,21 @@ def test_catalog_subgraph_still_rejects_atom_without_evidence_core():
         )
 
 
-def test_catalog_subgraph_marks_missing_answer_or_rubric_basis_insufficient():
+def test_catalog_subgraph_sufficient_with_non_answer_evidence_role():
+    """简化路线：覆盖判定不再受 evidence_role 角色门禁约束，
+    direct 证据存在即视为充足，避免因角色分类误判覆盖不足。"""
+
     decision = _decision("e1", role="fact")
-    point = _point().model_copy(update={"required_evidence_roles": []})
 
     tree = build_knowledge_catalog_candidate(
         framework_version_id="framework-v1",
-        exam_points=[point],
+        exam_points=[_point()],
         file_decisions=[ExamPointFileDecision(exam_point_code="EP-1", material_version_id="m1", decisions=[decision])],
         consolidated_units={"EP-1": [_unit(["e1"])]},
     )
 
-    assert tree.coverage[0].status == "insufficient"
-    assert "missing_answer_or_rubric_basis" in tree.coverage[0].reasons
+    assert tree.coverage[0].status == "sufficient"
+    assert "missing_answer_or_rubric_basis" not in tree.coverage[0].reasons
 
 
 def test_catalog_subgraph_detects_generic_opposite_direct_claims():

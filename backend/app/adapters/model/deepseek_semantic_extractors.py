@@ -687,11 +687,14 @@ class DeepSeekExamPointEvidenceClassifier:
                 "background 判定只需把 evidence_chunk_id 列入 background_chunk_ids，"
                 "out_of_scope 判定只需把 evidence_chunk_id 列入 out_of_scope_chunk_ids，两者均不得输出其他字段。"
                 "relevance_class 仅允许 direct、supporting、background、out_of_scope；"
-                "direct 表示该 chunk 直接提供了能支撑该考点考核内容的事实或依据，"
+                "direct 表示该 chunk 的内容本身就是该考点考核知识的直接事实或依据："
+                "概念、定义、原理、机制、规则、公式、关系、比较、约束等知识本身，"
+                "或案例承载的通用结论。"
                 "support_claim 用一句话概括该 chunk 提供的具体事实即可，无需补全归属或写成自包含命题；"
                 "归属补全与命题化由后续归并环节完成。"
-                "仅当 chunk 确实直接支撑该考点时判 direct，否则降级为 supporting 或 background。"
-                "supporting 只用于设问语境；background/out_of_scope 不产出知识事实。"
+                "仅当 chunk 是设问/练习语境、背景铺垫或与考点无关时才判 supporting/background/out_of_scope；"
+                "承载考点知识本身的 chunk 一律判 direct，不要降级为 supporting。"
+                "background/out_of_scope 不产出知识事实。"
                 "遵守各考点 operational_detail_policy，不使用任何课程专属黑名单。"
                 "来源页码和标题仅用于教师追溯，不得写入 support_claim 的正文。返回严格 JSON。"
             ),
@@ -752,68 +755,6 @@ class DeepSeekExamPointEvidenceClassifier:
 class DeepSeekExamPointKnowledgeConsolidator:
     def __init__(self, client: JsonRequester) -> None:
         self.client = client
-
-    def recheck_direct(
-        self,
-        *,
-        exam_point: ExamPoint,
-        candidate_chunks: list[StagingChunk],
-        call_context: ModelCallContext | None = None,
-    ) -> set[str]:
-        """对候选 chunks 逐个判定是否直接支撑考点，返回应提升为 direct 的 id 集合。
-
-        分类在大批量判定里判 direct 偏保守，导致部分考点 0 direct；复核只针对
-        单个考点，对召回但被判为 supporting/background 的 chunks 逐个布尔判定，
-        把内容本身就是考点考核知识的 chunk 提回 direct。
-        """
-        grounding = sorted(candidate_chunks, key=lambda item: item.id)
-        if not grounding:
-            return set()
-
-        def validate_response(result: dict) -> None:
-            flags = result.get("is_direct")
-            if not isinstance(flags, list) or any(
-                not isinstance(item, bool) for item in flags
-            ):
-                raise DeepSeekModelError(
-                    "model_schema_validation_failed",
-                    "direct recheck output must contain is_direct boolean array",
-                )
-            if len(flags) != len(grounding):
-                raise DeepSeekModelError(
-                    "model_output_scope_violation",
-                    "direct recheck flag count does not match chunk count",
-                )
-
-        result = self.client.request_json(
-            system_prompt=(
-                "你复核一个考试考点的证据判定。以下 chunks 是从教学资料中召回的相关片段，"
-                "逐个判断：若 chunk 的内容本身就是该考点考核知识的直接事实或依据"
-                "（概念、定义、原理、机制、规则、公式、关系、比较、约束等知识本身，"
-                "或案例承载的通用结论），判 true；仅当 chunk 是设问/练习语境、"
-                "背景铺垫或与考点无关时才判 false。"
-                "is_direct 数组与 chunks 顺序一一对应，只输出 JSON 对象"
-                " {\"is_direct\": [true, false, ...]}。"
-            ),
-            payload={
-                "exam_point": exam_point.model_dump(mode="json"),
-                "chunks": [
-                    {
-                        "evidence_chunk_id": chunk.id,
-                        "material_version_id": chunk.material_version_id,
-                        "content": chunk.content,
-                        "locator": chunk.locator,
-                    }
-                    for chunk in grounding
-                ],
-            },
-            temperature=0.0,
-            call_context=call_context,
-            response_validator=validate_response,
-            max_tokens=512,
-        )
-        flags = result.get("is_direct") or []
-        return {chunk.id for chunk, flag in zip(grounding, flags) if flag}
 
     def consolidate(
         self,
@@ -909,9 +850,9 @@ class DeepSeekExamPointKnowledgeConsolidator:
                 system_prompt=(
                 "你只归并一个考试考点已经准入的 direct 和 supporting 证据，产出该考点的可评分知识卡。"
                 "按可评分表现合并同义事实、保留不同答案边界；不得按文件名、章节、页码或来源数量拆分卡片。"
-                "每条 assessable_content 都必须被 direct 证据逐条支撑；supporting 内容只能进入 prompt_material。"
-                "evidence_chunk_ids 只能从 payload 的 citable_chunk_ids（direct 证据的 chunk id）中选择，"
-                "不得为空；其余 chunks 均为 supporting，仅供理解语境与补全归属，禁止引用。"
+                "每条 assessable_content 都必须被准入证据逐条支撑；supporting 内容可进入 prompt_material。"
+                "evidence_chunk_ids 只能从 payload 的 citable_chunk_ids（准入证据的 chunk id）中选择，"
+                "不得为空；citable_chunk_ids 以外的 chunks 仅供理解语境与补全归属，禁止引用。"
                 "每条 assessable_content 必须是可迁移的通用知识：案例讲解只抽取其承载的通用结论，"
                 "剥离绑定特定实验运行的叙述背景——不得出现'上一轮训练''本次实验''我们的实验'等情境表述"
                 "（'失衡问题出现在上一轮训练中'不是知识点，'混合数据集用于解决思考与非思考数据失衡'才是）。"
@@ -939,7 +880,6 @@ class DeepSeekExamPointKnowledgeConsolidator:
                 "citable_chunk_ids": sorted(
                     decision.evidence_chunk_id
                     for decision in batch
-                    if decision.relevance_class is RelevanceClass.DIRECT
                 ),
                 "chunks": [
                     {
@@ -1002,26 +942,26 @@ def _validate_consolidated_units(
     *,
     chunks_by_id: dict[str, "StagingChunk"],
 ) -> None:
-    direct_by_id = {
+    admitted_by_id = {
         decision.evidence_chunk_id: decision
         for decision in admitted
-        if decision.relevance_class is RelevanceClass.DIRECT
     }
-    # 支撑池取该考点全部 direct 证据：既含分类阶段 support_claim 概括，也含
-    # 其对应 teaching chunk 的原文（经 assessable_fact_keys 按可评分事实边界
-    # 切分为规范化 key）。模型归并时虽被要求逐字落在 support_claim，但 MiMo
-    # 实际会用自己的措辞重述事实或把某条 chunk 原句浓缩成更短可评分句；把
-    # 原文一并纳入支撑池，配合 fact_key_supported 的双向子串判定，可放行
-    # 措辞变体而仍拒绝凭空编造。误引的 supporting id 在下方确定性剔除。
+    # 支撑池取该考点全部准入证据（direct + supporting）：既含分类阶段
+    # support_claim 概括，也含其对应 teaching chunk 的原文（经
+    # assessable_fact_keys 按可评分事实边界切分为规范化 key）。模型归并时
+    # 虽被要求逐字落在 support_claim，但 MiMo 实际会用自己的措辞重述事实或
+    # 把某条 chunk 原句浓缩成更短可评分句；把原文一并纳入支撑池，配合
+    # fact_key_supported 的双向子串判定，可放行措辞变体而仍拒绝凭空编造。
+    # 误引的非准入 id 在下方确定性剔除。
     point_evidence_keys = assessable_fact_keys(
         [
             *(
                 decision.support_claim
-                for decision in direct_by_id.values()
+                for decision in admitted_by_id.values()
             ),
             *(
                 chunks_by_id[evidence_id].content
-                for evidence_id in direct_by_id
+                for evidence_id in admitted_by_id
                 if evidence_id in chunks_by_id
             ),
         ]
@@ -1041,12 +981,12 @@ def _validate_consolidated_units(
             evidence_ids = [
                 evidence_id
                 for evidence_id in card.evidence_chunk_ids
-                if evidence_id in direct_by_id
+                if evidence_id in admitted_by_id
             ]
             if not evidence_ids:
                 raise DeepSeekModelError(
                     "model_output_evidence_gap",
-                    "knowledge card references no admitted direct evidence",
+                    "knowledge card references no admitted evidence",
                 )
             card.evidence_chunk_ids = evidence_ids
             if not all_facts_supported(

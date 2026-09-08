@@ -168,11 +168,9 @@ def _session(tmp_path):
 
 def _tree(*, coverage_status="sufficient"):
     from app.domain.knowledge.relevance import (
-        AssessmentUnitCandidate,
         ContentKind,
         EvidenceDecision,
         ExamPointCoverage,
-        KnowledgeCardCandidate,
         RelevanceClass,
     )
 
@@ -183,16 +181,6 @@ def _tree(*, coverage_status="sufficient"):
         support_claim="检索、上下文构造和生成",
         evidence_role="answer_or_rubric_basis",
         content_kind=ContentKind.FACT,
-        candidate_assessment_unit=AssessmentUnitCandidate(
-            code="rag-flow",
-            title="分析RAG流程",
-            performance_statement="能够分析RAG流程",
-        ),
-        candidate_card_content=KnowledgeCardCandidate(
-            name="RAG基本流程",
-            performance_statement="能够说明RAG基本流程",
-            assessable_content=["检索、上下文构造和生成"],
-        ),
         confidence=95,
     )
     return KnowledgeTreeCandidate(

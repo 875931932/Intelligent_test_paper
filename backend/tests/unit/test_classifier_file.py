@@ -92,7 +92,7 @@ def test_classify_file_returns_decisions_for_all_points():
     assert {chunk["evidence_chunk_id"] for chunk in payload["chunks"]} == {"c1", "c2"}
 
 
-def test_classify_file_rejects_incomplete_coverage():
+def test_classify_file_completes_missing_pairs_as_out_of_scope():
     response = {
         "file_decisions": [
             _file_item("EP1", chunk_ids=("c1", "c2")),
@@ -101,14 +101,16 @@ def test_classify_file_rejects_incomplete_coverage():
     }
     classifier = DeepSeekExamPointEvidenceClassifier(FakeJsonClient(response))
 
-    with pytest.raises(DeepSeekModelError) as caught:
-        classifier.classify_file(
-            exam_points=[_point("EP1"), _point("EP2")],
-            material_version_id="M1",
-            chunks=[_chunk("c1"), _chunk("c2")],
-        )
+    decisions = classifier.classify_file(
+        exam_points=[_point("EP1"), _point("EP2")],
+        material_version_id="M1",
+        chunks=[_chunk("c1"), _chunk("c2")],
+    )
 
-    assert caught.value.error_code == "model_output_scope_violation"
+    by_point = {item.exam_point_code: item for item in decisions}
+    assert {d.evidence_chunk_id for d in by_point["EP2"].decisions} == {"c1", "c2"}
+    completed = {d.evidence_chunk_id: d for d in by_point["EP2"].decisions}["c2"]
+    assert completed.relevance_class.value == "out_of_scope"
 
 
 def test_classify_file_rejects_unknown_point():
@@ -237,7 +239,7 @@ def test_classify_file_rejects_compact_array_duplication():
     assert caught.value.error_code == "model_output_scope_violation"
 
 
-def test_classify_file_rejects_compact_array_missing_chunk():
+def test_classify_file_completes_compact_array_missing_chunk():
     response = {
         "file_decisions": [
             {
@@ -250,11 +252,12 @@ def test_classify_file_rejects_compact_array_missing_chunk():
     }
     classifier = DeepSeekExamPointEvidenceClassifier(FakeJsonClient(response))
 
-    with pytest.raises(DeepSeekModelError) as caught:
-        classifier.classify_file(
-            exam_points=[_point("EP1")],
-            material_version_id="M1",
-            chunks=[_chunk("c1"), _chunk("c2"), _chunk("c3")],
-        )
+    decisions = classifier.classify_file(
+        exam_points=[_point("EP1")],
+        material_version_id="M1",
+        chunks=[_chunk("c1"), _chunk("c2"), _chunk("c3")],
+    )
 
-    assert caught.value.error_code == "model_output_scope_violation"
+    by_id = {d.evidence_chunk_id: d for d in decisions[0].decisions}
+    assert set(by_id) == {"c1", "c2", "c3"}
+    assert by_id["c3"].relevance_class.value == "out_of_scope"

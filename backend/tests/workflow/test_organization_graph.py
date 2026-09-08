@@ -9,11 +9,9 @@ from langgraph.types import Command
 from app.domain.framework.exam_points import ExamPoint, OperationalDetailPolicy, WeightSource
 from app.domain.knowledge.models import AssessmentUnitDraft, KnowledgeCardDraft
 from app.domain.knowledge.relevance import (
-    AssessmentUnitCandidate,
     ContentKind,
     EvidenceDecision,
     ExamPointFileDecision,
-    KnowledgeCardCandidate,
     RelevanceClass,
     StagingChunk,
 )
@@ -48,16 +46,6 @@ def _decision(point: ExamPoint, chunk: StagingChunk) -> EvidenceDecision:
         support_claim=fact,
         evidence_role="answer_or_rubric_basis",
         content_kind=ContentKind.FACT,
-        candidate_assessment_unit=AssessmentUnitCandidate(
-            code=f"unit-{point.code}",
-            title=f"理解{point.code}",
-            performance_statement=f"能够理解{point.code}",
-        ),
-        candidate_card_content=KnowledgeCardCandidate(
-            name=f"{point.code}核心事实",
-            performance_statement=f"能够说明{point.code}核心事实",
-            assessable_content=[fact],
-        ),
         confidence=95,
     )
 
@@ -113,7 +101,7 @@ class RecordingConsolidator:
     def __init__(self):
         self.calls: list[tuple[str, list[str]]] = []
 
-    def consolidate(self, *, exam_point, admitted_decisions, call_context=None):
+    def consolidate(self, *, exam_point, admitted_decisions, chunks_by_id=None, call_context=None):
         ids = sorted(decision.evidence_chunk_id for decision in admitted_decisions)
         self.calls.append((exam_point.code, ids))
         assert call_context.stage == "consolidate_exam_point"
@@ -639,7 +627,7 @@ def test_incomplete_classifier_response_isolated_to_its_pair(response_kind):
 
 def test_unsupported_consolidated_fact_isolated_to_one_exam_point():
     class BadConsolidator(RecordingConsolidator):
-        def consolidate(self, *, exam_point, admitted_decisions, call_context=None):
+        def consolidate(self, *, exam_point, admitted_decisions, chunks_by_id=None, call_context=None):
             units = super().consolidate(
                 exam_point=exam_point,
                 admitted_decisions=admitted_decisions,
@@ -665,7 +653,7 @@ def test_unsupported_consolidated_fact_isolated_to_one_exam_point():
 
 def test_empty_consolidation_with_direct_evidence_isolated_to_one_exam_point():
     class EmptyConsolidator(RecordingConsolidator):
-        def consolidate(self, *, exam_point, admitted_decisions, call_context=None):
+        def consolidate(self, *, exam_point, admitted_decisions, chunks_by_id=None, call_context=None):
             if exam_point.code == "EP-1":
                 return []
             return super().consolidate(

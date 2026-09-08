@@ -82,20 +82,13 @@ def _coverage(
         reasons.append("no_recalled_evidence")
     if not direct:
         reasons.append("no_direct_evidence")
-    if not any(
-        (item.evidence_role or "").strip().casefold() in _ANSWER_BASIS_ROLES
-        for item in direct
-    ):
-        reasons.append("missing_answer_or_rubric_basis")
     conflicting = _has_conflicting_direct_claims(direct)
     if conflicting:
         reasons.append("conflicting_direct_claims")
     reasons = list(dict.fromkeys(reasons))
     if conflicting:
         status = "conflicting"
-    elif direct and "missing_answer_or_rubric_basis" not in reasons and not any(
-        reason.endswith("_failed") for reason in reasons
-    ):
+    elif direct and not any(reason.endswith("_failed") for reason in reasons):
         status = "sufficient"
     else:
         status = "insufficient"
@@ -219,18 +212,22 @@ def build_knowledge_catalog_candidate(
                 raise KnowledgeTreeValidationError(str(exc)) from exc
             admitted_by_point[point.code].append(admitted)
 
+    reasons = coverage_reasons or {}
     candidates: list[FileKnowledgeCandidate] = []
     for point in sorted(exam_points, key=lambda item: item.code):
         units = _merge_consolidated_units(
             [item.model_copy(deep=True) for item in consolidated_units.get(point.code, [])]
         )
-        direct = [
+        # 准入素材 = direct + supporting（background/out_of_scope 不是知识点来源）
+        admitted = [
             item
             for item in admitted_by_point.get(point.code, [])
-            if item.relevance_class is RelevanceClass.DIRECT
+            if item.relevance_class in {RelevanceClass.DIRECT, RelevanceClass.SUPPORTING}
         ]
-        validate_consolidated_units(point, units, direct, chunks_by_id=chunks_by_id)
+        validate_consolidated_units(point, units, admitted, chunks_by_id=chunks_by_id)
         if not units:
+            if admitted:
+                reasons.setdefault(point.code, []).append("no_cards_produced")
             continue
         candidates.append(
             FileKnowledgeCandidate(
@@ -260,7 +257,6 @@ def build_knowledge_catalog_candidate(
             item.relevance_class.value,
         ),
     )
-    reasons = coverage_reasons or {}
     tree.coverage = [
         _coverage(
             point,

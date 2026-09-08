@@ -35,6 +35,8 @@ class RecordingJsonClient:
         temperature,
         call_context=None,
         response_validator=None,
+        tool=None,
+        max_tokens=None,
     ):
         self.recorded_payloads.append(
             {
@@ -84,7 +86,6 @@ def _point() -> ExamPoint:
 def _decision(
     *,
     relevance_class: str = "direct",
-    candidate_facts: list[str] | None = None,
     support_claim: str | None = None,
 ) -> dict:
     return {
@@ -94,16 +95,6 @@ def _decision(
         "support_claim": support_claim or "切分粒度会影响关键内容召回",
         "evidence_role": "answer_or_rubric_basis",
         "content_kind": "principle",
-        "candidate_assessment_unit": {
-            "code": "diagnose-retrieval",
-            "title": "诊断检索偏差",
-            "performance_statement": "分析召回偏差成因",
-        },
-        "candidate_card_content": {
-            "name": "切分粒度影响",
-            "performance_statement": "说明切分粒度如何影响召回",
-            "assessable_content": candidate_facts or ["切分粒度会影响召回"],
-        },
         "confidence": 95,
         "source_locator": {"page": 3, "heading_path": ["检索"]},
     }
@@ -1073,8 +1064,20 @@ def test_consolidator_receives_only_one_point_admitted_decisions_and_keeps_sourc
     )
     consolidator = DeepSeekExamPointKnowledgeConsolidator(client)
     decision = EvidenceDecision.model_validate(_decision())
+    chunks_by_id = {
+        "e1": StagingChunk(
+            id="e1",
+            material_version_id="material-v1",
+            content="切分粒度不当会影响关键内容召回",
+            locator={"page": 3, "heading_path": ["检索"]},
+        )
+    }
 
-    units = consolidator.consolidate(exam_point=_point(), admitted_decisions=[decision])
+    units = consolidator.consolidate(
+        exam_point=_point(),
+        admitted_decisions=[decision],
+        chunks_by_id=chunks_by_id,
+    )
 
     request = client.recorded_payloads[-1]["user"]
     assert request["exam_point"]["code"] == "rag-diagnosis"
@@ -1082,9 +1085,11 @@ def test_consolidator_receives_only_one_point_admitted_decisions_and_keeps_sourc
     assert request["admitted_decisions"][0]["evidence_chunk_id"] == "e1"
     card = units[0].cards[0]
     assert card.evidence_chunk_ids == ["e1"]
-    assert card.concept_cluster == "检索质量影响因素"
-    assert card.answer_proposition == "切分粒度会影响召回"
-    assert card.instance_carriers[0].normalized_name == "ExampleVectorStore"
+    assert card.prompt_material == ["可结合检索场景设问"]
+    # 语义画像字段（concept_cluster 等）已从归并输出中移除，保持默认空
+    assert card.concept_cluster == ""
+    assert card.answer_proposition == ""
+    assert card.instance_carriers == []
     assert "source_locator" not in card.model_dump(mode="json")
 
 
@@ -1118,6 +1123,13 @@ def test_consolidator_rejects_fact_without_direct_evidence_coverage():
         consolidator.consolidate(
             exam_point=_point(),
             admitted_decisions=[EvidenceDecision.model_validate(_decision())],
+            chunks_by_id={
+                "e1": StagingChunk(
+                    id="e1",
+                    material_version_id="material-v1",
+                    content="切分粒度不当会影响关键内容召回",
+                )
+            },
         )
 
     assert caught.value.error_code == "model_output_evidence_gap"
@@ -1152,14 +1164,19 @@ def test_consolidator_accepts_owner_qualified_fact_wrapping_direct_evidence():
         ]
     )
     decision = EvidenceDecision.model_validate(
-        _decision(
-            candidate_facts=["eval_batch_size参数用于控制评测批大小"],
-            support_claim="eval_batch_size参数用于控制评测批大小",
-        )
+        _decision(support_claim="eval_batch_size参数用于控制评测批大小")
     )
 
     units = DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
-        exam_point=_point(), admitted_decisions=[decision]
+        exam_point=_point(),
+        admitted_decisions=[decision],
+        chunks_by_id={
+            "e1": StagingChunk(
+                id="e1",
+                material_version_id="material-v1",
+                content="eval_batch_size参数用于控制评测批大小",
+            )
+        },
     )
 
     assert units[0].cards[0].assessable_content == [
@@ -1199,15 +1216,20 @@ def test_consolidator_still_rejects_fabricated_owner_fact():
         ]
     )
     decision = EvidenceDecision.model_validate(
-        _decision(
-            candidate_facts=["eval_batch_size参数用于控制评测批大小"],
-            support_claim="eval_batch_size参数用于控制评测批大小",
-        )
+        _decision(support_claim="eval_batch_size参数用于控制评测批大小")
     )
 
     with pytest.raises(DeepSeekModelError) as caught:
         DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
-            exam_point=_point(), admitted_decisions=[decision]
+            exam_point=_point(),
+            admitted_decisions=[decision],
+            chunks_by_id={
+                "e1": StagingChunk(
+                    id="e1",
+                    material_version_id="material-v1",
+                    content="eval_batch_size参数用于控制评测批大小",
+                )
+            },
         )
 
     assert caught.value.error_code == "model_output_evidence_gap"
@@ -1242,15 +1264,20 @@ def test_consolidator_rejects_case_narrative_fact_bound_to_experiment_run():
         ]
     )
     decision = EvidenceDecision.model_validate(
-        _decision(
-            candidate_facts=["思考模式数据与非思考模式数据分布不均衡的问题出现在上一轮训练中。"],
-            support_claim="上一轮训练中出现思考与非思考模式数据分布不均衡",
-        )
+        _decision(support_claim="上一轮训练中出现思考与非思考模式数据分布不均衡")
     )
 
     with pytest.raises(DeepSeekModelError) as caught:
         DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
-            exam_point=_point(), admitted_decisions=[decision]
+            exam_point=_point(),
+            admitted_decisions=[decision],
+            chunks_by_id={
+                "e1": StagingChunk(
+                    id="e1",
+                    material_version_id="material-v1",
+                    content="上一轮训练中出现思考与非思考模式数据分布不均衡",
+                )
+            },
         )
 
     assert caught.value.error_code == "model_output_evidence_gap"
@@ -1281,6 +1308,13 @@ def test_consolidator_rejects_active_unit_without_knowledge_cards():
         DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
             exam_point=_point(),
             admitted_decisions=[EvidenceDecision.model_validate(_decision())],
+            chunks_by_id={
+                "e1": StagingChunk(
+                    id="e1",
+                    material_version_id="material-v1",
+                    content="切分粒度不当会影响关键内容召回",
+                )
+            },
         )
 
     assert caught.value.error_code == "model_output_evidence_gap"
@@ -1315,6 +1349,13 @@ def test_consolidator_rejects_active_card_with_empty_assessable_content():
         DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
             exam_point=_point(),
             admitted_decisions=[EvidenceDecision.model_validate(_decision())],
+            chunks_by_id={
+                "e1": StagingChunk(
+                    id="e1",
+                    material_version_id="material-v1",
+                    content="切分粒度不当会影响关键内容召回",
+                )
+            },
         )
 
     assert caught.value.error_code == "model_schema_validation_failed"

@@ -284,13 +284,20 @@ class DeepSeekJsonClient:
 
         assert last_error is not None
         duration_ms = round((time.perf_counter() - started) * 1000)
+        # 已知错误码（evidence_gap 等）的具体原因落库便于定位；validator 自定义
+        # 错误码的原始 message 可能含敏感内容，统一用脱敏文案。
+        persisted_code, persisted_message = _persistence_error(last_error)
         details = {
             "attempt_count": attempt_count,
             "retry_count": attempt_count - 1,
             "effective_max_attempts": effective_max_attempts,
             "final_http_status": final_http_status,
-            "last_error_code": _persistence_error(last_error)[0],
-            "error_message": str(last_error),
+            "last_error_code": persisted_code,
+            "error_message": (
+                str(last_error)
+                if last_error.error_code in _PERSISTED_ERROR_MESSAGES
+                else persisted_message
+            ),
             "attempts": attempts,
         }
         validation_details = _sanitized_validation_details(last_error)

@@ -301,9 +301,7 @@ def _strict_tree_with_direct_role(
     evidence_role: str,
     *,
     content_kind: str = "fact",
-    candidate_unit_code: str = "rag-flow",
-    candidate_card_name: str = "检索增强生成的基本流程",
-    candidate_card_content: list[str] | None = None,
+    support_claim: str | None = None,
 ) -> KnowledgeTreeCandidate:
     return KnowledgeTreeCandidate(
         framework_version_id="framework-v1",
@@ -313,20 +311,10 @@ def _strict_tree_with_direct_role(
                 "exam_point_code": "EP-1",
                 "evidence_chunk_id": "e1",
                 "relevance_class": "direct",
-                "support_claim": "该证据支撑知识卡中的可评分事实",
+                "support_claim": support_claim
+                or "检索增强生成包括检索、上下文构造和生成三个阶段",
                 "evidence_role": evidence_role,
                 "content_kind": content_kind,
-                "candidate_assessment_unit": {
-                    "code": candidate_unit_code,
-                    "title": "分析RAG流程",
-                    "performance_statement": "能够分析检索增强生成流程",
-                },
-                "candidate_card_content": {
-                    "name": candidate_card_name,
-                    "performance_statement": "能够说明该概念并用于解决问题",
-                    "assessable_content": candidate_card_content
-                    or ["检索增强生成包括检索、上下文构造和生成三个阶段"],
-                },
                 "confidence": 90,
             }
         ],
@@ -336,29 +324,17 @@ def _strict_tree_with_direct_role(
 def _direct_decision(
     *,
     evidence_chunk_id: str,
-    assessable_content: list[str],
+    support_claim: str,
     exam_point_code: str = "EP-1",
-    unit_code: str = "source-unit-code",
-    card_name: str = "来源候选知识卡",
     content_kind: str = "fact",
 ) -> dict:
     return {
         "exam_point_code": exam_point_code,
         "evidence_chunk_id": evidence_chunk_id,
         "relevance_class": "direct",
-        "support_claim": "该证据支撑可评分事实",
+        "support_claim": support_claim,
         "evidence_role": "fact_or_constraint",
         "content_kind": content_kind,
-        "candidate_assessment_unit": {
-            "code": unit_code,
-            "title": "来源候选单元",
-            "performance_statement": "能够分析相关事实",
-        },
-        "candidate_card_content": {
-            "name": card_name,
-            "performance_statement": "能够说明并运用相关事实",
-            "assessable_content": assessable_content,
-        },
         "confidence": 90,
     }
 
@@ -410,10 +386,10 @@ def test_publishable_tree_rejects_context_only_raw_direct_relation():
         )
 
 
-def test_publishable_tree_rejects_unrelated_candidate_fact():
+def test_publishable_tree_rejects_unrelated_support_claim():
     tree = _strict_tree_with_direct_role(
         "fact_or_constraint",
-        candidate_card_content=["与发布卡片无关的事实"],
+        support_claim="与发布卡片无关的事实",
     )
 
     with pytest.raises(KnowledgeTreeValidationError, match="direct evidence"):
@@ -429,7 +405,7 @@ def test_strict_publish_accepts_teacher_renamed_and_recoded_consolidation():
     tree = _strict_tree(
         card_content=[fact],
         evidence_ids=("e1",),
-        decisions=[_direct_decision(evidence_chunk_id="e1", assessable_content=[fact])],
+        decisions=[_direct_decision(evidence_chunk_id="e1", support_claim=fact)],
         unit_code="teacher-recoded-unit",
         card_name="教师重命名后的知识卡",
     )
@@ -441,13 +417,13 @@ def test_strict_publish_accepts_teacher_renamed_and_recoded_consolidation():
     )
 
 
-def test_strict_publish_rejects_when_any_referenced_evidence_id_is_not_direct():
+def test_strict_publish_rejects_any_referenced_evidence_id_without_admitted_decision():
     fact = "召回遗漏会削弱回答的事实覆盖"
     tree = _strict_tree(
         card_content=[fact],
         evidence_ids=("valid", "bogus"),
         decisions=[
-            _direct_decision(evidence_chunk_id="valid", assessable_content=[fact])
+            _direct_decision(evidence_chunk_id="valid", support_claim=fact)
         ],
     )
 
@@ -467,7 +443,7 @@ def test_strict_publish_rejects_extra_unsubstantiated_fact():
         decisions=[
             _direct_decision(
                 evidence_chunk_id="e1",
-                assessable_content=[valid_fact],
+                support_claim=valid_fact,
             )
         ],
     )
@@ -488,7 +464,7 @@ def test_strict_publish_rejects_unsubstantiated_clause_in_one_fact_string():
         decisions=[
             _direct_decision(
                 evidence_chunk_id="e1",
-                assessable_content=[valid_fact],
+                support_claim=valid_fact,
             )
         ],
     )
@@ -509,11 +485,11 @@ def test_strict_publish_rejects_direct_evidence_unrelated_to_all_card_facts():
         decisions=[
             _direct_decision(
                 evidence_chunk_id="relevant",
-                assessable_content=[valid_fact],
+                support_claim=valid_fact,
             ),
             _direct_decision(
                 evidence_chunk_id="unrelated",
-                assessable_content=["向量维度由嵌入模型决定"],
+                support_claim="向量维度由嵌入模型决定",
             ),
         ],
     )
@@ -533,7 +509,7 @@ def test_strict_publish_preserves_comparison_direction_during_fact_matching():
         decisions=[
             _direct_decision(
                 evidence_chunk_id="e1",
-                assessable_content=["a > b"],
+                support_claim="a > b",
             )
         ],
     )
@@ -553,7 +529,7 @@ def test_strict_publish_does_not_treat_separate_words_as_one_word():
         decisions=[
             _direct_decision(
                 evidence_chunk_id="e1",
-                assessable_content=["not able"],
+                support_claim="not able",
             )
         ],
     )
@@ -585,7 +561,7 @@ def test_strict_publish_preserves_scientific_and_enumeration_notation(
         decisions=[
             _direct_decision(
                 evidence_chunk_id="e1",
-                assessable_content=[evidence_fact],
+                support_claim=evidence_fact,
             )
         ],
     )
@@ -616,7 +592,7 @@ def test_strict_publish_preserves_case_sensitive_scientific_semantics(
         decisions=[
             _direct_decision(
                 evidence_chunk_id="e1",
-                assessable_content=[evidence_fact],
+                support_claim=evidence_fact,
             )
         ],
     )
@@ -636,7 +612,7 @@ def test_strict_publish_unifies_fullwidth_ascii_with_same_case():
         decisions=[
             _direct_decision(
                 evidence_chunk_id="e1",
-                assessable_content=["A"],
+                support_claim="A",
             )
         ],
     )
@@ -665,7 +641,7 @@ def test_strict_publish_preserves_logical_operators_during_fact_matching(
         decisions=[
             _direct_decision(
                 evidence_chunk_id="e1",
-                assessable_content=[evidence_fact],
+                support_claim=evidence_fact,
             )
         ],
     )
@@ -685,8 +661,8 @@ def test_strict_publish_allows_multiple_direct_facts_to_support_one_merged_card(
         card_content=[first_fact, second_fact],
         evidence_ids=("e1", "e2"),
         decisions=[
-            _direct_decision(evidence_chunk_id="e1", assessable_content=[first_fact]),
-            _direct_decision(evidence_chunk_id="e2", assessable_content=[second_fact]),
+            _direct_decision(evidence_chunk_id="e1", support_claim=first_fact),
+            _direct_decision(evidence_chunk_id="e2", support_claim=second_fact),
         ],
     )
 
@@ -704,8 +680,34 @@ def test_strict_publish_allows_supported_facts_joined_by_safe_semicolon_boundary
         card_content=[f"{first_fact}；{second_fact}"],
         evidence_ids=("e1", "e2"),
         decisions=[
-            _direct_decision(evidence_chunk_id="e1", assessable_content=[first_fact]),
-            _direct_decision(evidence_chunk_id="e2", assessable_content=[second_fact]),
+            _direct_decision(evidence_chunk_id="e1", support_claim=first_fact),
+            _direct_decision(evidence_chunk_id="e2", support_claim=second_fact),
+        ],
+    )
+
+    validate_publishable_tree(
+        tree,
+        allowed_anchor_keys={"rag"},
+        allowed_exam_point_codes={"EP-1"},
+    )
+
+
+def test_strict_publish_allows_supporting_evidence_id_on_direct_grounded_card():
+    fact = "召回遗漏会削弱回答的事实覆盖"
+    tree = _strict_tree(
+        card_content=[fact],
+        evidence_ids=("direct-evidence", "supporting-evidence"),
+        decisions=[
+            _direct_decision(evidence_chunk_id="direct-evidence", support_claim=fact),
+            {
+                "exam_point_code": "EP-1",
+                "evidence_chunk_id": "supporting-evidence",
+                "relevance_class": "supporting",
+                "support_claim": "召回链路是回答事实覆盖的前提语境",
+                "evidence_role": "context_only",
+                "content_kind": "background",
+                "confidence": 80,
+            },
         ],
     )
 

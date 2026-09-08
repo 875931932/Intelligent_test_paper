@@ -54,9 +54,7 @@ from app.domain.knowledge.models import (
     KnowledgeTreeCandidate,
 )
 from app.domain.knowledge.relevance import (
-    AssessmentUnitCandidate,
     ExamPointFileDecision,
-    KnowledgeCardCandidate,
     RelevanceClass,
     StagingChunk,
     SITUATIONAL_BINDING_LANGUAGE,
@@ -761,7 +759,7 @@ def build_support_claim_units(
 
 def aggregate_published_evidence(
     consolidated: dict[str, list[AssessmentUnitDraft]],
-) -> dict[tuple[str, str], tuple[AssessmentUnitDraft, KnowledgeCardCandidate]]:
+) -> dict[tuple[str, str], tuple[AssessmentUnitDraft, KnowledgeCardDraft]]:
     grouped: dict[
         tuple[str, str],
         list[tuple[AssessmentUnitDraft, KnowledgeCardDraft]],
@@ -774,13 +772,13 @@ def aggregate_published_evidence(
 
     candidates: dict[
         tuple[str, str],
-        tuple[AssessmentUnitDraft, KnowledgeCardCandidate],
+        tuple[AssessmentUnitDraft, KnowledgeCardDraft],
     ] = {}
     for key, published in grouped.items():
         first_unit, first_card = published[0]
         candidates[key] = (
             first_unit,
-            KnowledgeCardCandidate(
+            KnowledgeCardDraft(
                 name=first_card.name,
                 performance_statement=first_card.performance_statement,
                 assessable_content=list(
@@ -805,6 +803,7 @@ def aggregate_published_evidence(
                         for question_type in card.allowed_question_types
                     )
                 ),
+                evidence_chunk_ids=first_card.evidence_chunk_ids,
             ),
         )
     return candidates
@@ -1930,47 +1929,11 @@ async def main() -> None:
                 raise
             consolidated[code] = units
     consolidated = normalize_capability_families(points, consolidated)
-    published_by_evidence = aggregate_published_evidence(consolidated)
-
-    publication_file_decisions: list[ExamPointFileDecision] = []
-    for file_decision in decisions:
-        promoted = []
-        for decision in file_decision.decisions:
-            published = published_by_evidence.get(
-                (decision.exam_point_code, decision.evidence_chunk_id)
-            )
-            if decision.relevance_class is RelevanceClass.SUPPORTING and published is not None:
-                unit, card = published
-                decision = decision.model_copy(
-                    update={
-                        "relevance_class": RelevanceClass.DIRECT,
-                        "evidence_role": "fact",
-                        "confidence": max(60, decision.confidence),
-                        "candidate_assessment_unit": AssessmentUnitCandidate(
-                            code=unit.code,
-                            title=unit.title,
-                            performance_statement=unit.performance_statement,
-                            scope_boundary=unit.scope_boundary,
-                        ),
-                        "candidate_card_content": KnowledgeCardCandidate(
-                            name=card.name,
-                            performance_statement=card.performance_statement,
-                            assessable_content=card.assessable_content,
-                            scope_boundary=card.scope_boundary,
-                            cognitive_targets=card.cognitive_targets,
-                            allowed_question_types=card.allowed_question_types,
-                        ),
-                    }
-                )
-            promoted.append(decision)
-        publication_file_decisions.append(
-            file_decision.model_copy(update={"decisions": promoted})
-        )
 
     tree = build_knowledge_catalog_candidate(
         framework_version_id=f"demo:{assessment_document['sha256'][:12]}",
         exam_points=points,
-        file_decisions=publication_file_decisions,
+        file_decisions=decisions,
         consolidated_units=consolidated,
     )
     core_injection = inject_core_concept_units(tree, points)
