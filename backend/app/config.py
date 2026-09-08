@@ -19,18 +19,19 @@ class Settings(BaseSettings):
     mineru_poll_interval_seconds: int = 10
     mineru_max_poll_seconds: int = 1800
     deepseek_api_key: str = ""
-    deepseek_base_url: str = "https://api.xiaomimimo.com/v1"
-    deepseek_model: str = "mimo-v2.5-pro"
+    deepseek_base_url: str = "https://api.stepfun.com/v1"
+    deepseek_model: str = "step-3.7-flash"
     # 知识目录组织阶段按能力分层选模：分类只做相关性判断，可换经济模型；
     # 归并做知识抽取，需更强模型。两者留空时回退到 deepseek_model，不受影响。
     deepseek_classify_model: str = ""
     deepseek_consolidate_model: str = ""
-    # 关闭 MiMo 思考模式（thinking）：结构化抽取不需要长链路推理，关闭可避免
-    # 推理链消耗输出额度导致 JSON 内容为空/被截断，并节省推理 token。true=关闭。
+    # 抽取/分类/归并阶段关闭长链路推理：MiMo 发 thinking=disabled；StepFun 无
+    # 思考开关，改用 reasoning_effort=low（官方标注 low 档适合信息抽取），
+    # 避免推理消耗输出额度导致 JSON 内容为空/被截断，并节省 token。true=关闭。
     deepseek_disable_thinking: bool = True
-    # 出题/命题阶段是否关闭 MiMo 思考模式。出题需要较长推理与质检，保留思考可提升
-    # 题目质量与覆盖面；false=不关闭（保留思考）。此配置仅作用于命题生成，抽取/大纲
-    # 阶段仍由 deepseek_disable_thinking 控制（默认关闭思考）。
+    # 出题/命题阶段保留推理（StepFun 默认 medium 档，不额外设置）。出题需要较长
+    # 推理与质检，保留思考可提升题目质量与覆盖面；false=不关闭（保留思考）。
+    # 此配置仅作用于命题生成，抽取/大纲阶段仍由 deepseek_disable_thinking 控制。
     deepseek_generation_disable_thinking: bool = False
     embedding_base_url: str = "https://api.openai.com/v1"
     embedding_api_key: str = ""

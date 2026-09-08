@@ -359,6 +359,11 @@ class DeepSeekJsonClient:
         tool: dict[str, Any] | None = None,
         max_tokens: int | None = None,
     ) -> httpx.Response:
+        # StepFun（api.stepfun.com/.ai）未文档化 thinking/tool_choice 参数，
+        # MiMo（api.xiaomimimo.com）两者均支持：按 base_url 分流避免未知参数
+        # 触发 400。tool_choice 缺省时模型若不触发 tool_calls，由
+        # _extract_tool_arguments 兜底解析 content JSON。
+        is_stepfun = "stepfun" in self.base_url
         json_body: dict[str, Any] = {
             "model": self.model,
             "temperature": temperature,
@@ -371,11 +376,16 @@ class DeepSeekJsonClient:
             json_body["max_tokens"] = max_tokens
         if tool is not None:
             json_body["tools"] = [{"type": "function", "function": tool}]
-            json_body["tool_choice"] = "required"
+            if not is_stepfun:
+                json_body["tool_choice"] = "required"
         else:
             json_body["response_format"] = {"type": "json_object"}
         if self.disable_thinking:
-            json_body["thinking"] = {"type": "disabled"}
+            if is_stepfun:
+                # 官方 low 档面向信息抽取/摘要/改写，最省 token。
+                json_body["reasoning_effort"] = "low"
+            else:
+                json_body["thinking"] = {"type": "disabled"}
         request = {
             "headers": {
                 "Authorization": f"Bearer {self.api_key}",
@@ -429,8 +439,8 @@ class DeepSeekGateway:
         self,
         *,
         api_key: str,
-        base_url: str = "https://api.xiaomimimo.com/v1",
-        model: str = "mimo-v2.5-pro",
+        base_url: str = "https://api.stepfun.com/v1",
+        model: str = "step-3.7-flash",
         timeout: float = 90.0,
         max_attempts: int = 4,
         disable_thinking: bool = True,
