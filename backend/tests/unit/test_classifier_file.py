@@ -265,3 +265,40 @@ def test_classify_file_completes_compact_array_missing_chunk():
     by_id = {d.evidence_chunk_id: d for d in decisions[0].decisions}
     assert set(by_id) == {"c1", "c2", "c3"}
     assert by_id["c3"].relevance_class.value == "out_of_scope"
+
+
+def test_classify_prompt_guides_kv_cache_and_storage_direct_judgment():
+    """KV Cache / 缓存 / 键值存储类知识陈述必须被显式引导判 direct，
+    不被操作外壳或 operational_detail 误降级。"""
+
+    response = {
+        "file_decisions": [
+            {
+                "exam_point_code": "EP1",
+                "material_version_id": "M1",
+                "decisions": [
+                    {
+                        "exam_point_code": "EP1",
+                        "evidence_chunk_id": "c1",
+                        "relevance_class": "direct",
+                        "support_claim": "KV Cache 用于缓存注意力历史键值以复用计算",
+                        "content_kind": "mechanism",
+                        "confidence": 90,
+                    }
+                ],
+            }
+        ]
+    }
+    client = FakeJsonClient(response)
+    DeepSeekExamPointEvidenceClassifier(client).classify_file(
+        exam_points=[_point("EP1")],
+        material_version_id="M1",
+        chunks=[_chunk("c1"), _chunk("c2")],
+    )
+
+    system = client.system_prompts[0]
+    assert "KV Cache" in system
+    assert "缓存" in system
+    assert "键值存储" in system
+    # 操作外壳不被降级：任何承载知识陈述的 chunk 一律判 direct
+    assert "一律判 direct" in system

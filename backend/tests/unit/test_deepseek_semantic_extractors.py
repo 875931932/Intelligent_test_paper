@@ -1352,3 +1352,150 @@ def test_consolidator_rejects_active_card_with_empty_assessable_content():
         )
 
     assert caught.value.error_code == "model_schema_validation_failed"
+
+
+def test_consolidator_flattens_nested_assessment_units_and_evidence_aliases():
+    """模型把扁平 cards 包进嵌套的分层结构、并用 evidence_ids 别名引用时，
+    归并应递归平铺并归一，不因顶层缺 cards 键而判死整批。"""
+
+    client = RecordingJsonClient(
+        [
+            {
+                "exam_point_code": "rag-diagnosis",
+                "assessment_units": [
+                    {
+                        "code": "U1",
+                        "title": "隐藏单元",
+                        "cards": [
+                            {
+                                "name": "切分粒度影响",
+                                "assessable_content": ["切分粒度不当会影响关键内容召回"],
+                                "evidence_ids": ["e1"],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    )
+
+    units = DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+        exam_point=_point(),
+        admitted_decisions=[EvidenceDecision.model_validate(_decision())],
+        chunks_by_id={
+            "e1": StagingChunk(
+                id="e1",
+                material_version_id="material-v1",
+                content="切分粒度不当会影响关键内容召回",
+            )
+        },
+    )
+
+    assert len(units[0].cards) == 1
+    assert units[0].cards[0].name == "切分粒度影响"
+    assert units[0].cards[0].evidence_chunk_ids == ["e1"]
+
+
+def test_consolidator_normalizes_content_and_evidence_aliases_on_flat_cards():
+    """平铺卡片用 content 别名承载事实、evidence_ids 引用证据时，
+    别名归一必须生效（此前字段先被白名单过滤导致别名取不到恒为空）。"""
+
+    client = RecordingJsonClient(
+        [
+            {
+                "exam_point_code": "rag-diagnosis",
+                "cards": [
+                    {
+                        "name": "切分粒度影响",
+                        "content": "切分粒度不当会影响关键内容召回",
+                        "evidence_ids": ["e1"],
+                    }
+                ],
+            }
+        ]
+    )
+
+    units = DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+        exam_point=_point(),
+        admitted_decisions=[EvidenceDecision.model_validate(_decision())],
+        chunks_by_id={
+            "e1": StagingChunk(
+                id="e1",
+                material_version_id="material-v1",
+                content="切分粒度不当会影响关键内容召回",
+            )
+        },
+    )
+
+    assert units[0].cards[0].assessable_content == ["切分粒度不当会影响关键内容召回"]
+    assert units[0].cards[0].evidence_chunk_ids == ["e1"]
+
+
+def test_consolidator_drops_empty_card_but_keeps_valid_cards():
+    """批内混有残缺空卡与有效卡时，只保留有效卡，不因单卡空揉判死整批。"""
+
+    client = RecordingJsonClient(
+        [
+            {
+                "exam_point_code": "rag-diagnosis",
+                "cards": [
+                    {"name": "空卡", "assessable_content": [], "evidence_ids": ["e1"]},
+                    {
+                        "name": "有效卡",
+                        "assessable_content": ["切分粒度不当会影响关键内容召回"],
+                        "evidence_chunk_ids": ["e1"],
+                    },
+                ],
+            }
+        ]
+    )
+
+    units = DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+        exam_point=_point(),
+        admitted_decisions=[EvidenceDecision.model_validate(_decision())],
+        chunks_by_id={
+            "e1": StagingChunk(
+                id="e1",
+                material_version_id="material-v1",
+                content="切分粒度不当会影响关键内容召回",
+            )
+        },
+    )
+
+    assert len(units[0].cards) == 1
+    assert units[0].cards[0].name == "有效卡"
+
+
+def test_json_client_parses_json_object_embedded_in_code_fence():
+    """json_object 通道偶发把 JSON 包进 markdown 代码块/说明文字时，
+    应与 tool 通道一致从容提取首个 { 到末个 } 的对象，不再直接建模失败。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": "结果如下：\n```json\n{\"ok\": true, \"list\": [1, 2]}\n```"
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 9, "completion_tokens": 4},
+            },
+        )
+
+    http_client = httpx.Client(transport=httpx.MockTransport(handler))
+    client = DeepSeekJsonClient(
+        api_key="test-key",
+        base_url="https://deepseek.invalid/v1",
+        client=http_client,
+    )
+
+    result = client.request_json(
+        system_prompt="s",
+        payload={"x": 1},
+        temperature=0.0,
+    )
+
+    assert result == {"ok": True, "list": [1, 2]}

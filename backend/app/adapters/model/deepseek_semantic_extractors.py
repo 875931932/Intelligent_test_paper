@@ -315,28 +315,56 @@ _BATCH_TOTAL_MAX = 6
 _CONSOLIDATION_MAX_TOKENS = 4096
 
 
+def _collect_all_cards(node: Any) -> list[dict[str, Any]]:
+    """DFS 平铺任意结构下所有 cards 数组中的卡片字典。
+
+    模型偶发把扁平 cards 包进 assessment_units/units/content_domains/topics
+    等分层结构，或顶层与分层重复列举；统一递归平铺，避免仅因顶层缺 cards
+    键或用了分层结构就整批判死。同卡重复由外层 name 去重兜底。
+    """
+
+    collected: list[dict[str, Any]] = []
+    if isinstance(node, dict):
+        raw_cards = node.get("cards")
+        if isinstance(raw_cards, list):
+            collected.extend(item for item in raw_cards if isinstance(item, dict))
+        for value in node.values():
+            collected.extend(_collect_all_cards(value))
+    elif isinstance(node, list):
+        for item in node:
+            collected.extend(_collect_all_cards(item))
+    return collected
+
+
 def _normalize_consolidation_response(
     raw: dict[str, Any], exam_point: ExamPoint, admitted: list[EvidenceDecision]
 ) -> dict[str, Any]:
-    """Accept the provider's flat-card variant without weakening evidence checks.
+    """Accept the provider's flat/nested card variant without weakening evidence checks.
 
-    归并只要求模型输出扁平知识卡（顶层 cards 数组）；单元层面的 code/title/
-    exam_point_code/performance_statement 由代码确定性组装，不接受嵌套
-    assessment_units 输出。
+    归并接受顶层 cards 数组或嵌套在分层结构（assessment_units/units/
+    content_domains/topics）中的 cards，统一平铺为扁平知识卡。单卡字段支持
+    content/facts/knowledge_points、evidence_ids 别名归一（此前字段先被过滤
+    到白名单导致别名取不到，别名归一失效）；缺 name/performance_statement 用
+    考点信息兜底；无可评分事实的卡被丢弃而非判死整批。
     """
 
     def card_with_defaults(card: dict[str, Any]) -> dict[str, Any]:
         out = {key: value for key, value in card.items() if key in _CARD_FIELDS}
-        out["assessable_content"] = _split_multi_clause_atoms(
-            out.get(
-                "assessable_content",
-                out.get("content", out.get("facts", out.get("knowledge_points", []))),
-            )
+        content_value = (
+            card.get("assessable_content")
+            or card.get("content")
+            or card.get("facts")
+            or card.get("knowledge_points")
+            or []
         )
-        out["evidence_chunk_ids"] = out.get("evidence_chunk_ids", out.get("evidence_ids", []))
+        out["assessable_content"] = _split_multi_clause_atoms(content_value)
+        out["evidence_chunk_ids"] = (
+            card.get("evidence_chunk_ids") or card.get("evidence_ids") or []
+        )
         if not isinstance(out.get("name"), str) or not out.get("name").strip():
             facts = [
-                item for item in out.get("assessable_content", [])
+                item
+                for item in out.get("assessable_content", [])
                 if isinstance(item, str) and item.strip()
             ]
             out["name"] = facts[0][:40] if facts else exam_point.title
@@ -356,11 +384,19 @@ def _normalize_consolidation_response(
         else []
     )
 
-    raw_cards = normalized.get("cards")
-    if not isinstance(raw_cards, list):
+    flat_cards = _collect_all_cards(raw)
+    if not flat_cards:
         return normalized
+    # 空卡过滤：无任何可评分事实的卡丢弃，避免单卡残缺判死整批；
+    # 仅当该批仍存在有效卡时放行；全批无效时由 _ConsolidationResponse 判死重试。
+    normalized_cards = [card_with_defaults(card) for card in flat_cards]
     normalized["cards"] = [
-        card_with_defaults(card) for card in raw_cards if isinstance(card, dict)
+        card
+        for card in normalized_cards
+        if any(
+            isinstance(item, str) and item.strip()
+            for item in card.get("assessable_content", [])
+        )
     ]
     return normalized
 
@@ -674,6 +710,11 @@ class DeepSeekExamPointEvidenceClassifier:
                 "operational_detail_policy 只约束『操作细节』类内容（纯操作指令：执行/等待/截图/确认/"
                 "检查某步骤完成，且不含知识陈述）的等级，不影响知识陈述：supporting_only 不表示只能判 "
                 "supporting，承载考点知识的知识陈述一律判 direct。"
+                "KV Cache（键值缓存）机制、缓存管理/淘汰/替换策略、键值存储等属于机制/原理/约束类知识："
+                "若 chunk 承载这类知识的陈述（如『KV Cache 用于缓存注意力历史键值以复用计算』"
+                "『LRU 缓存用于在容量有限时淘汰最久未使用的条目』『键值存储按 key 直接寻址取值』），"
+                "一律判 direct；只有不含知识陈述的纯操作指令（执行/清空/查看/重启/配置缓存命令）"
+                "才受 operational_detail_policy 约束，『查看/配置某缓存』等操作外壳不改变其承载知识陈述的 direct 判定。"
                 "每个 chunk 只能出现在一个判定位置：direct/supporting 写入 decisions，"
                 "background 写入 background_chunk_ids，out_of_scope 写入 out_of_scope_chunk_ids；"
                 "同一 chunk 不得同时出现在多个位置。"

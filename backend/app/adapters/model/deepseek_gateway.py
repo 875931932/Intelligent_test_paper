@@ -231,13 +231,12 @@ class DeepSeekJsonClient:
                         raise DeepSeekModelError(
                             "model_empty_response", "model returned empty content"
                         )
-                    try:
-                        result = json.loads(content)
-                    except json.JSONDecodeError:
+                    result = _extract_json_object(content)
+                    if result is None:
                         raise DeepSeekModelError(
                             "model_non_json_response",
                             "model returned content that is not valid JSON",
-                        ) from None
+                        )
                 if not isinstance(result, dict):
                     raise DeepSeekModelError(
                         "model_non_object_response",
@@ -557,22 +556,9 @@ def _extract_tool_arguments(message: dict[str, Any]) -> dict:
                         ) from None
     content = message.get("content")
     if isinstance(content, str) and content.strip():
-        try:
-            parsed = json.loads(content)
-            if isinstance(parsed, dict):
-                return parsed
-        except json.JSONDecodeError:
-            pass
-        # 模型偶发把 JSON 包在 markdown 代码块或说明文字里：取首个 { 到末个 } 再试一次。
-        first = content.find("{")
-        last = content.rfind("}")
-        if 0 <= first < last:
-            try:
-                parsed = json.loads(content[first : last + 1])
-                if isinstance(parsed, dict):
-                    return parsed
-            except json.JSONDecodeError:
-                pass
+        parsed = _extract_json_object(content)
+        if parsed is not None:
+            return parsed
     # 采样真实的 message 结构，帮助定位 MiMo 到底回了什么（只取键名，不取长内容）。
     shape: dict[str, object] = {}
     for key in ("role", "content", "tool_calls", "refusal"):
@@ -596,6 +582,33 @@ def _extract_tool_arguments(message: dict[str, Any]) -> dict:
         "model returned no tool call or JSON content",
         details={"message_shape": shape},
     )
+
+
+def _extract_json_object(content: str) -> Any | None:
+    """Parse a top-level JSON value, tolerating surrounding prose/code fences.
+
+    模型偶发把 JSON 包在 markdown 代码块或说明文字里（`````json ... `````、
+    "结果如下：{...}"）。先按原样解析（合法值原样返回，含非对象的 list/标量，
+    由调用方 `isinstance(result, dict)` 判定对象类型错误码）；失败则取首个 {
+    到末个 } 的连续段再试，只接受对象。与 tool 通道 _extract_tool_arguments
+    的兜底口径一致。
+    """
+
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+    first = content.find("{")
+    last = content.rfind("}")
+    if 0 <= first < last:
+        try:
+            embedded = content[first : last + 1]
+            parsed = json.loads(embedded)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+    return None
 
 
 def _is_retryable_http_status(status_code: int) -> bool:
