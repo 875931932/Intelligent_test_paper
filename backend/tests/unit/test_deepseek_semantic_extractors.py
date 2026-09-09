@@ -1499,3 +1499,106 @@ def test_json_client_parses_json_object_embedded_in_code_fence():
     )
 
     assert result == {"ok": True, "list": [1, 2]}
+
+
+def test_consolidator_filters_operational_detail_supporting_before_model_and_validation():
+    """被降级的操作细节（OPERATIONAL_DETAIL 且非 DIRECT）与发布 strict 准入
+    口径一致在归并阶段剔除：consolidate 下发模型的 payload 不含该 id，
+    validate_consolidated_units 的支撑池也不含该 id，避免卡片引用发布时
+    缺席的证据触发 'knowledge card requires a valid direct evidence relation'。
+    """
+
+    direct = EvidenceDecision.model_validate(
+        _decision(
+            relevance_class="direct",
+            support_claim="KV Cache 用于缓存注意力历史键值以复用计算",
+        )
+    )
+    op_supporting = EvidenceDecision.model_validate(
+        {
+            **_decision(relevance_class="supporting"),
+            "evidence_chunk_id": "op1",
+            "support_claim": "执行清空缓存命令可释放显存",
+            "content_kind": "operational_detail",
+        }
+    )
+    client = RecordingJsonClient(
+        [
+            {
+                "exam_point_code": "rag-diagnosis",
+                "cards": [
+                    {
+                        "name": "KV缓存机制",
+                        "assessable_content": ["KV Cache 用于缓存注意力历史键值以复用计算"],
+                        "evidence_chunk_ids": ["e1"],
+                    }
+                ],
+            }
+        ]
+    )
+    chunks_by_id = {
+        "e1": StagingChunk(
+            id="e1",
+            material_version_id="material-v1",
+            content="KV Cache 用于缓存注意力历史键值以复用计算",
+        ),
+        "op1": StagingChunk(
+            id="op1",
+            material_version_id="material-v1",
+            content="执行清空缓存命令可释放显存",
+        ),
+    }
+
+    units = DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+        exam_point=_point(),
+        admitted_decisions=[direct, op_supporting],
+        chunks_by_id=chunks_by_id,
+    )
+
+    request = client.recorded_payloads[-1]["user"]
+    payload_ids = {item["evidence_chunk_id"] for item in request["admitted_decisions"]}
+    assert payload_ids == {"e1"}
+    assert "op1" not in {chunk["evidence_chunk_id"] for chunk in request["chunks"]}
+    assert units[0].cards[0].evidence_chunk_ids == ["e1"]
+
+
+def test_consolidator_keeps_operational_detail_direct_as_assessable():
+    """DIRECTLY_ASSESSABLE 策略下保持 direct 的操作细节仍可作评分依据，
+    不应被统一剔除（与发布 strict 口径一致：仅剔除非 direct 的操作细节）。"""
+
+    op_direct = EvidenceDecision.model_validate(
+        {
+            **_decision(),
+            "evidence_chunk_id": "op1",
+            "support_claim": "执行清空缓存命令可释放显存",
+            "content_kind": "operational_detail",
+        }
+    )
+    client = RecordingJsonClient(
+        [
+            {
+                "exam_point_code": "rag-diagnosis",
+                "cards": [
+                    {
+                        "name": "缓存清理",
+                        "assessable_content": ["执行清空缓存命令可释放显存"],
+                        "evidence_chunk_ids": ["op1"],
+                    }
+                ],
+            }
+        ]
+    )
+    units = DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+        exam_point=_point(),
+        admitted_decisions=[op_direct],
+        chunks_by_id={
+            "op1": StagingChunk(
+                id="op1",
+                material_version_id="material-v1",
+                content="执行清空缓存命令可释放显存",
+            )
+        },
+    )
+    request = client.recorded_payloads[-1]["user"]
+    assert {item["evidence_chunk_id"] for item in request["admitted_decisions"]} == {"op1"}
+    assert units[0].cards[0].evidence_chunk_ids == ["op1"]

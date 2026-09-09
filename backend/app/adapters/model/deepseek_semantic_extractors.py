@@ -35,6 +35,27 @@ from app.domain.knowledge.relevance import (
 from app.domain.model_calls import ModelCallContext
 
 
+def _evidence_admitted_for_consolidation(decision: EvidenceDecision) -> bool:
+    """与发布 strict 准入口径对齐：操作细节仅 DIRECT 可作评分依据。
+
+    knowledge_tree_service.validate_publishable_tree 的准入循环对
+    OPERATIONAL_DETAIL 且非 DIRECT 的决策会剔除（supporting_only 策略下
+    被降级的操作细节不作为可评分依据）。归并阶段若把这些 id 放进
+    citable_chunk_ids 让模型引用，卡片就会带上发布时缺席的引用，
+    触发 "knowledge card requires a valid direct evidence relation"。
+    此处预先用同一规则过滤，保证归并产出与发布校验不再错配。
+    """
+
+    if decision.relevance_class not in {RelevanceClass.DIRECT, RelevanceClass.SUPPORTING}:
+        return False
+    if (
+        decision.content_kind is ContentKind.OPERATIONAL_DETAIL
+        and decision.relevance_class is not RelevanceClass.DIRECT
+    ):
+        return False
+    return True
+
+
 class JsonRequester(Protocol):
     def request_json(
         self,
@@ -802,7 +823,7 @@ class DeepSeekExamPointKnowledgeConsolidator:
         admitted = [
             decision
             for decision in admitted_decisions
-            if decision.relevance_class in {RelevanceClass.DIRECT, RelevanceClass.SUPPORTING}
+            if _evidence_admitted_for_consolidation(decision)
         ]
         if any(decision.exam_point_code != exam_point.code for decision in admitted):
             raise DeepSeekModelError(
@@ -973,6 +994,7 @@ def validate_consolidated_units(
     admitted_by_id = {
         decision.evidence_chunk_id: decision
         for decision in admitted
+        if _evidence_admitted_for_consolidation(decision)
     }
     # 支撑池取该考点全部准入证据（direct + supporting）：既含分类阶段
     # support_claim 概括，也含其对应 teaching chunk 的原文（经
