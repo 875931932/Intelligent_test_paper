@@ -28,6 +28,7 @@ from app.domain.knowledge.relevance import (
     StagingChunk,
     all_facts_supported,
     assessable_fact_keys,
+    fact_key_supported,
     is_transferable_fact,
     semantic_text_key,
 )
@@ -1033,7 +1034,34 @@ def _validate_consolidated_units(
                     "model_output_evidence_gap",
                     "knowledge card references no admitted evidence",
                 )
-            card.evidence_chunk_ids = evidence_ids
+            # 与发布校验逐 id 口径对齐：卡片引用的每个 direct id 自身必须支撑
+            # 卡片至少一条可评分事实（其 support_claim + 原文）。模型偶发在
+            # 多卡片引用时把某 direct id 挂到一张不由它承载的卡上，此时整体池
+            # 校验放行但发布 strict 校验拦截。此处剔除不支撑的 direct id，避免
+            # "归并通过、发布拦死"的错配；剔除后若卡片无任何有效引用则判 gap。
+            published_facts = assessable_fact_keys(card.assessable_content)
+            kept_ids: list[str] = []
+            for evidence_id in evidence_ids:
+                decision = admitted_by_id[evidence_id]
+                if decision.relevance_class is not RelevanceClass.DIRECT:
+                    kept_ids.append(evidence_id)
+                    continue
+                direct_basis = [decision.support_claim]
+                chunk = chunks_by_id.get(evidence_id)
+                if chunk is not None:
+                    direct_basis.append(chunk.content)
+                direct_facts = assessable_fact_keys(direct_basis)
+                if direct_facts and any(
+                    fact_key_supported(published, direct_facts)
+                    for published in published_facts
+                ):
+                    kept_ids.append(evidence_id)
+            if not kept_ids:
+                raise DeepSeekModelError(
+                    "model_output_evidence_gap",
+                    "knowledge card references no evidence supporting its assessable facts",
+                )
+            card.evidence_chunk_ids = kept_ids
             if not all_facts_supported(
                 assessable_fact_keys(card.assessable_content), point_evidence_keys
             ):

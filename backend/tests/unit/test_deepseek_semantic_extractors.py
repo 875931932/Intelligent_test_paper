@@ -1135,6 +1135,63 @@ def test_consolidator_rejects_fact_without_direct_evidence_coverage():
     assert caught.value.error_code == "model_output_evidence_gap"
 
 
+def test_consolidator_prunes_direct_id_not_supporting_card_facts():
+    """卡片引用两个 direct id，其中 e2 的 direct 依据不承载卡片任何事实
+    （整体池校验放行，但发布 strict 校验逐 id 拦截）。归并层应剔除 e2，
+    仅保留真正支撑卡片事实的 e1，避免"归并通过、发布拦死"的错配。"""
+
+    client = RecordingJsonClient(
+        [
+            {
+                "exam_point_code": "rag-diagnosis",
+                "assessment_units": [
+                    {
+                        "code": "diagnose-retrieval",
+                        "title": "检索偏差异常",
+                        "performance_statement": "说明检索偏向",
+                        "exam_point_code": "rag-diagnosis",
+                        "cards": [
+                            {
+                                "name": "切分粒度的召回影响",
+                                "performance_statement": "说明切分粒度影响召回",
+                                "assessable_content": ["切分粒度不当会影响关键内容召回"],
+                                # e2 是准入 direct 但原文无关卡片事实，应被剔除
+                                "evidence_chunk_ids": ["e1", "e2"],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    )
+    e2_decision = EvidenceDecision.model_validate(
+        _decision(support_claim="图库可视化用于呈现推理链")
+    )
+    consolidator = DeepSeekExamPointKnowledgeConsolidator(client)
+
+    units = consolidator.consolidate(
+        exam_point=_point(),
+        admitted_decisions=[
+            EvidenceDecision.model_validate(_decision()),
+            e2_decision,
+        ],
+        chunks_by_id={
+            "e1": StagingChunk(
+                id="e1",
+                material_version_id="material-v1",
+                content="切分粒度不当会影响关键内容召回",
+            ),
+            "e2": StagingChunk(
+                id="e2",
+                material_version_id="material-v1",
+                content="图库可视化用于呈现推理链",
+            ),
+        },
+    )
+
+    assert units[0].cards[0].evidence_chunk_ids == ["e1"]
+
+
 def test_consolidator_accepts_owner_qualified_fact_wrapping_direct_evidence():
     """归并原子为碎片证据补全归属限定（如工具名）时必须通过证据落地校验。"""
 
