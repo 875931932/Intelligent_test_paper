@@ -1602,3 +1602,82 @@ def test_consolidator_keeps_operational_detail_direct_as_assessable():
     request = client.recorded_payloads[-1]["user"]
     assert {item["evidence_chunk_id"] for item in request["admitted_decisions"]} == {"op1"}
     assert units[0].cards[0].evidence_chunk_ids == ["op1"]
+
+
+def test_consolidator_drops_hallucinated_id_but_keeps_card_with_valid_refs():
+    """模型幻觉引用未下发的 chunk id 时，剔除该 id 后若卡片仍剩有效引用且
+    事实被支撑，卡片保留而非整卡判死（避免拖垮考点覆盖）。"""
+
+    direct = EvidenceDecision.model_validate(
+        _decision(
+            relevance_class="direct",
+            support_claim="切分粒度会影响关键内容召回",
+        )
+    )
+    client = RecordingJsonClient(
+        [
+            {
+                "exam_point_code": "rag-diagnosis",
+                "cards": [
+                    {
+                        "name": "检索召回粒度",
+                        "assessable_content": ["切分粒度会影响关键内容召回"],
+                        "evidence_chunk_ids": ["e1", "HALLUCINATED-ID-999"],
+                    }
+                ],
+            }
+        ]
+    )
+    units = DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+        exam_point=_point(),
+        admitted_decisions=[direct],
+        chunks_by_id={
+            "e1": StagingChunk(
+                id="e1",
+                material_version_id="material-v1",
+                content="切分粒度会影响关键内容召回",
+            )
+        },
+    )
+    assert len(units) == 1
+    assert units[0].cards[0].evidence_chunk_ids == ["e1"]
+
+
+def test_consolidator_rejects_card_with_only_hallucinated_ids():
+    """卡片引用全部为幻觉 id（无一在准入池）时仍判 gap，错误信息带出具体 id。"""
+
+    direct = EvidenceDecision.model_validate(
+        _decision(
+            relevance_class="direct",
+            support_claim="切分粒度会影响关键内容召回",
+        )
+    )
+    client = RecordingJsonClient(
+        [
+            {
+                "exam_point_code": "rag-diagnosis",
+                "cards": [
+                    {
+                        "name": "编造卡片",
+                        "assessable_content": ["切分粒度会影响关键内容召回"],
+                        "evidence_chunk_ids": ["GHOST-A", "GHOST-B"],
+                    }
+                ],
+            }
+        ]
+    )
+    with pytest.raises(DeepSeekModelError) as excinfo:
+        DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+            exam_point=_point(),
+            admitted_decisions=[direct],
+            chunks_by_id={
+                "e1": StagingChunk(
+                    id="e1",
+                    material_version_id="material-v1",
+                    content="切分粒度会影响关键内容召回",
+                )
+            },
+        )
+    assert excinfo.value.error_code == "model_output_evidence_gap"
+    assert "GHOST-A" in str(excinfo.value)
+    assert "GHOST-B" in str(excinfo.value)

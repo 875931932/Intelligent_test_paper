@@ -1028,15 +1028,26 @@ def validate_consolidated_units(
                 "active assessment unit requires at least one knowledge card",
             )
         for card in unit.cards:
-            evidence_ids = [
+            referenced_ids = [
                 evidence_id
                 for evidence_id in card.evidence_chunk_ids
                 if evidence_id in admitted_by_id
             ]
-            if not evidence_ids:
+            hallucinated_ids = sorted(
+                set(card.evidence_chunk_ids) - set(admitted_by_id)
+            )
+            # 模型偶发幻觉引用未下发的 chunk id（其它考点/材料的真实 chunk，
+            # 但从未被本考点准入）。非准入 id 从卡片剔除；只要剔除后仍剩有效
+            # 引用且事实被支撑，卡片保留，避免整卡判死拖垮该考点覆盖。
+            if not referenced_ids:
                 raise DeepSeekModelError(
                     "model_output_evidence_gap",
-                    "knowledge card references no admitted evidence",
+                    "knowledge card references no admitted evidence"
+                    + (
+                        f"; hallucinated ids not in citable set: {hallucinated_ids[:5]}"
+                        if hallucinated_ids
+                        else ""
+                    ),
                 )
             # 与发布校验逐 id 口径对齐：卡片引用的每个 direct id 自身必须支撑
             # 卡片至少一条可评分事实（其 support_claim + 原文）。模型偶发在
@@ -1045,7 +1056,7 @@ def validate_consolidated_units(
             # "归并通过、发布拦死"的错配；剔除后若卡片无任何有效引用则判 gap。
             published_facts = assessable_fact_keys(card.assessable_content)
             kept_ids: list[str] = []
-            for evidence_id in evidence_ids:
+            for evidence_id in referenced_ids:
                 decision = admitted_by_id[evidence_id]
                 if decision.relevance_class is not RelevanceClass.DIRECT:
                     kept_ids.append(evidence_id)
