@@ -13,6 +13,9 @@ from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from app.adapters.model.deepseek_semantic_extractors import (
+    validate_consolidated_units,
+)
 from app.config import settings
 from app.domain.framework.exam_points import ExamPoint
 from app.domain.knowledge.models import (
@@ -35,7 +38,6 @@ from app.services.knowledge_tree_service import apply_tree_operations, validate_
 from app.services.staging_retrieval_service import HybridStagingRetriever
 from app.workflows.knowledge_catalog_subgraph import (
     build_knowledge_catalog_candidate,
-    validate_consolidated_units,
 )
 
 log = logging.getLogger("organization")
@@ -507,7 +509,7 @@ def build_organization_graph(
                 raise ValueError(
                     "consolidator returned no assessment units for admitted direct evidence"
                 )
-            validate_consolidated_units(point, validated_units, admitted, chunks_by_id=chunks_by_id)
+            validate_consolidated_units(point, admitted, validated_units, chunks_by_id=chunks_by_id)
             return point.code, validated_units
 
         consolidated: dict[str, list[dict]] = {}

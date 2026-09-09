@@ -219,7 +219,7 @@ def validate_publishable_tree(
                 raise KnowledgeTreeValidationError("active assessment unit requires a knowledge card")
             # 该考点全部可迁移准入证据的 claim 聚合为支撑池（direct + supporting，
             # 操作细节已在准入循环排除）；若传入 chunks_by_id，则把准入证据对应的
-            # chunk 原文一并纳入（与归并阶段 _validate_consolidated_units 口径一致，
+            # chunk 原文一并纳入（与归并阶段 validate_consolidated_units 口径一致，
             # 模型对原句浓缩成可评分事实时仍可放行）。
             point_evidence_keys = assessable_fact_keys(
                 [

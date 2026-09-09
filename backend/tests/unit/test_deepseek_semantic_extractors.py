@@ -1028,34 +1028,26 @@ def test_consolidator_receives_only_one_point_admitted_decisions_and_keeps_sourc
         [
             {
                 "exam_point_code": "rag-diagnosis",
-                "assessment_units": [
+                "cards": [
                     {
-                        "code": "diagnose-retrieval",
-                        "title": "诊断检索偏差",
-                        "performance_statement": "分析召回偏差成因",
-                        "exam_point_code": "rag-diagnosis",
-                        "cards": [
+                        "name": "切分粒度影响",
+                        "performance_statement": "说明切分粒度如何影响召回",
+                        "assessable_content": ["切分粒度会影响召回"],
+                        "concept_cluster": "检索质量影响因素",
+                        "answer_proposition": "切分粒度会影响召回",
+                        "required_propositions": [],
+                        "relation_edges": [],
+                        "instance_carriers": [
                             {
-                                "name": "切分粒度影响",
-                                "performance_statement": "说明切分粒度如何影响召回",
-                                "assessable_content": ["切分粒度会影响召回"],
-                                "concept_cluster": "检索质量影响因素",
-                                "answer_proposition": "切分粒度会影响召回",
-                                "required_propositions": [],
-                                "relation_edges": [],
-                                "instance_carriers": [
-                                    {
-                                        "normalized_name": "ExampleVectorStore",
-                                        "carrier_type": "software",
-                                        "role": "illustrative_context",
-                                        "authorized_by_syllabus": False,
-                                        "replaceable": True,
-                                    }
-                                ],
-                                "evidence_chunk_ids": ["e1"],
-                                "prompt_material": ["可结合检索场景设问"],
+                                "normalized_name": "ExampleVectorStore",
+                                "carrier_type": "software",
+                                "role": "illustrative_context",
+                                "authorized_by_syllabus": False,
+                                "replaceable": True,
                             }
                         ],
+                        "evidence_chunk_ids": ["e1"],
+                        "prompt_material": ["可结合检索场景设问"],
                     }
                 ],
                 "source_locations": [{"evidence_chunk_id": "e1", "page": 3}],
@@ -1098,20 +1090,12 @@ def test_consolidator_rejects_fact_without_direct_evidence_coverage():
         [
             {
                 "exam_point_code": "rag-diagnosis",
-                "assessment_units": [
+                "cards": [
                     {
-                        "code": "diagnose-retrieval",
-                        "title": "诊断检索偏差",
-                        "performance_statement": "分析召回偏差成因",
-                        "exam_point_code": "rag-diagnosis",
-                        "cards": [
-                            {
-                                "name": "额外事实",
-                                "performance_statement": "说明额外事实",
-                                "assessable_content": ["模型没有依据的新事实"],
-                                "evidence_chunk_ids": ["e1"],
-                            }
-                        ],
+                        "name": "额外事实",
+                        "performance_statement": "说明额外事实",
+                        "assessable_content": ["模型没有依据的新事实"],
+                        "evidence_chunk_ids": ["e1"],
                     }
                 ],
             }
@@ -1144,21 +1128,13 @@ def test_consolidator_prunes_direct_id_not_supporting_card_facts():
         [
             {
                 "exam_point_code": "rag-diagnosis",
-                "assessment_units": [
+                "cards": [
                     {
-                        "code": "diagnose-retrieval",
-                        "title": "检索偏差异常",
-                        "performance_statement": "说明检索偏向",
-                        "exam_point_code": "rag-diagnosis",
-                        "cards": [
-                            {
-                                "name": "切分粒度的召回影响",
-                                "performance_statement": "说明切分粒度影响召回",
-                                "assessable_content": ["切分粒度不当会影响关键内容召回"],
-                                # e2 是准入 direct 但原文无关卡片事实，应被剔除
-                                "evidence_chunk_ids": ["e1", "e2"],
-                            }
-                        ],
+                        "name": "切分粒度的召回影响",
+                        "performance_statement": "说明切分粒度影响召回",
+                        "assessable_content": ["切分粒度不当会影响关键内容召回"],
+                        # e2 是准入 direct 但原文无关卡片事实，应被剔除
+                        "evidence_chunk_ids": ["e1", "e2"],
                     }
                 ],
             }
@@ -1199,22 +1175,14 @@ def test_consolidator_accepts_owner_qualified_fact_wrapping_direct_evidence():
         [
             {
                 "exam_point_code": "rag-diagnosis",
-                "assessment_units": [
+                "cards": [
                     {
-                        "code": "diagnose-retrieval",
-                        "title": "评测参数配置",
-                        "performance_statement": "说明评测参数作用",
-                        "exam_point_code": "rag-diagnosis",
-                        "cards": [
-                            {
-                                "name": "eval_batch_size参数作用",
-                                "performance_statement": "说明eval_batch_size参数作用",
-                                "assessable_content": [
-                                    "ms-swift框架中，eval_batch_size参数用于控制评测批大小"
-                                ],
-                                "evidence_chunk_ids": ["e1"],
-                            }
+                        "name": "eval_batch_size参数作用",
+                        "performance_statement": "说明eval_batch_size参数作用",
+                        "assessable_content": [
+                            "ms-swift框架中，eval_batch_size参数用于控制评测批大小"
                         ],
+                        "evidence_chunk_ids": ["e1"],
                     }
                 ],
             }
@@ -1251,22 +1219,14 @@ def test_consolidator_still_rejects_fabricated_owner_fact():
         [
             {
                 "exam_point_code": "rag-diagnosis",
-                "assessment_units": [
+                "cards": [
                     {
-                        "code": "diagnose-retrieval",
-                        "title": "评测参数配置",
-                        "performance_statement": "说明评测参数作用",
-                        "exam_point_code": "rag-diagnosis",
-                        "cards": [
-                            {
-                                "name": "额外参数",
-                                "performance_statement": "说明额外参数",
-                                "assessable_content": [
-                                    "vLLM框架中，tensor_parallel_size参数用于控制张量并行数"
-                                ],
-                                "evidence_chunk_ids": ["e1"],
-                            }
+                        "name": "额外参数",
+                        "performance_statement": "说明额外参数",
+                        "assessable_content": [
+                            "vLLM框架中，tensor_parallel_size参数用于控制张量并行数"
                         ],
+                        "evidence_chunk_ids": ["e1"],
                     }
                 ],
             }
@@ -1299,22 +1259,14 @@ def test_consolidator_rejects_case_narrative_fact_bound_to_experiment_run():
         [
             {
                 "exam_point_code": "rag-diagnosis",
-                "assessment_units": [
+                "cards": [
                     {
-                        "code": "diagnose-retrieval",
-                        "title": "数据构建",
-                        "performance_statement": "说明数据构建目标",
-                        "exam_point_code": "rag-diagnosis",
-                        "cards": [
-                            {
-                                "name": "数据失衡案例",
-                                "performance_statement": "说明数据失衡",
-                                "assessable_content": [
-                                    "思考模式数据与非思考模式数据分布不均衡的问题出现在上一轮训练中。"
-                                ],
-                                "evidence_chunk_ids": ["e1"],
-                            }
+                        "name": "数据失衡案例",
+                        "performance_statement": "说明数据失衡",
+                        "assessable_content": [
+                            "思考模式数据与非思考模式数据分布不均衡的问题出现在上一轮训练中。"
                         ],
+                        "evidence_chunk_ids": ["e1"],
                     }
                 ],
             }
@@ -1348,15 +1300,7 @@ def test_consolidator_rejects_active_unit_without_knowledge_cards():
         [
             {
                 "exam_point_code": "rag-diagnosis",
-                "assessment_units": [
-                    {
-                        "code": "empty-unit",
-                        "title": "空单元",
-                        "performance_statement": "没有卡片",
-                        "exam_point_code": "rag-diagnosis",
-                        "cards": [],
-                    }
-                ],
+                "cards": [],
             }
         ]
     )
@@ -1374,7 +1318,7 @@ def test_consolidator_rejects_active_unit_without_knowledge_cards():
             },
         )
 
-    assert caught.value.error_code == "model_output_evidence_gap"
+    assert caught.value.error_code == "model_schema_validation_failed"
 
 
 def test_consolidator_rejects_active_card_with_empty_assessable_content():
@@ -1382,20 +1326,12 @@ def test_consolidator_rejects_active_card_with_empty_assessable_content():
         [
             {
                 "exam_point_code": "rag-diagnosis",
-                "assessment_units": [
+                "cards": [
                     {
-                        "code": "diagnose-retrieval",
-                        "title": "诊断检索偏差",
-                        "performance_statement": "分析召回偏差成因",
-                        "exam_point_code": "rag-diagnosis",
-                        "cards": [
-                            {
-                                "name": "空事实",
-                                "performance_statement": "没有可评分事实",
-                                "assessable_content": [],
-                                "evidence_chunk_ids": ["e1"],
-                            }
-                        ],
+                        "name": "空事实",
+                        "performance_statement": "没有可评分事实",
+                        "assessable_content": [],
+                        "evidence_chunk_ids": ["e1"],
                     }
                 ],
             }

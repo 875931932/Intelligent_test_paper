@@ -321,9 +321,8 @@ def _normalize_consolidation_response(
     """Accept the provider's flat-card variant without weakening evidence checks.
 
     归并只要求模型输出扁平知识卡（顶层 cards 数组）；单元层面的 code/title/
-    exam_point_code/performance_statement 由代码确定性组装，避免模型产出嵌套
-    assessment_units 时因缺单元必填字段触发 schema 校验失败。同时保留对旧
-    assessment_units 输出的解析，防止重构期间回归。
+    exam_point_code/performance_statement 由代码确定性组装，不接受嵌套
+    assessment_units 输出。
     """
 
     def card_with_defaults(card: dict[str, Any]) -> dict[str, Any]:
@@ -358,47 +357,11 @@ def _normalize_consolidation_response(
     )
 
     raw_cards = normalized.get("cards")
-    if isinstance(raw_cards, list):
-        normalized["cards"] = [
-            card_with_defaults(card) for card in raw_cards if isinstance(card, dict)
-        ]
+    if not isinstance(raw_cards, list):
         return normalized
-
-    units = normalized.get("assessment_units")
-    if not isinstance(units, list):
-        return normalized
-    converted: list[Any] = []
-    for index, raw_unit in enumerate(units, start=1):
-        if not isinstance(raw_unit, dict):
-            converted.append(raw_unit)
-            continue
-        if "cards" in raw_unit:
-            unit = dict(raw_unit)
-            cards = unit.get("cards")
-            if isinstance(cards, list):
-                unit["cards"] = [
-                    card_with_defaults(card) for card in cards if isinstance(card, dict)
-                ]
-            converted.append(unit)
-            continue
-        if "name" not in raw_unit or "assessable_content" not in raw_unit:
-            converted.append(raw_unit)
-            continue
-        card = card_with_defaults(dict(raw_unit))
-        card.pop("title", None)
-        card.pop("code", None)
-        card.pop("exam_point_code", None)
-        card.pop("source_locations", None)
-        converted.append(
-            {
-                "code": f"{exam_point.code}-U{index}",
-                "title": str(raw_unit["name"]),
-                "performance_statement": exam_point.assessment_requirement,
-                "exam_point_code": exam_point.code,
-                "cards": [card],
-            }
-        )
-    normalized["assessment_units"] = converted
+    normalized["cards"] = [
+        card_with_defaults(card) for card in raw_cards if isinstance(card, dict)
+    ]
     return normalized
 
 
@@ -442,18 +405,6 @@ class _KnowledgeCardResponse(BaseModel):
         if self.status == "active" and not self.assessable_content:
             raise ValueError("active knowledge card requires assessable_content")
         return self
-
-
-class _AssessmentUnitResponse(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    code: _Text
-    title: _Text
-    performance_statement: _Text
-    exam_point_code: _Text
-    scope_boundary: dict[str, Any] = Field(default_factory=dict)
-    cards: list[_KnowledgeCardResponse] = Field(default_factory=list)
-    status: Literal["active", "excluded", "needs_teacher_review"] = "active"
 
 
 class _TeachingResponse(BaseModel):
@@ -516,13 +467,11 @@ class _ConsolidationResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
     exam_point_code: _Text
     cards: list[_KnowledgeCardResponse] = Field(default_factory=list)
-    assessment_units: list[_AssessmentUnitResponse] = Field(default_factory=list)
-    source_locations: list[dict[str, Any]] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def require_output_form(self):
-        if not self.cards and not self.assessment_units:
-            raise ValueError("consolidation must output cards or assessment_units")
+        if not self.cards:
+            raise ValueError("consolidation must output at least one card")
         return self
 
 
@@ -862,27 +811,19 @@ class DeepSeekExamPointKnowledgeConsolidator:
                     "model_output_scope_violation",
                     "consolidation output belongs to another exam point",
                 )
-            if response.cards:
-                units = [
-                    AssessmentUnitDraft.model_validate(
-                        {
-                            "code": f"{exam_point.code}-U1",
-                            "title": exam_point.title,
-                            "performance_statement": exam_point.assessment_requirement,
-                            "exam_point_code": exam_point.code,
-                            "scope_boundary": {},
-                            "cards": [
-                                card.model_dump(mode="json") for card in response.cards
-                            ],
-                        }
-                    )
-                ]
-            else:
-                units = [
-                    AssessmentUnitDraft.model_validate(unit.model_dump(mode="json"))
-                    for unit in response.assessment_units
-                ]
-            _validate_consolidated_units(exam_point, admitted, units, chunks_by_id=chunks_by_id)
+            units = [
+                AssessmentUnitDraft.model_validate(
+                    {
+                        "code": f"{exam_point.code}-U1",
+                        "title": exam_point.title,
+                        "performance_statement": exam_point.assessment_requirement,
+                        "exam_point_code": exam_point.code,
+                        "scope_boundary": {},
+                        "cards": [card.model_dump(mode="json") for card in response.cards],
+                    }
+                )
+            ]
+            validate_consolidated_units(exam_point, admitted, units, chunks_by_id=chunks_by_id)
             parsed.append(units)
 
         for batch in batches:
@@ -977,11 +918,11 @@ class DeepSeekExamPointKnowledgeConsolidator:
                 }
             )
         ]
-        _validate_consolidated_units(exam_point, admitted, units, chunks_by_id=chunks_by_id)
+        validate_consolidated_units(exam_point, admitted, units, chunks_by_id=chunks_by_id)
         return units
 
 
-def _validate_consolidated_units(
+def validate_consolidated_units(
     exam_point: ExamPoint,
     admitted: list[EvidenceDecision],
     units: list[AssessmentUnitDraft],
@@ -1089,15 +1030,7 @@ def _schema_error(exc: ValidationError) -> DeepSeekModelError:
     invalid_values = {
         ".".join(str(part) for part in item["loc"]): str(item.get("input", ""))[:80]
         for item in errors
-        if str(item["loc"][-1]) in {"confidence", "content_kind"}
-    }
-    invalid_inputs = {
-        ".".join(str(part) for part in item["loc"]): {
-            "type": type(item.get("input")).__name__,
-            "preview": str(item.get("input", ""))[:240],
-        }
-        for item in errors
-        if len(item["loc"]) >= 3 and item["loc"][0] == "assessment_units"
+        if item.get("loc") and str(item["loc"][-1]) in {"confidence", "content_kind"}
     }
     validation_errors = [
         {"loc": list(item.get("loc", [])), "msg": str(item.get("msg", ""))[:160]}
@@ -1109,7 +1042,6 @@ def _schema_error(exc: ValidationError) -> DeepSeekModelError:
         details={
             "invalid_fields": fields[:20],
             "invalid_values": invalid_values,
-            "invalid_inputs": invalid_inputs,
             "validation_errors": validation_errors,
         },
     )
@@ -1121,4 +1053,5 @@ __all__ = [
     "DeepSeekJsonClient",
     "DeepSeekModelError",
     "DeepSeekSyllabusExtractor",
+    "validate_consolidated_units",
 ]

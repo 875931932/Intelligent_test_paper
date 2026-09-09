@@ -5,6 +5,9 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 
+from app.adapters.model.deepseek_semantic_extractors import (
+    validate_consolidated_units,
+)
 from app.domain.framework.exam_points import ExamPoint
 from app.domain.knowledge.models import (
     AssessmentUnitDraft,
@@ -19,8 +22,6 @@ from app.domain.knowledge.relevance import (
     RelevanceClass,
     StagingChunk,
     admit_evidence_decision,
-    all_facts_supported,
-    assessable_fact_keys,
     semantic_text_key,
 )
 from app.services.knowledge_tree_service import (
@@ -101,45 +102,6 @@ def _coverage(
         status=status,
         reasons=reasons,
     )
-
-
-def validate_consolidated_units(
-    point: ExamPoint,
-    units: list[AssessmentUnitDraft],
-    admitted_decisions: list[EvidenceDecision],
-    *,
-    chunks_by_id: dict[str, StagingChunk] | None = None,
-) -> None:
-    # 支撑池取该考点全部准入证据（direct + supporting）：既含分类阶段
-    # support_claim 概括，也含其对应 teaching chunk 的原文（经
-    # assessable_fact_keys 按可评分事实边界切分为规范化 key）。该口径与
-    # 归并阶段 _validate_consolidated_units 完全一致，避免"归并通过、此处
-    # 凭 claim 池反而失败"的错配。
-    point_evidence_keys = assessable_fact_keys(
-        [
-            *(
-                decision.support_claim
-                for decision in admitted_decisions
-            ),
-            *(
-                chunks_by_id[decision.evidence_chunk_id].content
-                for decision in admitted_decisions
-                if chunks_by_id is not None
-                and decision.evidence_chunk_id in chunks_by_id
-            ),
-        ]
-    )
-    for unit in units:
-        if unit.exam_point_code != point.code:
-            raise KnowledgeTreeValidationError(
-                "consolidated assessment unit must remain bound to its exam point"
-            )
-        for card in unit.cards:
-            published_facts = assessable_fact_keys(card.assessable_content)
-            if not all_facts_supported(published_facts, point_evidence_keys):
-                raise KnowledgeTreeValidationError(
-                    "knowledge card requires direct evidence admitted for the same exam point"
-                )
 
 
 def _merge_consolidated_units(units: list[AssessmentUnitDraft]) -> list[AssessmentUnitDraft]:
@@ -225,7 +187,7 @@ def build_knowledge_catalog_candidate(
             for item in admitted_by_point.get(point.code, [])
             if item.relevance_class in {RelevanceClass.DIRECT, RelevanceClass.SUPPORTING}
         ]
-        validate_consolidated_units(point, units, admitted, chunks_by_id=chunks_by_id)
+        validate_consolidated_units(point, admitted, units, chunks_by_id=chunks_by_id)
         if not units:
             if admitted:
                 reasons.setdefault(point.code, []).append("no_cards_produced")
