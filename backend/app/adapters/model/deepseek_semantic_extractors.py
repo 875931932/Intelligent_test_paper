@@ -141,10 +141,19 @@ def _normalize_classification_response(raw: dict[str, Any]) -> dict[str, Any]:
         decisions = []
     point_code = normalized.get("exam_point_code")
     normalized_decisions: list[Any] = []
+    # 模型偶发在 decisions 数组内部把同一 chunk 列多次（措辞或等级不同）。
+    # 逐条归一后按 evidence_chunk_id 去重，保留首次出现的判定，使下游
+    # duplicate evidence decisions 校验不被同一 chunk 的重叠列举误判。
+    seen_chunk_ids_within_decisions: set[str] = set()
     for raw_decision in decisions:
         if not isinstance(raw_decision, dict):
             normalized_decisions.append(raw_decision)
             continue
+        chunk_id = raw_decision.get("evidence_chunk_id") or raw_decision.get("chunk_id") or raw_decision.get("id")
+        if isinstance(chunk_id, str) and chunk_id.strip():
+            if chunk_id.strip() in seen_chunk_ids_within_decisions:
+                continue
+            seen_chunk_ids_within_decisions.add(chunk_id.strip())
         decision = dict(raw_decision)
         if "exam_point_code" not in decision and isinstance(point_code, str):
             decision["exam_point_code"] = point_code
@@ -205,6 +214,14 @@ def _normalize_classification_response(raw: dict[str, Any]) -> dict[str, Any]:
                 else "background"
             )
         normalized_decisions.append(decision)
+    # 模型偶发把同一 chunk 同时写进 decisions 与紧凑数组（重复列举）：
+    # 优先保留 decisions 中的完整判定，紧凑数组跳过已出现的 chunk，避免
+    # 下游 duplicate evidence decisions 判死。
+    seen_chunk_ids = {
+        item.get("evidence_chunk_id")
+        for item in normalized_decisions
+        if isinstance(item, dict) and item.get("evidence_chunk_id")
+    }
     for array_key, relevance_class in _COMPACT_CLASS_ARRAY_KEYS.items():
         chunk_ids = normalized.pop(array_key, None)
         if not isinstance(chunk_ids, list):
@@ -212,10 +229,14 @@ def _normalize_classification_response(raw: dict[str, Any]) -> dict[str, Any]:
         for chunk_id in chunk_ids:
             if not isinstance(chunk_id, str) or not chunk_id.strip():
                 continue
+            chunk_id = chunk_id.strip()
+            if chunk_id in seen_chunk_ids:
+                continue
+            seen_chunk_ids.add(chunk_id)
             normalized_decisions.append(
                 {
                     "exam_point_code": point_code,
-                    "evidence_chunk_id": chunk_id.strip(),
+                    "evidence_chunk_id": chunk_id,
                     "relevance_class": relevance_class,
                     "support_claim": "（未提供说明）",
                     "content_kind": "background",
@@ -227,7 +248,11 @@ def _normalize_classification_response(raw: dict[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_file_classification_response(raw: dict[str, Any]) -> dict[str, Any]:
-    """Normalize the file-level wrapper without weakening per-point evidence checks."""
+    """Normalize the file-level wrapper without weakening per-point evidence checks.
+
+    若模型直接返回单考点对象（缺 file_decisions 包装），将其作为唯一元素包裹；
+    顶层只保留 file_decisions，避免残留键触发 extra=forbid 校验失败。
+    """
 
     normalized = dict(raw)
     file_decisions = None
@@ -241,11 +266,12 @@ def _normalize_file_classification_response(raw: dict[str, Any]) -> dict[str, An
         file_decisions = [legacy_item]
     if file_decisions is None:
         return normalized
-    normalized["file_decisions"] = [
-        _normalize_classification_response(item) if isinstance(item, dict) else item
-        for item in file_decisions
-    ]
-    return normalized
+    return {
+        "file_decisions": [
+            _normalize_classification_response(item) if isinstance(item, dict) else item
+            for item in file_decisions
+        ]
+    }
 
 
 def _split_multi_clause_atoms(values: Any) -> list[str]:
@@ -690,9 +716,26 @@ class DeepSeekExamPointEvidenceClassifier:
                 "direct 表示该 chunk 的内容本身就是该考点考核知识的直接事实或依据："
                 "概念、定义、原理、机制、规则、公式、关系、比较、约束等知识本身，"
                 "或案例承载的通用结论。"
+                "实验手册/操作指引的条目常以『（编号）动词：知识陈述』形式出现，"
+                "如『（2.3）理解传统 RLHF 流程：传统 RLHF 通常包含偏好数据收集、奖励模型训练和 PPO 策略优化等步骤』。"
+                "判定依据是冒号后的知识陈述是否承载考点知识，而不是条目的编号、动词等操作外壳；"
+                "『理解/明确/分析/总结/区分/对比/观察 X：YY』中的 YY 即为可迁移知识，应判 direct，"
+                "不要因步骤式写法而降级。"
+                "operational_detail_policy 只约束『操作细节』类内容（纯操作指令：执行/等待/截图/确认/"
+                "检查某步骤完成，且不含知识陈述）的等级，不影响知识陈述：supporting_only 不表示只能判 "
+                "supporting，承载考点知识的知识陈述一律判 direct。"
+                "每个 chunk 只能出现在一个判定位置：direct/supporting 写入 decisions，"
+                "background 写入 background_chunk_ids，out_of_scope 写入 out_of_scope_chunk_ids；"
+                "同一 chunk 不得同时出现在多个位置。"
+                "chunks 是相互独立的片段，各自截取自资料不同位置，相邻 chunk 之间不存在文本连续性："
+                "不得假设当前 chunk 前后还有未展示的内容（如编号列表的后续项），"
+                "禁止把其他 chunk 的内容归属到当前 chunk。"
+                "每个 direct/supporting 判定都必须逐项核对 support_claim 中的事实确实出现在该 "
+                "chunk 的原文中；若某条知识不在该 chunk 内，不得写入该 chunk 的 claim。"
+                "只有纯操作指令（执行/等待/截图/确认/检查某步骤完成，且不含知识陈述）"
+                "或与考点无关的内容才判 supporting/background/out_of_scope。"
                 "support_claim 用一句话概括该 chunk 提供的具体事实即可，无需补全归属或写成自包含命题；"
                 "归属补全与命题化由后续归并环节完成。"
-                "仅当 chunk 是设问/练习语境、背景铺垫或与考点无关时才判 supporting/background/out_of_scope；"
                 "承载考点知识本身的 chunk 一律判 direct，不要降级为 supporting。"
                 "background/out_of_scope 不产出知识事实。"
                 "遵守各考点 operational_detail_policy，不使用任何课程专属黑名单。"
@@ -705,7 +748,8 @@ class DeepSeekExamPointEvidenceClassifier:
                     {
                         "evidence_chunk_id": chunk.id,
                         "material_version_id": chunk.material_version_id,
-                        "content": chunk.content,
+                        "content": chunk.content
+                        + "\n【该片段内容到此结束，其后内容属于其他片段，严禁在此片段内补全未展示的内容】",
                         "locator": chunk.locator,
                     }
                     for chunk in chunks
@@ -885,7 +929,8 @@ class DeepSeekExamPointKnowledgeConsolidator:
                     {
                         "evidence_chunk_id": chunk.id,
                         "material_version_id": chunk.material_version_id,
-                        "content": chunk.content,
+                        "content": chunk.content
+                        + "\n【该片段内容到此结束，其后内容属于其他片段，严禁在此片段内补全未展示的内容】",
                         "locator": chunk.locator,
                         "role": (
                             "direct"

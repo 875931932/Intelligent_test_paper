@@ -216,7 +216,9 @@ def test_classify_file_expands_compact_class_arrays():
     assert "out_of_scope_chunk_ids" in system
 
 
-def test_classify_file_rejects_compact_array_duplication():
+def test_classify_file_dedupes_duplicate_chunk_within_decisions():
+    # step-3.7-flash 偶发在 decisions 内部把同一 chunk 列多次（措辞或等级不同）。
+    # 归一化层应保留首次判定并丢弃重复项，而非判错整次调用。
     response = {
         "file_decisions": [
             {
@@ -229,14 +231,16 @@ def test_classify_file_rejects_compact_array_duplication():
     }
     classifier = DeepSeekExamPointEvidenceClassifier(FakeJsonClient(response))
 
-    with pytest.raises(DeepSeekModelError) as caught:
-        classifier.classify_file(
-            exam_points=[_point("EP1")],
-            material_version_id="M1",
-            chunks=[_chunk("c1"), _chunk("c2")],
-        )
+    decisions = classifier.classify_file(
+        exam_points=[_point("EP1")],
+        material_version_id="M1",
+        chunks=[_chunk("c1"), _chunk("c2")],
+    )
 
-    assert caught.value.error_code == "model_output_scope_violation"
+    by_chunk = {d.evidence_chunk_id: d for d in decisions[0].decisions}
+    assert len(decisions[0].decisions) == 2
+    assert by_chunk["c1"].relevance_class.value == "supporting"
+    assert by_chunk["c2"].relevance_class.value == "out_of_scope"
 
 
 def test_classify_file_completes_compact_array_missing_chunk():
