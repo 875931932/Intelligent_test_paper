@@ -99,6 +99,13 @@ def build_knowledge_catalog_candidate(
             try:
                 admitted = admit_evidence_decision(point, decision)
             except ValueError as exc:
+                # 低置信度决策在分类阶段已被保守降级为 out_of_scope（confidence
+                # 字段保持原值），这里的准入校验只是复检：跳过即可，与发布侧
+                # knowledge_tree_service 的「不可准入则 continue」口径一致。
+                # 若在此整树判死，前面分类+归并的全部模型成本因一条边缘决策
+                # 白费（生产事故：run 45ec7e13 崩于本节点）。
+                if "confidence is below" in str(exc):
+                    continue
                 raise KnowledgeTreeValidationError(str(exc)) from exc
             admitted_by_point[point.code].append(admitted)
 

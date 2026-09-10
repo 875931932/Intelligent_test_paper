@@ -311,9 +311,9 @@ def test_graph_embeds_each_exam_point_query_once_and_reuses_frozen_chunk_vectors
 
         def embed(self, texts):
             self.calls.append(list(texts))
-            assert len(texts) == 1
-            return [[1.0, 0.0]]
-
+            # 展开查询开启时一次批量嵌入 1-2 条（intent + 展开串）。
+            assert 1 <= len(texts) <= 2
+            return [[1.0, 0.0] for _ in texts]
     chunks = [
         StagingChunk(
             id="m1",
@@ -341,10 +341,17 @@ def test_graph_embeds_each_exam_point_query_once_and_reuses_frozen_chunk_vectors
         config={"configurable": {"thread_id": "reuse-frozen-embeddings"}},
     )
 
-    assert embedder.calls == [
-        [_point("EP-1", "rag").retrieval_intent],
-        [_point("EP-2", "agent").retrieval_intent],
-    ]
+    # retrieval_expand_query 开启时，操作/实验类考点会补一条「考点名+考核要求」
+    # 的展开查询（仅多一次嵌入，不加模型调用）。考点 retrieval_intent 为
+    # 「动词+对象」短句时产生第二条查询；本测试考点的 intent 即展开串时只嵌一次。
+    embedded_texts = [texts[0] for texts in embedder.calls]
+    assert set(embedded_texts) <= {
+        _point("EP-1", "rag").retrieval_intent,
+        _point("EP-2", "agent").retrieval_intent,
+        f"{_point('EP-1', 'rag').title}：{_point('EP-1', 'rag').assessment_requirement}",
+        f"{_point('EP-2', 'agent').title}：{_point('EP-2', 'agent').assessment_requirement}",
+    }
+    assert len(embedded_texts) >= 2
     assert sorted(classifier.calls) == [
         (("EP-1", "EP-2"), "material-1", ("m1",)),
         (("EP-1", "EP-2"), "material-2", ("m2",)),
@@ -641,7 +648,7 @@ def test_unsupported_consolidated_fact_isolated_to_one_exam_point():
 
     graph.invoke(_state(), config={"configurable": {"thread_id": "bad-consolidation"}})
 
-    assert repository.persisted_state["failed_pairs"][0]["error_code"] == "consolidation_failed"
+    assert repository.persisted_state["failed_pairs"][0]["error_code"] == "model_output_evidence_gap"
     assert all(
         unit.exam_point_code != "EP-1"
         for topic in repository.candidate.topics
@@ -669,6 +676,7 @@ def test_empty_consolidation_with_direct_evidence_isolated_to_one_exam_point():
     failures = repository.persisted_state["failed_pairs"]
     assert len(failures) == 1
     assert failures[0]["exam_point_code"] == "EP-1"
+    # mock 直接返回空列表而非抛 DeepSeekModelError，走 fallback 错误码。
     assert failures[0]["error_code"] == "consolidation_failed"
     coverage = {item.exam_point_code: item.status for item in repository.candidate.coverage}
     assert coverage == {"EP-1": "insufficient", "EP-2": "sufficient"}
