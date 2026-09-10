@@ -166,7 +166,6 @@ class DatabaseKnowledgeRepository:
         rows = self.session.execute(
             select(evidence_chunks).where(
                 evidence_chunks.c.course_id == course_id,
-                evidence_chunks.c.organization_run_id == run_id,
                 evidence_chunks.c.id.in_(evidence_chunk_ids),
             )
         ).mappings().all()
@@ -299,7 +298,6 @@ class DatabaseKnowledgeRepository:
                         select(evidence_chunks.c.id).where(
                             evidence_chunks.c.id == decision.evidence_chunk_id,
                             evidence_chunks.c.course_id == course_id,
-                            evidence_chunks.c.organization_run_id == run_id,
                             evidence_chunks.c.material_version_id == file_decision.material_version_id,
                         )
                     ).scalar_one_or_none()
@@ -549,7 +547,6 @@ class DatabaseKnowledgeRepository:
                             evidence_chunks.c.content,
                         ).where(
                             evidence_chunks.c.course_id == course_id,
-                            evidence_chunks.c.organization_run_id == state["run_id"],
                             evidence_chunks.c.id.in_(chunk_ids),
                         )
                     ).mappings()
@@ -841,7 +838,6 @@ class DatabaseKnowledgeRepository:
                 select(evidence_chunks.c.id).where(
                     evidence_chunks.c.id == chunk_id,
                     evidence_chunks.c.course_id == course_id,
-                    evidence_chunks.c.organization_run_id == run_id,
                 )
             ).scalar_one_or_none()
             if chunk_exists is None:
@@ -934,7 +930,6 @@ class DatabaseKnowledgeRepository:
                 exam_point_evidence_links.c.relevance_class == "direct",
                 exam_point_evidence_links.c.status.in_(["candidate", "published"]),
                 evidence_chunks.c.course_id == course_id,
-                evidence_chunks.c.organization_run_id == run_id,
                 material_versions.c.course_id == course_id,
                 material_versions.c.status == "staged",
                 materials.c.course_id == course_id,
@@ -1318,7 +1313,6 @@ def create_organization_state(
                 f"{version_id}\n{merged_block['text'].strip()}".encode()
             ).hexdigest()
             evidence_id = digest[:32]
-            evidence_ids.append(evidence_id)
             locator = {
                 "page_index": merged_block["page_index"],
                 "bbox": merged_block["bbox"],
@@ -1328,6 +1322,26 @@ def create_organization_state(
                 "source_block_count": len(source_blocks),
             }
             merged_text = merged_block["text"].strip()
+            existing = session.execute(
+                select(evidence_chunks.c.id, evidence_chunks.c.embedding).where(
+                    evidence_chunks.c.id == evidence_id,
+                    evidence_chunks.c.course_id == course_id,
+                    evidence_chunks.c.material_version_id == version_id,
+                )
+            ).mappings().first()
+            if existing is not None:
+                # 内容寻址复用：id 相同即同资料同内容，旧行就是同一条知识块，
+                # 不再插入（表为 append-only，重复插入必撞主键）。历史行早于
+                # 确定性 id 方案时缺 embedding，此处补齐以保证新 run 检索可用。
+                if existing["embedding"] is None:
+                    session.execute(
+                        evidence_chunks.update()
+                        .where(evidence_chunks.c.id == evidence_id)
+                        .values(embedding=vector)
+                    )
+                evidence_ids.append(evidence_id)
+                continue
+            evidence_ids.append(evidence_id)
             session.execute(
                 evidence_chunks.insert().values(
                     id=evidence_id,

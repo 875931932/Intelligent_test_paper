@@ -559,6 +559,59 @@ def test_create_organization_state_snapshots_ready_blocks_without_putting_text_i
         engine.dispose()
 
 
+def test_create_organization_state_reuses_deterministic_chunk_ids_across_runs(tmp_path):
+    """同一资料重复构建：确定性 id 复用已有行，不再撞主键（生产事故回归）。"""
+    engine, session = _session(tmp_path)
+    try:
+        embedder = RecordingEmbedder()
+
+        first = create_organization_state(
+            session,
+            course_id="course",
+            material_version_ids=["material-v1"],
+            embedder=embedder,
+        )
+        # 第二次构建前把 run 状态终结，模拟教师拒绝后的重新构建场景。
+        session.execute(
+            organization_runs.update()
+            .where(organization_runs.c.id == first["run_id"])
+            .values(status="rejected")
+        )
+        session.commit()
+
+        second = create_organization_state(
+            session,
+            course_id="course",
+            material_version_ids=["material-v1"],
+            embedder=embedder,
+        )
+
+        # 内容寻址：同资料同内容 → 相同 chunk id，可零成本命中模型响应缓存。
+        assert second["evidence_chunk_ids"] == first["evidence_chunk_ids"]
+        assert len(second["evidence_chunk_ids"]) == 1
+        # 复用旧行而非重复插入：全表该 id 仍只有一行（归属第一个 run）。
+        rows = session.execute(
+            select(
+                evidence_chunks.c.id,
+                evidence_chunks.c.organization_run_id,
+            ).where(evidence_chunks.c.id == first["evidence_chunk_ids"][0])
+        ).all()
+        assert len(rows) == 1
+        assert rows[0].organization_run_id == first["run_id"]
+        # 第二个 run 的快照校验按课程+id 读取，能解析出复用行。
+        repository = DatabaseKnowledgeRepository(session)
+        chunks = repository.load_evidence_chunks(
+            course_id="course",
+            run_id=second["run_id"],
+            evidence_chunk_ids=second["evidence_chunk_ids"],
+        )
+        assert [c.id for c in chunks] == second["evidence_chunk_ids"]
+        assert chunks[0].content == "RAG包括检索、上下文构造和生成"
+    finally:
+        session.close()
+        engine.dispose()
+
+
 @pytest.mark.parametrize(
     ("vectors", "message"),
     [
