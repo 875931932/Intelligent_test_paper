@@ -925,7 +925,9 @@ function CandidatePanel({ candidate, supplementOps, onSupplementChange, onPublis
   );
 }
 
-function CandidateTreePreview({ topics, coverage, onSupplement }: {
+// 候选树渲染面大（实测 142 卡 / 1.2MB 候选 JSON）：补证据弹窗开合、
+// supplementOps 变化都不应触发整棵树重渲染，memo 隔离。
+const CandidateTreePreview = memo(function CandidateTreePreview({ topics, coverage, onSupplement }: {
   topics: CandidateKnowledgeTopic[];
   coverage: KnowledgeCandidatePayload['coverage'];
   onSupplement: (code: string) => void;
@@ -933,7 +935,10 @@ function CandidateTreePreview({ topics, coverage, onSupplement }: {
   const [expandedTopics, setExpandedTopics] = useState<Set<string>>(new Set());
   const [expandedUnits, setExpandedUnits] = useState<Set<string>>(new Set());
 
-  const coverageByCode = new Map((coverage || []).map((c) => [c.exam_point_code, c]));
+  const coverageByCode = useMemo(
+    () => new Map((coverage || []).map((c) => [c.exam_point_code, c])),
+    [coverage]
+  );
 
   if (topics.length === 0) {
     return (
@@ -1028,7 +1033,7 @@ function CandidateTreePreview({ topics, coverage, onSupplement }: {
       })}
     </div>
   );
-}
+});
 
 function CoverageBadge({ status }: { status: string }) {
   if (status === 'sufficient') return <Badge variant="success">覆盖充足</Badge>;

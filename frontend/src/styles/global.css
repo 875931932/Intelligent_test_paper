@@ -26,7 +26,10 @@ body {
   position: relative;
 }
 
-/* ── 液态玻璃环境光斑（固定背景装饰） ── */
+/* ── 液态玻璃环境光斑（固定背景装饰，静态渲染） ──
+   不要给这两个光斑加动画：每帧位移会让页面上所有 backdrop-filter 毛玻璃
+   （侧边栏 + 全部 glass-card）每帧重新采样模糊，核显上直接拖垮全局帧率。
+   静态渐变浏览器只光栅化一次，视觉差异可忽略。 */
 body::before,
 body::after {
   content: '';
@@ -35,7 +38,6 @@ body::after {
   pointer-events: none;
   border-radius: 50%;
   filter: blur(90px);
-  will-change: transform;
 }
 body::before {
   width: 480px;
@@ -43,7 +45,6 @@ body::before {
   top: -120px;
   right: -80px;
   background: radial-gradient(circle, rgba(0, 113, 227, 0.18), transparent 70%);
-  animation: blobFloat 18s ease-in-out infinite;
 }
 body::after {
   width: 420px;
@@ -51,12 +52,6 @@ body::after {
   bottom: -140px;
   left: -60px;
   background: radial-gradient(circle, rgba(175, 82, 222, 0.14), transparent 70%);
-  animation: blobFloat 22s ease-in-out infinite reverse;
-}
-@keyframes blobFloat {
-  0%, 100% { transform: translate(0, 0) scale(1); }
-  33% { transform: translate(24px, -18px) scale(1.06); }
-  66% { transform: translate(-16px, 14px) scale(0.96); }
 }
 
 #root {
@@ -78,8 +73,6 @@ body::after {
 
 .glass-card {
   background: var(--surface);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
   border: 1px solid rgba(255, 255, 255, 0.5);
   border-radius: var(--radius-lg);
   box-shadow: var(--glass-shadow);
@@ -100,8 +93,6 @@ body::after {
 
 .glass-panel {
   background: var(--surface-elevated);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
   border: 1px solid rgba(255, 255, 255, 0.5);
   border-radius: var(--radius-xl);
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.04);
@@ -116,9 +107,11 @@ body::after {
   left: var(--sidebar-offset);
   top: var(--sidebar-offset);
   bottom: var(--sidebar-offset);
+  /* 高斯模糊降档：blur(24px)+saturate 在核显上是常驻 GPU 负担，且它
+     固定全高覆盖、每页都渲染。半透明底色已足够呈现"悬浮岛"层次。 */
   background: var(--sidebar-glass);
-  backdrop-filter: var(--sidebar-blur);
-  -webkit-backdrop-filter: var(--sidebar-blur);
+  backdrop-filter: blur(10px) saturate(1.2);
+  -webkit-backdrop-filter: blur(10px) saturate(1.2);
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: var(--sidebar-radius);
   box-shadow: var(--sidebar-shadow);
