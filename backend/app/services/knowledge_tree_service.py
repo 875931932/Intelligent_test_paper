@@ -286,6 +286,9 @@ def apply_tree_operations(
 ) -> KnowledgeTreeCandidate:
     revised = tree.model_copy(deep=True)
     for operation in operations:
+        if operation.operation == "supplement_direct_evidence":
+            # 由组织流程的 _apply_supplemented_evidence 专门处理，此处跳过。
+            continue
         topic = next((item for item in revised.topics if item.code == operation.target_code), None)
         if operation.operation in {"rename_topic", "exclude_topic", "move_topic"}:
             if topic is None:

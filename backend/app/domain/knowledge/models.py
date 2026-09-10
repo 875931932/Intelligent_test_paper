@@ -90,7 +90,13 @@ class KnowledgeTreeCandidate(BaseModel):
 class TreeOperation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    operation: Literal["rename_topic", "exclude_topic", "exclude_unit", "move_topic"]
+    operation: Literal[
+        "rename_topic",
+        "exclude_topic",
+        "exclude_unit",
+        "move_topic",
+        "supplement_direct_evidence",
+    ]
     target_code: str
     value: str | None = None
 

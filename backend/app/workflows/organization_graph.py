@@ -37,6 +37,7 @@ from app.domain.model_calls import ModelCallContext
 from app.services.knowledge_tree_service import apply_tree_operations, validate_publishable_tree
 from app.services.staging_retrieval_service import HybridStagingRetriever
 from app.workflows.knowledge_catalog_subgraph import (
+    _coverage,
     build_knowledge_catalog_candidate,
 )
 
@@ -161,6 +162,58 @@ def _redacted_error_message(exc: Exception) -> str:
     if not message:
         return exc.__class__.__name__
     return message
+
+
+def _apply_supplemented_evidence(
+    revised: KnowledgeTreeCandidate,
+    operations: list[TreeOperation],
+    points_by_code: dict[str, ExamPoint],
+) -> None:
+    """Apply 'supplement_direct_evidence' operations:
+    - Promote an existing supporting/background evidence chunk to DIRECT
+    - Recompute exam point coverage with the updated decisions
+    - Minimal, zero-model change that only fixes classification/consolidation
+      coverage pressure for points that already have cards but were marked insufficient
+      due to missed direct decisions.
+    """
+    from app.domain.knowledge.relevance import EvidenceDecision, RelevanceClass
+
+    for op in operations:
+        if op.operation != "supplement_direct_evidence":
+            continue
+        exam_point_code = op.target_code
+        chunk_id = op.value
+        if not exam_point_code.strip() or not chunk_id.strip():
+            continue
+        point = points_by_code.get(exam_point_code)
+        if not point:
+            continue
+
+        updated_decisions: list[EvidenceDecision] = []
+        found = False
+        for d in revised.evidence_decisions:
+            if d.exam_point_code != exam_point_code or d.evidence_chunk_id != chunk_id:
+                updated_decisions.append(d)
+                continue
+            if d.relevance_class in {RelevanceClass.SUPPORTING, RelevanceClass.BACKGROUND}:
+                updated = d.model_copy(update={"relevance_class": RelevanceClass.DIRECT})
+                updated_decisions.append(updated)
+                found = True
+            else:
+                updated_decisions.append(d)
+        if not found:
+            continue
+
+        revised.evidence_decisions = updated_decisions
+        point_decisions = [d for d in revised.evidence_decisions if d.exam_point_code == exam_point_code]
+        coverage = _coverage(
+            point=point,
+            decisions=point_decisions,
+            additional_reasons=[],
+        )
+        revised.coverage = [
+            c for c in revised.coverage if c.exam_point_code != exam_point_code
+        ] + [coverage]
 
 
 def _failure(*, stage: str, point_code: str, material_version_id: str | None, exc: Exception) -> dict:
@@ -680,6 +733,7 @@ def build_organization_graph(
                     unit.status = "excluded"
                     for card in unit.cards:
                         card.status = "excluded"
+        _apply_supplemented_evidence(revised, confirmation.operations, points_by_code)
         coverage_by_code = {item.exam_point_code: item for item in revised.coverage}
         unresolved = {
             code
