@@ -229,20 +229,45 @@ def build_organization_graph(
             chunks_by_material[chunk.material_version_id].append(chunk)
         pairs: list[dict] = []
         coverage_reasons: dict[str, list[str]] = defaultdict(list)
+        expand = bool(settings.organization_retrieval_expand_query)
         for point in _points(state):
             point_has_recall = False
-            embed_query = getattr(retriever, "embed_query", None)
-            query_vector = embed_query(point) if callable(embed_query) else None
+            if expand:
+                # 操作/实验类考点的 retrieval_intent 是"动词+对象"短句，与材料中
+                # 知识陈述式文本相似度低；补一个「考点名+考核要求」的展开查询，
+                # 使知识名词直接参与检索。仅多一次嵌入，不增加模型调用。
+                expanded = (
+                    f"{point.title}：{point.assessment_requirement}"
+                    if (point.assessment_requirement or "").strip()
+                    else point.title
+                )
+                queries = [point.retrieval_intent]
+                if expanded != point.retrieval_intent:
+                    queries.append(expanded)
+            else:
+                queries = [point.retrieval_intent]
+            embed_queries = getattr(retriever, "embed_queries", None)
+            query_vectors = (
+                embed_queries(queries)
+                if callable(embed_queries)
+                else None
+            )
             for material_version_id in sorted(chunks_by_material):
                 material_chunks = chunks_by_material[material_version_id]
                 allowed_ids = {chunk.id for chunk in material_chunks}
-                if query_vector is None:
+                if query_vectors is None or not query_vectors:
                     retrieved = retriever.retrieve(point, material_chunks)
-                else:
+                elif len(query_vectors) == 1:
                     retrieved = retriever.retrieve(
                         point,
                         material_chunks,
-                        query_vector=query_vector,
+                        query_vector=query_vectors[0],
+                    )
+                else:
+                    retrieved = retriever.retrieve_multi(
+                        point,
+                        material_chunks,
+                        query_vectors=query_vectors,
                     )
                 ranked = sorted(
                     retrieved,
@@ -479,6 +504,18 @@ def build_organization_graph(
                 for item in file_decision.decisions
                 if item.relevance_class in {RelevanceClass.DIRECT, RelevanceClass.SUPPORTING}
             )
+        # 主线程一次性预加载全部准入证据 chunk：SQLAlchemy Session/DBAPI 连接
+        # 非线程安全，若在每个 worker 线程内并发查询共享 repository，会破坏
+        # 连接状态使事务失效（consolidate 各点异常被吞、后续 build_catalog_candidate
+        # 首句即报 PendingRollbackError）。与 classify 节点同样的预加载模式。
+        all_evidence_ids = sorted(
+            {
+                item.evidence_chunk_id
+                for point_admitted in admitted_by_point.values()
+                for item in point_admitted
+            }
+        )
+        chunks_by_id = {chunk.id: chunk for chunk in _chunks(state, all_evidence_ids)}
 
         def consolidate_point(point: ExamPoint) -> tuple[str, list[AssessmentUnitDraft]]:
             admitted = sorted(
@@ -487,14 +524,14 @@ def build_organization_graph(
             )
             if not admitted:
                 return point.code, []
-            evidence_chunk_ids = sorted({item.evidence_chunk_id for item in admitted})
-            chunks_by_id = {
-                chunk.id: chunk for chunk in _chunks(state, evidence_chunk_ids)
+            point_chunks_by_id = {
+                chunk_id: chunks_by_id[chunk_id]
+                for chunk_id in sorted({item.evidence_chunk_id for item in admitted})
             }
             units = consolidator.consolidate(
                 exam_point=point,
                 admitted_decisions=admitted,
-                chunks_by_id=chunks_by_id,
+                chunks_by_id=point_chunks_by_id,
                 call_context=ModelCallContext(
                     course_id=state["course_id"],
                     organization_run_id=state["run_id"],
@@ -509,7 +546,7 @@ def build_organization_graph(
                 raise ValueError(
                     "consolidator returned no assessment units for admitted direct evidence"
                 )
-            validate_consolidated_units(point, admitted, validated_units, chunks_by_id=chunks_by_id)
+            validate_consolidated_units(point, admitted, validated_units, chunks_by_id=point_chunks_by_id)
             return point.code, validated_units
 
         consolidated: dict[str, list[dict]] = {}

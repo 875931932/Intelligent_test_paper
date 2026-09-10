@@ -182,6 +182,17 @@ class HybridStagingRetriever:
             raise RetrievalConfigurationError("嵌入服务调用失败，暂存检索已中止") from exc
         return _validated_vectors(raw_vectors, expected_count=1)[0]
 
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        try:
+            raw_vectors = self.embedder.embed(texts)
+        except RetrievalConfigurationError:
+            raise
+        except Exception as exc:
+            raise RetrievalConfigurationError("嵌入服务调用失败，暂存检索已中止") from exc
+        return _validated_vectors(raw_vectors, expected_count=len(texts))
+
     def retrieve(
         self,
         exam_point: ExamPoint,
@@ -197,3 +208,40 @@ class HybridStagingRetriever:
             minimum_score=self.minimum_score,
             query_vector=query_vector,
         )
+
+    def retrieve_multi(
+        self,
+        exam_point: ExamPoint,
+        chunks: list[StagingChunk],
+        *,
+        query_vectors: list[list[float]],
+    ) -> list[RankedChunk]:
+        """多查询混合检索：各查询独立打分，按 chunk 取最高分合并去重后截断 top_k。
+
+        每个查询先过 minimum_score 过滤，再并集合并，保证任一查询能召回的块
+        都进入候选，避免长查询词法分数被稀释而整体落选。
+        """
+        if not query_vectors:
+            return []
+        ranked_groups = [
+            retrieve_for_exam_point(
+                exam_point,
+                chunks,
+                self.embedder,
+                top_k=len(chunks),
+                minimum_score=self.minimum_score,
+                query_vector=query_vector,
+            )
+            for query_vector in query_vectors
+        ]
+        by_chunk: dict[str, RankedChunk] = {}
+        for ranked in ranked_groups:
+            for item in ranked:
+                existing = by_chunk.get(item.chunk.id)
+                if existing is None or item.score > existing.score:
+                    by_chunk[item.chunk.id] = item
+        merged = sorted(
+            by_chunk.values(),
+            key=lambda item: (-item.score, item.chunk.material_version_id, item.chunk.id),
+        )
+        return merged[: self.top_k]

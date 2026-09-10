@@ -41,6 +41,11 @@ class Settings(BaseSettings):
     # top_k 24→12 且 min_score 0.25→0.30，削减重复 chunk 传递与无效分类输出。
     organization_retrieval_top_k: int = Field(default=12, gt=0)
     organization_retrieval_min_score: float = Field(default=0.30, ge=0, le=1)
+    # 检索查询增强：操作/实验类考点的 retrieval_intent 是"动词+对象"短句，与材料
+    # 中"知识陈述"式文本词面重叠少，收紧阈值后相关块漏召回。开启后每个考点用
+    # retrieval_intent 与「考点名+考核要求」两个 query 分别检索再合并取 top_k，
+    # 不增加模型调用（仅多一次嵌入），零破坏地提升召回。
+    organization_retrieval_expand_query: bool = True
     organization_max_workers: int = Field(default=16, gt=0)
     # 知识目录组织阶段的模型调用超时（秒）。分类/归并 prompt 较大（数万 token），
     # 默认 90s 超时在 MiMo 上不足以完成响应，超时失败会整材料放弃并烧掉 token；

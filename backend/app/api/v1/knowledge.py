@@ -141,24 +141,33 @@ def _not_found() -> HTTPException:
 
 
 def _mark_organization_run_failed(
-    session: Session, *, course_id: str, run_id: str, message: str
+    session_factory, *, course_id: str, run_id: str, message: str
 ) -> None:
+    """用全新会话标记 run 失败。
+
+    主流程会话在失败时可能已处于失效事务（PendingRollbackError），若复用
+    该会话写失败状态会静默失败，导致 run 永远停留在 running。
+    """
     try:
-        session.execute(
-            knowledge_publish_service.organization_runs.update()
-            .where(
-                knowledge_publish_service.organization_runs.c.id == run_id,
-                knowledge_publish_service.organization_runs.c.course_id == course_id,
+        session = session_factory()
+        try:
+            session.execute(
+                knowledge_publish_service.organization_runs.update()
+                .where(
+                    knowledge_publish_service.organization_runs.c.id == run_id,
+                    knowledge_publish_service.organization_runs.c.course_id == course_id,
+                )
+                .values(
+                    status="failed",
+                    error_code="organization_invariant_error",
+                    error_message=message,
+                )
             )
-            .values(
-                status="failed",
-                error_code="organization_invariant_error",
-                error_message=message,
-            )
-        )
-        session.commit()
+            session.commit()
+        finally:
+            session.close()
     except Exception:
-        session.rollback()
+        _logger.exception("failed to mark organization run %s failed", run_id)
 
 
 def _run_organization_pipeline(
@@ -205,13 +214,13 @@ def _run_organization_pipeline(
         _logger.info("run %s pipeline finished in %.1fs", run_id, time.monotonic() - started)
     except knowledge_publish_service.KnowledgePublishError as exc:
         _logger.error("run %s failed (publish error): %s", run_id, str(exc)[:500])
-        _mark_organization_run_failed(session, course_id=course_id, run_id=run_id, message=str(exc)[:500])
+        _mark_organization_run_failed(session_factory, course_id=course_id, run_id=run_id, message=str(exc)[:500])
     except Exception as exc:
         message = "knowledge organization stopped because an invariant failed"
         if str(exc).strip():
             message = f"{message}: {str(exc)[:300]}"
         _logger.exception("run %s failed", run_id)
-        _mark_organization_run_failed(session, course_id=course_id, run_id=run_id, message=message)
+        _mark_organization_run_failed(session_factory, course_id=course_id, run_id=run_id, message=message)
     finally:
         session.close()
 

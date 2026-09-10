@@ -302,6 +302,7 @@ def _normalize_semantic_width(value: str) -> str:
     """Normalize common fullwidth ASCII without compatibility-folding notation."""
 
     normalized = unicodedata.normalize("NFC", value)
+    normalized = normalized.replace("\\_", "_")
     return "".join(
         " "
         if character == "\u3000"
@@ -363,12 +364,46 @@ _MIN_SEMANTIC_TOKEN_LEN = 2
 # 0.66 在容忍措辞变体（措辞不同但实词重叠）与拒绝编造（新增实词过多）间折中。
 _SEMANTIC_COVERAGE_MIN = 0.66
 
+# 证据联合兜底的覆盖阈值：低于单证据层（见 _SEMANTIC_COVERAGE_MIN /
+# _SEMANTIC_BIGRAM_COVERAGE_MIN）。模型归并时会把同一考点的多条证据综合成
+# 一条可评分事实，单条证据覆盖率被稀释（实测 0.5~0.6），但事实的每个实词
+# 仍能在证据联合文本中找到；联合层只在该考点证据够丰富、且没有任何单条证据
+# 能覆盖时才启用，实测接地事实联合 token 覆盖 ≥0.5、联合 bigram 覆盖 ≥0.35，
+# 而凭空编造（新增术语不在任何证据中）仍远低于该比例。
+_UNION_SEMANTIC_COVERAGE_MIN = 0.5
+_UNION_BIGRAM_COVERAGE_MIN = 0.35
+
 
 _CJK_TOKEN_PATTERN = re.compile(r"[\u3400-\u9fff]{2,}")
 _ASCII_TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_]{2,}")
 # 2字子串覆盖率阈值：容忍归并阶段插入的字（"步骤可将""参数"）与措辞变体，
 # 又足以区分凭空编造（编造句与证据仅有"用于"这类高频泛动词重叠）。
 _SEMANTIC_BIGRAM_COVERAGE_MIN = 0.5
+# 连续字面链的最短 2-gram 数：卡片事实中若存在连续 N 个 2-gram 都被某条证据
+# 覆盖（即 ≥N+1 个连续汉字与证据逐字一致），视为强接地信号。措辞再变体，
+# 核心字面（如"过滤低质量或失配样本"）也往往整段保留；编造句与材料至多零星
+# 重叠，达不到 6 个连续 2-gram（7 个连续汉字）的整段一致性。
+_MIN_CONTIGUOUS_BIGRAM_RUN = 6
+
+
+def _cjk_bigram_list(value: str) -> list[str]:
+    """抽取纯中文的 2 字子串有序列表（与 _semantic_bigram_set 同一口径）。"""
+    normalized = _normalize_semantic_width(value)
+    characters: list[str] = []
+    buffer: list[str] = []
+    for character in normalized:
+        if "\u3400" <= character <= "\u9fff":
+            buffer.append(character)
+        else:
+            if len(buffer) >= 2:
+                characters.extend(buffer)
+            buffer.clear()
+    if len(buffer) >= 2:
+        characters.extend(buffer)
+    return [
+        characters[index] + characters[index + 1]
+        for index in range(len(characters) - 1)
+    ]
 
 
 def _semantic_token_set(value: str) -> set[str]:
@@ -397,33 +432,53 @@ def _semantic_bigram_set(value: str) -> set[str]:
     串做 2-gram 可容忍归并阶段在句中插入若干字（"步骤可将""参数"），仍能
     高比例保留原句字面；编造句则与证据仅有零星泛动词重叠。
     """
-    normalized = _normalize_semantic_width(value)
-    characters: list[str] = []
-    buffer: list[str] = []
-    for character in normalized:
-        if "\u3400" <= character <= "\u9fff":
-            buffer.append(character)
-        else:
-            if len(buffer) >= 2:
-                characters.extend(buffer)
-            buffer.clear()
-    if len(buffer) >= 2:
-        characters.extend(buffer)
-    return {
-        characters[index] + characters[index + 1]
-        for index in range(len(characters) - 1)
-    }
+    return set(_cjk_bigram_list(value))
+
+
+def _longest_contiguous_bigram_run(
+    atom_key: str, evidence_keys: frozenset[str]
+) -> int:
+    """卡片事实与任一证据逐字连续的 2-gram 链最长长度。
+
+    依次检查事实的有序 2-gram 序列在每条证据中连续命中的长度：连续命中
+    N 个 2-gram 意味着证据中存在与事实 N+1 个连续汉字逐字一致的片段。
+    """
+    atom_bigrams = _cjk_bigram_list(atom_key)
+    if not atom_bigrams:
+        return 0
+    best = 0
+    for evidence_key in evidence_keys:
+        evidence_bigrams = _semantic_bigram_set(evidence_key)
+        if not evidence_bigrams:
+            continue
+        run = 0
+        for bigram in atom_bigrams:
+            if bigram in evidence_bigrams:
+                run += 1
+                if run > best:
+                    best = run
+            else:
+                run = 0
+    return best
 
 
 def fact_semantically_supported(atom_key: str, evidence_keys: frozenset[str]) -> bool:
-    """语义兜底：卡片事实是否被证据集合中任一原文语义覆盖。
+    """语义兜底：卡片事实是否被证据原文语义覆盖。
 
-    两层宽松判定，任一命中即支撑：
+    三层宽松判定，任一命中即支撑：
     1. 语义词条覆盖率：卡片事实的实词 token 被任一证据原文覆盖；对拉丁
        标识符（swift/infer/LoRA）敏感。
     2. 中文 2-gram 覆盖率：卡片事实的连续字面 2 元组被任一证据覆盖；对
        归并阶段插入字/措辞变体稳健。
-    两层都拒绝：卡片事实大量实词在证据中找不到，且字面连续性不匹配——
+    3. 证据联合覆盖率：卡片事实的实词/2-gram 被全部证据聚合后的联合集合
+       覆盖。模型归并时会把同一考点的多条直接证据综合成一条可评分事实
+       （如"显存不足时可释放显存，也可调整批处理参数"综合了清理缓存与
+       调参两条证据），此时任何单条证据都覆盖不了整条事实，但事实的每个
+       实词都能在证据联合文本中找到。
+    4. 连续字面链：卡片事实中存在一段与某条证据逐字连续一致的汉字链。
+       比例覆盖率会被长句前缀稀释（"图像"与"图片"一字之差即整段失配），
+       但只要事实保留了证据中的整段核心字面，即为强接地信号。
+    四层都拒绝：卡片事实大量实词在证据中找不到，且字面连续性不匹配——
        即凭空编造。
     """
     atom_tokens = _semantic_token_set(atom_key)
@@ -432,6 +487,8 @@ def fact_semantically_supported(atom_key: str, evidence_keys: frozenset[str]) ->
         return False
     best_token_coverage = 0.0
     best_bigram_coverage = 0.0
+    union_tokens: set[str] = set()
+    union_bigrams: set[str] = set()
     for evidence_key in evidence_keys:
         evidence_tokens = _semantic_token_set(evidence_key)
         if atom_tokens and evidence_tokens:
@@ -445,9 +502,31 @@ def fact_semantically_supported(atom_key: str, evidence_keys: frozenset[str]) ->
             best_bigram_coverage = max(
                 best_bigram_coverage, len(overlap) / len(atom_bigrams)
             )
+        union_tokens.update(evidence_tokens)
+        union_bigrams.update(evidence_bigrams)
     if best_token_coverage >= _SEMANTIC_COVERAGE_MIN:
         return True
-    return best_bigram_coverage >= _SEMANTIC_BIGRAM_COVERAGE_MIN
+    if best_bigram_coverage >= _SEMANTIC_BIGRAM_COVERAGE_MIN:
+        return True
+    union_token_coverage = (
+        len(atom_tokens & union_tokens) / len(atom_tokens)
+        if atom_tokens and union_tokens
+        else 0.0
+    )
+    union_bigram_coverage = (
+        len(atom_bigrams & union_bigrams) / len(atom_bigrams)
+        if atom_bigrams and union_bigrams
+        else 0.0
+    )
+    if union_token_coverage >= _UNION_SEMANTIC_COVERAGE_MIN:
+        return True
+    if union_bigram_coverage >= _UNION_BIGRAM_COVERAGE_MIN:
+        return True
+    if _longest_contiguous_bigram_run(
+        atom_key, evidence_keys
+    ) >= _MIN_CONTIGUOUS_BIGRAM_RUN:
+        return True
+    return False
 
 
 def fact_key_supported(atom_key: str, evidence_keys: frozenset[str] | set[str]) -> bool:

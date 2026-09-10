@@ -136,6 +136,16 @@ class DatabaseKnowledgeRepository:
     def __init__(self, session: Session) -> None:
         self.session = session
 
+    def _reset_connection(self) -> None:
+        """宽容结束当前事务：连接被服务端掐断时 rollback 同样抛错，丢弃旧连接即可。
+
+        随后的 execute 由连接池 pool_pre_ping 校验后换新连接，调用方无需感知。
+        """
+        try:
+            self.session.rollback()
+        except Exception:
+            self.session.close()
+
     def load_evidence_chunks(
         self,
         *,
@@ -145,6 +155,13 @@ class DatabaseKnowledgeRepository:
     ) -> list[StagingChunk]:
         if not evidence_chunk_ids:
             return []
+        # 先结束上一个事务再读取：图执行期间长模型调用阶段（分类/归并，可达
+        # 十余分钟）会一直占着这条连接且无 DB 流量，远程 PostgreSQL 会掐断
+        # 空闲连接；下次查询即报 "server closed the connection unexpectedly"。
+        # 对已死连接 rollback 同样抛错，_reset_connection 宽容处理并丢弃旧连接，
+        # 随后的 execute 由 pool_pre_ping 从池中换取全新连接。读取均为无状态快照，
+        # 跨语句无需保持同一事务。
+        self._reset_connection()
         rows = self.session.execute(
             select(evidence_chunks).where(
                 evidence_chunks.c.course_id == course_id,
@@ -169,6 +186,7 @@ class DatabaseKnowledgeRepository:
     def persist_candidate(self, state: dict, tree: KnowledgeTreeCandidate) -> str:
         course_id = state["course_id"]
         run_id = state["run_id"]
+        self._reset_connection()
         existing = self.session.execute(
             select(
                 knowledge_catalog_versions.c.id,
