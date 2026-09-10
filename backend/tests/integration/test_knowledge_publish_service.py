@@ -293,7 +293,9 @@ def test_database_repository_publishes_catalog_and_index_atomically(tmp_path):
             "background": 0,
             "out_of_scope": 0,
         }
-        assert teacher_candidate["payload"]["evidence_sources"][0]["exam_point_code"] == "EP-1"
+        # evidence_sources 只注入可补充的 supporting/background（out_of_scope
+        # 与 direct 不可改判）；本树无 supporting，故为空列表。
+        assert teacher_candidate["payload"]["evidence_sources"] == []
         assert (
             teacher_candidate["payload"]["organization_schema_version"]
             == ORGANIZATION_SCHEMA_VERSION
@@ -333,6 +335,82 @@ def test_database_repository_publishes_catalog_and_index_atomically(tmp_path):
         ).scalar_one()
         assert published_payload["organization_schema_version"] == ORGANIZATION_SCHEMA_VERSION
         assert published_payload["frozen_input"] == _frozen_input()
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_candidate_payload_injects_supplementable_evidence_sources(tmp_path):
+    """evidence_sources 只注入可补充的 supporting/background，并带原文。
+
+    out_of_scope 占链接总量九成以上且不可改判（发布侧 update 只认
+    supporting/background），注入会膨胀 payload 且让教师选到发布必报错的
+    选项；content 字段供补证据弹窗展示原文预览。
+    """
+    engine, session = _session(tmp_path)
+    try:
+        from app.domain.knowledge.relevance import RelevanceClass
+
+        # helper 造齐 material-2/v2/evidence-2 的外键链；随后把 v2 纳入快照
+        # 使其从「外部证据」转为本次冻结范围内的合法证据。
+        _add_outside_snapshot_evidence(session)
+        repository = DatabaseKnowledgeRepository(session)
+        tree = _tree()
+        supporting = tree.evidence_decisions[0].model_copy(
+            update={
+                "evidence_chunk_id": "evidence-2",
+                "material_version_id": "material-v2",
+                "relevance_class": RelevanceClass.SUPPORTING,
+                "support_claim": "间接说明检索质量影响回答 grounded 程度",
+                "evidence_role": None,
+                "confidence": 70,
+            }
+        )
+        oos = supporting.model_copy(
+            update={
+                "evidence_chunk_id": "evidence-3",
+                "relevance_class": RelevanceClass.OUT_OF_SCOPE,
+                "support_claim": "（未提供说明）",
+                "confidence": 100,
+            }
+        )
+        tree.evidence_decisions.extend([supporting, oos])
+        state = _organization_state(tree)
+        # 把 material-v2 纳入冻结快照：更新 run 库中快照与 state 一致，
+        # evidence-2 才能通过「outside the frozen snapshot」校验。
+        state["frozen_input"]["material_version_ids"].append("material-v2")
+        session.execute(
+            organization_runs.update()
+            .where(organization_runs.c.id == "organization-run")
+            .values(input_snapshot=state["frozen_input"])
+        )
+        session.commit()
+        state["file_decisions"][0]["decisions"] = [
+            d.model_dump(mode="json") for d in tree.evidence_decisions[:1]
+        ]
+        # evidence-3 无对应 chunk 行（故意只给 evidence-2 建 chunk），
+        # out_of_scope 链接本就不该存在——用 missing chunk 的 oos 决策模拟
+        # 「oos 永远不注入」。这里需要 oos 也写进链接表才会被注入查询看到，
+        # 但 oos 决策同样会被 outside snapshot 拦截，因此单独删除 oos 决策，
+        # 改由「direct 不注入」断言覆盖注入过滤逻辑。
+        state["file_decisions"].append({
+            "exam_point_code": "EP-1",
+            "material_version_id": "material-v2",
+            "decisions": [d.model_dump(mode="json") for d in tree.evidence_decisions[1:2]],
+        })
+        repository.persist_candidate(state, tree)
+        candidate = get_organization_candidate(
+            session, course_id="course", run_id="organization-run"
+        )
+        sources = candidate["payload"]["evidence_sources"]
+        # supporting 注入且带原文预览字段；direct（evidence-1）被排除——
+        # 补证据只能改判间接证据。
+        assert [s["evidence_chunk_id"] for s in sources] == ["evidence-2"]
+        source = sources[0]
+        assert source["exam_point_code"] == "EP-1"
+        assert source["support_claim"] == "间接说明检索质量影响回答 grounded 程度"
+        assert source["confidence"] == 70
+        assert "检索" in (source["content"] or "")
     finally:
         session.close()
         engine.dispose()

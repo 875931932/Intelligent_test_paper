@@ -1419,6 +1419,7 @@ def get_organization_candidate(session: Session, *, course_id: str, run_id: str)
             "support_claim": item["support_claim"],
             "evidence_role": item["evidence_role"],
             "confidence": item["confidence"],
+            "content": (item["content"] or "")[:1200],
         }
         for item in session.execute(
             select(
@@ -1430,6 +1431,7 @@ def get_organization_candidate(session: Session, *, course_id: str, run_id: str)
                 exam_point_evidence_links.c.confidence,
                 evidence_chunks.c.material_version_id,
                 evidence_chunks.c.locator,
+                evidence_chunks.c.content,
             )
             .join(
                 evidence_chunks,
@@ -1444,6 +1446,13 @@ def get_organization_candidate(session: Session, *, course_id: str, run_id: str)
                 exam_point_evidence_links.c.organization_run_id == run_id,
                 evidence_chunks.c.course_id == course_id,
                 exam_points.c.course_id == course_id,
+                # 补证据只允许改判 supporting/background（发布侧 update 的
+                # where 范围）；out_of_scope 不注入——前端列为可选项会导致
+                # 发布时 rowcount=0 报错，且它占链接总量九成以上，注入只会
+                # 膨胀候选 payload。
+                exam_point_evidence_links.c.relevance_class.in_(
+                    ["supporting", "background"]
+                ),
             )
             .order_by(
                 exam_point_evidence_links.c.exam_point_id,

@@ -13,6 +13,18 @@ import type {
   FrameworkExamPoint, KnowledgeCandidatePayload, CandidateKnowledgeTopic,
 } from '@/types/api';
 
+// 补证据可选项（来自候选 payload 的 evidence_sources，仅 supporting/background）
+interface SupplementSource {
+  evidence_chunk_id: string;
+  exam_point_code: string;
+  relevance_class: string;
+  support_claim: string;
+  evidence_role: string;
+  confidence: number;
+  locator: Record<string, unknown>;
+  content?: string;
+}
+
 type ViewMode = 'tree' | 'graph';
 type BuildState = 'idle' | 'building' | 'candidate' | 'published';
 
@@ -749,7 +761,7 @@ function CandidatePanel({ candidate, supplementOps, onSupplementChange, onPublis
 
   // 按考点索引候选证据，避免每次渲染对全部证据源做线性扫描。
   const sourcesByPoint = useMemo(() => {
-    const map = new Map<string, KnowledgeCandidatePayload['evidence_sources']>();
+    const map = new Map<string, SupplementSource[]>();
     evidenceSources.forEach((s) => {
       if (s.relevance_class === 'direct') return;
       const list = map.get(s.exam_point_code);
@@ -791,17 +803,35 @@ function CandidatePanel({ candidate, supplementOps, onSupplementChange, onPublis
     () => (suppPoint ? sourcesByPoint.get(suppPoint) || [] : []),
     [suppPoint, sourcesByPoint]
   );
+  // 下拉选项：等级+置信度+claim 摘要，让教师能区分"有依据的间接证据"与"弱背景"。
   const suppOptions = useMemo(
-    () => supplementable.map((s) => ({
-      id: s.evidence_chunk_id,
-      label: s.relevance_class + ' · ' + (s.support_claim || '').slice(0, 60),
-    })),
+    () => supplementable.map((s) => {
+      const level = s.relevance_class === 'supporting' ? '支持' : '背景';
+      const conf = typeof s.confidence === 'number' ? `置信${s.confidence}` : '';
+      const claim = (s.support_claim || '').replace(/\s+/g, ' ').slice(0, 48);
+      return {
+        id: s.evidence_chunk_id,
+        label: `${level} · ${conf}${conf ? ' · ' : ''}${claim}${(s.support_claim || '').length > 48 ? '…' : ''}`,
+      };
+    }),
     [supplementable]
   );
+  // 当前选中证据的原文预览：教师确认前能看到将改判的直接证据内容。
+  const suppPreview = useMemo(
+    () => supplementable.find((s) => s.evidence_chunk_id === suppChunk) || null,
+    [supplementable, suppChunk]
+  );
+  const suppPreviewPage = useMemo(() => {
+    const page = suppPreview?.locator?.page_index;
+    return typeof page === 'number' && page >= 0 ? page + 1 : null;
+  }, [suppPreview]);
 
   const openSupplement = useCallback((code: string) => {
     setSuppPoint(code);
-    setSuppChunk(sourcesByPoint.get(code)?.[0]?.evidence_chunk_id || '');
+    const candidates = sourcesByPoint.get(code) || [];
+    // 默认选置信度最高的支持证据，而不是列表第一条。
+    const best = [...candidates].sort((a, b) => (b.confidence || 0) - (a.confidence || 0))[0];
+    setSuppChunk(best?.evidence_chunk_id || '');
     setSuppOpen(true);
   }, [sourcesByPoint]);
 
@@ -814,6 +844,16 @@ function CandidatePanel({ candidate, supplementOps, onSupplementChange, onPublis
     onSupplementChange(next);
     setSuppOpen(false);
   }, [suppPoint, suppChunk, supplementOps, onSupplementChange]);
+
+  // 已补充的操作数（按考点），行内展示待发布状态，避免"点了没反应"。
+  const supplementedCountByPoint = useMemo(() => {
+    const map = new Map<string, number>();
+    supplementOps.forEach((op) => {
+      map.set(op.target_code, (map.get(op.target_code) || 0) + 1);
+    });
+    return map;
+  }, [supplementOps]);
+  const totalSupplementOps = supplementOps.length;
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -843,6 +883,9 @@ function CandidatePanel({ candidate, supplementOps, onSupplementChange, onPublis
             <AlertTriangle size={16} style={{ color: 'var(--warning)' }} />
             <h4 style={{ fontSize: '0.9375rem', fontWeight: 600 }}>证据不足的考点（{insufficientPoints.length}）</h4>
             <span style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>可逐点补充间接证据后再发布</span>
+            {totalSupplementOps > 0 && (
+              <Badge variant="success">待发布补充 {totalSupplementOps} 项</Badge>
+            )}
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {insufficientPoints.map((code) => {
@@ -857,6 +900,9 @@ function CandidatePanel({ candidate, supplementOps, onSupplementChange, onPublis
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>{code}</div>
                   </div>
                   {cov && <CoverageBadge status={cov.status} />}
+                  {supplementedCountByPoint.has(code) && (
+                    <Badge variant="success">已补 {supplementedCountByPoint.get(code)} 项</Badge>
+                  )}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
                     <Button
                       variant="secondary"
@@ -882,7 +928,7 @@ function CandidatePanel({ candidate, supplementOps, onSupplementChange, onPublis
       <Modal
         open={suppOpen}
         onClose={closeSupplement}
-        title={`补充直接证据 · ${suppPoint}`}
+        title={`补充直接证据 · ${suppPoint ? pointLabels.get(suppPoint) || suppPoint : ''}`}
         maxWidth="560px"
         footer={
           <>
@@ -893,6 +939,14 @@ function CandidatePanel({ candidate, supplementOps, onSupplementChange, onPublis
       >
         {suppPoint && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            <div>
+              <div style={{ fontSize: '0.9375rem', fontWeight: 600 }}>
+                {pointLabels.get(suppPoint) || suppPoint}
+              </div>
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '2px' }}>
+                {suppPoint} · 以下间接证据将被改判为该考点的直接证据参与出卷
+              </div>
+            </div>
             {supplementable.length === 0 ? (
               <p style={{ fontSize: '0.875rem', color: 'var(--text-tertiary)' }}>
                 该考点暂无可用于补充的间接证据。建议直接排除该考点，或重新构建知识目录。
@@ -900,7 +954,9 @@ function CandidatePanel({ candidate, supplementOps, onSupplementChange, onPublis
             ) : (
               <>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <label style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>选择间接证据改判为直接证据</label>
+                  <label style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
+                    选择要改判为直接证据的间接证据（{suppOptions.length} 条）
+                  </label>
                   <select
                     value={suppChunk}
                     onChange={(e) => setSuppChunk(e.target.value)}
@@ -913,8 +969,30 @@ function CandidatePanel({ candidate, supplementOps, onSupplementChange, onPublis
                     ))}
                   </select>
                 </div>
+                {suppPreview && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px', borderRadius: '10px', background: 'rgba(0,0,0,0.03)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                      <Badge variant={suppPreview.relevance_class === 'supporting' ? 'info' : 'warning'}>
+                        {suppPreview.relevance_class === 'supporting' ? '支持证据' : '背景证据'}
+                      </Badge>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
+                        置信度 {suppPreview.confidence}
+                        {suppPreviewPage !== null && ` · 第 ${suppPreviewPage} 页`}
+                        {suppPreview.evidence_role && ` · ${EvidenceRoleLabel(suppPreview.evidence_role)}`}
+                      </span>
+                    </div>
+                    {(suppPreview.support_claim || '').trim() && (
+                      <div style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                        <span style={{ fontWeight: 600 }}>改判依据：</span>{suppPreview.support_claim}
+                      </div>
+                    )}
+                    <div style={{ fontSize: '0.8125rem', color: 'var(--text)', lineHeight: 1.7, maxHeight: 180, overflowY: 'auto', whiteSpace: 'pre-wrap' }}>
+                      {(suppPreview.content || '').trim() || '（原文未注入，请以改判依据为准）'}
+                    </div>
+                  </div>
+                )}
                 <p style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
-                  补充后该证据块将被视为该考点的直接证据，用于支撑出卷事实。若该考点当前已有知识卡，此操作可使其覆盖转为充足并参与发布。
+                  确认后操作会暂存，点击顶部「确认并发布」时才提交生效；每条补充会在考点行标注「已补 N 项」。
                 </p>
               </>
             )}

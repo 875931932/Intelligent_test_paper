@@ -307,6 +307,7 @@ export interface KnowledgeCandidatePayload {
     support_claim: string;
     evidence_role: string;
     confidence: number;
+    content?: string;
   }>;
 }
 
