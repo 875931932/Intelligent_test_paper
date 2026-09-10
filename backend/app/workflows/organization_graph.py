@@ -104,6 +104,29 @@ _UNQUOTED_SECRET_PATTERN = re.compile(
 )
 
 
+def _admit_evidence(
+    point: ExamPoint,
+    decision: "object",
+    *,
+    default_relevance: object,
+) -> object:
+    """多查询增强后单考点召回过载，模型会对边缘的 (考点, chunk) 对给出低置信度
+    分档。admit 对单条 confidence 不足即抛错，历史上会导致该考点整批判定被丢弃，
+    已正确判出的 direct 证据随之丢失 → 覆盖被误判为不足。
+    这里仅对"置信度不足"保守降级为 default_relevance（不采信为证据），保留同批
+    其余正确判定；其它准入错误（code 不匹配等）仍透传，避免掩盖真实问题。
+    """
+    try:
+        return admit_evidence_decision(point, decision)
+    except ValueError as exc:
+        message = str(exc)
+        if "confidence is below" not in message:
+            raise
+        return decision.model_copy(
+            update={"relevance_class": default_relevance, "prompt_material": None}
+        )
+
+
 def _redacted_error_message(exc: Exception) -> str:
     raw_message = str(exc)
     redacted = _DOUBLE_QUOTED_SECRET_PATTERN.sub(
@@ -413,7 +436,11 @@ def build_organization_graph(
                             if item.evidence_chunk_id in allowed_ids
                         ]
                         admitted = [
-                            admit_evidence_decision(points[code], item)
+                            _admit_evidence(
+                                points[code],
+                                item,
+                                default_relevance=RelevanceClass.OUT_OF_SCOPE,
+                            )
                             for item in scoped
                         ]
                         decision_ids = [item.evidence_chunk_id for item in scoped]
