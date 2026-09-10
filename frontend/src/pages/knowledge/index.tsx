@@ -68,6 +68,7 @@ export default function KnowledgePage() {
   const [reviewedTopicCodes, setReviewedTopicCodes] = useState<string[]>([]);
   const [reviewedExamPointCodes, setReviewedExamPointCodes] = useState<string[]>([]);
   const [teacherExclusions] = useState<string[]>([]);
+  const [supplementOps, setSupplementOps] = useState<Array<{ operation: string; target_code: string; value: string }>>([]);
 
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
   const [evidence, setEvidence] = useState<EvidenceChunk[]>([]);
@@ -281,7 +282,7 @@ export default function KnowledgePage() {
     if (!runId) return;
     try {
       await api.knowledge.publish(courseId, runId, {
-        operations: [],
+        operations: supplementOps,
         reviewed_topic_codes: reviewedTopicCodes,
         reviewed_exam_point_codes: reviewedExamPointCodes,
         teacher_exclusions: teacherExclusions,
@@ -289,11 +290,12 @@ export default function KnowledgePage() {
       addToast('知识目录已发布', 'success');
       setBuildState('published');
       setCandidatePayload(null);
+      setSupplementOps([]);
       loadPublished();
     } catch (err) {
       addToast(`发布失败：${getErrorMessage(err)}`, 'error');
     }
-  }, [courseId, runId, loadPublished, addToast, reviewedTopicCodes, reviewedExamPointCodes, teacherExclusions]);
+  }, [courseId, runId, loadPublished, addToast, reviewedTopicCodes, reviewedExamPointCodes, teacherExclusions, supplementOps]);
 
   const handleReject = useCallback(async () => {
     if (!runId) return;
@@ -450,6 +452,8 @@ export default function KnowledgePage() {
       {buildState === 'candidate' && (
         <CandidatePanel
           candidate={candidatePayload}
+          supplementOps={supplementOps}
+          onSupplementChange={setSupplementOps}
           onPublish={handlePublish}
           onReset={() => setRejectOpen(true)}
         />
@@ -713,17 +717,60 @@ function BuildingPanel() {
   );
 }
 
-function CandidatePanel({ candidate, onPublish, onReset }: {
+function CandidatePanel({ candidate, supplementOps, onSupplementChange, onPublish, onReset }: {
   candidate: KnowledgeCandidatePayload | null;
+  supplementOps: Array<{ operation: string; target_code: string; value: string }>;
+  onSupplementChange: (ops: Array<{ operation: string; target_code: string; value: string }>) => void;
   onPublish: () => void;
   onReset: () => void;
 }) {
   const topics = candidate?.topics || [];
   const coverage = candidate?.coverage || [];
+  const evidenceSources = candidate?.evidence_sources || [];
   const totalUnits = topics.reduce((acc, t) => acc + (t.units?.length || 0), 0);
   const totalCards = topics.reduce((acc, t) => acc + (t.units || []).reduce((a, u) => a + (u.cards?.length || 0), 0), 0);
   const needsReview = topics.filter((t) => t.status !== 'active').length
     + topics.reduce((acc, t) => acc + (t.units || []).filter((u) => u.status !== 'active').length, 0);
+
+  const coverageByCode = new Map((coverage || []).map((c) => [c.exam_point_code, c]));
+  const insufficientPoints = (coverage || [])
+    .filter((c) => c.status !== 'sufficient')
+    .map((c) => c.exam_point_code)
+    .filter((code) => (evidenceSources || []).some((s) => s.exam_point_code === code));
+
+  const [suppOpen, setSuppOpen] = useState(false);
+  const [suppPoint, setSuppPoint] = useState<string>('');
+  const [suppChunk, setSuppChunk] = useState<string>('');
+
+  const openSupplement = (code: string) => {
+    setSuppPoint(code);
+    const first = (evidenceSources || []).find((s) => s.exam_point_code === code && s.relevance_class !== 'direct');
+    setSuppChunk(first?.evidence_chunk_id || '');
+    setSuppOpen(true);
+  };
+
+  const addSupplement = () => {
+    if (!suppPoint || !suppChunk) return;
+    const next = supplementOps.filter((op) => !(op.target_code === suppPoint && op.value === suppChunk));
+    next.push({ operation: 'supplement_direct_evidence', target_code: suppPoint, value: suppChunk });
+    onSupplementChange(next);
+    setSuppOpen(false);
+  };
+
+  const supplementable = (code: string) => (evidenceSources || [])
+    .filter((s) => s.exam_point_code === code && s.relevance_class !== 'direct');
+
+  // 为覆盖不足的考点，从其主题/单元里找可读标题，方便在待补证据列表里展示。
+  const pointLabel = (code: string) => {
+    for (const t of topics) {
+      for (const u of (t.units || [])) {
+        if (u.exam_point_code === code) {
+          return ((t.name || t.code) + ' · ' + u.title);
+        }
+      }
+    }
+    return code;
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -737,6 +784,7 @@ function CandidatePanel({ candidate, onPublish, onReset }: {
           <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', marginTop: '4px' }}>
             {topics.length} 个主题 · {totalUnits} 个考核单元 · {totalCards} 张知识卡
             {needsReview > 0 && <span style={{ color: 'var(--warning)' }}> · {needsReview} 项需审阅</span>}
+            {insufficientPoints.length > 0 && <span style={{ color: 'var(--warning)' }}> · {insufficientPoints.length} 考点可补证据</span>}
           </p>
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
@@ -745,17 +793,99 @@ function CandidatePanel({ candidate, onPublish, onReset }: {
         </div>
       </div>
 
+      {/* 证据不足考点：单点补证据入口（醒目列表，无需展开树） */}
+      {insufficientPoints.length > 0 && (
+        <div className="glass-card" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <AlertTriangle size={16} style={{ color: 'var(--warning)' }} />
+            <h4 style={{ fontSize: '0.9375rem', fontWeight: 600 }}>证据不足的考点（{insufficientPoints.length}）</h4>
+            <span style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>可逐点补充间接证据后再发布</span>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {insufficientPoints.map((code) => {
+              const cov = coverageByCode.get(code);
+              return (
+                <div
+                  key={code}
+                  style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', borderRadius: '10px', background: 'rgba(0,0,0,0.02)', flexWrap: 'wrap' }}
+                >
+                  <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+                    <div style={{ fontSize: '0.875rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pointLabel(code)}</div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>{code}</div>
+                  </div>
+                  {cov && <CoverageBadge status={cov.status} />}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Button
+                      variant="secondary"
+                      style={{ padding: '4px 12px', fontSize: '0.8125rem', height: 'auto', minHeight: 0 }}
+                      onClick={() => openSupplement(code)}
+                    >
+                      补证据
+                    </Button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* 预览树 */}
       <div className="glass-card" style={{ padding: '16px', overflow: 'hidden' }}>
-        <CandidateTreePreview topics={topics} coverage={coverage} />
+        <CandidateTreePreview topics={topics} coverage={coverage} onSupplement={openSupplement} />
       </div>
+
+      {/* 补充证据弹窗 */}
+      <Modal
+        open={suppOpen}
+        onClose={() => setSuppOpen(false)}
+        title={`补充直接证据 · ${suppPoint}`}
+        maxWidth="560px"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setSuppOpen(false)}>取消</Button>
+            <Button disabled={!suppPoint || !suppChunk} onClick={addSupplement}>确认补充</Button>
+          </>
+        }
+      >
+        {suppPoint && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+            {supplementable(suppPoint).length === 0 ? (
+              <p style={{ fontSize: '0.875rem', color: 'var(--text-tertiary)' }}>
+                该考点暂无可用于补充的间接证据。建议直接排除该考点，或重新构建知识目录。
+              </p>
+            ) : (
+              <>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>选择间接证据改判为直接证据</label>
+                  <select
+                    value={suppChunk}
+                    onChange={(e) => setSuppChunk(e.target.value)}
+                    style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: '0.875rem' }}
+                  >
+                    {supplementable(suppPoint).map((s) => (
+                      <option key={s.evidence_chunk_id} value={s.evidence_chunk_id}>
+                        {s.relevance_class} · {(s.support_claim || '').slice(0, 60)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <p style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
+                  补充后该证据块将被视为该考点的直接证据，用于支撑出卷事实。若该考点当前已有知识卡，此操作可使其覆盖转为充足并参与发布。
+                </p>
+              </>
+            )}
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
 
-function CandidateTreePreview({ topics, coverage }: {
+function CandidateTreePreview({ topics, coverage, onSupplement }: {
   topics: CandidateKnowledgeTopic[];
   coverage: KnowledgeCandidatePayload['coverage'];
+  onSupplement: (code: string) => void;
 }) {
   const [expandedTopics, setExpandedTopics] = useState<Set<string>>(new Set());
   const [expandedUnits, setExpandedUnits] = useState<Set<string>>(new Set());
@@ -818,6 +948,15 @@ function CandidateTreePreview({ topics, coverage }: {
                         <span style={{ fontSize: '0.875rem', fontWeight: 500 }}>{unit.title}</span>
                         {unit.status !== 'active' && <Badge variant="warning">需审阅</Badge>}
                         {cov && <CoverageBadge status={cov.status} />}
+                        {cov && cov.status !== 'sufficient' && (
+                          <Button
+                            variant="secondary"
+                            style={{ padding: '2px 8px', fontSize: '0.75rem', height: 'auto', minHeight: 0 }}
+                            onClick={(e) => { e.stopPropagation(); onSupplement(unit.exam_point_code); }}
+                          >
+                            补证据
+                          </Button>
+                        )}
                         <span style={{ fontSize: '0.8125rem', marginLeft: 'auto', color: 'var(--text-tertiary)' }}>{(unit.cards || []).length}卡</span>
                       </div>
                       {isUExp && (unit.cards || []).length > 0 && (
