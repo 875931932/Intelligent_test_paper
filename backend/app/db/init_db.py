@@ -46,6 +46,52 @@ def _migrate_user_columns(engine: Engine) -> None:
                     conn.execute(text(f"ALTER TABLE users ADD COLUMN {name} {ddl}"))
 
 
+def _migrate_evidence_link_fk(engine: Engine) -> None:
+    """Replace the run-scoped evidence link FK with a course-scoped one.
+
+    evidence_chunks 的 id 已改为内容寻址（material_version+内容哈希派生），
+    重建同一资料时新 run 复用旧 run 的 chunk 行（organization_run_id 保留
+    首次创建值）。旧外键 fk_exam_point_evidence_links_chunk_run_course 要求
+    (chunk_id, run_id, course_id) 三元组匹配，链接行带新 run_id 时与复用行
+    对不上，publish 阶段触发 ForeignKeyViolation（生产事故 run 88c59159）。
+    新外键改为 (chunk_id, course_id) 双列，课程隔离语义不变。
+    PostgreSQL 幂等执行；SQLite 不持久化外键名，跳过。
+    """
+
+    if engine.dialect.name != "postgresql":
+        return
+    try:
+        insp = inspect(engine)
+        if not insp.has_table("exam_point_evidence_links"):
+            return
+        fks = {fk["name"]: fk for fk in insp.get_foreign_keys("exam_point_evidence_links")}
+    except Exception:
+        # 迁移是尽力而为的幂等维护：无法内省（如 bootstrap 单测的 mock engine）
+        # 时跳过，不阻断启动。
+        return
+    old = fks.get("fk_exam_point_evidence_links_chunk_run_course")
+    new = fks.get("fk_exam_point_evidence_links_chunk_course")
+    if old is None and new is not None:
+        return
+    with engine.begin() as conn:
+        if old is not None:
+            conn.execute(
+                text(
+                    "ALTER TABLE exam_point_evidence_links "
+                    "DROP CONSTRAINT fk_exam_point_evidence_links_chunk_run_course"
+                )
+            )
+        if new is None:
+            conn.execute(
+                text(
+                    "ALTER TABLE exam_point_evidence_links ADD CONSTRAINT "
+                    "fk_exam_point_evidence_links_chunk_course "
+                    "FOREIGN KEY (evidence_chunk_id, course_id) "
+                    "REFERENCES evidence_chunks (id, course_id)"
+                )
+            )
+
+
 def _seed_dev_data(bind: Engine | Connection) -> None:
     """Upsert the admin test account and fold any legacy 'owner-dev' data into it."""
 
@@ -120,6 +166,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             with engine.begin() as conn:
                 Base.metadata.create_all(conn)
                 _migrate_user_columns(engine)
+                _migrate_evidence_link_fk(engine)
                 if seed:
                     _seed_dev_data(conn)
         else:
@@ -127,6 +174,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
                 _drop_all(engine)
             Base.metadata.create_all(engine)
             _migrate_user_columns(engine)
+            _migrate_evidence_link_fk(engine)
             if seed:
                 _seed_dev_data(engine)
     finally:

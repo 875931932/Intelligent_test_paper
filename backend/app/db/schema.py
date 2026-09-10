@@ -349,9 +349,9 @@ exam_point_evidence_links = _course_table(
             name="uq_exam_point_evidence_links_run_point_chunk",
         ),
         ForeignKeyConstraint(
-            ["evidence_chunk_id", "organization_run_id", "course_id"],
-            ["evidence_chunks.id", "evidence_chunks.organization_run_id", "evidence_chunks.course_id"],
-            name="fk_exam_point_evidence_links_chunk_run_course",
+            ["evidence_chunk_id", "course_id"],
+            ["evidence_chunks.id", "evidence_chunks.course_id"],
+            name="fk_exam_point_evidence_links_chunk_course",
         ),
         CheckConstraint(
             "relevance_class IN ('direct', 'supporting', 'background', 'out_of_scope')",

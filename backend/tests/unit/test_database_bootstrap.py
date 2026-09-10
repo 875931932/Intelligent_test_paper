@@ -213,11 +213,12 @@ def test_course_scoped_parent_relationships_use_composite_foreign_keys():
             for constraint in relevance_constraints
         ), parent_name
 
+    # evidence chunk id 已内容寻址（同资料跨 run 复用同一行），链接外键
+    # 不再绑定 organization_run_id，仅 (chunk_id, course_id) 双列。
     assert any(
-        set(constraint.column_keys) == {"evidence_chunk_id", "organization_run_id", "course_id"}
+        set(constraint.column_keys) == {"evidence_chunk_id", "course_id"}
         and {element.target_fullname for element in constraint.elements} == {
             "evidence_chunks.id",
-            "evidence_chunks.organization_run_id",
             "evidence_chunks.course_id",
         }
         for constraint in relevance_constraints
@@ -233,8 +234,8 @@ def test_course_scoped_parent_relationships_use_composite_foreign_keys():
         ), parent_name
 
 
-def test_exam_point_evidence_link_rejects_chunk_from_another_organization_run(tmp_path):
-    engine = create_engine(f"sqlite:///{tmp_path / 'exam-point-evidence-run-isolation.db'}")
+def test_exam_point_evidence_link_rejects_chunk_from_another_course(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'exam-point-evidence-course-isolation.db'}")
     event.listen(engine, "connect", lambda connection, _: connection.execute("PRAGMA foreign_keys=ON"))
     Base.metadata.create_all(engine)
     try:
@@ -316,21 +317,38 @@ def test_exam_point_evidence_link_rejects_chunk_from_another_organization_run(tm
                 },
             )
 
+        # chunk id 内容寻址后跨 run 复用同一行：链接行的 run_id 是当前 run，
+        # chunk 行保留首次创建的 run_id，二者不必一致——这正是修复的目标行为。
+        with engine.begin() as connection:
+            connection.execute(
+                Base.metadata.tables["exam_point_evidence_links"].insert(),
+                {
+                    "id": "reused-chunk-link",
+                    "course_id": "course",
+                    "organization_run_id": "organization-b",
+                    "exam_point_id": "exam-point",
+                    "evidence_chunk_id": "chunk-a",
+                    "relevance_class": "direct",
+                    "support_claim": "Supports the exam point.",
+                    "confidence": 90,
+                    "prompt_material": "Retrieval quality affects grounding.",
+                    "status": "candidate",
+                },
+            )
+
+        # 跨课程引用仍然拒绝：chunk 属于其它课程时复合外键 (chunk_id, course_id) 失配。
         with pytest.raises(IntegrityError):
             with engine.begin() as connection:
                 connection.execute(
-                    Base.metadata.tables["exam_point_evidence_links"].insert(),
+                    Base.metadata.tables["evidence_chunks"].insert(),
                     {
-                        "id": "invalid-link",
-                        "course_id": "course",
-                        "organization_run_id": "organization-b",
-                        "exam_point_id": "exam-point",
-                        "evidence_chunk_id": "chunk-a",
-                        "relevance_class": "direct",
-                        "support_claim": "Supports the exam point.",
-                        "confidence": 90,
-                        "prompt_material": "Retrieval quality affects grounding.",
-                        "status": "candidate",
+                        "id": "chunk-other-course",
+                        "course_id": "course-b",
+                        "organization_run_id": "organization-a",
+                        "material_version_id": "material-version",
+                        "chunk_index": 0,
+                        "content": "Other course content.",
+                        "content_hash": "chunk-hash-b",
                     },
                 )
     finally:
