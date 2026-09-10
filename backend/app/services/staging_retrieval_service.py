@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+from hashlib import sha256
 from numbers import Real
 from typing import Protocol
 
@@ -104,6 +105,14 @@ def _validated_vectors(
     return vectors
 
 
+def _chunk_content_hash(chunk: StagingChunk) -> str:
+    """排序决胜键：优先 content_hash，退化为内容哈希。"""
+
+    if getattr(chunk, "content_hash", None):
+        return str(chunk.content_hash)
+    return sha256(chunk.content.encode()).hexdigest()
+
+
 def retrieve_for_exam_point(
     point: ExamPoint,
     chunks: list[StagingChunk],
@@ -150,10 +159,16 @@ def retrieve_for_exam_point(
                 )
             )
 
+    # 分数量化到 3 位小数：嵌入 API 对同文本返回的向量存在尾级浮点微扰，
+    # 若直接按 float 排序，截断边界附近的 chunk 顺序会在 run 间抖动，导致
+    # 分类 prompt 变化、响应缓存永不命中。量化后配合 content_hash 决胜，
+    # 同一资料快照的召回集合与顺序完全确定。
+    for item in ranked:
+        item.score = round(item.score, 3)
     ranked.sort(
         key=lambda item: (
             -item.score,
-            item.chunk.material_version_id,
+            _chunk_content_hash(item.chunk),
             item.chunk.id,
         )
     )
@@ -242,6 +257,10 @@ class HybridStagingRetriever:
                     by_chunk[item.chunk.id] = item
         merged = sorted(
             by_chunk.values(),
-            key=lambda item: (-item.score, item.chunk.material_version_id, item.chunk.id),
+            key=lambda item: (
+                -item.score,
+                _chunk_content_hash(item.chunk),
+                item.chunk.id,
+            ),
         )
         return merged[: self.top_k]

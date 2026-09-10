@@ -77,8 +77,9 @@ def test_retrieval_combines_semantic_and_lexical_scores_without_returning_noise(
     assert [ranked.chunk.id for ranked in result] == ["good"]
     assert result[0].chunk is good
     assert result[0].semantic_score == pytest.approx(0.9938837)
+    # score 量化到 3 位小数（跨 run 确定性截断），lexical 分不变。
     assert result[0].score == pytest.approx(
-        0.35 * result[0].lexical_score + 0.65 * result[0].semantic_score
+        round(0.35 * result[0].lexical_score + 0.65 * result[0].semantic_score, 3)
     )
     assert embedder.calls == [[point.retrieval_intent]]
 
@@ -264,8 +265,10 @@ def test_equal_scores_use_material_version_and_chunk_id_as_stable_tiebreakers():
         minimum_score=0.25,
     )
 
-    assert [item.chunk.id for item in first] == ["z-chunk"]
-    assert [item.chunk.id for item in reversed_input] == ["z-chunk"]
+    # 同分并列时决胜键为 (content_hash, chunk.id)：跨 run 顺序确定（缓存
+    # prompt 稳定的前提），同内容下按 id 字典序，与输入顺序无关。
+    assert [item.chunk.id for item in first] == ["a-chunk"]
+    assert [item.chunk.id for item in reversed_input] == ["a-chunk"]
 
 
 def test_embedding_gateway_sorts_response_by_index_and_returns_vectors():

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, useDeferredValue, memo } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   GitBranch, Search, Network, TreePine, ChevronRight, ChevronDown, Circle,
@@ -67,7 +67,6 @@ export default function KnowledgePage() {
   const [candidatePayload, setCandidatePayload] = useState<KnowledgeCandidatePayload | null>(null);
   const [reviewedTopicCodes, setReviewedTopicCodes] = useState<string[]>([]);
   const [reviewedExamPointCodes, setReviewedExamPointCodes] = useState<string[]>([]);
-  const [teacherExclusions] = useState<string[]>([]);
   const [supplementOps, setSupplementOps] = useState<Array<{ operation: string; target_code: string; value: string }>>([]);
 
   const [selectedCardId, setSelectedCardId] = useState<string | null>(null);
@@ -79,10 +78,20 @@ export default function KnowledgePage() {
 
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Derived
-  const examPoints: FrameworkExamPoint[] = knowledge?.exam_points || [];
-  const units: AssessmentUnit[] = knowledge?.units || [];
-  const cardsDict: Record<string, KnowledgeCard> = knowledge?.knowledge_cards || {};
+  // Derived（用 useMemo 固定引用，保证下游 memo/记忆化真正生效）
+  const examPoints: FrameworkExamPoint[] = useMemo(
+    () => knowledge?.exam_points || [],
+    [knowledge]
+  );
+  const units: AssessmentUnit[] = useMemo(() => knowledge?.units || [], [knowledge]);
+  const cardsDict: Record<string, KnowledgeCard> = useMemo(
+    () => knowledge?.knowledge_cards || {},
+    [knowledge]
+  );
+
+  // 搜索输入延迟渲染：输入框立即回显，繁重的树/图谱按浏览器空闲时更新，
+  // 避免大目录下每敲一个字符全页卡顿。
+  const deferredSearch = useDeferredValue(searchQuery);
 
   const clusters = useMemo(() => {
     const set = new Set<string>();
@@ -92,8 +101,8 @@ export default function KnowledgePage() {
 
   const filteredCards = useMemo(() => {
     let cards = Object.values(cardsDict) as KnowledgeCard[];
-    if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase();
+    if (deferredSearch.trim()) {
+      const q = deferredSearch.toLowerCase();
       cards = cards.filter((c) =>
         c.name.toLowerCase().includes(q) ||
         c.concept_cluster.toLowerCase().includes(q) ||
@@ -109,7 +118,7 @@ export default function KnowledgePage() {
       cards = cards.filter((c) => !c.grounded);
     }
     return cards;
-  }, [cardsDict, searchQuery, filterCluster, filterGrounded]);
+  }, [cardsDict, deferredSearch, filterCluster, filterGrounded]);
 
   const filteredCardIds = useMemo(() => new Set(filteredCards.map((c) => c.id)), [filteredCards]);
 
@@ -284,8 +293,11 @@ export default function KnowledgePage() {
       await api.knowledge.publish(courseId, runId, {
         operations: supplementOps,
         reviewed_topic_codes: reviewedTopicCodes,
-        reviewed_exam_point_codes: reviewedExamPointCodes,
-        teacher_exclusions: teacherExclusions,
+        // 补证据的考点由教师逐点挑选并确认过证据，视为已完成审阅。
+        reviewed_exam_point_codes: [
+          ...new Set([...reviewedExamPointCodes, ...supplementOps.map((op) => op.target_code)]),
+        ],
+        teacher_exclusions: [],
       });
       addToast('知识目录已发布', 'success');
       setBuildState('published');
@@ -295,7 +307,7 @@ export default function KnowledgePage() {
     } catch (err) {
       addToast(`发布失败：${getErrorMessage(err)}`, 'error');
     }
-  }, [courseId, runId, loadPublished, addToast, reviewedTopicCodes, reviewedExamPointCodes, teacherExclusions, supplementOps]);
+  }, [courseId, runId, loadPublished, addToast, reviewedTopicCodes, reviewedExamPointCodes, supplementOps]);
 
   const handleReject = useCallback(async () => {
     if (!runId) return;
@@ -724,53 +736,84 @@ function CandidatePanel({ candidate, supplementOps, onSupplementChange, onPublis
   onPublish: () => void;
   onReset: () => void;
 }) {
-  const topics = candidate?.topics || [];
-  const coverage = candidate?.coverage || [];
-  const evidenceSources = candidate?.evidence_sources || [];
+  const topics = useMemo(() => candidate?.topics || [], [candidate]);
+  const coverage = useMemo(() => candidate?.coverage || [], [candidate]);
+  const evidenceSources = useMemo(
+    () => candidate?.evidence_sources || [],
+    [candidate]
+  );
   const totalUnits = topics.reduce((acc, t) => acc + (t.units?.length || 0), 0);
   const totalCards = topics.reduce((acc, t) => acc + (t.units || []).reduce((a, u) => a + (u.cards?.length || 0), 0), 0);
   const needsReview = topics.filter((t) => t.status !== 'active').length
     + topics.reduce((acc, t) => acc + (t.units || []).filter((u) => u.status !== 'active').length, 0);
 
-  const coverageByCode = new Map((coverage || []).map((c) => [c.exam_point_code, c]));
-  const insufficientPoints = (coverage || [])
-    .filter((c) => c.status !== 'sufficient')
-    .map((c) => c.exam_point_code)
-    .filter((code) => (evidenceSources || []).some((s) => s.exam_point_code === code));
+  // 按考点索引候选证据，避免每次渲染对全部证据源做线性扫描。
+  const sourcesByPoint = useMemo(() => {
+    const map = new Map<string, KnowledgeCandidatePayload['evidence_sources']>();
+    evidenceSources.forEach((s) => {
+      if (s.relevance_class === 'direct') return;
+      const list = map.get(s.exam_point_code);
+      if (list) list.push(s);
+      else map.set(s.exam_point_code, [s]);
+    });
+    return map;
+  }, [evidenceSources]);
+
+  const coverageByCode = useMemo(
+    () => new Map((coverage || []).map((c) => [c.exam_point_code, c])),
+    [coverage]
+  );
+  const insufficientPoints = useMemo(
+    () => (coverage || [])
+      .filter((c) => c.status !== 'sufficient' && sourcesByPoint.has(c.exam_point_code))
+      .map((c) => c.exam_point_code),
+    [coverage, sourcesByPoint]
+  );
+
+  // 为覆盖不足的考点，从其主题/单元里找可读标题，方便在待补证据列表里展示。
+  const pointLabels = useMemo(() => {
+    const map = new Map<string, string>();
+    topics.forEach((t) => {
+      (t.units || []).forEach((u) => {
+        if (!map.has(u.exam_point_code)) {
+          map.set(u.exam_point_code, (t.name || t.code) + ' · ' + u.title);
+        }
+      });
+    });
+    return map;
+  }, [topics]);
 
   const [suppOpen, setSuppOpen] = useState(false);
   const [suppPoint, setSuppPoint] = useState<string>('');
   const [suppChunk, setSuppChunk] = useState<string>('');
 
-  const openSupplement = (code: string) => {
-    setSuppPoint(code);
-    const first = (evidenceSources || []).find((s) => s.exam_point_code === code && s.relevance_class !== 'direct');
-    setSuppChunk(first?.evidence_chunk_id || '');
-    setSuppOpen(true);
-  };
+  const supplementable = useMemo(
+    () => (suppPoint ? sourcesByPoint.get(suppPoint) || [] : []),
+    [suppPoint, sourcesByPoint]
+  );
+  const suppOptions = useMemo(
+    () => supplementable.map((s) => ({
+      id: s.evidence_chunk_id,
+      label: s.relevance_class + ' · ' + (s.support_claim || '').slice(0, 60),
+    })),
+    [supplementable]
+  );
 
-  const addSupplement = () => {
+  const openSupplement = useCallback((code: string) => {
+    setSuppPoint(code);
+    setSuppChunk(sourcesByPoint.get(code)?.[0]?.evidence_chunk_id || '');
+    setSuppOpen(true);
+  }, [sourcesByPoint]);
+
+  const closeSupplement = useCallback(() => setSuppOpen(false), []);
+
+  const addSupplement = useCallback(() => {
     if (!suppPoint || !suppChunk) return;
     const next = supplementOps.filter((op) => !(op.target_code === suppPoint && op.value === suppChunk));
     next.push({ operation: 'supplement_direct_evidence', target_code: suppPoint, value: suppChunk });
     onSupplementChange(next);
     setSuppOpen(false);
-  };
-
-  const supplementable = (code: string) => (evidenceSources || [])
-    .filter((s) => s.exam_point_code === code && s.relevance_class !== 'direct');
-
-  // 为覆盖不足的考点，从其主题/单元里找可读标题，方便在待补证据列表里展示。
-  const pointLabel = (code: string) => {
-    for (const t of topics) {
-      for (const u of (t.units || [])) {
-        if (u.exam_point_code === code) {
-          return ((t.name || t.code) + ' · ' + u.title);
-        }
-      }
-    }
-    return code;
-  };
+  }, [suppPoint, suppChunk, supplementOps, onSupplementChange]);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -810,7 +853,7 @@ function CandidatePanel({ candidate, supplementOps, onSupplementChange, onPublis
                   style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', borderRadius: '10px', background: 'rgba(0,0,0,0.02)', flexWrap: 'wrap' }}
                 >
                   <div style={{ flex: '1 1 220px', minWidth: 0 }}>
-                    <div style={{ fontSize: '0.875rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pointLabel(code)}</div>
+                    <div style={{ fontSize: '0.875rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pointLabels.get(code) || code}</div>
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>{code}</div>
                   </div>
                   {cov && <CoverageBadge status={cov.status} />}
@@ -838,19 +881,19 @@ function CandidatePanel({ candidate, supplementOps, onSupplementChange, onPublis
       {/* 补充证据弹窗 */}
       <Modal
         open={suppOpen}
-        onClose={() => setSuppOpen(false)}
+        onClose={closeSupplement}
         title={`补充直接证据 · ${suppPoint}`}
         maxWidth="560px"
         footer={
           <>
-            <Button variant="secondary" onClick={() => setSuppOpen(false)}>取消</Button>
+            <Button variant="secondary" onClick={closeSupplement}>取消</Button>
             <Button disabled={!suppPoint || !suppChunk} onClick={addSupplement}>确认补充</Button>
           </>
         }
       >
         {suppPoint && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            {supplementable(suppPoint).length === 0 ? (
+            {supplementable.length === 0 ? (
               <p style={{ fontSize: '0.875rem', color: 'var(--text-tertiary)' }}>
                 该考点暂无可用于补充的间接证据。建议直接排除该考点，或重新构建知识目录。
               </p>
@@ -863,9 +906,9 @@ function CandidatePanel({ candidate, supplementOps, onSupplementChange, onPublis
                     onChange={(e) => setSuppChunk(e.target.value)}
                     style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: '0.875rem' }}
                   >
-                    {supplementable(suppPoint).map((s) => (
-                      <option key={s.evidence_chunk_id} value={s.evidence_chunk_id}>
-                        {s.relevance_class} · {(s.support_claim || '').slice(0, 60)}
+                    {suppOptions.map((opt) => (
+                      <option key={opt.id} value={opt.id}>
+                        {opt.label}
                       </option>
                     ))}
                   </select>
@@ -889,7 +932,6 @@ function CandidateTreePreview({ topics, coverage, onSupplement }: {
 }) {
   const [expandedTopics, setExpandedTopics] = useState<Set<string>>(new Set());
   const [expandedUnits, setExpandedUnits] = useState<Set<string>>(new Set());
-  const [selectedCard, setSelectedCard] = useState<{ name: string; unit: string; topic: string } | null>(null);
 
   const coverageByCode = new Map((coverage || []).map((c) => [c.exam_point_code, c]));
 
@@ -964,8 +1006,7 @@ function CandidateTreePreview({ topics, coverage, onSupplement }: {
                           {(unit.cards || []).map((card, ci) => (
                             <div
                               key={card.name + ci}
-                              style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', borderRadius: '8px', cursor: 'pointer' }}
-                              onClick={() => setSelectedCard({ name: card.name, unit: unit.title, topic: topic.name || topic.code })}
+                              style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', borderRadius: '8px' }}
                             >
                               <span style={{ color: card.status === 'active' ? '#34c759' : '#ff9500' }}>
                                 <Circle size={8} fill="currentColor" />
@@ -985,26 +1026,6 @@ function CandidateTreePreview({ topics, coverage, onSupplement }: {
           </div>
         );
       })}
-
-      {/* 卡片详情弹窗 */}
-      <Modal
-        open={!!selectedCard}
-        onClose={() => setSelectedCard(null)}
-        title={selectedCard?.name || '知识卡详情'}
-        maxWidth="560px"
-        footer={<Button variant="secondary" onClick={() => setSelectedCard(null)}>关闭</Button>}
-      >
-        {selectedCard && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            <p style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>
-              {selectedCard.topic} · {selectedCard.unit}
-            </p>
-            <p style={{ fontSize: '0.875rem', lineHeight: 1.6, color: 'var(--text)' }}>
-              知识卡「{selectedCard.name}」的详细内容（性能表述、可评分内容、认知目标等）可在发布后于「知识目录」树形视图中点击查看。
-            </p>
-          </div>
-        )}
-      </Modal>
     </div>
   );
 }
@@ -1032,7 +1053,7 @@ function IdlePanel({ onBuild }: { onBuild: () => void }) {
 
 // ─── Tree View ───
 
-function TreeView(props: {
+const TreeView = memo(function TreeView(props: {
   examPoints: FrameworkExamPoint[];
   units: AssessmentUnit[];
   cardsDict: Record<string, KnowledgeCard>;
@@ -1122,11 +1143,11 @@ function TreeView(props: {
       })}
     </div>
   );
-}
+});
 
 // ─── Graph View ───
 
-function GraphView(props: {
+const GraphView = memo(function GraphView(props: {
   examPoints: FrameworkExamPoint[];
   units: AssessmentUnit[];
   cards: KnowledgeCard[];
@@ -1274,4 +1295,4 @@ function GraphView(props: {
       </div>
     </div>
   );
-}
+});

@@ -46,6 +46,7 @@ from app.domain.knowledge.relevance import (
 from app.services.knowledge_tree_service import (
     KnowledgeTreeValidationError,
     apply_tree_operations,
+    compute_exam_point_coverage,
     validate_publishable_tree,
 )
 
@@ -440,6 +441,7 @@ class DatabaseKnowledgeRepository:
                     "persisted evidence references a material outside the frozen material snapshot"
                 )
         points_by_code = {item["code"]: _exam_point_from_row(item) for item in point_rows}
+        point_ids = {item["code"]: item["id"] for item in point_rows}
         publishable_exam_point_codes: set[str] | None = None
         try:
             if schema_version == ORGANIZATION_SCHEMA_VERSION:
@@ -455,6 +457,13 @@ class DatabaseKnowledgeRepository:
                             unit.status = "excluded"
                             for card in unit.cards:
                                 card.status = "excluded"
+                self._apply_supplement_operations(
+                    course_id=course_id,
+                    run_id=state["run_id"],
+                    point_ids=point_ids,
+                    tree=tree,
+                    confirmation=confirmation,
+                )
                 coverage_by_code = {
                     item.exam_point_code: item for item in tree.coverage
                 }
@@ -570,7 +579,6 @@ class DatabaseKnowledgeRepository:
         except KnowledgeTreeValidationError as exc:
             raise KnowledgePublishError(str(exc)) from exc
 
-        point_ids = {item["code"]: item["id"] for item in point_rows}
         try:
             active_direct_card_ids = self._insert_tree(
                 course_id,
@@ -796,6 +804,105 @@ class DatabaseKnowledgeRepository:
                     if hierarchy_is_publishable and direct_count:
                         active_direct_card_ids.append(card_id)
         return active_direct_card_ids
+
+    def _apply_supplement_operations(
+        self,
+        *,
+        course_id: str,
+        run_id: str,
+        point_ids: dict[str, str],
+        tree: KnowledgeTreeCandidate,
+        confirmation: KnowledgeTreeConfirmation,
+    ) -> None:
+        """把教师补证据操作落库并同步改判候选树。
+
+        REST 发布路径是唯一的教师确认入口（后台图的中断恢复从不被调用），
+        因此 supplement_direct_evidence 必须在这里生效：改判证据链接分类、
+        重算覆盖、并同步内存中的 evidence_decisions，使后续的活证据过滤
+        与发布校验基于改判后的状态运行。
+        """
+        supplement_ops = [
+            op
+            for op in confirmation.operations
+            if op.operation == "supplement_direct_evidence"
+            and op.target_code.strip()
+            and (op.value or "").strip()
+        ]
+        if not supplement_ops:
+            return
+        valid_codes = set(point_ids)
+        for op in supplement_ops:
+            if op.target_code not in valid_codes:
+                raise KnowledgePublishError(
+                    "supplement operation references an unknown exam point"
+                )
+            chunk_id = (op.value or "").strip()
+            chunk_exists = self.session.execute(
+                select(evidence_chunks.c.id).where(
+                    evidence_chunks.c.id == chunk_id,
+                    evidence_chunks.c.course_id == course_id,
+                    evidence_chunks.c.organization_run_id == run_id,
+                )
+            ).scalar_one_or_none()
+            if chunk_exists is None:
+                raise KnowledgePublishError(
+                    "supplement operation references evidence outside the frozen snapshot"
+                )
+            updated = self.session.execute(
+                exam_point_evidence_links.update()
+                .where(
+                    exam_point_evidence_links.c.course_id == course_id,
+                    exam_point_evidence_links.c.organization_run_id == run_id,
+                    exam_point_evidence_links.c.exam_point_id == point_ids[op.target_code],
+                    exam_point_evidence_links.c.evidence_chunk_id == chunk_id,
+                    exam_point_evidence_links.c.relevance_class.in_(
+                        ["supporting", "background"]
+                    ),
+                )
+                .values(relevance_class="direct")
+            )
+            if updated.rowcount == 0:
+                # 可能是同一操作的重复提交（已改判过 direct）；确认目标链接
+                # 以 direct 存在则幂等跳过，否则说明目标不存在，拒绝发布。
+                still_there = self.session.execute(
+                    select(exam_point_evidence_links.c.id).where(
+                        exam_point_evidence_links.c.course_id == course_id,
+                        exam_point_evidence_links.c.organization_run_id == run_id,
+                        exam_point_evidence_links.c.exam_point_id == point_ids[op.target_code],
+                        exam_point_evidence_links.c.evidence_chunk_id == chunk_id,
+                        exam_point_evidence_links.c.relevance_class == "direct",
+                    )
+                ).scalar_one_or_none()
+                if still_there is None:
+                    raise KnowledgePublishError(
+                        "supplement operation targets an evidence link that does not exist"
+                    )
+        self.session.flush()
+        # 同步内存中的 evidence_decisions 与 coverage，供 _filter_live_direct_evidence
+        # 与 validate_publishable_tree 基于改判后的状态校验。
+        updated_keys = {
+            (op.target_code, (op.value or "").strip()) for op in supplement_ops
+        }
+        tree.evidence_decisions = [
+            (
+                decision.model_copy(update={"relevance_class": RelevanceClass.DIRECT})
+                if (decision.exam_point_code, decision.evidence_chunk_id) in updated_keys
+                and decision.relevance_class
+                in {RelevanceClass.SUPPORTING, RelevanceClass.BACKGROUND}
+                else decision
+            )
+            for decision in tree.evidence_decisions
+        ]
+        touched_codes = {code for code, _ in updated_keys}
+        for code in touched_codes:
+            tree.coverage = [
+                item for item in tree.coverage if item.exam_point_code != code
+            ] + [
+                compute_exam_point_coverage(
+                    code,
+                    [d for d in tree.evidence_decisions if d.exam_point_code == code],
+                )
+            ]
 
     def _filter_live_direct_evidence(
         self,
@@ -1203,7 +1310,14 @@ def create_organization_state(
             )
         )
         for chunk_index, (version_id, merged_block, vector, source_blocks) in enumerate(embedded_blocks):
-            evidence_id = uuid4().hex
+            # chunk id 从内容哈希+资料版本确定性派生（而非随机 UUID）：同一资料
+            # 快照在重复 run 中产出相同 id，分类/归并 prompt 随之稳定，模型响应
+            # 缓存（temperature=0）才能真正命中，重建 run 的模型成本趋近于零。
+            # 冲突域按 (material_version_id, content_hash) 划分，同内容跨资料不串。
+            digest = sha256(
+                f"{version_id}\n{merged_block['text'].strip()}".encode()
+            ).hexdigest()
+            evidence_id = digest[:32]
             evidence_ids.append(evidence_id)
             locator = {
                 "page_index": merged_block["page_index"],

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import re
+from collections import defaultdict
+
 from app.domain.framework.exam_points import ExamPoint
 from app.domain.knowledge.models import (
     FileKnowledgeCandidate,
@@ -14,6 +17,7 @@ from app.domain.knowledge.models import (
 from app.domain.knowledge.relevance import (
     ContentKind,
     EvidenceDecision,
+    ExamPointCoverage,
     RelevanceClass,
     StagingChunk,
     admit_evidence_decision,
@@ -27,6 +31,68 @@ from app.domain.knowledge.relevance import (
 
 class KnowledgeTreeValidationError(Exception):
     pass
+
+
+_NEGATION_PATTERN = re.compile(
+    r"(?<![A-Za-z])(not|never|without)(?![A-Za-z])|禁止|并非|不是|不(?=[\u3400-\u9fff])|非",
+    re.IGNORECASE,
+)
+
+
+def _claim_polarity_key(value: str) -> tuple[str, bool]:
+    normalized = semantic_text_key(value)
+    negative = bool(_NEGATION_PATTERN.search(normalized))
+    base = _NEGATION_PATTERN.sub("", normalized)
+    return base, negative
+
+
+def _has_conflicting_direct_claims(decisions: list[EvidenceDecision]) -> bool:
+    polarities: dict[str, set[bool]] = defaultdict(set)
+    for decision in decisions:
+        if decision.relevance_class is not RelevanceClass.DIRECT:
+            continue
+        # 分类瘦身后 direct 决策不再携带候选卡；support_claim 就是该证据
+        # 所落地的自包含可迁移事实锚点，直接以它做极性冲突判定。
+        base, negative = _claim_polarity_key(decision.support_claim)
+        if base:
+            polarities[base].add(negative)
+    return any(len(values) > 1 for values in polarities.values())
+
+
+def compute_exam_point_coverage(
+    exam_point_code: str,
+    decisions: list[EvidenceDecision],
+    *,
+    additional_reasons: list[str] | None = None,
+) -> ExamPointCoverage:
+    counts = {member: 0 for member in RelevanceClass}
+    for decision in decisions:
+        counts[decision.relevance_class] += 1
+    reasons = list(dict.fromkeys(additional_reasons or []))
+    direct = [item for item in decisions if item.relevance_class is RelevanceClass.DIRECT]
+    if not decisions and "no_recalled_evidence" not in reasons:
+        reasons.append("no_recalled_evidence")
+    if not direct:
+        reasons.append("no_direct_evidence")
+    conflicting = _has_conflicting_direct_claims(direct)
+    if conflicting:
+        reasons.append("conflicting_direct_claims")
+    reasons = list(dict.fromkeys(reasons))
+    if conflicting:
+        status = "conflicting"
+    elif direct and not any(reason.endswith("_failed") for reason in reasons):
+        status = "sufficient"
+    else:
+        status = "insufficient"
+    return ExamPointCoverage(
+        exam_point_code=exam_point_code,
+        direct_count=counts[RelevanceClass.DIRECT],
+        supporting_count=counts[RelevanceClass.SUPPORTING],
+        background_count=counts[RelevanceClass.BACKGROUND],
+        out_of_scope_count=counts[RelevanceClass.OUT_OF_SCOPE],
+        status=status,
+        reasons=reasons,
+    )
 
 
 def _unmatched(material_version_id: str, label: str, reason: str) -> UnmatchedCandidate:
@@ -284,10 +350,12 @@ def apply_tree_operations(
     *,
     allowed_anchor_keys: set[str],
 ) -> KnowledgeTreeCandidate:
+    """应用教师确认操作。supplement_direct_evidence 会同步改判覆盖状态，
+    使覆盖不足的考点在确认后转为覆盖充足并参与发布。"""
     revised = tree.model_copy(deep=True)
     for operation in operations:
         if operation.operation == "supplement_direct_evidence":
-            # 由组织流程的 _apply_supplemented_evidence 专门处理，此处跳过。
+            _supplement_direct_evidence(revised, operation.target_code, operation.value or "")
             continue
         topic = next((item for item in revised.topics if item.code == operation.target_code), None)
         if operation.operation in {"rename_topic", "exclude_topic", "move_topic"}:
@@ -312,3 +380,45 @@ def apply_tree_operations(
         else:
             raise KnowledgeTreeValidationError("tree operation target was not found")
     return revised
+
+
+def _supplement_direct_evidence(
+    tree: KnowledgeTreeCandidate,
+    exam_point_code: str,
+    chunk_id: str,
+) -> None:
+    """把一条 supporting/background 证据改判为 direct 并重算覆盖。
+
+    仅改判已有决策的分类，不新增证据、不调用模型；找不到匹配决策时静默跳过
+    （保持与既有兜底行为一致，不阻塞整个发布）。
+    """
+    if not exam_point_code.strip() or not chunk_id.strip():
+        return
+    updated_decisions: list[EvidenceDecision] = []
+    found = False
+    for decision in tree.evidence_decisions:
+        if (
+            decision.exam_point_code != exam_point_code
+            or decision.evidence_chunk_id != chunk_id
+            or decision.relevance_class
+            not in {RelevanceClass.SUPPORTING, RelevanceClass.BACKGROUND}
+        ):
+            updated_decisions.append(decision)
+            continue
+        updated_decisions.append(
+            decision.model_copy(update={"relevance_class": RelevanceClass.DIRECT})
+        )
+        found = True
+    if not found:
+        return
+    tree.evidence_decisions = updated_decisions
+    tree.coverage = [
+        item
+        for item in tree.coverage
+        if item.exam_point_code != exam_point_code
+    ] + [
+        compute_exam_point_coverage(
+            exam_point_code,
+            [d for d in updated_decisions if d.exam_point_code == exam_point_code],
+        )
+    ]

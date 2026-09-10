@@ -651,8 +651,6 @@ class DeepSeekExamPointEvidenceClassifier:
                 "title": point.title,
                 "assessment_requirement": point.assessment_requirement,
                 "cognitive_targets": point.cognitive_targets,
-                "assessment_orientations": point.assessment_orientations,
-                "allowed_question_types": point.allowed_question_types,
                 "operational_detail_policy": point.operational_detail_policy.value,
                 "retrieval_intent": point.retrieval_intent,
             }
@@ -714,7 +712,9 @@ class DeepSeekExamPointEvidenceClassifier:
                 "你判断一份教学资料文件与多个考试考点的证据关系。输入包含 exam_points 数组与该文件全部召回的 chunks。"
                 "必须返回 JSON 对象，顶层字段 file_decisions 为数组；每个元素对应一个考点，"
                 "包含 exam_point_code、material_version_id、decisions、background_chunk_ids、out_of_scope_chunk_ids。"
-                "尽量覆盖全部 (考点, chunk) 组合；未明确判定的组合会被系统默认为 out_of_scope。"
+                "与考点无关或仅提供背景的 chunk 占大多数：这类组合一律用 background_chunk_ids / "
+                "out_of_scope_chunk_ids 数组紧凑上报（只写 id），禁止把它们写成完整 decisions 条目；"
+                "decisions 数组只收录 direct 与 supporting 两种判定，通常只占召回量的少数。"
                 "direct/supporting 判定写入 decisions 数组，每条包含 evidence_chunk_id、relevance_class、"
                 "support_claim、content_kind、confidence（无需重复 exam_point_code）；"
                 "background 判定只需把 evidence_chunk_id 列入 background_chunk_ids，"
@@ -989,7 +989,7 @@ def validate_consolidated_units(
     admitted: list[EvidenceDecision],
     units: list[AssessmentUnitDraft],
     *,
-    chunks_by_id: dict[str, "StagingChunk"],
+    chunks_by_id: dict[str, "StagingChunk"] | None = None,
 ) -> None:
     admitted_by_id = {
         decision.evidence_chunk_id: decision
@@ -1012,7 +1012,7 @@ def validate_consolidated_units(
             *(
                 chunks_by_id[evidence_id].content
                 for evidence_id in admitted_by_id
-                if evidence_id in chunks_by_id
+                if chunks_by_id is not None and evidence_id in chunks_by_id
             ),
         ]
     )
@@ -1062,7 +1062,9 @@ def validate_consolidated_units(
                     kept_ids.append(evidence_id)
                     continue
                 direct_basis = [decision.support_claim]
-                chunk = chunks_by_id.get(evidence_id)
+                chunk = (
+                    chunks_by_id.get(evidence_id) if chunks_by_id is not None else None
+                )
                 if chunk is not None:
                     direct_basis.append(chunk.content)
                 direct_facts = assessable_fact_keys(direct_basis)

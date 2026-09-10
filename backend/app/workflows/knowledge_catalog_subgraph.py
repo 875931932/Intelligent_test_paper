@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import re
 from collections import defaultdict
 
+from app.adapters.model.deepseek_gateway import DeepSeekModelError
 from app.adapters.model.deepseek_semantic_extractors import (
     validate_consolidated_units,
 )
@@ -17,7 +17,6 @@ from app.domain.knowledge.models import (
 )
 from app.domain.knowledge.relevance import (
     EvidenceDecision,
-    ExamPointCoverage,
     ExamPointFileDecision,
     RelevanceClass,
     StagingChunk,
@@ -26,82 +25,10 @@ from app.domain.knowledge.relevance import (
 )
 from app.services.knowledge_tree_service import (
     KnowledgeTreeValidationError,
+    compute_exam_point_coverage,
     merge_file_candidates,
     validate_publishable_tree,
 )
-
-
-_ANSWER_BASIS_ROLES = frozenset(
-    {
-        "answer",
-        "answer_basis",
-        "rubric",
-        "rubric_basis",
-        "answer_or_rubric_basis",
-        "scoring",
-        "scoring_basis",
-    }
-)
-_NEGATION_PATTERN = re.compile(
-    r"(?<![A-Za-z])(not|never|without)(?![A-Za-z])|禁止|并非|不是|不(?=[\u3400-\u9fff])|非",
-    re.IGNORECASE,
-)
-
-
-def _claim_polarity_key(value: str) -> tuple[str, bool]:
-    normalized = semantic_text_key(value)
-    negative = bool(_NEGATION_PATTERN.search(normalized))
-    base = _NEGATION_PATTERN.sub("", normalized)
-    return base, negative
-
-
-def _has_conflicting_direct_claims(decisions: list[EvidenceDecision]) -> bool:
-    polarities: dict[str, set[bool]] = defaultdict(set)
-    for decision in decisions:
-        if decision.relevance_class is not RelevanceClass.DIRECT:
-            continue
-        # 分类瘦身后 direct 决策不再携带候选卡；support_claim 就是该证据
-        # 所落地的自包含可迁移事实锚点，直接以它做极性冲突判定。
-        base, negative = _claim_polarity_key(decision.support_claim)
-        if base:
-            polarities[base].add(negative)
-    return any(len(values) > 1 for values in polarities.values())
-
-
-def _coverage(
-    point: ExamPoint,
-    decisions: list[EvidenceDecision],
-    *,
-    additional_reasons: list[str],
-) -> ExamPointCoverage:
-    counts = {member: 0 for member in RelevanceClass}
-    for decision in decisions:
-        counts[decision.relevance_class] += 1
-    reasons = list(dict.fromkeys(additional_reasons))
-    direct = [item for item in decisions if item.relevance_class is RelevanceClass.DIRECT]
-    if not decisions and "no_recalled_evidence" not in reasons:
-        reasons.append("no_recalled_evidence")
-    if not direct:
-        reasons.append("no_direct_evidence")
-    conflicting = _has_conflicting_direct_claims(direct)
-    if conflicting:
-        reasons.append("conflicting_direct_claims")
-    reasons = list(dict.fromkeys(reasons))
-    if conflicting:
-        status = "conflicting"
-    elif direct and not any(reason.endswith("_failed") for reason in reasons):
-        status = "sufficient"
-    else:
-        status = "insufficient"
-    return ExamPointCoverage(
-        exam_point_code=point.code,
-        direct_count=counts[RelevanceClass.DIRECT],
-        supporting_count=counts[RelevanceClass.SUPPORTING],
-        background_count=counts[RelevanceClass.BACKGROUND],
-        out_of_scope_count=counts[RelevanceClass.OUT_OF_SCOPE],
-        status=status,
-        reasons=reasons,
-    )
 
 
 def _merge_consolidated_units(units: list[AssessmentUnitDraft]) -> list[AssessmentUnitDraft]:
@@ -187,7 +114,12 @@ def build_knowledge_catalog_candidate(
             for item in admitted_by_point.get(point.code, [])
             if item.relevance_class in {RelevanceClass.DIRECT, RelevanceClass.SUPPORTING}
         ]
-        validate_consolidated_units(point, admitted, units, chunks_by_id=chunks_by_id)
+        try:
+            validate_consolidated_units(point, admitted, units, chunks_by_id=chunks_by_id)
+        except DeepSeekModelError as exc:
+            # 归并适配层失败（引用缺口、编造事实等）按树校验失败处理，
+            # 保持构建器「确定性输入 → KnowledgeTreeValidationError」的契约。
+            raise KnowledgeTreeValidationError(str(exc)) from exc
         if not units:
             if admitted:
                 reasons.setdefault(point.code, []).append("no_cards_produced")
@@ -221,8 +153,8 @@ def build_knowledge_catalog_candidate(
         ),
     )
     tree.coverage = [
-        _coverage(
-            point,
+        compute_exam_point_coverage(
+            point.code,
             admitted_by_point.get(point.code, []),
             additional_reasons=reasons.get(point.code, []),
         )

@@ -126,7 +126,12 @@ class DeepSeekJsonClient:
         self.large_prompt_max_attempts = max(1, large_prompt_max_attempts)
         self.large_prompt_threshold_chars = large_prompt_threshold_chars
         self.disable_thinking = disable_thinking
-        self.client = client or httpx.Client(trust_env=False, timeout=timeout)
+        self.client = client or httpx.Client(
+            trust_env=False,
+            # 连接 15s / 读写 self.timeout：连接阶段卡死（历史上曾单请求挂
+            # 3600s）应快速失败进入重试，而非占住 worker 线程无限等待。
+            timeout=httpx.Timeout(timeout, connect=15.0),
+        )
         self.recorder = recorder
 
     def request_json(
@@ -391,7 +396,10 @@ class DeepSeekJsonClient:
                 "Content-Type": "application/json",
             },
             "json": json_body,
-            "timeout": self.timeout,
+            # 连接与读取超时分离：读取超时即 self.timeout（默认 240s，覆盖
+            # 慢速生成），连接超时固定 15s——历史上出现单请求挂 3600s 的
+            # transport_error，多为连接阶段阻塞，及时失败重试优于无限等待。
+            "timeout": httpx.Timeout(self.timeout, connect=15.0),
         }
         if self.client is not None:
             return self.client.post(f"{self.base_url}/chat/completions", **request)

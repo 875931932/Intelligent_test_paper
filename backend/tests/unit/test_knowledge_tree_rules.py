@@ -836,3 +836,70 @@ def test_teacher_can_rename_and_exclude_tree_nodes():
 
     assert revised.topics[0].name == "RAG方法"
     assert revised.topics[0].units[0].status == "excluded"
+
+
+def _supplement_tree(*, relevance: str) -> KnowledgeTreeCandidate:
+    from app.domain.knowledge.relevance import EvidenceDecision, RelevanceClass
+
+    tree = KnowledgeTreeCandidate(
+        framework_version_id="framework-v1",
+        topics=[],
+        coverage=[],
+        evidence_decisions=[
+            EvidenceDecision(
+                exam_point_code="EP-1",
+                evidence_chunk_id="chunk-1",
+                relevance_class=RelevanceClass(relevance),
+                support_claim="检索增强生成包括检索、上下文构造和生成三个阶段",
+                content_kind="fact",
+                confidence=90,
+            )
+        ],
+    )
+    return tree
+
+
+def test_supplement_direct_evidence_promotes_supporting_and_recomputes_coverage():
+    tree = _supplement_tree(relevance="supporting")
+
+    revised = apply_tree_operations(
+        tree,
+        [TreeOperation(operation="supplement_direct_evidence", target_code="EP-1", value="chunk-1")],
+        allowed_anchor_keys={"rag"},
+    )
+
+    assert revised.evidence_decisions[0].relevance_class.value == "direct"
+    assert revised.coverage[0].status == "sufficient"
+    assert revised.coverage[0].direct_count == 1
+
+
+def test_supplement_direct_evidence_promotes_background_too():
+    tree = _supplement_tree(relevance="background")
+
+    revised = apply_tree_operations(
+        tree,
+        [TreeOperation(operation="supplement_direct_evidence", target_code="EP-1", value="chunk-1")],
+        allowed_anchor_keys={"rag"},
+    )
+
+    assert revised.evidence_decisions[0].relevance_class.value == "direct"
+    assert revised.coverage[0].status == "sufficient"
+
+
+def test_supplement_direct_evidence_ignores_unknown_chunk_or_point():
+    from app.domain.knowledge.relevance import RelevanceClass
+
+    tree = _supplement_tree(relevance="supporting")
+
+    revised = apply_tree_operations(
+        tree,
+        [
+            TreeOperation(operation="supplement_direct_evidence", target_code="EP-X", value="chunk-1"),
+            TreeOperation(operation="supplement_direct_evidence", target_code="EP-1", value="chunk-404"),
+        ],
+        allowed_anchor_keys={"rag"},
+    )
+
+    # 未命中任何决策：树保持原样，不报错也不产生覆盖项
+    assert revised.evidence_decisions[0].relevance_class is RelevanceClass.SUPPORTING
+    assert revised.coverage == []
