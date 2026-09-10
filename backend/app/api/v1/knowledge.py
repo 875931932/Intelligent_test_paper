@@ -12,10 +12,11 @@ from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from app.adapters.model.deepseek_gateway import DeepSeekJsonClient
+from app.adapters.model.deepseek_gateway import DeepSeekJsonClient, DeepSeekModelError
 from app.adapters.model.deepseek_semantic_extractors import (
     DeepSeekExamPointEvidenceClassifier,
     DeepSeekExamPointKnowledgeConsolidator,
+    DeepSeekSupplementRecommender,
 )
 from app.adapters.model.embedding_gateway import OpenAICompatibleEmbeddingGateway
 from app.config import settings
@@ -99,6 +100,25 @@ def get_exam_point_consolidator(request: Request) -> ExamPointKnowledgeConsolida
         consolidator = DeepSeekExamPointKnowledgeConsolidator(client)
         request.app.state.exam_point_knowledge_consolidator = consolidator
         return consolidator
+
+
+def get_supplement_recommender(request: Request) -> DeepSeekSupplementRecommender:
+    """补证据推荐器：复用分类模型客户端，独立缓存实例。"""
+    recommender = getattr(request.app.state, "supplement_recommender", None)
+    if recommender is not None:
+        return recommender
+    with _organization_state_lock:
+        recommender = getattr(request.app.state, "supplement_recommender", None)
+        if recommender is not None:
+            return recommender
+        if not _deepseek_configured():
+            raise HTTPException(status_code=503, detail="semantic recommender is not configured")
+        client = _get_semantic_json_client(
+            request, settings.deepseek_classify_model or settings.deepseek_model
+        )
+        recommender = DeepSeekSupplementRecommender(client)
+        request.app.state.supplement_recommender = recommender
+        return recommender
 
 
 def _get_semantic_json_client(request: Request, model: str) -> DeepSeekJsonClient:
@@ -298,6 +318,115 @@ def get_candidate(course_id: str, run_id: str, session: Session = Depends(get_se
         return knowledge_publish_service.get_organization_candidate(session, course_id=course_id, run_id=run_id)
     except knowledge_publish_service.KnowledgePublishError:
         raise _not_found()
+
+
+class SupplementRecommendationRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    exam_point_code: str = Field(min_length=1)
+
+
+@router.post("/organization-runs/{run_id}/supplement-recommendations")
+def recommend_supplements(
+    course_id: str,
+    run_id: str,
+    body: SupplementRecommendationRequest,
+    session: Session = Depends(get_session),
+    recommender: DeepSeekSupplementRecommender = Depends(get_supplement_recommender),
+) -> dict:
+    """AI 推荐某覆盖不足考点可改判为直接证据的间接证据。
+
+    模型只做预选建议；改判仍由教师在发布确认时提交，不绕过教师确认权。
+    推荐失败降级为空推荐列表（HTTP 200，recommended 为空数组），
+    教师仍可手动挑选，不阻塞补证据流程。
+    """
+    try:
+        candidate = knowledge_publish_service.get_organization_candidate(
+            session, course_id=course_id, run_id=run_id
+        )
+    except knowledge_publish_service.KnowledgePublishError:
+        raise _not_found()
+
+    payload = candidate["payload"]
+    coverage = {
+        item.get("exam_point_code"): item
+        for item in payload.get("coverage") or []
+    }
+    target = coverage.get(body.exam_point_code)
+    if target is None:
+        raise HTTPException(status_code=404, detail="exam point is not in this candidate")
+    if target.get("status") == "sufficient":
+        return {
+            "exam_point_code": body.exam_point_code,
+            "recommended": [],
+            "note": "该考点覆盖已充足，无需补充",
+        }
+
+    from sqlalchemy import select as _sa_select
+
+    from app.db.schema import exam_points as exam_points_table
+    from app.domain.framework.exam_points import ExamPoint
+
+    point_row = session.execute(
+        _sa_select(exam_points_table)
+        .where(
+            exam_points_table.c.course_id == course_id,
+            exam_points_table.c.code == body.exam_point_code,
+        )
+        .limit(1)
+    ).mappings().first()
+    if point_row is None:
+        raise HTTPException(status_code=404, detail="exam point not found")
+    point = ExamPoint.model_validate(dict(point_row))
+
+    # 候选 = 该考点的 supporting/background 链接 + 对应 chunk 原文。
+    from app.db.schema import evidence_chunks as chunks_table
+
+    sources = {
+        item.get("evidence_chunk_id"): item
+        for item in payload.get("evidence_sources") or []
+        if item.get("exam_point_code") == body.exam_point_code
+        and item.get("relevance_class") in ("supporting", "background")
+    }
+    candidates: list[dict] = []
+    if sources:
+        rows = session.execute(
+            _sa_select(
+                chunks_table.c.id,
+                chunks_table.c.content,
+            ).where(
+                chunks_table.c.course_id == course_id,
+                chunks_table.c.id.in_(list(sources)),
+            )
+        ).mappings()
+        content_by_id = {row["id"]: row["content"] for row in rows}
+        for chunk_id, item in sources.items():
+            candidates.append(
+                {
+                    "evidence_chunk_id": chunk_id,
+                    "relevance_class": item.get("relevance_class"),
+                    "support_claim": item.get("support_claim"),
+                    "confidence": item.get("confidence"),
+                    "content": content_by_id.get(chunk_id, ""),
+                }
+            )
+    if not candidates:
+        return {
+            "exam_point_code": body.exam_point_code,
+            "recommended": [],
+            "note": "该考点暂无可补充的间接证据",
+        }
+
+    try:
+        recommended = recommender.recommend(exam_point=point, candidates=candidates)
+    except DeepSeekModelError as exc:
+        _logger.warning("supplement recommendation failed for %s: %s", body.exam_point_code, exc)
+        recommended = []
+    return {
+        "exam_point_code": body.exam_point_code,
+        "point_title": point.title,
+        "recommended": recommended,
+        "candidate_count": len(candidates),
+    }
 
 
 @router.post("/organization-runs/{run_id}/publish")

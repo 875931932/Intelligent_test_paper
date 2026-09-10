@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom';
 import {
   GitBranch, Search, Network, TreePine, ChevronRight, ChevronDown, Circle,
   AlertTriangle, Eye, RefreshCw, Plus, BookOpen, Target, CheckCircle2, Layers, Folder,
+  Sparkles,
 } from 'lucide-react';
 import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
@@ -476,6 +477,8 @@ export default function KnowledgePage() {
       {buildState === 'candidate' && (
         <CandidatePanel
           candidate={candidatePayload}
+          courseId={courseId}
+          runId={runId}
           supplementOps={supplementOps}
           onSupplementChange={setSupplementOps}
           onPublish={handlePublish}
@@ -741,8 +744,10 @@ function BuildingPanel() {
   );
 }
 
-function CandidatePanel({ candidate, supplementOps, onSupplementChange, onPublish, onReset }: {
+function CandidatePanel({ candidate, courseId, runId, supplementOps, onSupplementChange, onPublish, onReset }: {
   candidate: KnowledgeCandidatePayload | null;
+  courseId: string;
+  runId: string | null;
   supplementOps: Array<{ operation: string; target_code: string; value: string }>;
   onSupplementChange: (ops: Array<{ operation: string; target_code: string; value: string }>) => void;
   onPublish: () => void;
@@ -798,6 +803,11 @@ function CandidatePanel({ candidate, supplementOps, onSupplementChange, onPublis
   const [suppOpen, setSuppOpen] = useState(false);
   const [suppPoint, setSuppPoint] = useState<string>('');
   const [suppChunk, setSuppChunk] = useState<string>('');
+  // AI 推荐：打开弹窗时自动请求该考点的推荐改判（模型预选，教师确认）。
+  const [suppRecoLoading, setSuppRecoLoading] = useState(false);
+  const [suppRecoError, setSuppRecoError] = useState<string>('');
+  const [suppRecoByChunk, setSuppRecoByChunk] = useState<Map<string, string>>(new Map());
+  const suppRecoSeq = useRef(0);
 
   const supplementable = useMemo(
     () => (suppPoint ? sourcesByPoint.get(suppPoint) || [] : []),
@@ -829,11 +839,40 @@ function CandidatePanel({ candidate, supplementOps, onSupplementChange, onPublis
   const openSupplement = useCallback((code: string) => {
     setSuppPoint(code);
     const candidates = sourcesByPoint.get(code) || [];
-    // 默认选置信度最高的支持证据，而不是列表第一条。
+    // 默认选置信度最高的支持证据；AI 推荐返回后再覆盖为推荐条目。
     const best = [...candidates].sort((a, b) => (b.confidence || 0) - (a.confidence || 0))[0];
     setSuppChunk(best?.evidence_chunk_id || '');
     setSuppOpen(true);
-  }, [sourcesByPoint]);
+    setSuppRecoError('');
+    setSuppRecoByChunk(new Map());
+    // 异步请求 AI 推荐（不阻塞弹窗渲染；温度 0 + 后端 503/模型错误均降级为空推荐）。
+    const seq = ++suppRecoSeq.current;
+    setSuppRecoLoading(true);
+    api.knowledge
+      .recommendSupplements(courseId, runId || '', code)
+      .then((res) => {
+        if (seq !== suppRecoSeq.current) return;
+        const recommended = Array.isArray(res.recommended) ? res.recommended : [];
+        const map = new Map<string, string>();
+        recommended.forEach((r: Record<string, unknown>) => {
+          const id = String(r.evidence_chunk_id || '');
+          if (id) map.set(id, String(r.reason || ''));
+        });
+        setSuppRecoByChunk(map);
+        // 推荐存在时预选第一条推荐，教师无需改动即可采纳。
+        if (map.size > 0) {
+          const first = sourcesByPoint.get(code)?.find((s) => map.has(s.evidence_chunk_id));
+          if (first) setSuppChunk(first.evidence_chunk_id);
+        }
+      })
+      .catch((err) => {
+        if (seq !== suppRecoSeq.current) return;
+        setSuppRecoError(getErrorMessage(err));
+      })
+      .finally(() => {
+        if (seq === suppRecoSeq.current) setSuppRecoLoading(false);
+      });
+  }, [sourcesByPoint, courseId, runId]);
 
   const closeSupplement = useCallback(() => setSuppOpen(false), []);
 
@@ -953,21 +992,52 @@ function CandidatePanel({ candidate, supplementOps, onSupplementChange, onPublis
               </p>
             ) : (
               <>
+                {suppRecoLoading && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>
+                    <Spinner size={14} /> AI 正在判读 {suppOptions.length} 条候选证据…
+                  </div>
+                )}
+                {!suppRecoLoading && suppRecoError && (
+                  <div style={{ fontSize: '0.8125rem', color: 'var(--warning)' }}>
+                    AI 推荐暂不可用（{suppRecoError}），可参考下方信息手动选择。
+                  </div>
+                )}
+                {!suppRecoLoading && !suppRecoError && suppRecoByChunk.size > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
+                    <Sparkles size={14} style={{ color: 'var(--accent)' }} />
+                    AI 已判读全部候选，推荐 {suppRecoByChunk.size} 条可改判（已高亮并预选），最终由你确认
+                  </div>
+                )}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  <label style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
-                    选择要改判为直接证据的间接证据（{suppOptions.length} 条）
-                  </label>
-                  <select
-                    value={suppChunk}
-                    onChange={(e) => setSuppChunk(e.target.value)}
-                    style={{ width: '100%', padding: '8px 10px', borderRadius: '8px', border: '1px solid var(--border)', background: 'var(--surface)', color: 'var(--text)', fontSize: '0.875rem' }}
-                  >
-                    {suppOptions.map((opt) => (
-                      <option key={opt.id} value={opt.id}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
+                  {suppOptions.map((opt) => {
+                    const reason = suppRecoByChunk.get(opt.id);
+                    const selected = suppChunk === opt.id;
+                    return (
+                      <div
+                        key={opt.id}
+                        onClick={() => setSuppChunk(opt.id)}
+                        style={{
+                          display: 'flex', flexDirection: 'column', gap: '4px',
+                          padding: '10px 12px', borderRadius: '10px', cursor: 'pointer',
+                          border: selected ? '2px solid var(--accent)' : '1px solid var(--border)',
+                          background: selected ? 'var(--accent-subtle)' : (reason ? 'rgba(52,199,89,0.06)' : 'var(--surface)'),
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                          {reason && <Badge variant="success">AI 推荐</Badge>}
+                          <span style={{ fontSize: '0.8125rem', fontWeight: selected ? 600 : 400, flex: '1 1 200px', minWidth: 0 }}>
+                            {opt.label}
+                          </span>
+                          {selected && <Badge variant="info">已选</Badge>}
+                        </div>
+                        {reason && (
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+                            {reason}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
                 {suppPreview && (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px', borderRadius: '10px', background: 'rgba(0,0,0,0.03)' }}>

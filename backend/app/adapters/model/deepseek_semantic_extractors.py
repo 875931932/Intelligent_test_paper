@@ -1123,9 +1123,142 @@ def _schema_error(exc: ValidationError) -> DeepSeekModelError:
     )
 
 
+class _SupplementRecommendationItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    evidence_chunk_id: _Text
+    recommend: bool
+    reason: _Text = Field(min_length=1, max_length=500)
+
+
+class _SupplementRecommendationResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    exam_point_code: _Text
+    recommendations: list[_SupplementRecommendationItem]
+
+
+class DeepSeekSupplementRecommender:
+    """为覆盖不足考点推荐可改判为直接证据的间接证据。
+
+    分类阶段判为 supporting/background 的证据中，部分实际承载考点可考核
+    知识（如以操作条目外壳出现的知识陈述）。教师逐条读原文判断成本高：
+    本推荐器把该考点的考核要求与全部候选证据（含原文）一次发给模型，
+    由模型挑出真正承载知识主张的条目并给出理由。推荐仅供教师预选，
+    改判仍需教师在发布确认时提交。
+    """
+
+    def __init__(self, client: JsonRequester) -> None:
+        self.client = client
+
+    def recommend(
+        self,
+        *,
+        exam_point: ExamPoint,
+        candidates: list[dict[str, Any]],
+        call_context: ModelCallContext | None = None,
+    ) -> list[dict[str, Any]]:
+        """candidates: [{evidence_chunk_id, relevance_class, support_claim, confidence, content}]。
+
+        返回模型建议采纳的条目（仅 recommend=true 的子集），字段同输入并
+        附加 model_reason。输入为空或模型漏答时返回空列表，不抛错。
+        """
+        usable = [
+            item for item in candidates if str(item.get("evidence_chunk_id") or "").strip()
+        ]
+        if not usable:
+            return []
+        expected_ids = {str(item["evidence_chunk_id"]) for item in usable}
+        accepted: list[dict[str, Any]] = []
+
+        def validate_response(result: dict) -> None:
+            try:
+                response = _SupplementRecommendationResponse.model_validate(result)
+            except ValidationError as exc:
+                raise _schema_error(exc) from None
+            if response.exam_point_code != exam_point.code:
+                raise DeepSeekModelError(
+                    "model_output_scope_violation",
+                    "recommendation response belongs to another exam point",
+                )
+            seen: set[str] = set()
+            for item in response.recommendations:
+                if item.evidence_chunk_id not in expected_ids:
+                    raise DeepSeekModelError(
+                        "model_output_scope_violation",
+                        "recommendation references an unknown chunk",
+                    )
+                if item.evidence_chunk_id in seen:
+                    raise DeepSeekModelError(
+                        "model_output_scope_violation",
+                        "recommendation contains duplicate chunk",
+                    )
+                seen.add(item.evidence_chunk_id)
+            accepted.extend(
+                {
+                    "evidence_chunk_id": item.evidence_chunk_id,
+                    "recommend": item.recommend,
+                    "reason": item.reason,
+                }
+                for item in response.recommendations
+                if item.recommend
+            )
+
+        payload_items = [
+            {
+                "evidence_chunk_id": str(item["evidence_chunk_id"]),
+                "relevance_class": str(item.get("relevance_class") or ""),
+                "support_claim": str(item.get("support_claim") or ""),
+                "confidence": item.get("confidence"),
+                "content": str(item.get("content") or "")[:1200],
+            }
+            for item in usable
+        ]
+        self.client.request_json(
+            system_prompt=(
+                "你为知识目录的补证据环节挑选证据。一个考点当前「直接证据不足」，"
+                "教师可以从该考点的间接证据（supporting/background）中挑选条目改判为直接证据。"
+                "改判标准与证据分类一致：该条目的原文必须实际承载该考点可考核的知识本身"
+                "（概念、定义、原理、机制、规则、公式、关系、比较、约束等知识陈述，"
+                "或案例承载的通用结论）；纯操作指令（执行/等待/截图/检查某步骤完成，"
+                "且不含知识陈述）、与考点无关的背景介绍不得推荐。"
+                "注意『（编号）动词：知识陈述』形式的实验手册条目，判定依据是冒号后的"
+                "知识陈述是否承载考点知识，而非条目的编号或动词外壳。"
+                "输入包含考点的 code、title、assessment_requirement 与候选证据数组。"
+                "必须返回 JSON 对象：exam_point_code 照抄输入，recommendations 为数组，"
+                "每条包含 evidence_chunk_id（照抄输入）、recommend（布尔值）、reason（中文一句话，"
+                "说明该条目是否承载考点知识；推荐时必须引用原文中的具体事实，"
+                "不推荐时说明缺什么）。必须对每个候选条目给出恰好一条 recommendation，"
+                "不得遗漏或重复。reason 总长不超过 200 字。返回严格 JSON。"
+            ),
+            payload={
+                "exam_point": {
+                    "code": exam_point.code,
+                    "title": exam_point.title,
+                    "assessment_requirement": exam_point.assessment_requirement,
+                    "retrieval_intent": exam_point.retrieval_intent,
+                },
+                "candidates": payload_items,
+            },
+            temperature=0.0,
+            call_context=call_context,
+            response_validator=validate_response,
+        )
+        # 把推荐理由合并回原始候选字段，便于前端直接渲染。
+        by_id = {str(item["evidence_chunk_id"]): item for item in usable}
+        merged: list[dict[str, Any]] = []
+        for item in accepted:
+            base = by_id.get(item["evidence_chunk_id"])
+            if base is None:
+                continue
+            merged.append({**base, "model_reason": item["reason"]})
+        return merged
+
+
 __all__ = [
     "DeepSeekExamPointEvidenceClassifier",
     "DeepSeekExamPointKnowledgeConsolidator",
+    "DeepSeekSupplementRecommender",
     "DeepSeekJsonClient",
     "DeepSeekModelError",
     "DeepSeekSyllabusExtractor",

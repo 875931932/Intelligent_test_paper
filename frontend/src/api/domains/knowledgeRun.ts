@@ -22,4 +22,13 @@ export const knowledgeRunApi = {
   reject: (courseId: string, runId: string, token?: string): Promise<Record<string, unknown>> =>
     request('/courses/' + courseId + '/organization-runs/' + runId + '/reject',
       { method: 'POST' }, token),
+
+  recommendSupplements: (
+    courseId: string,
+    runId: string,
+    examPointCode: string,
+    token?: string,
+  ): Promise<Record<string, unknown>> =>
+    request('/courses/' + courseId + '/organization-runs/' + runId + '/supplement-recommendations',
+      { method: 'POST', body: JSON.stringify({ exam_point_code: examPointCode }) }, token),
 };
