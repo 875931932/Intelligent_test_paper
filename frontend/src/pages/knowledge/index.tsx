@@ -765,10 +765,14 @@ function CandidatePanel({ candidate, courseId, runId, supplementOps, onSupplemen
     + topics.reduce((acc, t) => acc + (t.units || []).filter((u) => u.status !== 'active').length, 0);
 
   // 按考点索引候选证据，避免每次渲染对全部证据源做线性扫描。
+  // 只允许可改判为 direct 的间接证据：supporting/background 且内容非空。
+  // out_of_scope 是与考点无关的判类、空 content 多为解析失败脏块，两者
+  // 都不该作为"补直接证据"候选展示给教师或下发给模型。
   const sourcesByPoint = useMemo(() => {
     const map = new Map<string, SupplementSource[]>();
     evidenceSources.forEach((s) => {
-      if (s.relevance_class === 'direct') return;
+      if (s.relevance_class !== 'supporting' && s.relevance_class !== 'background') return;
+      if (!(s.content || '').trim()) return;
       const list = map.get(s.exam_point_code);
       if (list) list.push(s);
       else map.set(s.exam_point_code, [s]);
