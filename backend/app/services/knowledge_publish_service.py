@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections import Counter
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -1023,6 +1024,68 @@ _EVIDENCE_MERGE_TARGET_CHARS = 1200
 # 短于该值的 block 视为碎块，与后续 block 聚合；超长 block 保持独立。
 _EVIDENCE_MERGE_MIN_CHARS = 200
 
+# 实验报告/作业封面、表单区与声明区的识别特征。这些块不含可迁移知识、
+# 只是教学资料的封面或页面元信息（课程名/学生信息/提交日期/装订表单等），
+# 一旦作为证据入库会既污染分类/归并上下文，又成为无意义的补证据候选。
+# 精准特征（下划线填空占位、封面/申明表单项），避免误伤正文中的真实内容
+# 与表格（正文偶尔含下划线，但不会同时具备"学生姓名+学号+递交日期"组合）。
+_COVER_FORM_STRONG_SIGNALS = (
+    "实验报告封面",
+    "课程名称",
+    "课程代码",
+    "任课老师",
+    "实验指导老师",
+    "学生姓名",
+    "学号",
+    "教学班",
+    "递交日期",
+    "签收人",
+    "我申明",
+    "申明人",
+    "实验报告评语与评分",
+    "评阅老师签名",
+)
+# 封面表单区往往由多个含下划线填空的短块连排出现；单个下划线块不判死，
+# 需配合强信号定位后，在起始区统一剔除，避免误杀正文里独立的示例代码块。
+_COVER_FORM_UNDERSCORE_PATTERN = re.compile(r"_{6,}|__{2,}__")
+
+
+def _is_cover_form_block(text: str) -> bool:
+    """判定一个 block 是否属于封面/表单/声明区（非知识内容）。"""
+    return any(signal in text for signal in _COVER_FORM_STRONG_SIGNALS)
+
+
+def _drop_cover_form_blocks(blocks: list[dict]) -> list[dict]:
+    """剔除文档开头的封面/表单/声明块，保留其后真正的正文块。
+
+    封面区指文档最前面连续命中表单特征的块及其随后的填空占位块；
+    一旦进入真实正文（非表单且非填空占位）即停止收缩，避免把后续
+    page 0/第 1 页上的实验目的、步骤等真实内容一并误删。
+    """
+    text = [block.get("text") or "" for block in blocks]
+
+    # 定位起始封面区结束位置：从头扫描，遇到"强信号表单块"后，
+    # 其后若仍是表单/填空占位块则一并剔除，直到首个既非表单也非
+    # 填空占位的正文块为止。仅处理文档最前部的这些块。
+    cut_at: int | None = None
+    saw_cover = False
+    for index, raw in enumerate(text):
+        content = raw.strip()
+        if not content:
+            continue
+        if _is_cover_form_block(content):
+            saw_cover = True
+            cut_at = index + 1
+            continue
+        if saw_cover and _COVER_FORM_UNDERSCORE_PATTERN.search(content):
+            cut_at = index + 1
+            continue
+        # 封面区已结束：停在首个正文块前
+        break
+    if not saw_cover or cut_at is None:
+        return blocks
+    return blocks[cut_at:]
+
 
 def _merged_evidence_blocks(blocks: list[dict]) -> list[tuple[dict, list[dict]]]:
     """把相邻碎 block 聚合为更长的 evidence chunk。
@@ -1214,6 +1277,10 @@ def create_organization_state(
             ).mappings()
             if row["text"].strip()
         ]
+        # 剔除文档开头封面/表单/声明块（实验报告封面、学生信息、装订表单、
+        # 下划线填空占位等），从源头避免这些非知识块嵌入入库。既减少向量
+        # 调用与分类/归并 token，也让补证据候选不再出现封面类无效项。
+        blocks = _drop_cover_form_blocks(blocks)
         if not blocks:
             raise KnowledgePublishError("selected material has no ready parsed content")
         selected_blocks.append((version_id, blocks))
@@ -1459,6 +1526,7 @@ def get_organization_candidate(session: Session, *, course_id: str, run_id: str)
                 exam_point_evidence_links.c.evidence_chunk_id,
             )
         ).mappings()
+        if not _is_cover_form_block(item["content"] or "")
     ]
     # 注入考点元信息：覆盖不足的考点往往没有候选考核单元，前端从
     # topics[].units[].title 匹配不到标题，列表只能显示裸编码，教师无从

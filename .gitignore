@@ -24,3 +24,10 @@ old_paper.json
 tmp*/
 .trae/
 .fetch/
+
+# 排障用临时脚本与本地凭据（不入库）
+backend/debug_*.py
+backend/scripts/debug_*.py
+backend/scripts/check_*.py
+backend/.token.txt
+.codegraph/
