@@ -71,6 +71,7 @@ export default function KnowledgePage() {
 
   const [buildState, setBuildState] = useState<BuildState>('idle');
   const [buildOpen, setBuildOpen] = useState(false);
+  const [teacherExclusions, setTeacherExclusions] = useState<string[]>([]);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejecting, setRejecting] = useState(false);
   const [selectableVersions, setSelectableVersions] = useState<MaterialVersionOption[]>([]);
@@ -310,17 +311,23 @@ export default function KnowledgePage() {
         reviewed_exam_point_codes: [
           ...new Set([...reviewedExamPointCodes, ...supplementOps.map((op) => op.target_code)]),
         ],
-        teacher_exclusions: [],
+        teacher_exclusions: teacherExclusions,
       });
-      addToast('知识目录已发布', 'success');
+      addToast(
+        teacherExclusions.length > 0
+          ? `知识目录已发布（已排除 ${teacherExclusions.length} 个考点）`
+          : '知识目录已发布',
+        'success'
+      );
       setBuildState('published');
       setCandidatePayload(null);
       setSupplementOps([]);
+      setTeacherExclusions([]);
       loadPublished();
     } catch (err) {
       addToast(`发布失败：${getErrorMessage(err)}`, 'error');
     }
-  }, [courseId, runId, loadPublished, addToast, reviewedTopicCodes, reviewedExamPointCodes, supplementOps]);
+  }, [courseId, runId, loadPublished, addToast, reviewedTopicCodes, reviewedExamPointCodes, supplementOps, teacherExclusions]);
 
   const handleReject = useCallback(async () => {
     if (!runId) return;
@@ -481,6 +488,8 @@ export default function KnowledgePage() {
           runId={runId}
           supplementOps={supplementOps}
           onSupplementChange={setSupplementOps}
+          teacherExclusions={teacherExclusions}
+          onTeacherExclusionsChange={setTeacherExclusions}
           onPublish={handlePublish}
           onReset={() => setRejectOpen(true)}
         />
@@ -744,12 +753,14 @@ function BuildingPanel() {
   );
 }
 
-function CandidatePanel({ candidate, courseId, runId, supplementOps, onSupplementChange, onPublish, onReset }: {
+function CandidatePanel({ candidate, courseId, runId, supplementOps, onSupplementChange, teacherExclusions, onTeacherExclusionsChange, onPublish, onReset }: {
   candidate: KnowledgeCandidatePayload | null;
   courseId: string;
   runId: string | null;
   supplementOps: Array<{ operation: string; target_code: string; value: string }>;
   onSupplementChange: (ops: Array<{ operation: string; target_code: string; value: string }>) => void;
+  teacherExclusions: string[];
+  onTeacherExclusionsChange: (codes: string[]) => void;
   onPublish: () => void;
   onReset: () => void;
 }) {
@@ -784,11 +795,13 @@ function CandidatePanel({ candidate, courseId, runId, supplementOps, onSupplemen
     () => new Map((coverage || []).map((c) => [c.exam_point_code, c])),
     [coverage]
   );
+  // 展示所有覆盖不足考点（含"归并失败"这类无间接证据可补但可排除的考点），
+  // 让教师能针对性的补证据或排除。
   const insufficientPoints = useMemo(
     () => (coverage || [])
-      .filter((c) => c.status !== 'sufficient' && sourcesByPoint.has(c.exam_point_code))
+      .filter((c) => c.status !== 'sufficient')
       .map((c) => c.exam_point_code),
-    [coverage, sourcesByPoint]
+    [coverage]
   );
 
   // 为覆盖不足的考点，找可读标题：优先取候选考核单元标题，其次回退到
@@ -822,6 +835,9 @@ function CandidatePanel({ candidate, courseId, runId, supplementOps, onSupplemen
   const [suppOpen, setSuppOpen] = useState(false);
   const [suppPoint, setSuppPoint] = useState<string>('');
   const [suppChunk, setSuppChunk] = useState<string>('');
+  // 排除考点的二次确认：点击某考点"排除"后弹窗，确认后加入 teacherExclusions。
+  const [excludeConfirmOpen, setExcludeConfirmOpen] = useState(false);
+  const [excludePoint, setExcludePoint] = useState<string>('');
   // AI 推荐：打开弹窗时自动请求该考点的推荐改判（模型预选，教师确认）。
   const [suppRecoLoading, setSuppRecoLoading] = useState(false);
   const [suppRecoError, setSuppRecoError] = useState<string>('');
@@ -913,6 +929,24 @@ function CandidatePanel({ candidate, courseId, runId, supplementOps, onSupplemen
   }, [supplementOps]);
   const totalSupplementOps = supplementOps.length;
 
+  // 排除考点：确认后加入集合；再次点击取消排除（从集合移除）。
+  const toggleExclusion = useCallback((code: string) => {
+    if (teacherExclusions.includes(code)) {
+      onTeacherExclusionsChange(teacherExclusions.filter((c) => c !== code));
+    } else {
+      setExcludePoint(code);
+      setExcludeConfirmOpen(true);
+    }
+  }, [teacherExclusions, onTeacherExclusionsChange]);
+
+  const confirmExclusion = useCallback(() => {
+    if (excludePoint) {
+      onTeacherExclusionsChange([...teacherExclusions, excludePoint]);
+    }
+    setExcludeConfirmOpen(false);
+    setExcludePoint('');
+  }, [excludePoint, teacherExclusions, onTeacherExclusionsChange]);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       {/* 顶部操作区 */}
@@ -966,13 +1000,26 @@ function CandidatePanel({ candidate, courseId, runId, supplementOps, onSupplemen
                   {supplementedCountByPoint.has(code) && (
                     <Badge variant="success">已补 {supplementedCountByPoint.get(code)} 项</Badge>
                   )}
+                  {teacherExclusions.includes(code) && (
+                    <Badge variant="danger">已排除</Badge>
+                  )}
                   <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    {(sourcesByPoint.get(code)?.length || 0) > 0 && (
+                      <Button
+                        variant="secondary"
+                        style={{ padding: '4px 12px', fontSize: '0.8125rem', height: 'auto', minHeight: 0 }}
+                        onClick={() => openSupplement(code)}
+                        disabled={teacherExclusions.includes(code)}
+                      >
+                        补证据
+                      </Button>
+                    )}
                     <Button
-                      variant="secondary"
+                      variant={teacherExclusions.includes(code) ? 'secondary' : 'danger'}
                       style={{ padding: '4px 12px', fontSize: '0.8125rem', height: 'auto', minHeight: 0 }}
-                      onClick={() => openSupplement(code)}
+                      onClick={() => toggleExclusion(code)}
                     >
-                      补证据
+                      {teacherExclusions.includes(code) ? '取消排除' : '排除'}
                     </Button>
                   </div>
                 </div>
@@ -1092,6 +1139,31 @@ function CandidatePanel({ candidate, courseId, runId, supplementOps, onSupplemen
             )}
           </div>
         )}
+      </Modal>
+      <Modal
+        open={excludeConfirmOpen}
+        onClose={() => { setExcludeConfirmOpen(false); setExcludePoint(''); }}
+        title="排除该考点？"
+        maxWidth="480px"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => { setExcludeConfirmOpen(false); setExcludePoint(''); }}>
+              取消
+            </Button>
+            <Button variant="danger" onClick={confirmExclusion}>
+              确认排除
+            </Button>
+          </>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+          <div style={{ fontSize: '0.9375rem', fontWeight: 600 }}>{excludePoint && (pointLabels.get(excludePoint) || excludePoint)}</div>
+          <div style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+            排除后该考点将不参与出卷覆盖，也不会进入最终发布的考查范围。
+            {sourcesByPoint.get(excludePoint)?.length ? ' 可先尝试「补证据」后再决定是否排除。' : ''}
+            排除操作可在此处撤销。
+          </div>
+        </div>
       </Modal>
     </div>
   );
