@@ -1460,6 +1460,29 @@ def get_organization_candidate(session: Session, *, course_id: str, run_id: str)
             )
         ).mappings()
     ]
+    # 注入考点元信息：覆盖不足的考点往往没有候选考核单元，前端从
+    # topics[].units[].title 匹配不到标题，列表只能显示裸编码，教师无从
+    # 判断该补哪条证据。这里从框架版本查考点标题，供前端列表/弹窗兜底展示。
+    framework_version_id = payload.get("framework_version_id") or result.get("framework_version_id")
+    if framework_version_id:
+        payload["exam_point_labels"] = {
+            row["code"]: {
+                "title": row["title"],
+                "assessment_requirement": row["assessment_requirement"],
+            }
+            for row in session.execute(
+                select(
+                    exam_points.c.code,
+                    exam_points.c.title,
+                    exam_points.c.assessment_requirement,
+                )
+                .where(
+                    exam_points.c.course_id == course_id,
+                    exam_points.c.framework_version_id == framework_version_id,
+                )
+                .order_by(exam_points.c.code)
+            ).mappings()
+        }
     result["payload"] = payload
     return result
 

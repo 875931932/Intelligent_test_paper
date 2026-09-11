@@ -309,6 +309,10 @@ export interface KnowledgeCandidatePayload {
     confidence: number;
     content?: string;
   }>;
+  exam_point_labels?: Record<string, {
+    title: string;
+    assessment_requirement: string;
+  }>;
 }
 
 export interface OrganizationRunResponse {

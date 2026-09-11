@@ -791,7 +791,9 @@ function CandidatePanel({ candidate, courseId, runId, supplementOps, onSupplemen
     [coverage, sourcesByPoint]
   );
 
-  // 为覆盖不足的考点，从其主题/单元里找可读标题，方便在待补证据列表里展示。
+  // 为覆盖不足的考点，找可读标题：优先取候选考核单元标题，其次回退到
+  // 框架考点元信息（覆盖不足考点常无候选单元，只有裸编码无从判断）。
+  const examPointLabels = useMemo(() => candidate?.exam_point_labels || {}, [candidate]);
   const pointLabels = useMemo(() => {
     const map = new Map<string, string>();
     topics.forEach((t) => {
@@ -801,8 +803,21 @@ function CandidatePanel({ candidate, courseId, runId, supplementOps, onSupplemen
         }
       });
     });
+    // 兜底：无候选单元的覆盖不足考点，用框架标题。
+    Object.entries(examPointLabels).forEach(([code, meta]) => {
+      if (!map.has(code) && meta?.title) map.set(code, meta.title);
+    });
     return map;
-  }, [topics]);
+  }, [topics, examPointLabels]);
+
+  // 考点考核要求摘要，列表里让教师明确该考点考什么。
+  const pointRequirement = useMemo(() => {
+    const map = new Map<string, string>();
+    Object.entries(examPointLabels).forEach(([code, meta]) => {
+      if (meta?.assessment_requirement) map.set(code, meta.assessment_requirement);
+    });
+    return map;
+  }, [examPointLabels]);
 
   const [suppOpen, setSuppOpen] = useState(false);
   const [suppPoint, setSuppPoint] = useState<string>('');
@@ -938,9 +953,14 @@ function CandidatePanel({ candidate, courseId, runId, supplementOps, onSupplemen
                   key={code}
                   style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', borderRadius: '10px', background: 'rgba(0,0,0,0.02)', flexWrap: 'wrap' }}
                 >
-                  <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+                  <div style={{ flex: '1 1 260px', minWidth: 0 }}>
                     <div style={{ fontSize: '0.875rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pointLabels.get(code) || code}</div>
                     <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>{code}</div>
+                    {pointRequirement.has(code) && (
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.5, marginTop: 2, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                        {pointRequirement.get(code)}
+                      </div>
+                    )}
                   </div>
                   {cov && <CoverageBadge status={cov.status} />}
                   {supplementedCountByPoint.has(code) && (
