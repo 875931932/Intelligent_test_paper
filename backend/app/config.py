@@ -29,9 +29,11 @@ class Settings(BaseSettings):
     # 操作流程等非知识块。留空回退到 deepseek_model，不受影响。
     deepseek_extract_model: str = ""
     # 抽取阶段单次调用送入的原始块数：chunk 约 1200 字符，输出为每块 0~3 条
-    # 陈述，批大小控制单次输出规模，规避大 JSON 被截断导致的格式失败。
-    organization_extraction_batch_size: int = Field(default=15, gt=0)
-    organization_extraction_max_tokens: int = Field(default=6144, gt=0)
+    # 陈述。批过大（如 15 块 + 6144 输出预算）会让单次 JSON 输出过重，StepFun
+    # 在长时生成后返空内容导致整批失败；取小批（6 块）并把输出预算压到 3072，
+    # 单次轻量可靠（实测 5 块/3072 稳定返回 9 条陈述）。
+    organization_extraction_batch_size: int = Field(default=6, gt=0)
+    organization_extraction_max_tokens: int = Field(default=3072, gt=0)
     # 抽取/分类/归并阶段关闭长链路推理：MiMo 发 thinking=disabled；StepFun 无
     # 思考开关，改用 reasoning_effort=low（官方标注 low 档适合信息抽取），
     # 避免推理消耗输出额度导致 JSON 内容为空/被截断，并节省 token。true=关闭。
