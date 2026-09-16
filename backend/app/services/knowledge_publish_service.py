@@ -892,12 +892,23 @@ class DatabaseKnowledgeRepository:
         ]
         touched_codes = {code for code, _ in updated_keys}
         for code in touched_codes:
+            original = next(
+                (c for c in tree.coverage if c.exam_point_code == code), None
+            )
+            # 补证据只改变证据数量，无法重建已归并失败的单元/卡片链路：
+            # 保留原始 *_failed 原因，避免误判 sufficient 后触发 active-chain 校验。
+            irrecoverable = [
+                r
+                for r in (original.reasons if original else [])
+                if r.endswith("_failed")
+            ]
             tree.coverage = [
                 item for item in tree.coverage if item.exam_point_code != code
             ] + [
                 compute_exam_point_coverage(
                     code,
                     [d for d in tree.evidence_decisions if d.exam_point_code == code],
+                    additional_reasons=irrecoverable,
                 )
             ]
 
