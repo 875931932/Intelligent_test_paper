@@ -7,6 +7,10 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from app.domain.framework.exam_points import ExamPoint, OperationalDetailPolicy, WeightSource
+from app.adapters.model.deepseek_semantic_extractors import (
+    KnowledgePointExtractionResult,
+    KnowledgePointStatement,
+)
 from app.domain.knowledge.models import AssessmentUnitDraft, KnowledgeCardDraft
 from app.domain.knowledge.relevance import (
     ContentKind,
@@ -64,6 +68,38 @@ class PairSelectingRetriever:
             for chunk in chunks
             if chunk.id in allowed
         ]
+
+
+class RecordingExtractor:
+    """把每个输入块蒸馏成同内容知识点陈述，剔除 chunk-4（无关内容）。
+
+    为保持下游断言不变，陈述块 id 沿用原始块 id（statement 文本 = 原始文本），
+    仅验证抽取管线在检索/分类/归并之前先把 evidence_chunk_ids 换成陈述 id。
+    """
+
+    def __init__(self, *, drop_ids: set[str] | None = None):
+        self.calls: list[tuple[str, list[str]]] = []
+        self.drop_ids = {"chunk-4"} if drop_ids is None else drop_ids
+
+    def extract_material(self, *, material_version_id, chunks, call_context=None, max_tokens=None):
+        self.calls.append(
+            (material_version_id, tuple(sorted(chunk.id for chunk in chunks)))
+        )
+        statements = [
+            KnowledgePointStatement(
+                source_evidence_chunk_id=chunk.id,
+                statement=chunk.content,
+                content_kind=ContentKind.FACT,
+            )
+            for chunk in chunks
+            if chunk.id not in self.drop_ids
+        ]
+        dropped = [chunk.id for chunk in chunks if chunk.id in self.drop_ids]
+        return KnowledgePointExtractionResult(
+            material_version_id=material_version_id,
+            dropped_chunk_ids=dropped,
+            statements=statements,
+        )
 
 
 class RecordingClassifier:
@@ -138,6 +174,24 @@ class RecordingKnowledgeRepository:
         assert run_id == "organization-run-1"
         return [self.chunks[chunk_id] for chunk_id in evidence_chunk_ids]
 
+    def persist_statements(self, embedder, *, course_id, run_id, material_version_id, statements):
+        assert course_id == "course-1"
+        assert run_id == "organization-run-1"
+        # 为保持下游断言不变，陈述块沿用原始块 id；仅剔除非知识块（不在 chunks 里注册）。
+        kept_ids: list[str] = []
+        for item in statements:
+            source_id = item.source_evidence_chunk_id
+            if source_id not in self.chunks:
+                self.chunks[source_id] = StagingChunk(
+                    id=source_id,
+                    material_version_id=item.material_version_id
+                    if hasattr(item, "material_version_id")
+                    else material_version_id,
+                    content=item.statement,
+                )
+            kept_ids.append(source_id)
+        return kept_ids
+
     def persist_candidate(self, state, tree):
         self.candidate = tree
         self.persisted_state = state
@@ -185,17 +239,25 @@ def _state(chunks=None):
     }
 
 
-def _graph(*, classifier=None, retriever=None, consolidator=None, chunks=None):
+def _graph(*, classifier=None, retriever=None, consolidator=None, extractor=None, chunks=None):
     chunks = chunks or _chunks()
     repository = RecordingKnowledgeRepository(chunks)
     retriever = retriever or PairSelectingRetriever()
     classifier = classifier or RecordingClassifier()
     consolidator = consolidator or RecordingConsolidator()
+    extractor = extractor or RecordingExtractor()
+
+    class StubEmbedder:
+        def embed(self, texts):
+            return [[1.0, 0.0] for _ in texts]
+
     graph = build_organization_graph(
         retriever,
         classifier,
         consolidator,
         repository,
+        extractor=extractor,
+        embedder=StubEmbedder(),
         checkpointer=InMemorySaver(),
     )
     return graph, retriever, classifier, consolidator, repository
@@ -609,7 +671,9 @@ def test_incomplete_classifier_response_isolated_to_its_pair(response_kind):
             ]
 
     graph, _, classifier, _, repository = _graph(
-        retriever=MultiChunkRetriever(), classifier=IncompleteClassifier()
+        retriever=MultiChunkRetriever(),
+        classifier=IncompleteClassifier(),
+        extractor=RecordingExtractor(drop_ids=set()),
     )
 
     graph.invoke(

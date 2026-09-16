@@ -16,6 +16,7 @@ from app.adapters.model.deepseek_gateway import DeepSeekJsonClient, DeepSeekMode
 from app.adapters.model.deepseek_semantic_extractors import (
     DeepSeekExamPointEvidenceClassifier,
     DeepSeekExamPointKnowledgeConsolidator,
+    DeepSeekKnowledgePointExtractor,
     DeepSeekSupplementRecommender,
 )
 from app.adapters.model.embedding_gateway import OpenAICompatibleEmbeddingGateway
@@ -100,6 +101,24 @@ def get_exam_point_consolidator(request: Request) -> ExamPointKnowledgeConsolida
         consolidator = DeepSeekExamPointKnowledgeConsolidator(client)
         request.app.state.exam_point_knowledge_consolidator = consolidator
         return consolidator
+
+
+def get_knowledge_point_extractor(request: Request) -> DeepSeekKnowledgePointExtractor:
+    extractor = getattr(request.app.state, "knowledge_point_extractor", None)
+    if extractor is not None:
+        return extractor
+    with _organization_state_lock:
+        extractor = getattr(request.app.state, "knowledge_point_extractor", None)
+        if extractor is not None:
+            return extractor
+        if not _deepseek_configured():
+            raise HTTPException(status_code=503, detail="knowledge point extractor is not configured")
+        client = _get_semantic_json_client(
+            request, settings.deepseek_extract_model or settings.deepseek_model
+        )
+        extractor = DeepSeekKnowledgePointExtractor(client)
+        request.app.state.knowledge_point_extractor = extractor
+        return extractor
 
 
 def get_supplement_recommender(request: Request) -> DeepSeekSupplementRecommender:
@@ -196,6 +215,7 @@ def _run_organization_pipeline(
     run_id: str,
     material_version_ids: list[str],
     embedder: EmbeddingClient,
+    extractor: DeepSeekKnowledgePointExtractor,
     classifier: ExamPointEvidenceClassifier,
     consolidator: ExamPointKnowledgeConsolidator,
     session_factory,
@@ -228,6 +248,8 @@ def _run_organization_pipeline(
             classifier,
             consolidator,
             knowledge_publish_service.DatabaseKnowledgeRepository(session),
+            extractor=extractor,
+            embedder=embedder,
             checkpointer=InMemorySaver(),
         )
         graph.invoke(state, {"configurable": {"thread_id": state["run_id"]}})
@@ -251,6 +273,7 @@ def create_organization_run(
     payload: OrganizationRunCreate,
     session: Session = Depends(get_session),
     embedder: EmbeddingClient = Depends(get_organization_embedder),
+    extractor: DeepSeekKnowledgePointExtractor = Depends(get_knowledge_point_extractor),
     classifier: ExamPointEvidenceClassifier = Depends(get_exam_point_classifier),
     consolidator: ExamPointKnowledgeConsolidator = Depends(get_exam_point_consolidator),
 ) -> dict:
@@ -277,6 +300,7 @@ def create_organization_run(
             "run_id": run_id,
             "material_version_ids": payload.material_version_ids,
             "embedder": embedder,
+            "extractor": extractor,
             "classifier": classifier,
             "consolidator": consolidator,
             "session_factory": get_session_factory(),

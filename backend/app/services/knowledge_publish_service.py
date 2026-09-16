@@ -664,6 +664,29 @@ class DatabaseKnowledgeRepository:
             raise
         return {"catalog_version_id": catalog_id, "index_version_id": index_id}
 
+    def persist_statements(
+        self,
+        embedder,
+        *,
+        course_id: str,
+        run_id: str,
+        material_version_id: str,
+        statements,
+    ) -> list[str]:
+        """把抽取出的知识点陈述落库为 kind='statement' 的证据块并返回复用 id。
+
+        委托给独立函数以便与类内 Session 复用同一事务语义；statement 与原始块
+        同一套向量缓存寻址复用，重建 run 的嵌入成本趋近于零。
+        """
+        return persist_statement_evidence_chunks(
+            self.session,
+            embedder,
+            course_id=course_id,
+            run_id=run_id,
+            material_version_id=material_version_id,
+            statements=statements,
+        )
+
     def _insert_tree(
         self,
         course_id: str,
@@ -1448,6 +1471,173 @@ def create_organization_state(
         "evidence_chunk_ids": evidence_ids,
         "frozen_input": frozen_input,
     }
+
+
+def persist_statement_evidence_chunks(
+    session: Session,
+    embedder,
+    *,
+    course_id: str,
+    run_id: str,
+    material_version_id: str,
+    statements,
+) -> list[str]:
+    """把抽取出的知识点陈述落库为 kind='statement' 的证据块。
+
+    与原始块同一套内容寻址复用：id 从 (material_version, content_hash 'statement:'
+    前缀) 派生，同一资料的同一陈述在重复 run 中命中旧行，仅补齐缺失的 embedding，
+    重建 run 的嵌入成本趋近于零。statement 通过 source_evidence_chunk_id 回溯
+    到抽取它的原始块，供教师溯源。
+    """
+    if not statements:
+        return []
+    # 按 (source, 陈述文本) 去重，保留首次出现顺序。
+    cleaned: list[tuple[str, str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in statements:
+        text = str(getattr(item, "statement", "") or "").strip()
+        source_id = str(getattr(item, "source_evidence_chunk_id", "") or "").strip()
+        kind = str(getattr(item, "content_kind", "") or "fact").strip()
+        if not text or not source_id:
+            continue
+        key = (source_id, text)
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append((source_id, text, kind))
+    if not cleaned:
+        return []
+
+    source_ids = sorted({source_id for source_id, _text, _kind in cleaned})
+    source_by_id = {
+        row["id"]: row
+        for row in session.execute(
+            select(
+                evidence_chunks.c.id,
+                evidence_chunks.c.content_block_id,
+                evidence_chunks.c.locator,
+            ).where(
+                evidence_chunks.c.course_id == course_id,
+                evidence_chunks.c.material_version_id == material_version_id,
+                evidence_chunks.c.id.in_(source_ids),
+            )
+        ).mappings()
+    }
+
+    rows: list[dict] = []
+    for source_id, text, kind in cleaned:
+        statement_id = sha256(
+            f"statement:{material_version_id}\n{text}".encode()
+        ).hexdigest()[:32]
+        source = source_by_id.get(source_id)
+        locator = {
+            "page_index": (source.get("locator") or {}).get("page_index"),
+            "heading_path": (source.get("locator") or {}).get("heading_path") or [],
+            "reading_order": (source.get("locator") or {}).get("reading_order"),
+            "block_type": (source.get("locator") or {}).get("block_type"),
+            "source_block_count": (source.get("locator") or {}).get("source_block_count"),
+            "statement": True,
+            "content_kind": kind,
+            "source_evidence_chunk_id": source_id,
+        }
+        rows.append(
+            {
+                "id": statement_id,
+                "content": text,
+                "content_hash": sha256(text.encode()).hexdigest(),
+                "locator": locator,
+                "content_block_id": source.get("content_block_id") if source else None,
+                "source_evidence_chunk_id": source_id,
+            }
+        )
+
+    texts = [row["content"] for row in rows]
+    hashes = [row["content_hash"] for row in rows]
+    cached: dict[str, list[float]] = {}
+    if hashes:
+        for cache_row in session.execute(
+            select(evidence_chunks.c.content_hash, evidence_chunks.c.embedding).where(
+                evidence_chunks.c.course_id == course_id,
+                evidence_chunks.c.material_version_id == material_version_id,
+                evidence_chunks.c.content_hash.in_(hashes),
+                evidence_chunks.c.embedding.is_not(None),
+            )
+        ).mappings():
+            cached.setdefault(cache_row["content_hash"], cache_row["embedding"])
+    vectors: list[list[float] | None] = []
+    missing_index: list[int] = []
+    for index, (text, digest) in enumerate(zip(texts, hashes, strict=True)):
+        hit = cached.get(digest)
+        if hit is None:
+            missing_index.append(index)
+            vectors.append(None)
+        else:
+            vectors.append(hit)
+    if missing_index:
+        try:
+            fresh = _validated_embeddings(
+                embedder.embed([texts[index] for index in missing_index]),
+                expected=len(missing_index),
+            )
+        except KnowledgePublishError:
+            raise
+        except Exception as exc:
+            raise KnowledgePublishError("embedding service is unavailable") from exc
+        for position, index in enumerate(missing_index):
+            vectors[index] = fresh[position]
+
+    run_chunk_index_offset = (
+        session.scalar(
+            select(func.max(evidence_chunks.c.chunk_index)).where(
+                evidence_chunks.c.organization_run_id == run_id
+            )
+        )
+        or -1
+    )
+    persisted_ids: list[str] = []
+    try:
+        for index, row in enumerate(rows):
+            statement_id = row["id"]
+            existing = session.execute(
+                select(evidence_chunks.c.id, evidence_chunks.c.embedding).where(
+                    evidence_chunks.c.id == statement_id,
+                    evidence_chunks.c.course_id == course_id,
+                    evidence_chunks.c.material_version_id == material_version_id,
+                )
+            ).mappings().first()
+            vector = vectors[index]
+            if existing is not None:
+                if existing["embedding"] is None and vector is not None:
+                    session.execute(
+                        evidence_chunks.update()
+                        .where(evidence_chunks.c.id == statement_id)
+                        .values(embedding=vector)
+                    )
+                persisted_ids.append(statement_id)
+                continue
+            # 新块：chunk_index 接在 run 内现有块之后，避免撞 uq_evidence_chunks_run_index。
+            session.execute(
+                evidence_chunks.insert().values(
+                    id=statement_id,
+                    course_id=course_id,
+                    organization_run_id=run_id,
+                    material_version_id=material_version_id,
+                    content_block_id=row.get("content_block_id"),
+                    chunk_index=run_chunk_index_offset + 1 + index,
+                    content=row["content"],
+                    content_hash=row["content_hash"],
+                    locator=row["locator"],
+                    embedding=vectors[index],
+                    kind="statement",
+                    source_evidence_chunk_id=row["source_evidence_chunk_id"],
+                )
+            )
+            persisted_ids.append(statement_id)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    return persisted_ids
 
 
 def get_organization_run(session: Session, *, course_id: str, run_id: str) -> dict:

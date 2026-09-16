@@ -92,6 +92,30 @@ def _migrate_evidence_link_fk(engine: Engine) -> None:
             )
 
 
+def _migrate_evidence_chunk_columns(engine: Engine) -> None:
+    """Idempotently add kind / source_evidence_chunk_id columns to evidence_chunks.
+
+    知识点抽取环节新增：区分原始块(raw)与蒸馏陈述(statement)，并记录陈述的
+    溯源原始块 id。旧表无这些列，create_all 不会 ALTER 已存在表，需显式迁移。
+    """
+
+    insp = inspect(engine)
+    if not insp.has_table("evidence_chunks"):
+        return
+    existing = {c["name"] for c in insp.get_columns("evidence_chunks")}
+    dialect = engine.dialect.name
+    with engine.begin() as conn:
+        if dialect == "postgresql":
+            if "kind" not in existing:
+                conn.execute(text("ALTER TABLE evidence_chunks ADD COLUMN kind VARCHAR(20) NOT NULL DEFAULT 'raw'"))
+            if "source_evidence_chunk_id" not in existing:
+                conn.execute(text("ALTER TABLE evidence_chunks ADD COLUMN source_evidence_chunk_id VARCHAR(64)"))
+        elif "kind" not in existing:
+            conn.execute(text("ALTER TABLE evidence_chunks ADD COLUMN kind VARCHAR(20) NOT NULL DEFAULT 'raw'"))
+            if "source_evidence_chunk_id" not in existing:
+                conn.execute(text("ALTER TABLE evidence_chunks ADD COLUMN source_evidence_chunk_id VARCHAR(64)"))
+
+
 def _seed_dev_data(bind: Engine | Connection) -> None:
     """Upsert the admin test account and fold any legacy 'owner-dev' data into it."""
 
@@ -167,6 +191,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
                 Base.metadata.create_all(conn)
                 _migrate_user_columns(engine)
                 _migrate_evidence_link_fk(engine)
+                _migrate_evidence_chunk_columns(engine)
                 if seed:
                     _seed_dev_data(conn)
         else:
@@ -175,6 +200,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             Base.metadata.create_all(engine)
             _migrate_user_columns(engine)
             _migrate_evidence_link_fk(engine)
+            _migrate_evidence_chunk_columns(engine)
             if seed:
                 _seed_dev_data(engine)
     finally:

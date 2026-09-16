@@ -26,6 +26,7 @@ from app.domain.knowledge.relevance import (
     ExamPointFileDecision,
     RelevanceClass,
     StagingChunk,
+    _CONTENT_KIND_ALIASES,
     all_facts_supported,
     assessable_fact_keys,
     fact_key_supported,
@@ -1138,6 +1139,192 @@ class _SupplementRecommendationResponse(BaseModel):
     recommendations: list[_SupplementRecommendationItem]
 
 
+def _normalize_extraction_content_kind(value: object) -> object:
+    """把模型对 content_kind 的松散写法归一为 ContentKind 枚举值。
+
+    未知/通用类写法（如 process、explanation）收敛为 fact，避免单条瑕疵
+    陈述让整批抽取判死重试（与分类阶段对通用 kind 的兜底口径一致）。
+    """
+    if isinstance(value, ContentKind):
+        return value
+    if not isinstance(value, str):
+        return ContentKind.FACT.value
+    normalized = re.sub(r"[\s-]+", "_", value.strip().casefold())
+    normalized = _CONTENT_KIND_ALIASES.get(normalized, normalized)
+    if normalized in {item.value for item in ContentKind}:
+        return normalized
+    return ContentKind.FACT.value
+
+
+_ExtractionContentKind = Annotated[
+    ContentKind, BeforeValidator(_normalize_extraction_content_kind)
+]
+
+
+class _ExtractionStatementResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_evidence_chunk_id: _Text
+    statement: _Text
+    content_kind: _ExtractionContentKind
+
+
+class _ExtractionResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    material_version_id: _Text
+    dropped_chunk_ids: _TextList = Field(default_factory=list)
+    statements: list[_ExtractionStatementResponse] = Field(default_factory=list)
+
+
+class KnowledgePointStatement(BaseModel):
+    """从原始块蒸馏出的一条自包含知识点陈述。"""
+
+    source_evidence_chunk_id: str
+    statement: str
+    content_kind: ContentKind
+
+
+class KnowledgePointExtractionResult(BaseModel):
+    """一份资料的一次抽取结果：被剔除的非知识块 + 采纳的知识点陈述。"""
+
+    material_version_id: str
+    dropped_chunk_ids: list[str]
+    statements: list[KnowledgePointStatement]
+
+
+class DeepSeekKnowledgePointExtractor:
+    """把原始文本块蒸馏成自包含知识点陈述，并剔除封面/行政/纯操作流程块。
+
+    抽取在冻结资料之后、检索之前，对每份资料做一次性全局处理（与考点无关，
+    避免按考点扇出的 token 爆炸）。下游检索/分类/归并只消费 statement 块，
+    使证据从"原文长文"升级为"可迁移知识点陈述"，减少背景/说明类误判。
+    """
+
+    def __init__(self, client: JsonRequester) -> None:
+        self.client = client
+
+    def extract_material(
+        self,
+        *,
+        material_version_id: str,
+        chunks: list[StagingChunk],
+        call_context: ModelCallContext | None = None,
+        max_tokens: int | None = None,
+    ) -> KnowledgePointExtractionResult:
+        if any(chunk.material_version_id != material_version_id for chunk in chunks):
+            raise DeepSeekModelError(
+                "model_input_scope_violation",
+                "extraction input contains another material version",
+            )
+        all_ids = [chunk.id for chunk in chunks]
+        collected: dict[str, _ExtractionResponse] = {}
+
+        def validate_response(result: dict) -> None:
+            try:
+                response = _ExtractionResponse.model_validate(result)
+            except ValidationError as exc:
+                raise _schema_error(exc) from None
+            if response.material_version_id != material_version_id:
+                raise DeepSeekModelError(
+                    "model_output_scope_violation",
+                    "extraction response belongs to another material version",
+                )
+            referenced = set(response.dropped_chunk_ids) | {
+                item.source_evidence_chunk_id for item in response.statements
+            }
+            unknown = referenced - set(all_ids)
+            if unknown:
+                raise DeepSeekModelError(
+                    "model_output_scope_violation",
+                    "extraction response references an unknown chunk",
+                    details={"unknown_chunk_ids": sorted(unknown)[:10]},
+                )
+            collected["response"] = response
+
+        self.client.request_json(
+            system_prompt=(
+                "你负责把一份教学资料/习题材料切分出的文本片段，蒸馏成自包含、可迁移的知识点陈述，"
+                "并剔除不含课程知识的内容。输入是 chunks 数组，各片段相互独立、截取自材料不同位置，"
+                "相邻片段之间不存在文本连续性：不得假设当前片段前后还有未展示的内容，"
+                "禁止把其他片段的内容归属到当前片段。"
+                "对每个片段做两件事之一："
+                "1) 若该片段承载课程知识，放入 statements，并蒸馏出 1~3 条自包含知识点陈述；"
+                "2) 若该片段不含课程知识，把它的 evidence_chunk_id 列入 dropped_chunk_ids。"
+                "必须覆盖输入的每一个片段：要么被剔除，要么产出至少一条陈述，不得遗漏、不得重复。"
+                "判定'是否承载课程知识'：概念、定义、原理、机制、规则、公式、推导、关系、比较、约束、"
+                "事实，以及案例/实验/参数承载的通用结论、可考的操作细节（命令、配置、参数、路径、"
+                "评分规则）都算课程知识。"
+                "实验手册/操作指引常以『（编号）动词：知识陈述』形式出现，如『（2.3）理解传统 RLHF "
+                "流程：传统 RLHF 通常包含偏好数据收集、奖励模型训练和 PPO 策略优化等步骤』："
+                "判定依据是冒号后的知识陈述是否承载知识，而不是条目的编号或动作外壳；"
+                "『理解/明确/分析/演练 X：YY』中的 YY 就是知识，应蒸馏保留。"
+                "需要剔除的典型内容：封面/书名/作者/日期/学号/班级/装订声明等行政字段，"
+                "表格里只填空白的模板占位与'年 月 日'，目录/章节目录，页眉页脚，老师评语栏，"
+                "与课程考核无关的过程说明；以及不含任何命令/配置/参数/知识陈述的纯流程化操作指令"
+                "外壳（如'等待实验完成''截图保存''确认步骤已完成'）。"
+                "但承载可考事实的操作细节（如'使用 --batch_size 8 配置训练批次''eval_batch_size "
+                "参数用于控制评测批大小'）属于课程知识，应蒸馏保留而非剔除。"
+                "蒸馏出的陈述必须："
+                "只重述该片段原文中确实存在的事实，禁止引入片段之外的任何新事实、新术语、新观点；"
+                "每条自包含、独立可理解：脱离片段也能读懂，缺主语时从原文补全归属限定；"
+                "为此处 RAG 知识库抽离情境，案例/实验叙述只抽取其承载的可迁移通用结论，"
+                "禁止保留'本次实验''上一轮训练''我们的模型'等绑定特定运行的情境表述；"
+                "content_kind 仅允许 concept、definition、principle、mechanism、rule、"
+                "relationship、fact、constraint、formula、derivation、comparison、case、"
+                "operational_detail。"
+                "输出严格 JSON 对象，顶层字段仅为 material_version_id、dropped_chunk_ids、statements。"
+                "dropped_chunk_ids 是被剔除片段的 evidence_chunk_id 数组；statements 是数组，"
+                "每条包含 source_evidence_chunk_id（照抄输入片段 id）、statement（自包含知识点陈述）、"
+                "content_kind。每个片段最多提取 3 条陈述。返回严格 JSON，不要输出其它键。"
+            ),
+            payload={
+                "material_version_id": material_version_id,
+                "chunks": [
+                    {
+                        "evidence_chunk_id": chunk.id,
+                        "content": chunk.content
+                        + "\n【该片段内容到此结束，其后内容属于其他片段，严禁在此片段内补全未展示的内容】",
+                        "locator": chunk.locator,
+                    }
+                    for chunk in chunks
+                ],
+            },
+            temperature=0.0,
+            call_context=call_context,
+            response_validator=validate_response,
+            max_tokens=max_tokens,
+        )
+        response = collected["response"]
+
+        # 只采纳可迁移陈述；片段若因情境绑定等被过滤到零条，则视为被剔除，
+        # 保证"每个输入片段要么剔除要么有陈述"的完全覆盖不变式。
+        adopted: list[KnowledgePointStatement] = []
+        seen: set[tuple[str, str]] = set()
+        for item in response.statements:
+            if item.content_kind is ContentKind.BACKGROUND:
+                continue
+            if not is_transferable_fact(item.statement):
+                continue
+            key = (item.source_evidence_chunk_id, semantic_text_key(item.statement))
+            if key in seen:
+                continue
+            seen.add(key)
+            adopted.append(
+                KnowledgePointStatement(
+                    source_evidence_chunk_id=item.source_evidence_chunk_id,
+                    statement=item.statement,
+                    content_kind=item.content_kind,
+                )
+            )
+        kept_ids = {item.source_evidence_chunk_id for item in adopted}
+        return KnowledgePointExtractionResult(
+            material_version_id=material_version_id,
+            dropped_chunk_ids=sorted(set(all_ids) - kept_ids),
+            statements=adopted,
+        )
+
+
 class DeepSeekSupplementRecommender:
     """为覆盖不足考点推荐可改判为直接证据的间接证据。
 
@@ -1262,5 +1449,8 @@ __all__ = [
     "DeepSeekJsonClient",
     "DeepSeekModelError",
     "DeepSeekSyllabusExtractor",
+    "DeepSeekKnowledgePointExtractor",
+    "KnowledgePointStatement",
+    "KnowledgePointExtractionResult",
     "validate_consolidated_units",
 ]

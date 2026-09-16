@@ -74,6 +74,7 @@ class OrganizationState(TypedDict, total=False):
     confirmation: dict
     catalog_version_id: str
     index_version_id: str
+    extraction_stats: dict[str, dict]
 
 
 _CREDENTIAL_KEY_PATTERN = (
@@ -191,6 +192,8 @@ def build_organization_graph(
     consolidator: ExamPointKnowledgeConsolidator,
     repository: KnowledgeRepository,
     *,
+    extractor,
+    embedder,
     checkpointer=None,
 ):
     def _points(state: OrganizationState) -> list[ExamPoint]:
@@ -248,6 +251,66 @@ def build_organization_graph(
         ):
             raise ValueError("organization exam point snapshot is invalid")
         return {"frozen_input": expected}
+
+    def extract_knowledge_points(state: OrganizationState):
+        # 在检索/分类/归并之前，把冻结资料的原始文本块一次性全局蒸馏成知识点
+        # 陈述（与考点无关，避免按考点扇出的 token 爆炸），并剔除封面/行政/纯
+        # 操作流程等非知识块。抽取后在 state 中把 evidence_chunk_ids 换成陈述
+        # 块 id，下游检索/分类/归并/发布全部复用，无需改动。
+        raw_chunks = _chunks(state)
+        chunks_by_material: dict[str, list[StagingChunk]] = defaultdict(list)
+        for chunk in raw_chunks:
+            chunks_by_material[chunk.material_version_id].append(chunk)
+        statement_ids: list[str] = []
+        extraction_stats: dict[str, dict] = {}
+        batch_size = settings.organization_extraction_batch_size
+        max_tokens = settings.organization_extraction_max_tokens
+        for material_version_id in sorted(chunks_by_material):
+            material_chunks = sorted(
+                chunks_by_material[material_version_id], key=lambda item: item.id
+            )
+            stats = {
+                "chunks": len(material_chunks),
+                "dropped": 0,
+                "statements": 0,
+                "statement_ids": 0,
+            }
+            for start in range(0, len(material_chunks), batch_size):
+                batch = material_chunks[start : start + batch_size]
+                result = extractor.extract_material(
+                    material_version_id=material_version_id,
+                    chunks=batch,
+                    call_context=ModelCallContext(
+                        course_id=state["course_id"],
+                        organization_run_id=state["run_id"],
+                        stage="extract_knowledge_points",
+                    ),
+                    max_tokens=max_tokens,
+                )
+                stats["dropped"] += len(result.dropped_chunk_ids)
+                stats["statements"] += len(result.statements)
+                persisted = repository.persist_statements(
+                    embedder,
+                    course_id=state["course_id"],
+                    run_id=state["run_id"],
+                    material_version_id=material_version_id,
+                    statements=result.statements,
+                )
+                stats["statement_ids"] += len(persisted)
+                statement_ids.extend(persisted)
+            extraction_stats[material_version_id] = stats
+            log.info(
+                "extract_knowledge_points %s: chunks=%d dropped=%d statements=%d persisted=%d",
+                material_version_id,
+                stats["chunks"],
+                stats["dropped"],
+                stats["statements"],
+                stats["statement_ids"],
+            )
+        return {
+            "evidence_chunk_ids": statement_ids,
+            "extraction_stats": extraction_stats,
+        }
 
     def retrieve_per_exam_point(state: OrganizationState):
         chunks = _chunks(state)
@@ -768,6 +831,7 @@ def build_organization_graph(
     graph = StateGraph(OrganizationState)
     graph.add_node("validate_inputs", _logged("validate_inputs", validate_inputs))
     graph.add_node("freeze_selected_materials", _logged("freeze_selected_materials", freeze_selected_materials))
+    graph.add_node("extract_knowledge_points", _logged("extract_knowledge_points", extract_knowledge_points))
     graph.add_node("retrieve_per_exam_point", _logged("retrieve_per_exam_point", retrieve_per_exam_point))
     graph.add_node("classify_exam_point_file_pairs", _logged("classify_exam_point_file_pairs", classify_exam_point_file_pairs))
     graph.add_node("consolidate_per_exam_point", _logged("consolidate_per_exam_point", consolidate_per_exam_point))
@@ -778,7 +842,8 @@ def build_organization_graph(
     graph.add_node("publish_catalog_and_index", _logged("publish_catalog_and_index", publish_catalog_and_index))
     graph.add_edge(START, "validate_inputs")
     graph.add_edge("validate_inputs", "freeze_selected_materials")
-    graph.add_edge("freeze_selected_materials", "retrieve_per_exam_point")
+    graph.add_edge("freeze_selected_materials", "extract_knowledge_points")
+    graph.add_edge("extract_knowledge_points", "retrieve_per_exam_point")
     graph.add_edge("retrieve_per_exam_point", "classify_exam_point_file_pairs")
     graph.add_edge("classify_exam_point_file_pairs", "consolidate_per_exam_point")
     graph.add_edge("consolidate_per_exam_point", "build_catalog_candidate")

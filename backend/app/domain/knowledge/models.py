@@ -124,3 +124,13 @@ class KnowledgeRepository(Protocol):
     def persist_candidate(self, state: dict, tree: KnowledgeTreeCandidate) -> str: ...
 
     def publish(self, state: dict, tree: KnowledgeTreeCandidate, confirmation: KnowledgeTreeConfirmation) -> dict: ...
+
+    def persist_statements(
+        self,
+        embedder,
+        *,
+        course_id: str,
+        run_id: str,
+        material_version_id: str,
+        statements,
+    ) -> list[str]: ...

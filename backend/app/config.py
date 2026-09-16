@@ -25,6 +25,13 @@ class Settings(BaseSettings):
     # 归并做知识抽取，需更强模型。两者留空时回退到 deepseek_model，不受影响。
     deepseek_classify_model: str = ""
     deepseek_consolidate_model: str = ""
+    # 知识点抽取模型：把原始文本块蒸馏成自包含知识点陈述、剔除封面/行政/纯
+    # 操作流程等非知识块。留空回退到 deepseek_model，不受影响。
+    deepseek_extract_model: str = ""
+    # 抽取阶段单次调用送入的原始块数：chunk 约 1200 字符，输出为每块 0~3 条
+    # 陈述，批大小控制单次输出规模，规避大 JSON 被截断导致的格式失败。
+    organization_extraction_batch_size: int = Field(default=15, gt=0)
+    organization_extraction_max_tokens: int = Field(default=6144, gt=0)
     # 抽取/分类/归并阶段关闭长链路推理：MiMo 发 thinking=disabled；StepFun 无
     # 思考开关，改用 reasoning_effort=low（官方标注 low 档适合信息抽取），
     # 避免推理消耗输出额度导致 JSON 内容为空/被截断，并节省 token。true=关闭。

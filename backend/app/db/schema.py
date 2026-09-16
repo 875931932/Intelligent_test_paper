@@ -318,6 +318,11 @@ evidence_chunks = _course_table(
     Column("content_hash", String(64), nullable=False),
     Column("locator", JSON),
     Column("embedding", JSON),
+    # 证据块类型：raw=原始文本块；statement=从原始块蒸馏出的知识点陈述。
+    # 下游检索/分类/归并只消费 statement；raw 保留作为溯源与补证据展示来源。
+    Column("kind", String(20), nullable=False, server_default="raw", default="raw"),
+    # statement 的上级原始块 id（支持溯源回溯），raw 块为空。
+    Column("source_evidence_chunk_id", String(64)),
     constraints=(
         UniqueConstraint("organization_run_id", "chunk_index", name="uq_evidence_chunks_run_index"),
         UniqueConstraint(
