@@ -55,10 +55,12 @@ _CLASSIFY_MAX_PAIRS_PER_CALL = 40
 # 25k token 以内，避免单次分类调用输入超过 20 万 token。
 _CLASSIFY_MAX_CHUNKS_PER_CALL = 60
 # 抽取单批失败且可通过对半拆分自愈的错误码：推理型模型吃穿输出预算时
-# 表现为 content 为空或非 JSON；拆到单块仍失败才向上抛。
+# 表现为 content 为空或非 JSON；所在块内容会诱导模型输出含边缘字段的合法
+# JSON，触发 schema 校验失败。三者都拆到单块仍失败则跳过该块，不中断 run。
 _EXTRACTION_SPLITTABLE_ERRORS = {
     "model_empty_response",
     "model_non_json_response",
+    "model_schema_validation_failed",
 }
 
 

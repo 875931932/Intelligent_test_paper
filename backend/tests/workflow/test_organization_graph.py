@@ -382,6 +382,38 @@ def test_extraction_skips_single_chunk_that_always_returns_non_json():
     ) == 3
 
 
+def test_extraction_skips_single_chunk_that_fails_schema_validation():
+    """模型 JSON 可解析但字段不合 schema（model_schema_validation_failed）同样走
+    拆分到单块再跳过的降级路径，不中断 run。"""
+
+    class SchemaFailExtractor:
+        def __init__(self):
+            self.calls: list[list[str]] = []
+
+        def extract_material(self, *, material_version_id, chunks, call_context=None, max_tokens=None):
+            self.calls.append(sorted(chunk.id for chunk in chunks))
+            if len(chunks) == 1:
+                raise DeepSeekModelError(
+                    "model_schema_validation_failed", "model JSON does not match the required schema"
+                )
+            raise DeepSeekModelError("model_empty_response", "model returned empty content")
+
+    chunks = [
+        StagingChunk(id=f"c{i}", material_version_id="material-1", content=f"知识点{i}")
+        for i in range(1, 4)
+    ]
+    extractor = SchemaFailExtractor()
+    graph, _, _, _, repository = _graph(extractor=extractor, chunks=chunks)
+
+    result = graph.invoke(_state(chunks=chunks), config={"configurable": {"thread_id": "schema-skip"}})
+
+    assert "__interrupt__" in result
+    assert repository.candidate is not None
+    assert sum(
+        stats.get("skipped", 0) for stats in repository.persisted_state["extraction_stats"].values()
+    ) == 3
+
+
 def test_one_material_failure_is_redacted_and_does_not_block_other_materials():
     classifier = RecordingClassifier(fail_material="material-1")
     graph, _, _, _, repository = _graph(classifier=classifier)
