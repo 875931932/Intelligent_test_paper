@@ -26,6 +26,7 @@ from app.domain.knowledge.models import (
     ExamPointKnowledgeConsolidator,
     KnowledgeTreeCandidate,
     KnowledgeTreeConfirmation,
+    TreeOperation,
 )
 from app.domain.knowledge.relevance import ExamPointEvidenceClassifier
 from app.services import course_service, knowledge_publish_service
@@ -457,13 +458,146 @@ def recommend_supplements(
 
 
 @router.post("/organization-runs/{run_id}/publish")
-def publish_tree(course_id: str, run_id: str, confirmation: KnowledgeTreeConfirmation, session: Session = Depends(get_session)) -> dict:
+def publish_tree(
+    course_id: str,
+    run_id: str,
+    confirmation: KnowledgeTreeConfirmation,
+    session: Session = Depends(get_session),
+    recommender: DeepSeekSupplementRecommender = Depends(get_supplement_recommender),
+) -> dict:
     try:
         candidate = knowledge_publish_service.get_organization_candidate(session, course_id=course_id, run_id=run_id)
+        confirmation = _apply_auto_supplement(
+            course_id=course_id,
+            run_id=run_id,
+            candidate=candidate,
+            confirmation=confirmation,
+            session=session,
+            recommender=recommender,
+        )
         result = knowledge_publish_service.DatabaseKnowledgeRepository(session).publish({"course_id": course_id, "run_id": run_id, "candidate_id": candidate["id"]}, KnowledgeTreeCandidate.model_validate(candidate["payload"]), confirmation)
         return result
     except knowledge_publish_service.KnowledgePublishError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+
+
+def _apply_auto_supplement(
+    *,
+    course_id: str,
+    run_id: str,
+    candidate: dict,
+    confirmation: KnowledgeTreeConfirmation,
+    session: Session,
+    recommender: DeepSeekSupplementRecommender,
+) -> KnowledgeTreeConfirmation:
+    """一键补证据：为所有覆盖不足考点自动应用 AI 推荐的直接证据改判。
+
+    仅当 confirmation.auto_supplement_direct_evidence 为真时生效。对每个
+    "缺直接证据"且无不可逆失败原因的考点，取其 supporting/background 候选
+    证据（候选 payload 已注入原文摘要），调用推荐器预选，把推荐条目转成
+    supplement_direct_evidence 操作合并进确认（保留教师已手填的操作与排除
+    操作）。单个考点推荐失败或无可推荐条目时跳过，不阻塞其余考点。自动
+    补充过的考点并入 reviewed_exam_point_codes，满足发布审阅要求。
+    """
+    if not confirmation.auto_supplement_direct_evidence:
+        return confirmation
+    payload = candidate["payload"] or {}
+    sources_by_point: dict[str, list[dict]] = {}
+    for item in payload.get("evidence_sources") or []:
+        code = item.get("exam_point_code")
+        if code and item.get("evidence_chunk_id"):
+            sources_by_point.setdefault(code, []).append(item)
+    coverage_by_code = {
+        item.get("exam_point_code"): item for item in payload.get("coverage") or []
+    }
+    # 只处理能靠补证据解决的考点：缺直接证据、无 *_failed 阻断（归并失败
+    # 链路补证据无法重建）、有可改判的间接证据候选。conflicting 已有 direct
+    # 证据，no_recalled_evidence 无任何候选，均自动跳过。
+    targets = sorted(
+        code
+        for code, cov in coverage_by_code.items()
+        if cov.get("status") != "sufficient"
+        and "no_direct_evidence" in (cov.get("reasons") or [])
+        and not any(
+            str(reason).endswith("_failed")
+            for reason in (cov.get("reasons") or [])
+        )
+        and code in sources_by_point
+    )
+    if not targets:
+        return confirmation
+
+    from sqlalchemy import select as _sa_select
+
+    from app.db.schema import exam_points as exam_points_table
+    from app.domain.framework.exam_points import ExamPoint
+
+    point_rows = session.execute(
+        _sa_select(exam_points_table).where(
+            exam_points_table.c.course_id == course_id,
+            exam_points_table.c.code.in_(targets),
+        )
+    ).mappings()
+    points_by_code = {
+        row["code"]: ExamPoint.model_validate(dict(row)) for row in point_rows
+    }
+
+    # 保留教师已提交的操作（手填补证据、排除、改名等），只追加自动推荐。
+    existing = [
+        op
+        for op in confirmation.operations
+        if not (
+            op.operation == "supplement_direct_evidence"
+            and op.target_code.strip()
+            and (op.value or "").strip()
+        )
+    ]
+    added_by_point: dict[str, set[str]] = {}
+    for code in targets:
+        point = points_by_code.get(code)
+        if point is None:
+            continue
+        candidates = [
+            {
+                "evidence_chunk_id": item["evidence_chunk_id"],
+                "relevance_class": item.get("relevance_class"),
+                "support_claim": item.get("support_claim"),
+                "confidence": item.get("confidence"),
+                "content": item.get("content"),
+            }
+            for item in sources_by_point[code]
+        ]
+        try:
+            recommended = recommender.recommend(exam_point=point, candidates=candidates)
+        except DeepSeekModelError as exc:
+            _logger.warning(
+                "auto supplement recommendation failed for %s: %s", code, exc
+            )
+            continue
+        for item in recommended:
+            chunk_id = str(item.get("evidence_chunk_id") or "").strip()
+            if not chunk_id or chunk_id in added_by_point.setdefault(code, set()):
+                continue
+            existing.append(
+                TreeOperation(
+                    operation="supplement_direct_evidence",
+                    target_code=code,
+                    value=chunk_id,
+                )
+            )
+            added_by_point[code].add(chunk_id)
+    if not added_by_point:
+        return confirmation
+    return confirmation.model_copy(
+        update={
+            "operations": existing,
+            "reviewed_exam_point_codes": list(
+                dict.fromkeys(
+                    [*confirmation.reviewed_exam_point_codes, *added_by_point.keys()]
+                )
+            ),
+        }
+    )
 
 
 @router.post("/organization-runs/{run_id}/reject")

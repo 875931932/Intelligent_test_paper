@@ -249,6 +249,7 @@ export interface KnowledgeTreeConfirmation {
   reviewed_topic_codes: string[];
   reviewed_exam_point_codes: string[];
   teacher_exclusions: string[];
+  auto_supplement_direct_evidence?: boolean;
 }
 
 // ── 知识目录候选（待确认）嵌套结构 ──

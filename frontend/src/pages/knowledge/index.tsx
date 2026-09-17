@@ -71,6 +71,7 @@ export default function KnowledgePage() {
 
   const [buildState, setBuildState] = useState<BuildState>('idle');
   const [buildOpen, setBuildOpen] = useState(false);
+  const [publishing, setPublishing] = useState(false);
   const [teacherExclusions, setTeacherExclusions] = useState<string[]>([]);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [rejecting, setRejecting] = useState(false);
@@ -301,8 +302,9 @@ export default function KnowledgePage() {
     }
   }, [courseId, versionIds, startPolling, loadCandidate, addToast]);
 
-  const handlePublish = useCallback(async () => {
+  const handlePublish = useCallback(async (autoSupplement = false) => {
     if (!runId) return;
+    setPublishing(true);
     try {
       await api.knowledge.publish(courseId, runId, {
         operations: supplementOps,
@@ -312,11 +314,15 @@ export default function KnowledgePage() {
           ...new Set([...reviewedExamPointCodes, ...supplementOps.map((op) => op.target_code)]),
         ],
         teacher_exclusions: teacherExclusions,
+        // 一键补证据：后端为所有覆盖不足考点自动应用 AI 推荐的证据改判。
+        auto_supplement_direct_evidence: autoSupplement,
       });
       addToast(
-        teacherExclusions.length > 0
-          ? `知识目录已发布（已排除 ${teacherExclusions.length} 个考点）`
-          : '知识目录已发布',
+        autoSupplement && supplementOps.length === 0
+          ? '已按 AI 推荐自动补充证据并发布'
+          : teacherExclusions.length > 0
+            ? `知识目录已发布（已排除 ${teacherExclusions.length} 个考点）`
+            : '知识目录已发布',
         'success'
       );
       setBuildState('published');
@@ -326,6 +332,8 @@ export default function KnowledgePage() {
       loadPublished();
     } catch (err) {
       addToast(`发布失败：${getErrorMessage(err)}`, 'error');
+    } finally {
+      setPublishing(false);
     }
   }, [courseId, runId, loadPublished, addToast, reviewedTopicCodes, reviewedExamPointCodes, supplementOps, teacherExclusions]);
 
@@ -491,6 +499,7 @@ export default function KnowledgePage() {
           teacherExclusions={teacherExclusions}
           onTeacherExclusionsChange={setTeacherExclusions}
           onPublish={handlePublish}
+          publishing={publishing}
           onReset={() => setRejectOpen(true)}
         />
       )}
@@ -753,7 +762,7 @@ function BuildingPanel() {
   );
 }
 
-function CandidatePanel({ candidate, courseId, runId, supplementOps, onSupplementChange, teacherExclusions, onTeacherExclusionsChange, onPublish, onReset }: {
+function CandidatePanel({ candidate, courseId, runId, supplementOps, onSupplementChange, teacherExclusions, onTeacherExclusionsChange, onPublish, publishing, onReset }: {
   candidate: KnowledgeCandidatePayload | null;
   courseId: string;
   runId: string | null;
@@ -761,7 +770,8 @@ function CandidatePanel({ candidate, courseId, runId, supplementOps, onSupplemen
   onSupplementChange: (ops: Array<{ operation: string; target_code: string; value: string }>) => void;
   teacherExclusions: string[];
   onTeacherExclusionsChange: (codes: string[]) => void;
-  onPublish: () => void;
+  onPublish: (autoSupplement?: boolean) => void;
+  publishing: boolean;
   onReset: () => void;
 }) {
   const topics = useMemo(() => candidate?.topics || [], [candidate]);
@@ -963,8 +973,15 @@ function CandidatePanel({ candidate, courseId, runId, supplementOps, onSupplemen
           </p>
         </div>
         <div style={{ display: 'flex', gap: '8px' }}>
-          <Button variant="secondary" onClick={onReset}>放弃并取消</Button>
-          <Button onClick={onPublish}>确认并发布</Button>
+          <Button variant="secondary" onClick={onReset} disabled={publishing}>放弃并取消</Button>
+          {insufficientPoints.length > 0 && (
+            <Button variant="primary" onClick={() => onPublish(true)} loading={publishing} disabled={publishing}>
+              一键补证据并发布
+            </Button>
+          )}
+          <Button onClick={() => onPublish(false)} loading={publishing} disabled={publishing}>
+            {publishing ? '发布中…' : '确认并发布'}
+          </Button>
         </div>
       </div>
 
@@ -974,7 +991,7 @@ function CandidatePanel({ candidate, courseId, runId, supplementOps, onSupplemen
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
             <AlertTriangle size={16} style={{ color: 'var(--warning)' }} />
             <h4 style={{ fontSize: '0.9375rem', fontWeight: 600 }}>证据不足的考点（{insufficientPoints.length}）</h4>
-            <span style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>可逐点补充间接证据后再发布</span>
+            <span style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>一键按 AI 推荐自动补充后发布，或逐点手动补充 / 排除</span>
             {totalSupplementOps > 0 && (
               <Badge variant="success">待发布补充 {totalSupplementOps} 项</Badge>
             )}

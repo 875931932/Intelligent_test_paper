@@ -481,7 +481,8 @@ class DatabaseKnowledgeRepository:
                 )
                 if unresolved:
                     raise KnowledgePublishError(
-                        "exam point coverage must be sufficient or explicitly excluded"
+                        "exam point coverage must be sufficient or explicitly excluded: "
+                        + ", ".join(unresolved)
                     )
                 required_reviews = publishable_exam_point_codes
                 if required_reviews - set(confirmation.reviewed_exam_point_codes):

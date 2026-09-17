@@ -108,6 +108,9 @@ class KnowledgeTreeConfirmation(BaseModel):
     reviewed_topic_codes: list[str]
     reviewed_exam_point_codes: list[str] = Field(default_factory=list)
     teacher_exclusions: list[str]
+    # 一键补证据：为所有覆盖不足考点自动应用 AI 推荐的间接证据改判。
+    # 后端在发布前据此生成 supplement_direct_evidence 操作，无需教师逐点提交。
+    auto_supplement_direct_evidence: bool = False
 
 
 class KnowledgeFileExtractor(Protocol):
