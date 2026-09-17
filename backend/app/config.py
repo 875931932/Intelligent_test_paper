@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     # 返回，思考在预算内结束且留有 content 输出。
     organization_extraction_batch_size: int = Field(default=3, gt=0)
     organization_extraction_max_tokens: int = Field(default=3072, gt=0)
+    # 知识点抽取的推理强度（StepFun step-3.7-flash 的 reasoning_effort 三档：
+    # low/medium/high）。信息抽取用 low 最省预算，避免思考占满输出额度导致
+    # content 为空/截断非 JSON。显式下发优先于全局 deepseek_disable_thinking。
+    organization_extraction_reasoning_effort: str = "low"
     # 抽取/分类/归并阶段关闭长链路推理：MiMo 发 thinking=disabled；StepFun 无
     # 思考开关，改用 reasoning_effort=low（官方标注 low 档适合信息抽取），
     # 避免推理消耗输出额度导致 JSON 内容为空/被截断，并节省 token。true=关闭。

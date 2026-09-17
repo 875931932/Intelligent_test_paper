@@ -144,6 +144,7 @@ class DeepSeekJsonClient:
         response_validator: Callable[[dict], None] | None = None,
         tool: dict[str, Any] | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> dict:
         prompt = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else dict(payload)
         canonical_prompt = json.dumps(prompt, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -203,7 +204,7 @@ class DeepSeekJsonClient:
             raw_snapshot = None
             should_retry = True
             try:
-                response = self._post(system_prompt, canonical_prompt, temperature, tool, max_tokens)
+                response = self._post(system_prompt, canonical_prompt, temperature, tool, max_tokens, reasoning_effort)
                 headers = getattr(response, "headers", {})
                 request_id = headers.get("x-request-id") if hasattr(headers, "get") else None
                 status_code = getattr(response, "status_code", None)
@@ -362,11 +363,18 @@ class DeepSeekJsonClient:
         temperature: float,
         tool: dict[str, Any] | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
     ) -> httpx.Response:
         # StepFun（api.stepfun.com/.ai）未文档化 thinking/tool_choice 参数，
         # MiMo（api.xiaomimimo.com）两者均支持：按 base_url 分流避免未知参数
         # 触发 400。tool_choice 缺省时模型若不触发 tool_calls，由
         # _extract_tool_arguments 兜底解析 content JSON。
+        #
+        # StepFun step-3.7-flash 是推理型模型，可用 reasoning_effort 三档控制
+        # 思考强度（low/medium/high）。信息抽取用 low 最省预算、避免思考占满
+        # 输出额度导致 content 为空/截断非 JSON。调用方可显式传入档位；越过
+        # reasoning_effort 时沿用 disable_thinking=True 的旧行为（stepfun=low，
+        # mimo=关闭思考）。
         is_stepfun = "stepfun" in self.base_url
         json_body: dict[str, Any] = {
             "model": self.model,
@@ -384,12 +392,12 @@ class DeepSeekJsonClient:
                 json_body["tool_choice"] = "required"
         else:
             json_body["response_format"] = {"type": "json_object"}
-        if self.disable_thinking:
-            if is_stepfun:
-                # 官方 low 档面向信息抽取/摘要/改写，最省 token。
-                json_body["reasoning_effort"] = "low"
-            else:
-                json_body["thinking"] = {"type": "disabled"}
+        if is_stepfun:
+            effort = reasoning_effort or ("low" if self.disable_thinking else None)
+            if effort:
+                json_body["reasoning_effort"] = effort
+        elif self.disable_thinking:
+            json_body["thinking"] = {"type": "disabled"}
         request = {
             "headers": {
                 "Authorization": f"Bearer {self.api_key}",

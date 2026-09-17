@@ -350,6 +350,38 @@ def test_extraction_splits_heavy_batch_on_empty_response_to_single_chunks():
     assert "__interrupt__" in result
 
 
+def test_extraction_skips_single_chunk_that_always_returns_non_json():
+    class AlwaysFailsExtractor:
+        """任意批都抛非 JSON 错误；单块时映射为可拆分错误，触发跳过降级。"""
+
+        def __init__(self):
+            self.calls: list[list[str]] = []
+
+        def extract_material(self, *, material_version_id, chunks, call_context=None, max_tokens=None):
+            self.calls.append(sorted(chunk.id for chunk in chunks))
+            if len(chunks) == 1:
+                raise DeepSeekModelError(
+                    "model_non_json_response", "model returned content that is not valid JSON"
+                )
+            raise DeepSeekModelError("model_empty_response", "model returned empty content")
+
+    chunks = [
+        StagingChunk(id=f"c{i}", material_version_id="material-1", content=f"知识点{i}")
+        for i in range(1, 4)
+    ]
+    extractor = AlwaysFailsExtractor()
+    graph, _, _, _, repository = _graph(extractor=extractor, chunks=chunks)
+
+    result = graph.invoke(_state(chunks=chunks), config={"configurable": {"thread_id": "skip"}})
+
+    # 单块仍失败时降级为跳过，不再中断 run。
+    assert "__interrupt__" in result
+    assert repository.candidate is not None
+    assert sum(
+        stats.get("skipped", 0) for stats in repository.persisted_state["extraction_stats"].values()
+    ) == 3
+
+
 def test_one_material_failure_is_redacted_and_does_not_block_other_materials():
     classifier = RecordingClassifier(fail_material="material-1")
     graph, _, _, _, repository = _graph(classifier=classifier)

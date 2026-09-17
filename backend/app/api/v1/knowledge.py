@@ -116,7 +116,10 @@ def get_knowledge_point_extractor(request: Request) -> DeepSeekKnowledgePointExt
         client = _get_semantic_json_client(
             request, settings.deepseek_extract_model or settings.deepseek_model
         )
-        extractor = DeepSeekKnowledgePointExtractor(client)
+        extractor = DeepSeekKnowledgePointExtractor(
+            client,
+            reasoning_effort=settings.organization_extraction_reasoning_effort,
+        )
         request.app.state.knowledge_point_extractor = extractor
         return extractor
 

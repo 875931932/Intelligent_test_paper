@@ -1201,8 +1201,11 @@ class DeepSeekKnowledgePointExtractor:
     使证据从"原文长文"升级为"可迁移知识点陈述"，减少背景/说明类误判。
     """
 
-    def __init__(self, client: JsonRequester) -> None:
+    def __init__(self, client: JsonRequester, *, reasoning_effort: str | None = None) -> None:
         self.client = client
+        # StepFun step-3.7-flash 推理型模型：信息抽取用 low 档最省预算，避免
+        # 思考占满输出额度导致 content 为空/截断非 JSON。None 交由客户端默认。
+        self.reasoning_effort = reasoning_effort
 
     def extract_material(
         self,
@@ -1294,6 +1297,7 @@ class DeepSeekKnowledgePointExtractor:
             call_context=call_context,
             response_validator=validate_response,
             max_tokens=max_tokens,
+            reasoning_effort=self.reasoning_effort,
         )
         response = collected["response"]
 

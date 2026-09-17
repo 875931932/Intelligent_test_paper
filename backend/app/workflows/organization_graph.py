@@ -276,12 +276,12 @@ def build_organization_graph(
         def extract_batch(
             material_version_id: str,
             chunks: list[StagingChunk],
-        ) -> tuple[list[str], int, int]:
-            """抽取一批块，产出 (陈述id, 剔除数, 陈述数)。
+        ) -> tuple[list[str], int, int, int]:
+            """抽取一批块，产出 (陈述id, 剔除数, 陈述数, 跳过数)。
 
             stepfun 是推理型模型，重块（表格/公式/超长/命令密集）会吃穿输出预算
-            导致 content 为空或非 JSON。遇到这类负载失败时把批对半拆分递归自愈，
-            让单个重型块不再拖垮整个 run。
+            导致 content 为空或非 JSON。遇到这类负载失败时把批对半拆分递归自愈；
+            拆到单块仍失败时降级为跳过该块，不让单个毒块拖垮整份资料的抽取。
             """
             try:
                 result = extractor.extract_material(
@@ -305,11 +305,27 @@ def build_organization_graph(
                         len(chunks) - mid,
                         exc.error_code,
                     )
-                    left, ldropped, lstmts = extract_batch(material_version_id, chunks[:mid])
-                    right, rdropped, rstmts = extract_batch(
+                    left_ids, left_dropped, left_stmts, left_skipped = extract_batch(
+                        material_version_id, chunks[:mid]
+                    )
+                    right_ids, right_dropped, right_stmts, right_skipped = extract_batch(
                         material_version_id, chunks[mid:]
                     )
-                    return left + right, ldropped + rdropped, lstmts + rstmts
+                    return (
+                        left_ids + right_ids,
+                        left_dropped + right_dropped,
+                        left_stmts + right_stmts,
+                        left_skipped + right_skipped,
+                    )
+                if exc.error_code in _EXTRACTION_SPLITTABLE_ERRORS:
+                    log.warning(
+                        "extract_knowledge_points %s skip chunk %s (%s): %s",
+                        material_version_id,
+                        chunks[0].id,
+                        exc.error_code,
+                        exc,
+                    )
+                    return [], 1, 0, 1
                 raise
             dropped = len(result.dropped_chunk_ids)
             statements = len(result.statements)
@@ -320,7 +336,7 @@ def build_organization_graph(
                 material_version_id=material_version_id,
                 statements=result.statements,
             )
-            return persisted, dropped, statements
+            return persisted, dropped, statements, 0
 
         for material_version_id in sorted(chunks_by_material):
             material_chunks = sorted(
@@ -331,22 +347,25 @@ def build_organization_graph(
                 "dropped": 0,
                 "statements": 0,
                 "statement_ids": 0,
+                "skipped": 0,
             }
             for start in range(0, len(material_chunks), batch_size):
                 batch = material_chunks[start : start + batch_size]
-                ids, dropped, statements = extract_batch(material_version_id, batch)
+                ids, dropped, statements, skipped = extract_batch(material_version_id, batch)
                 stats["dropped"] += dropped
                 stats["statements"] += statements
                 stats["statement_ids"] += len(ids)
+                stats["skipped"] += skipped
                 statement_ids.extend(ids)
             extraction_stats[material_version_id] = stats
             log.info(
-                "extract_knowledge_points %s: chunks=%d dropped=%d statements=%d persisted=%d",
+                "extract_knowledge_points %s: chunks=%d dropped=%d statements=%d persisted=%d skipped=%d",
                 material_version_id,
                 stats["chunks"],
                 stats["dropped"],
                 stats["statements"],
                 stats["statement_ids"],
+                stats["skipped"],
             )
         return {
             "evidence_chunk_ids": statement_ids,
