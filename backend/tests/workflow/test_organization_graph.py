@@ -7,6 +7,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from app.domain.framework.exam_points import ExamPoint, OperationalDetailPolicy, WeightSource
+from app.adapters.model.deepseek_gateway import DeepSeekModelError
 from app.adapters.model.deepseek_semantic_extractors import (
     KnowledgePointExtractionResult,
     KnowledgePointStatement,
@@ -99,6 +100,30 @@ class RecordingExtractor:
             material_version_id=material_version_id,
             dropped_chunk_ids=dropped,
             statements=statements,
+        )
+
+
+class SplittingExtractor:
+    """>2 块时模拟推理型模型返空，触发抽取节点对半拆分自愈到可处理的子批。"""
+
+    def __init__(self):
+        self.calls: list[list[str]] = []
+
+    def extract_material(self, *, material_version_id, chunks, call_context=None, max_tokens=None):
+        self.calls.append(sorted(chunk.id for chunk in chunks))
+        if len(chunks) > 2:
+            raise DeepSeekModelError("model_empty_response", "model returned empty content")
+        return KnowledgePointExtractionResult(
+            material_version_id=material_version_id,
+            dropped_chunk_ids=[],
+            statements=[
+                KnowledgePointStatement(
+                    source_evidence_chunk_id=chunk.id,
+                    statement=chunk.content,
+                    content_kind=ContentKind.FACT,
+                )
+                for chunk in chunks
+            ],
         )
 
 
@@ -307,6 +332,22 @@ def test_no_recall_marks_exam_point_insufficient_without_classifier_call():
     coverage = {item.exam_point_code: item for item in repository.candidate.coverage}
     assert coverage["EP-2"].status == "insufficient"
     assert "no_recalled_evidence" in coverage["EP-2"].reasons
+
+
+def test_extraction_splits_heavy_batch_on_empty_response_to_single_chunks():
+    five = [
+        StagingChunk(id=f"c{i}", material_version_id="material-1", content=f"知识点{i}")
+        for i in range(1, 6)
+    ]
+    extractor = SplittingExtractor()
+    graph, _, _, _, repository = _graph(extractor=extractor, chunks=five)
+
+    result = graph.invoke(_state(chunks=five), config={"configurable": {"thread_id": "split"}})
+
+    # 初始批 c1..c5（按批 3 切成 [c1,c2,c3]+[c4,c5]）首批发空后递归拆分到单块，
+    # 至少出现一次单块叶子调用，且 run 正常走到教师确认中断而非失败。
+    assert any(len(ids) == 1 for ids in extractor.calls)
+    assert "__interrupt__" in result
 
 
 def test_one_material_failure_is_redacted_and_does_not_block_other_materials():

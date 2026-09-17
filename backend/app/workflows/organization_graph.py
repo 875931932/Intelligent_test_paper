@@ -13,6 +13,7 @@ from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
+from app.adapters.model.deepseek_gateway import DeepSeekModelError
 from app.adapters.model.deepseek_semantic_extractors import (
     validate_consolidated_units,
 )
@@ -53,6 +54,12 @@ _CLASSIFY_MAX_PAIRS_PER_CALL = 40
 # 综合估算：每 chunk 300-800 token，60 个 chunk 对应的 prompt 通常可控在
 # 25k token 以内，避免单次分类调用输入超过 20 万 token。
 _CLASSIFY_MAX_CHUNKS_PER_CALL = 60
+# 抽取单批失败且可通过对半拆分自愈的错误码：推理型模型吃穿输出预算时
+# 表现为 content 为空或非 JSON；拆到单块仍失败才向上抛。
+_EXTRACTION_SPLITTABLE_ERRORS = {
+    "model_empty_response",
+    "model_non_json_response",
+}
 
 
 class OrganizationState(TypedDict, total=False):
@@ -265,6 +272,56 @@ def build_organization_graph(
         extraction_stats: dict[str, dict] = {}
         batch_size = settings.organization_extraction_batch_size
         max_tokens = settings.organization_extraction_max_tokens
+
+        def extract_batch(
+            material_version_id: str,
+            chunks: list[StagingChunk],
+        ) -> tuple[list[str], int, int]:
+            """抽取一批块，产出 (陈述id, 剔除数, 陈述数)。
+
+            stepfun 是推理型模型，重块（表格/公式/超长/命令密集）会吃穿输出预算
+            导致 content 为空或非 JSON。遇到这类负载失败时把批对半拆分递归自愈，
+            让单个重型块不再拖垮整个 run。
+            """
+            try:
+                result = extractor.extract_material(
+                    material_version_id=material_version_id,
+                    chunks=chunks,
+                    call_context=ModelCallContext(
+                        course_id=state["course_id"],
+                        organization_run_id=state["run_id"],
+                        stage="extract_knowledge_points",
+                    ),
+                    max_tokens=max_tokens,
+                )
+            except DeepSeekModelError as exc:
+                if exc.error_code in _EXTRACTION_SPLITTABLE_ERRORS and len(chunks) > 1:
+                    mid = len(chunks) // 2
+                    log.info(
+                        "extract_knowledge_points %s split (%d chunks) -> %d+%d due to %s",
+                        material_version_id,
+                        len(chunks),
+                        mid,
+                        len(chunks) - mid,
+                        exc.error_code,
+                    )
+                    left, ldropped, lstmts = extract_batch(material_version_id, chunks[:mid])
+                    right, rdropped, rstmts = extract_batch(
+                        material_version_id, chunks[mid:]
+                    )
+                    return left + right, ldropped + rdropped, lstmts + rstmts
+                raise
+            dropped = len(result.dropped_chunk_ids)
+            statements = len(result.statements)
+            persisted = repository.persist_statements(
+                embedder,
+                course_id=state["course_id"],
+                run_id=state["run_id"],
+                material_version_id=material_version_id,
+                statements=result.statements,
+            )
+            return persisted, dropped, statements
+
         for material_version_id in sorted(chunks_by_material):
             material_chunks = sorted(
                 chunks_by_material[material_version_id], key=lambda item: item.id
@@ -277,27 +334,11 @@ def build_organization_graph(
             }
             for start in range(0, len(material_chunks), batch_size):
                 batch = material_chunks[start : start + batch_size]
-                result = extractor.extract_material(
-                    material_version_id=material_version_id,
-                    chunks=batch,
-                    call_context=ModelCallContext(
-                        course_id=state["course_id"],
-                        organization_run_id=state["run_id"],
-                        stage="extract_knowledge_points",
-                    ),
-                    max_tokens=max_tokens,
-                )
-                stats["dropped"] += len(result.dropped_chunk_ids)
-                stats["statements"] += len(result.statements)
-                persisted = repository.persist_statements(
-                    embedder,
-                    course_id=state["course_id"],
-                    run_id=state["run_id"],
-                    material_version_id=material_version_id,
-                    statements=result.statements,
-                )
-                stats["statement_ids"] += len(persisted)
-                statement_ids.extend(persisted)
+                ids, dropped, statements = extract_batch(material_version_id, batch)
+                stats["dropped"] += dropped
+                stats["statements"] += statements
+                stats["statement_ids"] += len(ids)
+                statement_ids.extend(ids)
             extraction_stats[material_version_id] = stats
             log.info(
                 "extract_knowledge_points %s: chunks=%d dropped=%d statements=%d persisted=%d",
