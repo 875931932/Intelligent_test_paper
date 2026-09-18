@@ -987,7 +987,12 @@ class DatabaseKnowledgeRepository:
                         ["supporting", "background"]
                     ),
                 )
-                .values(relevance_class="direct")
+                # 改判即确认该证据可直接支撑考点事实命题，等同答案依据：
+                # 统一赋予 answer_basis 角色（与分类器"统一落为 answer_basis"
+                # 的语义一致），否则 supporting（role 为 NULL）改判后 direct
+                # 无 answer/rubric 角色，发布时被 _filter_live_direct_evidence
+                # 的 answer_or_rubric 校验拦死。
+                .values(relevance_class="direct", evidence_role="answer_basis")
             )
             if updated.rowcount == 0:
                 # 可能是同一操作的重复提交（已改判过 direct）；确认目标链接
@@ -1013,7 +1018,13 @@ class DatabaseKnowledgeRepository:
         }
         tree.evidence_decisions = [
             (
-                decision.model_copy(update={"relevance_class": RelevanceClass.DIRECT})
+                decision.model_copy(
+                    update={
+                        "relevance_class": RelevanceClass.DIRECT,
+                        # 与落库一致：改判即确认可考核，统一 answer_basis 角色
+                        "evidence_role": "answer_basis",
+                    }
+                )
                 if (decision.exam_point_code, decision.evidence_chunk_id) in updated_keys
                 and decision.relevance_class
                 in {RelevanceClass.SUPPORTING, RelevanceClass.BACKGROUND}
@@ -1130,8 +1141,17 @@ class DatabaseKnowledgeRepository:
                 in _ANSWER_OR_RUBRIC_ROLES
                 for decision in direct
             ):
+                _logger.error(
+                    "publish gate: point %s lacks answer/rubric direct evidence "
+                    "course=%s run=%s direct_roles=%s",
+                    point_code,
+                    course_id,
+                    run_id,
+                    sorted({(d.evidence_role or "").strip() or "NULL" for d in direct}),
+                )
                 raise KnowledgePublishError(
-                    "active source evidence no longer contains an answer or rubric basis"
+                    "active source evidence no longer contains an answer or rubric basis: "
+                    + point_code
                 )
             coverage = next(
                 (
