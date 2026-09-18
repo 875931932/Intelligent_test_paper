@@ -234,7 +234,8 @@ def test_auto_no_recommendations_returns_confirmation_unchanged():
 
 
 def test_auto_failed_but_with_active_card_chain_is_rescued_not_excluded():
-    """B 类：failed 残因 + 已有活跃卡链 → 不排除（交由发布端救回）。"""
+    """B 类：failed 残因 + 已有活跃卡链 → 不排除（交由发布端救回），
+    但救回后转 sufficient 需要已审，因此并入 reviewed_exam_point_codes。"""
     recommender = _Recommender(accepted={})
     coverage = [_coverage("p1", "insufficient", ["classification_failed"])]
     # 树内含 p1 活跃卡链
@@ -257,11 +258,12 @@ def test_auto_failed_but_with_active_card_chain_is_rescued_not_excluded():
     assert recommender.called == []
     # 有活跃卡链的 failed 考点不进入 teacher_exclusions，交由发布端救回
     assert "p1" not in result.teacher_exclusions
-    assert "p1" not in result.reviewed_exam_point_codes
+    # 但必须已审，否则救回转 sufficient 后被 "requires teacher review" 拦下
+    assert "p1" in result.reviewed_exam_point_codes
 
 
-def test_auto_exists_nothing_when_only_b_rescue_candidates():
-    """仅 B 类（有卡 failed）时，本函数不应改变 confirmation。"""
+def test_auto_marks_rescued_points_reviewed_when_only_b_candidates():
+    """仅 B 类考点时，仍应并入已审集合（发布端救回后转 sufficient 需要已审）。"""
     recommender = _Recommender(accepted={})
     coverage = [_coverage("p1", "insufficient", ["classification_failed"])]
     topics = _tree_with_card("p1")
@@ -280,7 +282,8 @@ def test_auto_exists_nothing_when_only_b_rescue_candidates():
         session=_FakeSession([]),
         recommender=recommender,
     )
-    assert result is confirmation
+    assert "p1" in result.reviewed_exam_point_codes
+    assert "p1" not in result.teacher_exclusions
 
 
 def test_auto_filters_out_background_candidates():

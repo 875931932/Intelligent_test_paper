@@ -555,7 +555,6 @@ def _apply_auto_supplement(
     #   1) *_failed 残因（归并/分类失败，补证据重建不了卡片链路）
     #   2) 无 supporting 候选（材料里没有可升级为直接证据的间接证据，
     #      补证据无从下手；无卡链说明知识也未落地，只能排除）
-    # B 类（failed 残因但已有活跃卡链）不在此列，交由发布端救回。
     auto_exclusions = {
         code
         for code, cov in coverage_by_code.items()
@@ -566,7 +565,16 @@ def _apply_auto_supplement(
             or not _has_supporting(code)
         )
     }
-    if not targets and not auto_exclusions:
+    # B 类：failed 残因但已有活跃卡链 → 不排除，交由发布端救回；
+    # 救回后转 sufficient，必须并入已审集合，否则被"requires teacher review"拦下。
+    rescue_candidates = {
+        code
+        for code, cov in coverage_by_code.items()
+        if cov.get("status") != "sufficient"
+        and any(str(reason).endswith("_failed") for reason in (cov.get("reasons") or []))
+        and code in active_card_chains
+    }
+    if not targets and not auto_exclusions and not rescue_candidates:
         return confirmation
     _logger.info(
         "auto supplement: course=%s run=%s targets(A)=%s auto_exclusions(C)=%s "
@@ -575,13 +583,7 @@ def _apply_auto_supplement(
         run_id,
         targets,
         sorted(auto_exclusions),
-        sorted(
-            code
-            for code, cov in coverage_by_code.items()
-            if cov.get("status") != "sufficient"
-            and any(str(reason).endswith("_failed") for reason in (cov.get("reasons") or []))
-            and code in active_card_chains
-        ),
+        sorted(rescue_candidates),
     )
 
     from sqlalchemy import select as _sa_select
@@ -657,7 +659,7 @@ def _apply_auto_supplement(
                 )
             )
             added_by_point[code].add(chunk_id)
-    auto_reviewed = sorted({*added_by_point.keys(), *auto_exclusions})
+    auto_reviewed = sorted({*added_by_point.keys(), *auto_exclusions, *rescue_candidates})
     if not auto_reviewed:
         return confirmation
     _logger.info(
