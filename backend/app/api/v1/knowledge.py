@@ -492,12 +492,15 @@ def _apply_auto_supplement(
 ) -> KnowledgeTreeConfirmation:
     """一键补证据：为所有覆盖不足考点自动应用 AI 推荐的直接证据改判。
 
-    仅当 confirmation.auto_supplement_direct_evidence 为真时生效。对每个
-    "缺直接证据"且无不可逆失败原因的考点，取其 supporting/background 候选
-    证据（候选 payload 已注入原文摘要），调用推荐器预选，把推荐条目转成
-    supplement_direct_evidence 操作合并进确认（保留教师已手填的操作与排除
-    操作）。单个考点推荐失败或无可推荐条目时跳过，不阻塞其余考点。自动
-    补充过的考点并入 reviewed_exam_point_codes，满足发布审阅要求。
+    仅当 confirmation.auto_supplement_direct_evidence 为真时生效。按考点情况
+    分三类自动处理，彻底解放教师：
+      A. "缺直接证据"且无失败原因、有间接候选 → 调推荐器生成补充操作；
+      B. "有失败残因但因已有活跃卡链而可发布" → 由发布端的补证据覆盖重算
+         去 fail 原因救回，本函数不动；
+      C. "有失败残因且树内无活跃卡链"（归并/分类失败且内容未产出卡）→
+         补证据无法重建，自动并入 teacher_exclusions 排除。
+    单点推荐失败或无可推荐条目时跳过，不阻塞其余考点。自动补充/排除过的
+    考点并入 reviewed_exam_point_codes，满足发布审阅要求。
     """
     if not confirmation.auto_supplement_direct_evidence:
         return confirmation
@@ -510,9 +513,17 @@ def _apply_auto_supplement(
     coverage_by_code = {
         item.get("exam_point_code"): item for item in payload.get("coverage") or []
     }
-    # 只处理能靠补证据解决的考点：缺直接证据、无 *_failed 阻断（归并失败
-    # 链路补证据无法重建）、有可改判的间接证据候选。conflicting 已有 direct
-    # 证据，no_recalled_evidence 无任何候选，均自动跳过。
+    # 树内活跃 topic-unit-card 链（用于区分 B 类可救回 vs C 类真无卡）。
+    active_card_chains = {
+        unit.get("exam_point_code")
+        for topic in payload.get("topics") or []
+        if topic.get("status") == "active"
+        for unit in topic.get("units") or []
+        if unit.get("status") == "active"
+        and unit.get("exam_point_code")
+        and any(card.get("status") == "active" for card in unit.get("cards") or [])
+    }
+    # A 类：靠补证据能解决的考点（缺直接证据、无 *_failed 阻断、有候选项）。
     targets = sorted(
         code
         for code, cov in coverage_by_code.items()
@@ -524,7 +535,16 @@ def _apply_auto_supplement(
         )
         and code in sources_by_point
     )
-    if not targets:
+    # C 类：failed 残因 + 树内无活跃卡链 → 补证据无法重建，自动排除。
+    # 注意 B 类（failed 残因但已有活跃卡链）不在此列，交由发布端救回。
+    auto_exclusions = {
+        code
+        for code, cov in coverage_by_code.items()
+        if cov.get("status") != "sufficient"
+        and any(str(reason).endswith("_failed") for reason in (cov.get("reasons") or []))
+        and code not in active_card_chains
+    }
+    if not targets and not auto_exclusions:
         return confirmation
 
     from sqlalchemy import select as _sa_select
@@ -557,6 +577,10 @@ def _apply_auto_supplement(
         point = points_by_code.get(code)
         if point is None:
             continue
+        # 仅 supporting 可作为改判直接证据的候选：direct 已成为直接证据，
+        # 而 background 按定义不含可考核知识（其 support_claim 是"（未提供说明）"
+        # 占位符），改判后卡片将无支撑事实，触发发布质量闸。只下发可落地候选，
+        # 避免把无意义背景喂给推荐器、污染补证据选项。
         candidates = [
             {
                 "evidence_chunk_id": item["evidence_chunk_id"],
@@ -566,6 +590,7 @@ def _apply_auto_supplement(
                 "content": item.get("content"),
             }
             for item in sources_by_point[code]
+            if str(item.get("relevance_class") or "") == "supporting"
         ]
         try:
             recommended = recommender.recommend(exam_point=point, candidates=candidates)
@@ -586,14 +611,19 @@ def _apply_auto_supplement(
                 )
             )
             added_by_point[code].add(chunk_id)
-    if not added_by_point:
+    auto_reviewed = sorted({*added_by_point.keys(), *auto_exclusions})
+    if not auto_reviewed:
         return confirmation
+    # 自动排除的无卡考点并入 teacher_exclusions，teacher_exclusions 已包含
+    # 教师手填排除，并集去重后一并返回；排除后的考点不再要求覆盖/审阅。
+    new_exclusions = sorted(set(confirmation.teacher_exclusions) | auto_exclusions)
     return confirmation.model_copy(
         update={
             "operations": existing,
+            "teacher_exclusions": new_exclusions,
             "reviewed_exam_point_codes": list(
                 dict.fromkeys(
-                    [*confirmation.reviewed_exam_point_codes, *added_by_point.keys()]
+                    [*confirmation.reviewed_exam_point_codes, *auto_reviewed]
                 )
             ),
         }

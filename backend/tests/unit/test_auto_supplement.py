@@ -1,4 +1,4 @@
-"""一键补证据（auto_supplement_direct_evidence）单元测试。"""
+"""一键补证据（auto_supplement_direct_evidence）分流单元测试（含 C 类排除）。"""
 
 from __future__ import annotations
 
@@ -59,6 +59,21 @@ def _coverage(code: str, status: str, reasons: list[str]) -> dict:
     return {"exam_point_code": code, "status": status, "reasons": reasons}
 
 
+def _tree_with_card(code: str) -> list[dict]:
+    return [
+        {
+            "status": "active",
+            "units": [
+                {
+                    "status": "active",
+                    "exam_point_code": code,
+                    "cards": [{"status": "active"}],
+                }
+            ],
+        }
+    ]
+
+
 class _Recommender:
     def __init__(self, accepted: dict[str, list[str]], failing: set[str] | None = None) -> None:
         self.accepted = accepted
@@ -83,8 +98,8 @@ class _Recommender:
         ]
 
 
-def _payload(coverage: list[dict], sources: list[dict]) -> dict:
-    return {"coverage": coverage, "evidence_sources": sources}
+def _payload(coverage: list[dict], sources: list[dict], topics: list[dict] | None = None) -> dict:
+    return {"coverage": coverage, "evidence_sources": sources, "topics": topics or []}
 
 
 def test_auto_flag_false_returns_confirmation_untouched():
@@ -113,15 +128,10 @@ def test_auto_only_targets_no_direct_evidence_points_with_candidates():
         failing={"p2"},
     )
     coverage = [
-        # 缺直接证据且有候选：应被处理
         _coverage("p1", "insufficient", ["no_direct_evidence"]),
-        # 归并失败：补证据无法重建链路，跳过
         _coverage("p2", "insufficient", ["no_direct_evidence", "consolidation_failed"]),
-        # 已充足：跳过
         _coverage("p3", "sufficient", []),
-        # 无任何间接证据候选：跳过
         _coverage("p4", "insufficient", ["no_direct_evidence", "no_recalled_evidence"]),
-        # conflicting：已有 direct 证据，跳过
         _coverage("p5", "conflicting", ["conflicting_direct_claims"]),
     ]
     sources = [
@@ -146,19 +156,22 @@ def test_auto_only_targets_no_direct_evidence_points_with_candidates():
         session=_FakeSession([_point_row("p1")]),
         recommender=recommender,
     )
-    # 只 p1 被处理：p2 因 *_failed 跳过、p3 已充足、p4 无候选、p5 冲突。
+    # A 类只 p1 被补证据：p3 已充足、p4 无候选、p5 冲突。
     assert recommender.called == ["p1"]
     supplement_ops = [
         op for op in result.operations if op.operation == "supplement_direct_evidence"
     ]
     assert [op.value for op in supplement_ops] == ["c1"]
+    # C 类 p2（failed 且无活跃卡链）被自动排除
+    assert "p2" in result.teacher_exclusions
     # 教师原有操作保留
     assert any(
         op.operation == "exclude_topic" and op.target_code == "t1"
         for op in result.operations
     )
-    # 自动补充过的考点并入已审阅集合
+    # 自动补充/排除的考点并入已审阅集合
     assert "p1" in result.reviewed_exam_point_codes
+    assert "p2" in result.reviewed_exam_point_codes
     assert "p3" in result.reviewed_exam_point_codes
 
 
@@ -218,3 +231,86 @@ def test_auto_no_recommendations_returns_confirmation_unchanged():
     )
     assert result.operations == []
     assert result.reviewed_exam_point_codes == []
+
+
+def test_auto_failed_but_with_active_card_chain_is_rescued_not_excluded():
+    """B 类：failed 残因 + 已有活跃卡链 → 不排除（交由发布端救回）。"""
+    recommender = _Recommender(accepted={})
+    coverage = [_coverage("p1", "insufficient", ["classification_failed"])]
+    # 树内含 p1 活跃卡链
+    topics = _tree_with_card("p1")
+    confirmation = KnowledgeTreeConfirmation(
+        operations=[],
+        reviewed_topic_codes=[],
+        reviewed_exam_point_codes=[],
+        teacher_exclusions=[],
+        auto_supplement_direct_evidence=True,
+    )
+    result = _apply_auto_supplement(
+        course_id="course",
+        run_id="run",
+        candidate={"payload": _payload(coverage, [], topics)},
+        confirmation=confirmation,
+        session=_FakeSession([]),
+        recommender=recommender,
+    )
+    assert recommender.called == []
+    # 有活跃卡链的 failed 考点不进入 teacher_exclusions，交由发布端救回
+    assert "p1" not in result.teacher_exclusions
+    assert "p1" not in result.reviewed_exam_point_codes
+
+
+def test_auto_exists_nothing_when_only_b_rescue_candidates():
+    """仅 B 类（有卡 failed）时，本函数不应改变 confirmation。"""
+    recommender = _Recommender(accepted={})
+    coverage = [_coverage("p1", "insufficient", ["classification_failed"])]
+    topics = _tree_with_card("p1")
+    confirmation = KnowledgeTreeConfirmation(
+        operations=[],
+        reviewed_topic_codes=[],
+        reviewed_exam_point_codes=[],
+        teacher_exclusions=[],
+        auto_supplement_direct_evidence=True,
+    )
+    result = _apply_auto_supplement(
+        course_id="course",
+        run_id="run",
+        candidate={"payload": _payload(coverage, [], topics)},
+        confirmation=confirmation,
+        session=_FakeSession([]),
+        recommender=recommender,
+    )
+    assert result is confirmation
+
+
+def test_auto_filters_out_background_candidates():
+    """A 类候选仅保留 supporting：background 的 support_claim 是无意义占位符，
+    改判后卡片无支撑事实会触发发布质量闸，不得作为补证据候选下发推荐器。"""
+    recommender = _Recommender(accepted={"p1": ["c2"]})
+    coverage = [_coverage("p1", "insufficient", ["no_direct_evidence"])]
+    sources = [
+        _candidate("p1", "c1", relevance_class="background"),
+        _candidate("p1", "c2", relevance_class="supporting"),
+    ]
+    confirmation = KnowledgeTreeConfirmation(
+        operations=[],
+        reviewed_topic_codes=[],
+        reviewed_exam_point_codes=[],
+        teacher_exclusions=[],
+        auto_supplement_direct_evidence=True,
+    )
+    result = _apply_auto_supplement(
+        course_id="course",
+        run_id="run",
+        candidate={"payload": _payload(coverage, sources)},
+        confirmation=confirmation,
+        session=_FakeSession([_point_row("p1")]),
+        recommender=recommender,
+    )
+    ops = [
+        (op.target_code, op.value)
+        for op in result.operations
+        if op.operation == "supplement_direct_evidence"
+    ]
+    # 只可能改判 supporting 的 c2；background 的 c1 不被采纳
+    assert ops == [("p1", "c2")]

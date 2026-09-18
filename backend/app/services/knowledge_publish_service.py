@@ -463,6 +463,49 @@ class DatabaseKnowledgeRepository:
                     tree=tree,
                     confirmation=confirmation,
                 )
+                # 救回"有活跃卡链但覆盖仍被 *_failed 原因卡住"的考点：某考点
+                # 在分类/归并阶段有过失败残因，但最终已在树内落地活跃知识卡链
+                # （有卡可考核 + 有 direct 证据支撑），则其覆盖不应因历史失败
+                # 残因被拦。仅对树内已有活跃 topic-unit-card 链的考点去除
+                # *_failed 原因并重算覆盖——真正的无卡考点（补证据/救回均无法
+                # 重建）不在此列，仍维持 insufficient 交解析。
+                active_card_chain_codes = {
+                    unit.exam_point_code
+                    for topic in tree.topics
+                    if topic.status == "active"
+                    for unit in topic.units
+                    if unit.status == "active"
+                    and unit.exam_point_code
+                    and any(card.status == "active" for card in unit.cards)
+                }
+                for code in sorted(active_card_chain_codes):
+                    item = next(
+                        (c for c in tree.coverage if c.exam_point_code == code), None
+                    )
+                    if item is None or item.status == "sufficient":
+                        continue
+                    failed_reasons = [
+                        r for r in (item.reasons or []) if r.endswith("_failed")
+                    ]
+                    if not failed_reasons:
+                        continue
+                    tree.coverage = [
+                        c for c in tree.coverage if c.exam_point_code != code
+                    ] + [
+                        compute_exam_point_coverage(
+                            code,
+                            [
+                                d
+                                for d in tree.evidence_decisions
+                                if d.exam_point_code == code
+                            ],
+                            additional_reasons=[
+                                r
+                                for r in (item.reasons or [])
+                                if not r.endswith("_failed")
+                            ],
+                        )
+                    ]
                 coverage_by_code = {
                     item.exam_point_code: item for item in tree.coverage
                 }
@@ -915,17 +958,33 @@ class DatabaseKnowledgeRepository:
             for decision in tree.evidence_decisions
         ]
         touched_codes = {code for code, _ in updated_keys}
+        # 树内是否有活跃 topic-unit-card 链：有链即代表考点已落地可考核，
+        # 补证据阶段不应再被 *_failed 残留原因降级拦死（典型如 4.2 这类
+        # classification_failed 但已有卡+direct 证据的考点）。
+        active_card_chains = {
+            unit.exam_point_code
+            for topic in tree.topics
+            if topic.status == "active"
+            for unit in topic.units
+            if unit.status == "active"
+            and unit.exam_point_code
+            and any(card.status == "active" for card in unit.cards)
+        }
         for code in touched_codes:
             original = next(
                 (c for c in tree.coverage if c.exam_point_code == code), None
             )
             # 补证据只改变证据数量，无法重建已归并失败的单元/卡片链路：
             # 保留原始 *_failed 原因，避免误判 sufficient 后触发 active-chain 校验。
+            # 但若该考点实际已在树内落地活跃卡链（有可考核内容），则去除 failed
+            # 残留原因，按 direct 证据判定转 sufficient——避免"有卡却被误杀"。
             irrecoverable = [
                 r
                 for r in (original.reasons if original else [])
                 if r.endswith("_failed")
             ]
+            if code in active_card_chains:
+                irrecoverable = []
             tree.coverage = [
                 item for item in tree.coverage if item.exam_point_code != code
             ] + [
