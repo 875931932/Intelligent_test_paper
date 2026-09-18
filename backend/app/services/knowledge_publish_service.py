@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 from collections import Counter
@@ -54,6 +55,9 @@ from app.services.knowledge_tree_service import (
 
 class KnowledgePublishError(Exception):
     pass
+
+
+_logger = logging.getLogger("knowledge.publish")
 
 
 _ANSWER_OR_RUBRIC_ROLES = frozenset(
@@ -369,6 +373,17 @@ class DatabaseKnowledgeRepository:
         if not framework:
             raise KnowledgePublishError("published framework is required")
         allowed = {anchor["key"] for anchor in framework.get("anchors", [])}
+        _logger.info(
+            "publish start: course=%s run=%s catalog=%s schema=%s "
+            "operations=%d exclusions=%d auto_supplement=%s",
+            course_id,
+            state["run_id"],
+            catalog_id,
+            candidate_payload.get("organization_schema_version"),
+            len(confirmation.operations),
+            len(confirmation.teacher_exclusions),
+            confirmation.auto_supplement_direct_evidence,
+        )
         if confirmation.operations:
             try:
                 tree = apply_tree_operations(
@@ -379,7 +394,14 @@ class DatabaseKnowledgeRepository:
             except KnowledgeTreeValidationError as exc:
                 raise KnowledgePublishError(str(exc)) from exc
         active_topics = {topic.code for topic in tree.topics if topic.status == "active"}
-        if active_topics - set(confirmation.reviewed_topic_codes):
+        missing_topic_reviews = sorted(active_topics - set(confirmation.reviewed_topic_codes))
+        if missing_topic_reviews:
+            _logger.error(
+                "publish gate: unreviewed active topics course=%s run=%s missing=%s",
+                course_id,
+                state["run_id"],
+                missing_topic_reviews,
+            )
             raise KnowledgePublishError("every active topic requires teacher review")
         schema_version = candidate_payload.get("organization_schema_version")
         if type(schema_version) is not int or schema_version not in {
@@ -523,12 +545,37 @@ class DatabaseKnowledgeRepository:
                     or coverage_by_code[code].status != "sufficient"
                 )
                 if unresolved:
+                    unresolved_detail = [
+                        {
+                            "code": code,
+                            "status": coverage_by_code.get(code).status if code in coverage_by_code else "no_coverage",
+                            "reasons": coverage_by_code.get(code).reasons if code in coverage_by_code else [],
+                        }
+                        for code in unresolved
+                    ]
+                    _logger.error(
+                        "publish gate: coverage insufficient course=%s run=%s exclusions=%s "
+                        "unresolved=%s",
+                        course_id,
+                        state["run_id"],
+                        sorted(excluded_codes),
+                        unresolved_detail,
+                    )
                     raise KnowledgePublishError(
                         "exam point coverage must be sufficient or explicitly excluded: "
                         + ", ".join(unresolved)
                     )
                 required_reviews = publishable_exam_point_codes
-                if required_reviews - set(confirmation.reviewed_exam_point_codes):
+                missing_reviews = sorted(
+                    required_reviews - set(confirmation.reviewed_exam_point_codes)
+                )
+                if missing_reviews:
+                    _logger.error(
+                        "publish gate: unreviewed exam points course=%s run=%s missing=%s",
+                        course_id,
+                        state["run_id"],
+                        missing_reviews,
+                    )
                     raise KnowledgePublishError(
                         "every sufficient exam point requires teacher review"
                     )
@@ -569,7 +616,18 @@ class DatabaseKnowledgeRepository:
                 required_chain_codes = (
                     publishable_exam_point_codes - explicitly_excluded_chain_codes
                 )
-                if required_chain_codes - active_chain_codes:
+                missing_chain_codes = sorted(
+                    required_chain_codes - active_chain_codes
+                )
+                if missing_chain_codes:
+                    _logger.error(
+                        "publish gate: exam points without active card chain course=%s run=%s "
+                        "missing=%s active=%s",
+                        course_id,
+                        state["run_id"],
+                        missing_chain_codes,
+                        sorted(active_chain_codes),
+                    )
                     raise KnowledgePublishError(
                         "every sufficient exam point requires an active topic-unit-card chain"
                     )
@@ -612,6 +670,12 @@ class DatabaseKnowledgeRepository:
                         chunks_by_id=chunks_by_id,
                     )
                 except KnowledgeTreeValidationError as exc:
+                    _logger.error(
+                        "publish gate: tree validation failed course=%s run=%s reason=%s",
+                        course_id,
+                        state["run_id"],
+                        exc,
+                    )
                     raise KnowledgePublishError(
                         "active source evidence is no longer sufficient for publish"
                     ) from exc
@@ -985,15 +1049,26 @@ class DatabaseKnowledgeRepository:
             ]
             if code in active_card_chains:
                 irrecoverable = []
+            new_coverage = compute_exam_point_coverage(
+                code,
+                [d for d in tree.evidence_decisions if d.exam_point_code == code],
+                additional_reasons=irrecoverable,
+            )
+            _logger.info(
+                "publish supplement: course=%s run=%s point=%s before=%s(%s) "
+                "after=%s(%s) active_chain=%s",
+                course_id,
+                run_id,
+                code,
+                original.status if original else "none",
+                original.reasons if original else [],
+                new_coverage.status,
+                new_coverage.reasons,
+                code in active_card_chains,
+            )
             tree.coverage = [
                 item for item in tree.coverage if item.exam_point_code != code
-            ] + [
-                compute_exam_point_coverage(
-                    code,
-                    [d for d in tree.evidence_decisions if d.exam_point_code == code],
-                    additional_reasons=irrecoverable,
-                )
-            ]
+            ] + [new_coverage]
 
     def _filter_live_direct_evidence(
         self,

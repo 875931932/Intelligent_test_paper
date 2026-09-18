@@ -476,8 +476,15 @@ def publish_tree(
             recommender=recommender,
         )
         result = knowledge_publish_service.DatabaseKnowledgeRepository(session).publish({"course_id": course_id, "run_id": run_id, "candidate_id": candidate["id"]}, KnowledgeTreeCandidate.model_validate(candidate["payload"]), confirmation)
+        _logger.info("publish ok: course=%s run=%s", course_id, run_id)
         return result
     except knowledge_publish_service.KnowledgePublishError as exc:
+        _logger.error(
+            "publish failed: course=%s run=%s detail=%s",
+            course_id,
+            run_id,
+            exc,
+        )
         raise HTTPException(status_code=409, detail=str(exc))
 
 
@@ -546,6 +553,21 @@ def _apply_auto_supplement(
     }
     if not targets and not auto_exclusions:
         return confirmation
+    _logger.info(
+        "auto supplement: course=%s run=%s targets(A)=%s auto_exclusions(C)=%s "
+        "rescue_candidates(B)=%s",
+        course_id,
+        run_id,
+        targets,
+        sorted(auto_exclusions),
+        sorted(
+            code
+            for code, cov in coverage_by_code.items()
+            if cov.get("status") != "sufficient"
+            and any(str(reason).endswith("_failed") for reason in (cov.get("reasons") or []))
+            and code in active_card_chains
+        ),
+    )
 
     from sqlalchemy import select as _sa_select
 
@@ -599,6 +621,15 @@ def _apply_auto_supplement(
                 "auto supplement recommendation failed for %s: %s", code, exc
             )
             continue
+        _logger.info(
+            "auto supplement recommend: course=%s run=%s point=%s candidates=%d "
+            "accepted=%s",
+            course_id,
+            run_id,
+            code,
+            len(candidates),
+            sorted(str(item.get("evidence_chunk_id") or "") for item in recommended),
+        )
         for item in recommended:
             chunk_id = str(item.get("evidence_chunk_id") or "").strip()
             if not chunk_id or chunk_id in added_by_point.setdefault(code, set()):
@@ -614,6 +645,13 @@ def _apply_auto_supplement(
     auto_reviewed = sorted({*added_by_point.keys(), *auto_exclusions})
     if not auto_reviewed:
         return confirmation
+    _logger.info(
+        "auto supplement applied: course=%s run=%s added_by_point=%s exclusions=%s",
+        course_id,
+        run_id,
+        {code: sorted(chunks) for code, chunks in added_by_point.items()},
+        sorted(auto_exclusions),
+    )
     # 自动排除的无卡考点并入 teacher_exclusions，teacher_exclusions 已包含
     # 教师手填排除，并集去重后一并返回；排除后的考点不再要求覆盖/审阅。
     new_exclusions = sorted(set(confirmation.teacher_exclusions) | auto_exclusions)
