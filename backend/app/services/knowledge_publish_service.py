@@ -1136,6 +1136,35 @@ class DatabaseKnowledgeRepository:
                 live_direct_by_point.setdefault(decision.exam_point_code, []).append(decision)
         for point_code in publishable_exam_point_codes:
             direct = live_direct_by_point.get(point_code, [])
+            # 归一化：live 且补证据改判/历史遗留的 direct 决策若未带 answer/rubric
+            # 角色，统一视为 answer_basis——能成为该考点 live direct 即意味着它
+            # 直接支撑该考点可考核事实（补证据改判语义=确认可考核）。兜底修复
+            # 历史版本补证据改判未随改判落 answer_basis 的脏数据，避免误拦。
+            if direct and not any(
+                (d.evidence_role or "").strip().casefold() in _ANSWER_OR_RUBRIC_ROLES
+                for d in direct
+            ):
+                _logger.warning(
+                    "publish gate: point %s direct evidence missing answer/rubric role; "
+                    "normalizing to answer_basis course=%s run=%s direct_roles=%s",
+                    point_code,
+                    course_id,
+                    run_id,
+                    sorted({(d.evidence_role or "").strip() or "NULL" for d in direct}),
+                )
+                filtered.evidence_decisions = [
+                    (
+                        d.model_copy(update={"evidence_role": "answer_basis"})
+                        if d.relevance_class is RelevanceClass.DIRECT
+                        and d.exam_point_code == point_code
+                        else d
+                    )
+                    for d in filtered.evidence_decisions
+                ]
+                direct = live_direct_by_point[point_code] = [
+                    d.model_copy(update={"evidence_role": "answer_basis"})
+                    for d in direct
+                ]
             if not any(
                 (decision.evidence_role or "").strip().casefold()
                 in _ANSWER_OR_RUBRIC_ROLES

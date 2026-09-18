@@ -647,6 +647,18 @@ def _apply_auto_supplement(
             len(candidates),
             sorted(str(item.get("evidence_chunk_id") or "") for item in recommended),
         )
+        if not recommended:
+            # 推荐器对 A 类考点 0 采纳：改判后仍拿不到可考核（answer/rubric 依据）
+            # 的直接证据，等同于"无 supporting 候选"的材料覆盖缺口，自动排除，
+            # 避免该考点既补不上又在 answer/rubric 闸处永久拦死发布。
+            auto_exclusions.add(code)
+            _logger.info(
+                "auto supplement no adoption for %s -> auto exclude course=%s run=%s",
+                code,
+                course_id,
+                run_id,
+            )
+            continue
         for item in recommended:
             chunk_id = str(item.get("evidence_chunk_id") or "").strip()
             if not chunk_id or chunk_id in added_by_point.setdefault(code, set()):

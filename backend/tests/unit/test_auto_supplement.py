@@ -210,7 +210,9 @@ def test_auto_merges_recommendations_across_points_and_dedupes():
     assert set(result.reviewed_exam_point_codes) == {"p1", "p2"}
 
 
-def test_auto_no_recommendations_returns_confirmation_unchanged():
+def test_auto_no_recommendations_excludes_adeductive_point():
+    # 推荐器对 A 类考点 0 采纳：改判后仍拿不到 answer/rubric 依据的直接证据，
+    # 等同类材料覆盖缺口，该考点自动排除而非保持 unresolved 拦死发布。
     recommender = _Recommender(accepted={"p1": []})
     coverage = [_coverage("p1", "insufficient", ["no_direct_evidence"])]
     sources = [_candidate("p1", "c1")]
@@ -230,7 +232,8 @@ def test_auto_no_recommendations_returns_confirmation_unchanged():
         recommender=recommender,
     )
     assert result.operations == []
-    assert result.reviewed_exam_point_codes == []
+    assert "p1" in result.teacher_exclusions
+    assert "p1" in result.reviewed_exam_point_codes
 
 
 def test_auto_failed_but_with_active_card_chain_is_rescued_not_excluded():
@@ -370,3 +373,63 @@ def test_auto_excludes_no_direct_evidence_without_any_candidates():
     assert recommender.called == []
     assert "p1" in result.teacher_exclusions
     assert "p1" in result.reviewed_exam_point_codes
+
+
+def test_auto_excludes_when_recommender_accepts_nothing():
+    """A 类考点（no_direct_evidence + 有 supporting 候选）但推荐器 0 采纳：
+    改判后拿不到 answer/rubric 依据的直接证据，等同类材料覆盖缺口，
+    自动排除，避免它在 answer/rubric 闸处永久拦死发布。"""
+    # 有 supporting 候选，构成 A 类 target；推荐器不批准任何候选
+    recommender = _Recommender(accepted={})
+    coverage = [_coverage("p1", "insufficient", ["no_direct_evidence"])]
+    sources = [_candidate("p1", "c1", relevance_class="supporting")]
+    confirmation = KnowledgeTreeConfirmation(
+        operations=[],
+        reviewed_topic_codes=[],
+        reviewed_exam_point_codes=[],
+        teacher_exclusions=[],
+        auto_supplement_direct_evidence=True,
+    )
+    result = _apply_auto_supplement(
+        course_id="course",
+        run_id="run",
+        candidate={"payload": _payload(coverage, sources)},
+        confirmation=confirmation,
+        session=_FakeSession([_point_row("p1")]),
+        recommender=recommender,
+    )
+    assert recommender.called == ["p1"]
+    assert "p1" in result.teacher_exclusions
+    assert "p1" in result.reviewed_exam_point_codes
+    assert not any(
+        op.operation == "supplement_direct_evidence" for op in result.operations
+    )
+
+
+def test_auto_keeps_point_when_recommender_accepts_some():
+    """A 类考点推荐器批准至少一条 supporting → 生成改判操作，不排除。"""
+    recommender = _Recommender(accepted={"p1": ["c1"]})
+    coverage = [_coverage("p1", "insufficient", ["no_direct_evidence"])]
+    sources = [_candidate("p1", "c1", relevance_class="supporting")]
+    confirmation = KnowledgeTreeConfirmation(
+        operations=[],
+        reviewed_topic_codes=[],
+        reviewed_exam_point_codes=[],
+        teacher_exclusions=[],
+        auto_supplement_direct_evidence=True,
+    )
+    result = _apply_auto_supplement(
+        course_id="course",
+        run_id="run",
+        candidate={"payload": _payload(coverage, sources)},
+        confirmation=confirmation,
+        session=_FakeSession([_point_row("p1")]),
+        recommender=recommender,
+    )
+    assert "p1" not in result.teacher_exclusions
+    assert any(
+        op.operation == "supplement_direct_evidence"
+        and op.target_code == "p1"
+        and op.value == "c1"
+        for op in result.operations
+    )
