@@ -314,3 +314,56 @@ def test_auto_filters_out_background_candidates():
     ]
     # 只可能改判 supporting 的 c2；background 的 c1 不被采纳
     assert ops == [("p1", "c2")]
+
+
+def test_auto_excludes_no_direct_evidence_with_only_background_candidates():
+    """仅有 background 候选的 no_direct_evidence 考点：不算 A 类（无 supporting
+    可改判）、无 failed 残因，此前掉进缝隙既不补也不排除拦发布；现在自动排除。"""
+    recommender = _Recommender(accepted={})
+    coverage = [_coverage("p1", "insufficient", ["no_direct_evidence"])]
+    sources = [_candidate("p1", "c1", relevance_class="background")]
+    confirmation = KnowledgeTreeConfirmation(
+        operations=[],
+        reviewed_topic_codes=[],
+        reviewed_exam_point_codes=[],
+        teacher_exclusions=[],
+        auto_supplement_direct_evidence=True,
+    )
+    result = _apply_auto_supplement(
+        course_id="course",
+        run_id="run",
+        candidate={"payload": _payload(coverage, sources)},
+        confirmation=confirmation,
+        session=_FakeSession([_point_row("p1")]),
+        recommender=recommender,
+    )
+    assert recommender.called == []
+    assert "p1" in result.teacher_exclusions
+    assert not any(
+        op.operation == "supplement_direct_evidence" for op in result.operations
+    )
+
+
+def test_auto_excludes_no_direct_evidence_without_any_candidates():
+    """完全无候选的 no_direct_evidence 考点（材料无对应知识）：自动排除，
+    避免覆盖缺口考点永久拦死一键发布。"""
+    recommender = _Recommender(accepted={})
+    coverage = [_coverage("p1", "insufficient", ["no_direct_evidence"])]
+    confirmation = KnowledgeTreeConfirmation(
+        operations=[],
+        reviewed_topic_codes=[],
+        reviewed_exam_point_codes=[],
+        teacher_exclusions=[],
+        auto_supplement_direct_evidence=True,
+    )
+    result = _apply_auto_supplement(
+        course_id="course",
+        run_id="run",
+        candidate={"payload": _payload(coverage, [])},
+        confirmation=confirmation,
+        session=_FakeSession([_point_row("p1")]),
+        recommender=recommender,
+    )
+    assert recommender.called == []
+    assert "p1" in result.teacher_exclusions
+    assert "p1" in result.reviewed_exam_point_codes

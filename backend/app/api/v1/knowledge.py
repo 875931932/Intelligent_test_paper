@@ -530,7 +530,15 @@ def _apply_auto_supplement(
         and unit.get("exam_point_code")
         and any(card.get("status") == "active" for card in unit.get("cards") or [])
     }
-    # A 类：靠补证据能解决的考点（缺直接证据、无 *_failed 阻断、有候选项）。
+    def _has_supporting(code: str) -> bool:
+        return any(
+            str(item.get("relevance_class") or "") == "supporting"
+            for item in sources_by_point.get(code, [])
+        )
+
+    # A 类：靠补证据能解决的考点（缺直接证据、无 *_failed 阻断、有 supporting 候选）。
+    # 注意必须判定 supporting 而非"存在任意候选"：若考点只有 background 候选，
+    # 候选过滤后为空，推荐器必然返回空，考点既补不上也不会被排除，掉进缝隙拦发布。
     targets = sorted(
         code
         for code, cov in coverage_by_code.items()
@@ -540,16 +548,23 @@ def _apply_auto_supplement(
             str(reason).endswith("_failed")
             for reason in (cov.get("reasons") or [])
         )
-        and code in sources_by_point
+        and _has_supporting(code)
     )
-    # C 类：failed 残因 + 树内无活跃卡链 → 补证据无法重建，自动排除。
-    # 注意 B 类（failed 残因但已有活跃卡链）不在此列，交由发布端救回。
+    # C 类：补证据无法解决 且 树内无活跃卡链 → 自动排除。
+    # 无法解决有两种情况：
+    #   1) *_failed 残因（归并/分类失败，补证据重建不了卡片链路）
+    #   2) 无 supporting 候选（材料里没有可升级为直接证据的间接证据，
+    #      补证据无从下手；无卡链说明知识也未落地，只能排除）
+    # B 类（failed 残因但已有活跃卡链）不在此列，交由发布端救回。
     auto_exclusions = {
         code
         for code, cov in coverage_by_code.items()
         if cov.get("status") != "sufficient"
-        and any(str(reason).endswith("_failed") for reason in (cov.get("reasons") or []))
         and code not in active_card_chains
+        and (
+            any(str(reason).endswith("_failed") for reason in (cov.get("reasons") or []))
+            or not _has_supporting(code)
+        )
     }
     if not targets and not auto_exclusions:
         return confirmation
