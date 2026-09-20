@@ -17,7 +17,7 @@ from pydantic import (
 )
 
 from app.adapters.model.deepseek_gateway import DeepSeekJsonClient, DeepSeekModelError
-from app.domain.framework.exam_points import ExamPoint
+from app.domain.framework.exam_points import ExamPoint, OperationalDetailPolicy
 from app.domain.framework.models import AssessmentAnchor, AssessmentOutline, TeachingTopic
 from app.domain.knowledge.models import AssessmentUnitDraft
 from app.domain.knowledge.relevance import (
@@ -90,7 +90,13 @@ def _normalize_assessment_outline(raw: dict[str, Any]) -> dict[str, Any]:
     if isinstance(raw_points, list):
         for point in raw_points:
             if isinstance(point, dict) and point.get("anchor_key"):
-                weights_by_anchor.setdefault(str(point["anchor_key"]), point.get("weight_value"))
+                anchor_key = str(point["anchor_key"])
+                weight_value = point.get("weight_value")
+                try:
+                    weight_value = float(weight_value)
+                except (TypeError, ValueError):
+                    weight_value = 0.0
+                weights_by_anchor[anchor_key] = weights_by_anchor.get(anchor_key, 0.0) + weight_value
 
     raw_anchors = normalized.get("anchors")
     if not isinstance(raw_anchors, list):
@@ -112,12 +118,23 @@ def _normalize_assessment_outline(raw: dict[str, Any]) -> dict[str, Any]:
         anchor = {
             key: value for key, value in raw_anchor.items() if key in allowed_anchor_fields
         }
+        # 模型常把 anchor 的 key/title 命名为 anchor_key/anchor_scope，归一化到 schema 字段，
+        # 否则 anchors 的 key/title/exam_weight 全部为空导致 schema 反复校验失败。
+        if not anchor.get("key") and raw_anchor.get("anchor_key"):
+            anchor["key"] = raw_anchor["anchor_key"]
+        if not anchor.get("title") and raw_anchor.get("anchor_scope"):
+            anchor["title"] = raw_anchor["anchor_scope"]
         if not anchor.get("title") and isinstance(anchor.get("description"), str):
             anchor["title"] = anchor["description"]
         if not anchor.get("title") and isinstance(raw_anchor.get("description"), str):
             anchor["title"] = raw_anchor["description"]
-        if anchor.get("exam_weight") is None and anchor.get("key"):
-            anchor["exam_weight"] = weights_by_anchor.get(str(anchor["key"]))
+        # 章节权重一律由其全部考点权重之和推导，覆盖模型自报的锚点权重——
+        # 否则模型锚点权重与考点权重不一致会触发 "explicit exam point weight
+        # must not exceed parent anchor weight" 语义校验失败。
+        anchor["exam_weight"] = weights_by_anchor.get(
+            str(anchor.get("key") or raw_anchor.get("anchor_key")),
+            raw_anchor.get("exam_weight") or 0.0,
+        )
         exam_weight = anchor.get("exam_weight")
         if isinstance(exam_weight, str):
             compact_weight = exam_weight.strip().replace("％", "%")
@@ -135,6 +152,37 @@ def _normalize_assessment_outline(raw: dict[str, Any]) -> dict[str, Any]:
             anchor.setdefault(key, [])
         anchors.append(anchor)
     normalized["anchors"] = anchors
+    # 权重闭合：把全部考点权重按比例缩放到总和精确 100，避免模型输出的 100.07 之类
+    # 舍入误差触发 weight:total 冲突，卡住框架发布；章权重随考点同比例推导。
+    points_norm = normalized.get("exam_points")
+    if isinstance(points_norm, list) and points_norm:
+        _numeric_weights = [
+            float(p["weight_value"])
+            for p in points_norm
+            if isinstance(p, dict)
+            and isinstance(p.get("weight_value"), (int, float))
+        ]
+        total = sum(_numeric_weights)
+        if total > 0 and abs(total - 100) > 0.011:
+            scale = 100.0 / total
+            for p in points_norm:
+                if isinstance(p, dict) and isinstance(p.get("weight_value"), (int, float)):
+                    p["weight_value"] = round(float(p["weight_value"]) * scale, 4)
+            weights_by_anchor = {}
+            for p in points_norm:
+                if isinstance(p, dict) and p.get("anchor_key"):
+                    ak = str(p["anchor_key"])
+                    try:
+                        wv = float(p["weight_value"])
+                    except (TypeError, ValueError):
+                        wv = 0.0
+                    weights_by_anchor[ak] = weights_by_anchor.get(ak, 0.0) + wv
+            for anchor in anchors:
+                if isinstance(anchor, dict):
+                    anchor["exam_weight"] = weights_by_anchor.get(
+                        str(anchor.get("key") or anchor.get("anchor_key")),
+                        anchor.get("exam_weight") or 0.0,
+                    )
     return normalized
 
 
@@ -185,6 +233,12 @@ def _normalize_classification_response(raw: dict[str, Any]) -> dict[str, Any]:
         confidence = decision.get("confidence")
         if isinstance(confidence, float) and 0 <= confidence <= 1:
             decision["confidence"] = round(confidence * 100)
+        elif isinstance(confidence, int):
+            # 模型以整数 1（=100%）汇报满置信；若按原值保留会被准入阈值拒收。
+            if 0 <= confidence <= 1:
+                decision["confidence"] = round(confidence * 100)
+            elif 1 < confidence <= 100:
+                decision["confidence"] = round(confidence)
         elif isinstance(confidence, str):
             compact_confidence = confidence.strip().casefold().replace("％", "%")
             qualitative_confidence = {"高": 85, "high": 85, "中": 65, "medium": 65, "低": 40, "low": 40}
@@ -611,8 +665,16 @@ class DeepSeekSyllabusExtractor:
                 "包含 anchors、exam_points、final_exam_rules。每个 exam_point 必须包含 code、anchor_key、"
                 "title、assessment_requirement、weight_value、weight_source、weight_group_id、"
                 "cognitive_targets、assessment_orientations、operational_detail_policy、retrieval_intent、"
-                "teaching_anchor_keys。操作命令、安装和环境配置默认标记 supporting_only；只有考核大纲明确"
-                "要求实践配置或操作考核时才可标记 directly_assessable。weight_source 仅允许 "
+                "teaching_anchor_keys。每个 anchor 必须包含 key（章节key，如『第1章 开源大模型运行原理与量化部署』）、"
+                "title（章节名称）、exam_weight（该章考试权重，0~100，等于该章全部考点 weight_value 之和）"
+                "。不要用 anchor_key/anchor_scope 等别名代替 key/title。"
+                "operational_detail_policy 依据考核要求判：凡是考核对象本身就是命令、代码、配置、参数写法、"
+                "部署/调用/评测的执行方式与作用（考核要求含『阅读或补全XX代码/命令』『使用X完成调用/评测/推理』"
+                "『配置XX流程/参数』『能启动/执行/部署/运行X』『分析OOM等报错原因并排障』等执行语义），"
+                "标 directly_assessable——这些操作细节本身就是可考的知识点，可直接当 DIRECT 证据考；"
+                "只有纯概念、原理、比较、设计、方案的考核（考核要求是说明/比较/设计/选择/判断类型，"
+                "不要求写出命令或代码）才标 supporting_only。安装环境依赖等纯操作外壳禁止标记 forbidden。"
+                "weight_source 仅允许 "
                 "assessment_syllabus 或 inherited_group。"
             ),
             payload={"blocks": blocks},
@@ -620,6 +682,26 @@ class DeepSeekSyllabusExtractor:
             call_context=call_context,
             response_validator=validate_response,
         )
+        # 确定性兜底：考核要求以命令/代码/配置/参数/调用/部署/启动/执行/评测/推理为考核对象时，
+        # 操作细节本身就是可考知识，标 directly_assessable 让操作知识陈述可成为 direct 证据，
+        # 避免模型惯性一律标 supporting_only 而被准入阶段降级、过不了发布门。
+        # 概念考点即使多标成 directly_assessable 也无害（其材料以概念陈述为主，本就可直证）。
+        _REQ_USE_OP = re.compile(
+            r"使用[^，。；;]{1,20}(?:调用|评测|推理|部署|运行)|"
+            r"用[^，。；;]{1,15}完成[^，。；;]{0,8}(?:评测|推理|调用)"
+        )
+        _REQ_OPERATIONAL = re.compile(
+            r"阅读或补全|代码|命令|启动|排障|修复|配置|参数|构建和检查"
+        )
+        points = parsed[0].exam_points
+        for point in points:
+            req = point.assessment_requirement or ""
+            if point.operational_detail_policy is OperationalDetailPolicy.FORBIDDEN:
+                point.operational_detail_policy = OperationalDetailPolicy.SUPPORTING_ONLY
+            if _REQ_OPERATIONAL.search(req) or _REQ_USE_OP.search(req):
+                point.operational_detail_policy = OperationalDetailPolicy.DIRECTLY_ASSESSABLE
+            else:
+                point.operational_detail_policy = OperationalDetailPolicy.SUPPORTING_ONLY
         return parsed[0]
 
 

@@ -40,6 +40,7 @@ from app.domain.knowledge.models import (
     KnowledgeTreeConfirmation,
 )
 from app.domain.knowledge.relevance import (
+    ContentKind,
     EvidenceDecision,
     ExamPointFileDecision,
     RelevanceClass,
@@ -1095,6 +1096,7 @@ class DatabaseKnowledgeRepository:
             select(
                 exam_point_evidence_links.c.exam_point_id,
                 exam_point_evidence_links.c.evidence_chunk_id,
+                exam_point_evidence_links.c.relevance_class,
             )
             .join(
                 evidence_chunks,
@@ -1108,7 +1110,9 @@ class DatabaseKnowledgeRepository:
             .where(
                 exam_point_evidence_links.c.course_id == course_id,
                 exam_point_evidence_links.c.organization_run_id == run_id,
-                exam_point_evidence_links.c.relevance_class == "direct",
+                exam_point_evidence_links.c.relevance_class.in_(
+                    ["direct", "supporting"]
+                ),
                 exam_point_evidence_links.c.status.in_(["candidate", "published"]),
                 evidence_chunks.c.course_id == course_id,
                 material_versions.c.course_id == course_id,
@@ -1120,15 +1124,32 @@ class DatabaseKnowledgeRepository:
         ).all()
         live_keys = {
             (point_codes_by_id[point_id], evidence_id)
-            for point_id, evidence_id in rows
+            for point_id, evidence_id, _relevance in rows
             if point_id in point_codes_by_id
+        }
+        live_direct_keys = {
+            (point_codes_by_id[point_id], evidence_id)
+            for point_id, evidence_id, relevance in rows
+            if point_id in point_codes_by_id and relevance == "direct"
         }
         filtered = tree.model_copy(deep=True)
         filtered.evidence_decisions = [
             decision
             for decision in filtered.evidence_decisions
-            if decision.relevance_class is not RelevanceClass.DIRECT
-            or (decision.exam_point_code, decision.evidence_chunk_id) in live_keys
+            if (
+                decision.relevance_class is RelevanceClass.DIRECT
+                and (decision.exam_point_code, decision.evidence_chunk_id)
+                in live_direct_keys
+            )
+            or (
+                decision.relevance_class is RelevanceClass.SUPPORTING
+                and (decision.exam_point_code, decision.evidence_chunk_id)
+                in live_keys
+                # 与发布校验准入口径一致：被降级为 supporting 的操作细节
+                # 不作为可评分依据，从支撑池剔除（DIRECTLY_ASSESSABLE 策略下
+                # direct 的操作细节不受影响）。
+                and decision.content_kind is not ContentKind.OPERATIONAL_DETAIL
+            )
         ]
         live_direct_by_point: dict[str, list[EvidenceDecision]] = {}
         for decision in filtered.evidence_decisions:
@@ -1192,13 +1213,17 @@ class DatabaseKnowledgeRepository:
             )
             if coverage is not None:
                 coverage.direct_count = len(direct)
+        surviving_keys = {
+            (decision.exam_point_code, decision.evidence_chunk_id)
+            for decision in filtered.evidence_decisions
+        }
         for topic in filtered.topics:
             for unit in topic.units:
                 for card in unit.cards:
                     card.evidence_chunk_ids = [
                         evidence_id
                         for evidence_id in card.evidence_chunk_ids
-                        if (unit.exam_point_code, evidence_id) in live_keys
+                        if (unit.exam_point_code, evidence_id) in surviving_keys
                     ]
         return filtered
 

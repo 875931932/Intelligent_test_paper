@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 import time
 from collections.abc import Callable
 from typing import Any, Protocol
@@ -9,6 +10,14 @@ from typing import Any, Protocol
 import httpx
 
 from app.domain.model_calls import ModelCallContext
+
+# 并发洪泛是分类/归并阶段 HTTP 429 限流的根源：organization_max_workers=16
+# 的并行线程同时轰击模型 API，网关虽带退避重试但退避窗口太短，无法等限流恢复。
+# 用进程级信号量把所有模型调用（分类/归并/抽取/框架抽取共用同一网关）的并发数
+# 收敛到很小的常数，让 DeepSeek 端始终处于可控负载；再用 429 长退避兜底
+# RPM 触顶。metagain 单租户工具，进程内所有 client 共享同一信号量协调并发。
+_LLM_MAX_CONCURRENCY = 2
+_LLM_SEMAPHORE = threading.BoundedSemaphore(_LLM_MAX_CONCURRENCY)
 
 
 _PERSISTED_ERROR_MESSAGES = {
@@ -204,7 +213,8 @@ class DeepSeekJsonClient:
             raw_snapshot = None
             should_retry = True
             try:
-                response = self._post(system_prompt, canonical_prompt, temperature, tool, max_tokens, reasoning_effort)
+                with _LLM_SEMAPHORE:
+                    response = self._post(system_prompt, canonical_prompt, temperature, tool, max_tokens, reasoning_effort)
                 headers = getattr(response, "headers", {})
                 request_id = headers.get("x-request-id") if hasattr(headers, "get") else None
                 status_code = getattr(response, "status_code", None)
@@ -315,7 +325,12 @@ class DeepSeekJsonClient:
             if not should_retry:
                 break
             if attempt < effective_max_attempts:
-                time.sleep(min(2 ** (attempt - 1), 8))
+                # 429 是显式限流信号，退避窗口远比网络抖动长：给足时间等限流恢复
+                #（常见窗口约 1 分钟），避免在并发信号量保护下仍因 RPM 触顶重试耗尽。
+                if final_http_status == 429:
+                    time.sleep(min(45, 15 * attempt))
+                else:
+                    time.sleep(min(2 ** (attempt - 1), 8))
 
         assert last_error is not None
         duration_ms = round((time.perf_counter() - started) * 1000)

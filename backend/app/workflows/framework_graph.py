@@ -324,16 +324,24 @@ def _teaching_topic_for_keys(
         topic = normalized.get(_norm(key))
         if topic is not None:
             return topic
-    if title:
-        norm_title = _norm(title)
-        for topic in teaching_topics:
-            norm_topic_title = _norm(topic.title)
-            if (
-                norm_title
-                and norm_topic_title
-                and (norm_title in norm_topic_title or norm_topic_title in norm_title)
-            ):
-                return topic
+    if title or keys:
+        # 教学主题 key 常被压成短 id（chapter1…），考点侧 teaching_anchor_keys 则存完整章名。
+        # 因此标题包含匹配必须同时把 keys（完整章名）纳入候选，否则考点永远对不上主题，
+        # 误报大量 missing_teaching_coverage。锚点匹配（merge 阶段）传 anchor.title 不受影响。
+        needles = []
+        if title:
+            needles.append(title)
+        needles.extend(key for key in keys if key)
+        norm_topic_titles = [(_norm(topic.title), topic) for topic in teaching_topics]
+        for needle in needles:
+            norm_needle = _norm(needle)
+            if not norm_needle:
+                continue
+            for norm_topic_title, topic in norm_topic_titles:
+                if norm_topic_title and (
+                    norm_needle in norm_topic_title or norm_topic_title in norm_needle
+                ):
+                    return topic
     return None
 
 

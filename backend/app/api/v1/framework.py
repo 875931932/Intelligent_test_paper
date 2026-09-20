@@ -45,6 +45,7 @@ def get_syllabus_extractor(request: Request) -> SyllabusExtractor:
             base_url=settings.deepseek_base_url,
             model=settings.deepseek_model,
             disable_thinking=settings.deepseek_disable_thinking,
+            timeout=settings.framework_model_timeout,
             recorder=DatabaseModelCallRecorder(get_session_factory()),
         )
         extractor = DeepSeekSyllabusExtractor(client)

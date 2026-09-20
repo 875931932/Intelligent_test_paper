@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     # 默认 90s 超时在 MiMo 上不足以完成响应，超时失败会整材料放弃并烧掉 token；
     # 该阶段已异步化，放长超时不影响前端体验。
     organization_model_timeout: float = Field(default=240.0, gt=0)
+    # 框架大纲抽取阶段的模型调用超时（秒）。考核大纲 prompt 较大（数万 token），
+    # 默认 90s 超时会触发 transport error，需放长到足以容纳完整响应。
+    framework_model_timeout: float = Field(default=240.0, gt=0)
     seed_dev_data: bool = False
     upload_max_bytes: int = 209715200
     s3_endpoint: str = "http://localhost:9000"
