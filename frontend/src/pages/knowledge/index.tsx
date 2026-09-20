@@ -45,6 +45,19 @@ function EvidenceRoleVariant(role: string): string {
   return variants[role] || 'default';
 }
 
+function formatLocator(loc: Record<string, unknown> | string | null | undefined): string {
+  if (!loc) return '';
+  if (typeof loc === 'string') return loc;
+  const parts: string[] = [];
+  const page = loc.page_index;
+  if (typeof page === 'number' && page >= 0) parts.push(`第 ${page + 1} 页`);
+  const path = loc.heading_path;
+  if (typeof path === 'string' && path.trim()) parts.push(path);
+  const block = loc.block_type;
+  if (typeof block === 'string' && block.trim()) parts.push(block);
+  return parts.join(' · ');
+}
+
 interface MaterialVersionOption {
   id: string;
   name: string;
@@ -195,7 +208,13 @@ export default function KnowledgePage() {
       setLoading(true);
       const data = await api.knowledge.getPublished(courseId);
       if (data?.published !== false) {
-        setKnowledge(data as PublishedKnowledgeResponse);
+        // 后端 knowledge_cards 是 {id: card} 字典，卡片对象本身不含 id；
+        // 树/图谱/详情均依赖 card.id，这里统一注入，避免点击无响应与 key 重复。
+        const kc = data.knowledge_cards || {};
+        const kcWithId = Object.fromEntries(
+          Object.entries(kc).map(([k, v]) => [k, { ...(v as object), id: k }])
+        );
+        setKnowledge({ ...data, knowledge_cards: kcWithId } as PublishedKnowledgeResponse);
         setBuildState('published');
       } else {
         setKnowledge(null);
@@ -699,7 +718,7 @@ export default function KnowledgePage() {
             )}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
               <Badge variant={selectedCard.grounded ? 'success' : 'error'}>
-                {selectedCard.grounded ? '已着陆' : '未着陆'}
+                {selectedCard.grounded ? '已落地' : '未落地'}
               </Badge>
               {!!selectedCard.importance && (
                 <span style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>重要性: {selectedCard.importance}</span>
@@ -751,10 +770,10 @@ export default function KnowledgePage() {
                     <div key={i} style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(0,0,0,0.02)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                         <Badge variant={EvidenceRoleVariant(ev.evidence_role)}>{EvidenceRoleLabel(ev.evidence_role)}</Badge>
-                        <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>{Math.round((ev.confidence || 0) * 100)}%</span>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>{Math.round(ev.confidence || 0)}%</span>
                       </div>
                       <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>{ev.content}</p>
-                      <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ev.locator}</p>
+                      <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatLocator(ev.locator)}</p>
                     </div>
                   ))}
                   {evidence.length === 0 && (
