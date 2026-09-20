@@ -29,11 +29,6 @@ interface SupplementSource {
 type ViewMode = 'tree' | 'graph';
 type BuildState = 'idle' | 'building' | 'candidate' | 'published';
 
-const CLUSTER_COLORS = [
-  '#0071e3', '#34c759', '#ff9500', '#af52de',
-  '#ff3b30', '#5ac8fa', '#ff2d55', '#30b0c7',
-];
-
 function EvidenceRoleLabel(role: string): string {
   const labels: Record<string, string> = {
     direct: '直接证据', supporting: '支持证据',
@@ -403,6 +398,36 @@ export default function KnowledgePage() {
   }), [allCards, units, examPoints]);
 
   const selectedCard = selectedCardId ? (cardsDict[selectedCardId] as KnowledgeCard | undefined) : undefined;
+  const selectedUnit = selectedCardId ? units.find((u) => u.card_ids.includes(selectedCardId)) : undefined;
+  const selectedPoint = selectedUnit?.exam_point_id
+    ? examPoints.find((p) => p.id === selectedUnit.exam_point_id)
+    : undefined;
+
+  const assessableText = useMemo(() => {
+    if (!selectedCard) return '';
+    const v = selectedCard.assessable_content;
+    if (Array.isArray(v)) return v.join('\n');
+    return typeof v === 'string' ? v : '';
+  }, [selectedCard]);
+
+  const scopeText = useMemo(() => {
+    if (!selectedCard) return '';
+    const sb = selectedCard.scope_boundary;
+    if (!sb || typeof sb !== 'object') return '';
+    const parts: string[] = [];
+    Object.entries(sb).forEach(([k, val]) => {
+      if (val === null || val === undefined || val === '' || (Array.isArray(val) && val.length === 0)) return;
+      parts.push(Array.isArray(val) ? String(k) + '：' + val.join('、') : String(k) + '：' + String(val));
+    });
+    return parts.join('；');
+  }, [selectedCard]);
+
+  const cardCognitiveTargets = (selectedCard?.cognitive_targets || []).length > 0
+    ? selectedCard!.cognitive_targets
+    : (selectedPoint?.cognitive_targets || []);
+  const cardQuestionTypes = (selectedCard?.allowed_question_types || []).length > 0
+    ? selectedCard!.allowed_question_types
+    : (selectedPoint?.allowed_question_types || []);
 
   if (loading) {
     return (
@@ -645,32 +670,74 @@ export default function KnowledgePage() {
       >
         {selectedCard && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {/* 归属上下文 */}
+            {(selectedUnit || selectedPoint) && (
+              <div style={{
+                padding: '12px 14px', borderRadius: '12px',
+                background: 'rgba(0,113,227,0.05)', border: '1px solid rgba(0,113,227,0.12)',
+                display: 'flex', flexDirection: 'column', gap: '5px',
+              }}>
+                <span style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  归属位置
+                </span>
+                {selectedPoint && (
+                  <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    考点 <span style={{ fontWeight: 600, color: 'var(--text)' }}>{selectedPoint.code}</span> · {selectedPoint.title}
+                    {selectedPoint.assessment_requirement && (
+                      <span style={{ display: 'block', marginTop: '2px', color: 'var(--text-tertiary)', fontSize: '0.75rem' }}>
+                        {truncate(selectedPoint.assessment_requirement, 90)}
+                      </span>
+                    )}
+                  </p>
+                )}
+                {selectedUnit && (
+                  <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+                    单元 <span style={{ fontWeight: 600, color: 'var(--text)' }}>{selectedUnit.code}</span> · {selectedUnit.title}
+                  </p>
+                )}
+              </div>
+            )}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
               <Badge variant={selectedCard.grounded ? 'success' : 'error'}>
                 {selectedCard.grounded ? '已着陆' : '未着陆'}
               </Badge>
-              <span style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>重要性: {selectedCard.importance}</span>
-              <span style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>簇: {selectedCard.concept_cluster}</span>
+              {!!selectedCard.importance && (
+                <span style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>重要性: {selectedCard.importance}</span>
+              )}
+              {!!selectedCard.concept_cluster && (
+                <span style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>簇: {selectedCard.concept_cluster}</span>
+              )}
             </div>
             {selectedCard.performance_statement && (
               <FieldBlock label="性能表述" content={selectedCard.performance_statement} />
             )}
-            {selectedCard.answer_proposition && (
-              <FieldBlock label="答案命题" content={selectedCard.answer_proposition} />
+            {assessableText ? (
+              <FieldBlock label="可考核内容" content={assessableText} />
+            ) : (
+              <FieldBlock muted label="可考核内容" content="（暂无明确可考核内容，可基于性能表述与证据链推导命题范围）" />
             )}
-            {(selectedCard.cognitive_targets || []).length > 0 && (
+            {selectedCard.answer_proposition ? (
+              <FieldBlock label="答案命题" content={selectedCard.answer_proposition} />
+            ) : (
+              <FieldBlock muted label="答案命题" content="（暂未生成独立答案命题，出题时以可考核内容与性能表述为准）" />
+            )}
+            {scopeText && <FieldBlock label="范围边界" content={scopeText} />}
+            {cardCognitiveTargets.length > 0 && (
               <div>
                 <h4 style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>认知目标</h4>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
-                  {(selectedCard.cognitive_targets || []).map((t, i) => (
+                  {cardCognitiveTargets.map((t, i) => (
                     <Badge key={i} variant="info">{t}</Badge>
                   ))}
                 </div>
               </div>
             )}
             <p style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>
-              允许题型: {(selectedCard.allowed_question_types || []).join(', ') || '不限'}
+              允许题型: {cardQuestionTypes.join(', ') || '不限'}
             </p>
+            {(selectedCard.prompt_material || []).length > 0 && (
+              <FieldBlock label="命题素材" content={(selectedCard.prompt_material || []).join('\n')} />
+            )}
             <div>
               <h4 style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>证据链</h4>
               {evidenceLoading ? (
@@ -715,11 +782,15 @@ function StatsBadge({ icon, color, value, label }: { icon: React.ReactNode; colo
   );
 }
 
-function FieldBlock({ label, content }: { label: string; content: string }) {
+function FieldBlock({ label, content, muted }: { label: string; content: string; muted?: boolean }) {
   return (
     <div>
       <h4 style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>{label}</h4>
-      <p style={{ fontSize: '0.875rem', color: 'var(--text)', lineHeight: 1.6 }}>{content}</p>
+      <p style={{
+        fontSize: '0.875rem', lineHeight: 1.6, whiteSpace: 'pre-wrap',
+        color: muted ? 'var(--text-tertiary)' : 'var(--text)',
+        fontStyle: muted ? 'italic' : undefined,
+      }}>{content}</p>
     </div>
   );
 }
@@ -1391,7 +1462,12 @@ const TreeView = memo(function TreeView(props: {
                               <span style={{ color: card.grounded ? '#34c759' : '#ff3b30' }}>
                                 <Circle size={8} fill="currentColor" />
                               </span>
-                              <span style={{ fontSize: '0.875rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{card.name}</span>
+                              <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '2px' }}>
+                                <span style={{ fontSize: '0.875rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{card.name}</span>
+                                <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                  {truncate(card.performance_statement || '暂无性能表述', 46)}
+                                </span>
+                              </div>
                               <Badge variant={card.grounded ? 'success' : 'error'}>
                                 {card.grounded ? '已落地' : '未落地'}
                               </Badge>
@@ -1414,6 +1490,52 @@ const TreeView = memo(function TreeView(props: {
 
 // ─── Graph View ───
 
+const GRAPH_W = 960;
+const GRAPH_H = 640;
+const GRAPH_CX = GRAPH_W / 2;
+const GRAPH_CY = GRAPH_H / 2;
+const POINT_R = 282;
+const UNIT_R = 188;
+const GRAPH_PALETTE = ['#0071e3', '#0ea5e9', '#10b981', '#f59e0b', '#af52de', '#ff2d55', '#ff3b30', '#14b8a6'];
+
+function hashStr(s: string | null | undefined): number {
+  if (!s) return 0;
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h;
+}
+
+function truncate(s: string | null | undefined, n: number): string {
+  if (!s) return '';
+  return s.length > n ? s.slice(0, n) + '…' : s;
+}
+
+interface GraphNode {
+  key: string;
+  kind: 'point' | 'unit' | 'card';
+  x: number;
+  y: number;
+  angle: number;
+  r: number;
+  label: string;
+  sub: string;
+  color: string;
+  grounded: boolean;
+  cardId?: string;
+  unitId?: string;
+}
+
+interface GraphEdge {
+  id: string;
+  from: string;
+  to: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  kind: string;
+}
+
 const GraphView = memo(function GraphView(props: {
   examPoints: FrameworkExamPoint[];
   units: AssessmentUnit[];
@@ -1421,11 +1543,279 @@ const GraphView = memo(function GraphView(props: {
   onCardClick: (id: string) => void;
 }) {
   const { examPoints, units, cards, onCardClick } = props;
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const [zoom, setZoom] = useState(0.8);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [hoverKey, setHoverKey] = useState<string | null>(null);
+  const [dragging, setDragging] = useState<{ key: string; dx: number; dy: number } | null>(null);
+  const [panning, setPanning] = useState(false);
+  const [draggedPos, setDraggedPos] = useState<Record<string, { x: number; y: number }>>({});
+  const zoomRef = useRef(zoom);
+  const panRef = useRef(pan);
+  const panStart = useRef({ x: 0, y: 0 });
+  const movedRef = useRef(false);
+  zoomRef.current = zoom;
+  panRef.current = pan;
 
-  const width = 720;
-  const height = 520;
-  const cx = width / 2;
-  const cy = height / 2;
+  const unitOfCard = useMemo(() => {
+    const m = new Map<string, AssessmentUnit>();
+    units.forEach((u) => u.card_ids.forEach((cid) => m.set(cid, u)));
+    return m;
+  }, [units]);
+
+  // 分层"太阳系"布局：考点外环 → 单元中环（同考点同角度微偏移）→ 卡片簇绕所属单元
+  const layout = useMemo(() => {
+    const pointAngles = new Map<string, number>();
+    const pointNodes: GraphNode[] = [];
+    examPoints.forEach((p, i) => {
+      const a = -Math.PI / 2 + (Math.PI * 2 * i) / Math.max(examPoints.length, 1);
+      pointAngles.set(p.id, a);
+      pointNodes.push({
+        key: 'p-' + p.id, kind: 'point',
+        x: GRAPH_CX + POINT_R * Math.cos(a),
+        y: GRAPH_CY + POINT_R * Math.sin(a),
+        angle: a, r: 21,
+        label: String(p.code || '').replace(/^SK3020-/, ''),
+        sub: (p.weight_value ?? 0) + '%',
+        color: '#0071e3', grounded: true,
+      });
+    });
+    const unitCountByPoint = new Map<string, number>();
+    units.forEach((u) => unitCountByPoint.set(u.exam_point_id, (unitCountByPoint.get(u.exam_point_id) || 0) + 1));
+    const unitIdx = new Map<string, number>();
+    const unitNodes: GraphNode[] = [];
+    units.forEach((u) => {
+      const base = pointAngles.get(u.exam_point_id) ?? 0;
+      const idx = unitIdx.get(u.exam_point_id) || 0;
+      unitIdx.set(u.exam_point_id, idx + 1);
+      const total = unitCountByPoint.get(u.exam_point_id) || 1;
+      const spread = Math.min(0.2, (Math.PI * 2 / Math.max(examPoints.length, 1)) * 0.8);
+      const a = base + (total > 1 ? (idx - (total - 1) / 2) * spread : 0);
+      unitNodes.push({
+        key: 'u-' + u.unit_id, kind: 'unit',
+        x: GRAPH_CX + UNIT_R * Math.cos(a),
+        y: GRAPH_CY + UNIT_R * Math.sin(a),
+        angle: a, r: 14,
+        label: String(u.code || ''), sub: String(u.card_ids?.length || 0) + '卡',
+        color: '#af52de', grounded: true, unitId: u.unit_id,
+      });
+    });
+    const unitNodeById = new Map(unitNodes.map((n) => [n.unitId, n]));
+    const cardsByUnit = new Map<string, KnowledgeCard[]>();
+    const orphans: KnowledgeCard[] = [];
+    cards.forEach((c) => {
+      const u = unitOfCard.get(c.id);
+      if (u) {
+        const arr = cardsByUnit.get(u.unit_id) || [];
+        arr.push(c);
+        cardsByUnit.set(u.unit_id, arr);
+      } else {
+        orphans.push(c);
+      }
+    });
+    const cardNodes: GraphNode[] = [];
+    cardsByUnit.forEach((list, uid) => {
+      const un = unitNodeById.get(uid);
+      if (!un) return;
+      const n = list.length;
+      const ring = 40 + Math.min(9, n) * 7;
+      const spread = Math.min(0.6, (Math.PI * 2) / Math.max(n, 1) * 0.85);
+      list.forEach((c, i) => {
+        const a = un.angle + (i - (n - 1) / 2) * spread;
+        cardNodes.push({
+          key: 'c-' + c.id, kind: 'card',
+          x: un.x + ring * Math.cos(a),
+          y: un.y + ring * Math.sin(a),
+          angle: a,
+          r: 5 + (c.importance || 1) * 2.4,
+          label: String(c.name || ''), sub: '',
+          color: c.concept_cluster
+            ? GRAPH_PALETTE[hashStr(c.concept_cluster) % GRAPH_PALETTE.length]
+            : GRAPH_PALETTE[hashStr(uid) % GRAPH_PALETTE.length],
+          grounded: c.grounded, cardId: c.id,
+        });
+      });
+    });
+    // 未归属单元的卡片散落在中心区域
+    if (orphans.length > 0) {
+      orphans.forEach((c, i) => {
+        const a = -Math.PI / 2 + (Math.PI * 2 * i) / Math.max(orphans.length, 1);
+        cardNodes.push({
+          key: 'c-' + c.id, kind: 'card',
+          x: GRAPH_CX + 36 * Math.cos(a),
+          y: GRAPH_CY + 36 * Math.sin(a),
+          angle: a,
+          r: 5 + (c.importance || 1) * 2.4,
+          label: c.name, sub: '',
+          color: c.concept_cluster
+            ? GRAPH_PALETTE[hashStr(c.concept_cluster) % GRAPH_PALETTE.length]
+            : GRAPH_PALETTE[hashStr(c.id) % GRAPH_PALETTE.length],
+          grounded: c.grounded, cardId: c.id,
+        });
+      });
+    }
+    return { pointNodes, unitNodes, cardNodes };
+  }, [examPoints, units, cards, unitOfCard]);
+
+  // 从属边（卡→单元→考点）+ 卡片关系边（relation_edges）
+  const { edges, relEdges } = useMemo(() => {
+    const out: GraphEdge[] = [];
+    const rel: GraphEdge[] = [];
+    const nodeByKey = new Map<string, GraphNode>();
+    [...layout.cardNodes, ...layout.unitNodes, ...layout.pointNodes].forEach((n) => nodeByKey.set(n.key, n));
+    const unitByCardKey = new Map<string, GraphNode>();
+    layout.cardNodes.forEach((n) => {
+      const u = unitOfCard.get(n.cardId || '');
+      if (u) {
+        const un = nodeByKey.get('u-' + u.unit_id);
+        if (un) unitByCardKey.set(n.key, un);
+      }
+    });
+    layout.cardNodes.forEach((n) => {
+      const un = unitByCardKey.get(n.key);
+      if (un) out.push({ id: n.key + '->u-' + un.key, from: n.key, to: un.key, x1: n.x, y1: n.y, x2: un.x, y2: un.y, kind: 'card-unit' });
+    });
+    layout.unitNodes.forEach((n) => {
+      const u = units.find((it) => it.unit_id === n.unitId);
+      if (u && u.exam_point_id) {
+        const pn = nodeByKey.get('p-' + u.exam_point_id);
+        if (pn) out.push({ id: n.key + '->p-' + pn.key, from: n.key, to: pn.key, x1: n.x, y1: n.y, x2: pn.x, y2: pn.y, kind: 'unit-point' });
+      }
+    });
+    const cardNodeByCardId = new Map(layout.cardNodes.map((n) => [n.cardId, n]));
+    cards.forEach((c) => {
+      const arr = c.relation_edges;
+      if (!Array.isArray(arr)) return;
+      const src = cardNodeByCardId.get(c.id);
+      if (!src) return;
+      arr.forEach((edge, idx) => {
+        const obj = (edge && typeof edge === 'object' ? edge : {}) as { target?: string; relation?: string; kind?: string };
+        const target = (obj.target || (typeof edge === 'string' ? edge : '') || '').trim();
+        const relKind = (obj.relation || obj.kind || '').toLowerCase();
+        const tgt = cardNodeByCardId.get(target);
+        if (src && tgt) {
+          rel.push({ id: 'r-' + c.id + '-' + target + '-' + idx, from: src.key, to: tgt.key, x1: src.x, y1: src.y, x2: tgt.x, y2: tgt.y, kind: relKind });
+        }
+      });
+    });
+    return { edges: out, relEdges: rel };
+  }, [layout, units, cards, unitOfCard]);
+
+  // hover 邻接表：高亮节点与其直接关联的节点/边
+  const adjacency = useMemo(() => {
+    const adj = new Map<string, Set<string>>();
+    const add = (a: string, b: string) => {
+      if (!adj.has(a)) adj.set(a, new Set());
+      if (!adj.has(b)) adj.set(b, new Set());
+      adj.get(a)!.add(b);
+      adj.get(b)!.add(a);
+    };
+    [...edges, ...relEdges].forEach((e) => add(e.from, e.to));
+    return adj;
+  }, [edges, relEdges]);
+
+  const activeSet = useMemo(() => {
+    if (!hoverKey) return null;
+    const s = adjacency.get(hoverKey) || new Set();
+    return new Set([hoverKey, ...s]);
+  }, [hoverKey, adjacency]);
+
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = svg.getBoundingClientRect();
+      const factor = e.deltaY > 0 ? 0.88 : 1.12;
+      const z0 = zoomRef.current;
+      const z1 = Math.min(2.4, Math.max(0.3, z0 * factor));
+      const p0 = panRef.current;
+      const m = {
+        x: ((e.clientX - rect.left) / rect.width) * GRAPH_W,
+        y: ((e.clientY - rect.top) / rect.height) * GRAPH_H,
+      };
+      const k = z1 / z0;
+      setPan({ x: m.x - (m.x - p0.x) * k, y: m.y - (m.y - p0.y) * k });
+      setZoom(z1);
+    };
+    svg.addEventListener('wheel', onWheel, { passive: false });
+    return () => svg.removeEventListener('wheel', onWheel);
+  }, []);
+
+  const resetView = useCallback(() => {
+    setZoom(0.8);
+    setPan({ x: 0, y: 0 });
+    setDraggedPos({});
+  }, []);
+
+  const toCanvas = useCallback((clientX: number, clientY: number) => {
+    const rect = svgRef.current!.getBoundingClientRect();
+    const vx = ((clientX - rect.left) / rect.width) * GRAPH_W;
+    const vy = ((clientY - rect.top) / rect.height) * GRAPH_H;
+    const z = zoomRef.current;
+    const p = panRef.current;
+    return {
+      x: (vx - (GRAPH_CX + p.x)) / z + GRAPH_CX,
+      y: (vy - (GRAPH_CY + p.y)) / z + GRAPH_CY,
+    };
+  }, []);
+
+  const nodePos = useCallback((n: GraphNode) => draggedPos[n.key] || { x: n.x, y: n.y }, [draggedPos]);
+
+  const onNodePointerDown = (e: React.PointerEvent, n: GraphNode) => {
+    e.stopPropagation();
+    if (e.button !== 0) return;
+    movedRef.current = false;
+    const c = toCanvas(e.clientX, e.clientY);
+    const p = nodePos(n);
+    setDragging({ key: n.key, dx: c.x - p.x, dy: c.y - p.y });
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const onSvgPointerMove = (e: React.PointerEvent) => {
+    if (dragging) {
+      const c = toCanvas(e.clientX, e.clientY);
+      const p = { x: c.x - dragging.dx, y: c.y - dragging.dy };
+      const prev = draggedPos[dragging.key] || { x: 0, y: 0 };
+      if (Math.abs(p.x - prev.x) + Math.abs(p.y - prev.y) > 2) movedRef.current = true;
+      setDraggedPos((prev2) => ({ ...prev2, [dragging.key]: p }));
+    } else if (panning) {
+      setPan({ x: e.clientX - panStart.current.x, y: e.clientY - panStart.current.y });
+    }
+  };
+
+  const onSvgPointerUp = (e: React.PointerEvent) => {
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
+    setDragging(null);
+    setPanning(false);
+  };
+
+  const onBgPointerDown = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    movedRef.current = false;
+    panStart.current = { x: e.clientX - pan.x, y: e.clientY - pan.y };
+    setPanning(true);
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const transform = `translate(${GRAPH_CX + pan.x} ${GRAPH_CY + pan.y}) scale(${zoom}) translate(${-GRAPH_CX} ${-GRAPH_CY})`;
+
+  const allNodes = useMemo(
+    () => [...layout.pointNodes, ...layout.unitNodes, ...layout.cardNodes],
+    [layout]
+  );
+  void allNodes;
+
+  const edgeStyle = (kind: string) => {
+    if (kind === 'specializes' || kind === 'requires') return { stroke: '#0071e3', width: 1.6, dash: undefined, opacity: 0.75, marker: true };
+    if (kind === 'contrasts') return { stroke: '#af52de', width: 1.3, dash: '5 4', opacity: 0.7, marker: false };
+    if (kind === 'equivalent') return { stroke: '#10b981', width: 2.6, dash: undefined, opacity: 0.7, marker: false };
+    if (kind === 'card-unit') return { stroke: 'rgba(0,0,0,0.10)', width: 1, dash: undefined, opacity: 1, marker: false };
+    if (kind === 'unit-point') return { stroke: 'rgba(0,0,0,0.16)', width: 1.2, dash: undefined, opacity: 1, marker: false };
+    return { stroke: 'rgba(0,0,0,0.22)', width: 1.2, dash: undefined, opacity: 0.7, marker: false };
+  };
+
+  const isDimmed = (key: string) => activeSet !== null && !activeSet.has(key);
 
   if (cards.length === 0 && units.length === 0 && examPoints.length === 0) {
     return (
@@ -1436,129 +1826,184 @@ const GraphView = memo(function GraphView(props: {
     );
   }
 
-  // Card nodes positioned on inner rings
-  const cardNodes = cards.map((card, i) => {
-    const angle = ((Math.PI * 2) / Math.max(cards.length, 1)) * i - Math.PI / 2;
-    const ring = 110 + (i % 3) * 30 + (card.importance || 0) * 3;
-    return {
-      id: card.id,
-      x: cx + ring * Math.cos(angle),
-      y: cy + ring * Math.sin(angle),
-      r: 5 + (card.importance || 0) * 1.5,
-      color: CLUSTER_COLORS[i % CLUSTER_COLORS.length],
-      grounded: card.grounded,
-      name: card.name,
-    };
-  });
-
-  // Unit nodes on middle ring
-  const unitNodes = units.map((unit, i) => {
-    const angle = ((Math.PI * 2) / Math.max(units.length, 1)) * i - Math.PI / 2;
-    const r = 210;
-    return {
-      id: unit.unit_id,
-      x: cx + r * Math.cos(angle),
-      y: cy + r * Math.sin(angle),
-      code: unit.code,
-      count: unit.card_ids?.length || 0,
-    };
-  });
-
-  // Exam point nodes on outer ring
-  const pointNodes = examPoints.map((point, i) => {
-    const angle = ((Math.PI * 2) / Math.max(examPoints.length, 1)) * i - Math.PI / 2;
-    const r = 290;
-    return {
-      id: point.id,
-      x: cx + r * Math.cos(angle),
-      y: cy + r * Math.sin(angle),
-      code: point.code,
-      weight: point.weight_value,
-    };
-  });
-
-  // Edges from relation_edges
-  const edges: { id: string; x1: number; y1: number; x2: number; y2: number; dashed: boolean }[] = [];
-  const nodeById = new Map(cardNodes.map((n) => [n.id, n]));
-  cards.forEach((card) => {
-    const edgesArr = card.relation_edges;
-    if (!Array.isArray(edgesArr)) return;
-    edgesArr.forEach((edge, idx) => {
-      const targetId = typeof edge === 'string' ? edge : (edge as { target_id?: string }).target_id;
-      if (!targetId) return;
-      const src = nodeById.get(card.id);
-      const tgt = nodeById.get(targetId);
-      if (src && tgt) {
-        edges.push({ id: card.id + '-' + targetId + '-' + idx, x1: src.x, y1: src.y, x2: tgt.x, y2: tgt.y, dashed: false });
-      }
-    });
-  });
-
   return (
     <div>
       <div style={{ position: 'relative', userSelect: 'none' }}>
-        <svg viewBox={'0 0 ' + width + ' ' + height} style={{ width: '100%', maxHeight: '560px' }}>
+        <svg
+          ref={svgRef}
+          viewBox={`0 0 ${GRAPH_W} ${GRAPH_H}`}
+          style={{ width: '100%', maxHeight: '620px', cursor: panning ? 'grabbing' : 'grab', touchAction: 'none' }}
+          onPointerMove={onSvgPointerMove}
+          onPointerUp={onSvgPointerUp}
+          onPointerCancel={onSvgPointerUp}
+          onPointerDown={onBgPointerDown}
+        >
+          <style>{`
+            .gb { animation: gbFloat 3.6s ease-in-out infinite; }
+            @keyframes gbFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2.5px); } }
+          `}</style>
           <defs>
             <marker id="gh-arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-              <path d="M0,0 L8,3 L0,6 Z" fill="rgba(0,0,0,0.2)" />
+              <path d="M0,0 L8,3 L0,6 Z" fill="#0071e3" />
             </marker>
           </defs>
-
-          {/* Edges */}
-          {edges.map((edge) => (
-            <line key={edge.id} x1={edge.x1} y1={edge.y1} x2={edge.x2} y2={edge.y2}
-              stroke="rgba(0,0,0,0.12)" strokeWidth={1}
-              strokeDasharray={edge.dashed ? '4 3' : undefined}
-              markerEnd="url(#gh-arrowhead)" />
-          ))}
-
-          {/* Exam point nodes */}
-          {pointNodes.map((point) => (
-            <g key={'ep-' + point.id}>
-              <circle cx={point.x} cy={point.y} r="26" fill="#fff" stroke="rgba(0,0,0,0.08)" strokeWidth="1" />
-              <circle cx={point.x} cy={point.y} r="26" fill="rgba(0,113,227,0.04)" />
-              <text x={point.x} y={point.y - 2} textAnchor="middle" fontSize="10" fontWeight="700" fill="#0071e3">{point.code}</text>
-              <text x={point.x} y={point.y + 11} textAnchor="middle" fontSize="7" fill="var(--text-tertiary)">{point.weight}%</text>
+          <g transform={transform}>
+            {/* 边 */}
+            <g>
+              {[...edges, ...relEdges].map((e) => {
+                const dim = activeSet !== null && !(activeSet.has(e.from) && activeSet.has(e.to));
+                const st = edgeStyle(e.kind);
+                return (
+                  <line
+                    key={e.id}
+                    x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2}
+                    stroke={st.stroke}
+                    strokeWidth={st.width}
+                    strokeDasharray={st.dash}
+                    opacity={dim ? 0.06 : st.opacity}
+                    markerEnd={st.marker ? 'url(#gh-arrowhead)' : undefined}
+                  />
+                );
+              })}
             </g>
-          ))}
 
-          {/* Unit nodes */}
-          {unitNodes.map((unit) => (
-            <g key={'unit-' + unit.id}>
-              <circle cx={unit.x} cy={unit.y} r="17" fill="rgba(88,86,214,0.08)" stroke="rgba(88,86,214,0.25)" strokeWidth="1" />
-              <text x={unit.x} y={unit.y - 1} textAnchor="middle" fontSize="8" fontWeight="600" fill="#5856d6">{unit.code}</text>
-              <text x={unit.x} y={unit.y + 9} textAnchor="middle" fontSize="6" fill="var(--text-tertiary)">{unit.count}</text>
-            </g>
-          ))}
+            {/* 考点节点 */}
+            {layout.pointNodes.map((n) => {
+              const p = nodePos(n);
+              const dim = isDimmed(n.key);
+              return (
+                <g
+                  key={n.key}
+                  opacity={dim ? 0.12 : 1}
+                  onPointerEnter={() => setHoverKey(n.key)}
+                  onPointerLeave={() => setHoverKey(null)}
+                  onPointerDown={(e) => onNodePointerDown(e, n)}
+                  style={{ cursor: 'grab' }}
+                >
+                  <g className="gb" style={{ animationDelay: (hashStr(n.key) % 20) / 10 + 's' }}>
+                    <circle cx={p.x} cy={p.y} r={n.r + (hoverKey === n.key ? 3 : 0)} fill="#fff" stroke="#0071e3" strokeWidth={1.6} style={{ transition: 'r 0.15s' }} />
+                    <circle cx={p.x} cy={p.y} r={n.r + (hoverKey === n.key ? 3 : 0)} fill="rgba(0,113,227,0.06)" style={{ transition: 'r 0.15s' }} />
+                    <text x={p.x} y={p.y + 3} textAnchor="middle" fontSize="9" fontWeight="700" fill="#0071e3" style={{ pointerEvents: 'none' }}>{n.label}</text>
+                    <text x={p.x} y={p.y + 15} textAnchor="middle" fontSize="7.5" fill="var(--text-tertiary)" style={{ pointerEvents: 'none' }}>{n.sub}</text>
+                  </g>
+                </g>
+              );
+            })}
 
-          {/* Card nodes */}
-          {cardNodes.map((node) => (
-            <g key={node.id} onClick={() => onCardClick(node.id)} style={{ cursor: 'pointer' }}>
-              <title>{node.name}</title>
-              <circle cx={node.x} cy={node.y} r={node.r}
-                fill={node.color} fillOpacity={node.grounded ? 1 : 0.4}
-                stroke={node.grounded ? 'none' : '#ff3b30'} strokeWidth={node.grounded ? 0 : 2}
-                strokeDasharray={node.grounded ? 'none' : '3 2'} />
-            </g>
-          ))}
+            {/* 单元节点 */}
+            {layout.unitNodes.map((n) => {
+              const p = nodePos(n);
+              const dim = isDimmed(n.key);
+              return (
+                <g
+                  key={n.key}
+                  opacity={dim ? 0.12 : 1}
+                  onPointerEnter={() => setHoverKey(n.key)}
+                  onPointerLeave={() => setHoverKey(null)}
+                  onPointerDown={(e) => onNodePointerDown(e, n)}
+                  style={{ cursor: 'grab' }}
+                >
+                  <g className="gb" style={{ animationDelay: (hashStr(n.key) % 20) / 10 + 's' }}>
+                    <circle cx={p.x} cy={p.y} r={n.r + (hoverKey === n.key ? 2.5 : 0)} fill="#fff" stroke="#af52de" strokeWidth={1.4} style={{ transition: 'r 0.15s' }} />
+                    <circle cx={p.x} cy={p.y} r={n.r + (hoverKey === n.key ? 2.5 : 0)} fill="rgba(175,82,222,0.07)" style={{ transition: 'r 0.15s' }} />
+                    <text x={p.x} y={p.y + 2.5} textAnchor="middle" fontSize="8" fontWeight="600" fill="#af52de" style={{ pointerEvents: 'none' }}>{n.label}</text>
+                    <text x={p.x} y={p.y + 12} textAnchor="middle" fontSize="7" fill="var(--text-tertiary)" style={{ pointerEvents: 'none' }}>{n.sub}</text>
+                  </g>
+                </g>
+              );
+            })}
+
+            {/* 卡片节点 */}
+            {layout.cardNodes.map((n) => {
+              const p = nodePos(n);
+              const dim = isDimmed(n.key);
+              const hovered = hoverKey === n.key;
+              return (
+                <g
+                  key={n.key}
+                  opacity={dim ? 0.1 : 1}
+                  onPointerEnter={() => setHoverKey(n.key)}
+                  onPointerLeave={() => setHoverKey(null)}
+                  onPointerDown={(e) => onNodePointerDown(e, n)}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (movedRef.current) { movedRef.current = false; return; }
+                    if (n.cardId) onCardClick(n.cardId);
+                  }}
+                  style={{ cursor: 'pointer' }}
+                >
+                  <g className="gb" style={{ animationDelay: (hashStr(n.key) % 24) / 10 + 's' }}>
+                    <circle
+                      cx={p.x} cy={p.y}
+                      r={n.r + (hovered ? 3 : 0)}
+                      fill={n.color}
+                      fillOpacity={n.grounded ? 0.9 : 0.3}
+                      stroke={n.grounded ? n.color : '#ff3b30'}
+                      strokeWidth={n.grounded ? 0 : 1.8}
+                      strokeDasharray={n.grounded ? undefined : '3 2'}
+                      style={{ transition: 'r 0.15s, fill-opacity 0.15s' }}
+                    />
+                    {hovered && (
+                      <text x={p.x} y={p.y - n.r - 6} textAnchor="middle" fontSize="8.5" fontWeight="600" fill="var(--text)"
+                        style={{ paintOrder: 'stroke', stroke: '#fff', strokeWidth: 3, strokeLinejoin: 'round', pointerEvents: 'none' }}>
+                        {truncate(n.label, 16)}
+                      </text>
+                    )}
+                    {!hovered && (
+                      <text x={p.x} y={p.y + n.r + 11} textAnchor="middle" fontSize="7.5" fill="var(--text-secondary)" style={{ pointerEvents: 'none' }}>
+                        {truncate(n.label, 8)}
+                      </text>
+                    )}
+                  </g>
+                </g>
+              );
+            })}
+          </g>
         </svg>
+
+        {/* 缩放控件 */}
+        <div style={{ position: 'absolute', right: 10, top: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {[
+            { label: '+', fn: () => setZoom((z) => Math.min(2.4, z * 1.25)) },
+            { label: '−', fn: () => setZoom((z) => Math.max(0.3, z * 0.8)) },
+            { label: '⟲', fn: resetView },
+          ].map((b) => (
+            <button
+              key={b.label}
+              onClick={b.fn}
+              style={{
+                width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(0,0,0,0.08)',
+                background: 'rgba(255,255,255,0.9)', boxShadow: '0 1px 4px rgba(0,0,0,0.08)',
+                cursor: 'pointer', fontSize: '0.9rem', color: 'var(--text-secondary)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}
+            >
+              {b.label}
+            </button>
+          ))}
+        </div>
+        <div style={{ position: 'absolute', left: 10, top: 10, fontSize: '0.72rem', color: 'var(--text-tertiary)', background: 'rgba(255,255,255,0.75)', padding: '4px 8px', borderRadius: 6, border: '1px solid rgba(0,0,0,0.05)' }}>
+          滚轮缩放 · 拖拽画布平移 · 拖动节点调整 · 点击卡片看详情
+        </div>
       </div>
 
       {/* Legend */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '12px 8px 0', flexWrap: 'wrap' }}>
         <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-          <span style={{ width: 12, height: 12, borderRadius: '50%', border: '2px dashed #ff3b30', background: 'rgba(255,59,48,0.1)' }} /> 未落地
+          <span style={{ width: 12, height: 12, borderRadius: '50%', border: '2px dashed #ff3b30', background: 'rgba(255,59,48,0.15)' }} /> 未落地
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#34c759' }} /> 已落地
+          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#0071e3' }} /> 已落地卡
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-          <span style={{ width: 12, height: 12, borderRadius: '50%', background: 'rgba(0,113,227,0.15)', border: '1px solid rgba(0,113,227,0.4)' }} /> 考点
+          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#fff', border: '1.5px solid #0071e3' }} /> 考点
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-          <span style={{ width: 12, height: 12, borderRadius: '50%', background: 'rgba(88,86,214,0.15)', border: '1px solid rgba(88,86,214,0.4)' }} /> 单元
+          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#fff', border: '1.5px solid #af52de' }} /> 单元
         </span>
-        <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>点击卡片查看详情</span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
+          <span style={{ width: 18, height: 0, borderTop: '2px solid #0071e3' }} /> 卡片关系
+        </span>
       </div>
     </div>
   );

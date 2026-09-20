@@ -379,6 +379,8 @@ _CARD_FIELDS = {
     "importance",
     "evidence_chunk_ids",
     "prompt_material",
+    "concept_cluster",
+    "answer_proposition",
     "status",
 }
 
@@ -449,6 +451,16 @@ def _normalize_consolidation_response(
             or not out.get("performance_statement").strip()
         ):
             out["performance_statement"] = exam_point.assessment_requirement
+        if not isinstance(out.get("cognitive_targets"), list) or not out["cognitive_targets"]:
+            out["cognitive_targets"] = list(exam_point.cognitive_targets or [])
+        if not isinstance(out.get("allowed_question_types"), list) or not out["allowed_question_types"]:
+            out["allowed_question_types"] = list(exam_point.allowed_question_types or [])
+        if not isinstance(out.get("concept_cluster"), str) or not out["concept_cluster"].strip():
+            out["concept_cluster"] = (exam_point.title or exam_point.code)[:40]
+        if not isinstance(out.get("answer_proposition"), str) or not out["answer_proposition"].strip():
+            out["answer_proposition"] = (
+                out.get("performance_statement") or exam_point.assessment_requirement
+            )
         return out
 
     normalized = dict(raw)
@@ -510,6 +522,8 @@ class _KnowledgeCardResponse(BaseModel):
     importance: int = Field(default=1, ge=1, le=5)
     evidence_chunk_ids: _TextList = Field(default_factory=list)
     prompt_material: _TextList = Field(default_factory=list)
+    concept_cluster: str = ""
+    answer_proposition: str = ""
     status: Literal["active", "excluded", "material_only", "needs_teacher_review"] = "active"
 
     @model_validator(mode="after")
@@ -992,13 +1006,19 @@ class DeepSeekExamPointKnowledgeConsolidator:
                 "'ms-swift框架中，eval_batch_size参数用于控制评测批大小'）；归属只能来自证据或考点语境，"
                 "禁止编造，禁止输出无主语的参数或命令罗列。"
                 "严格输出 JSON 对象，只含两个顶层字段 exam_point_code 和 cards。cards 是扁平数组，"
-                "每项字段仅为：name（卡片名）、performance_statement（一句话可评分表现说明）、"
-                "assessable_content（字符串数组，每条一个可评分事实）、prompt_material（字符串数组，可空）、"
-                "evidence_chunk_ids（字符串数组，从 citable_chunk_ids 中选择，不得为空）。"
-                "不要输出 assessment_units、code、title、source_locations、importance 等其它字段。"
+                "每项字段为：name（卡片名）、performance_statement（一句话可评分表现说明）、"
+                "assessable_content（字符串数组，每条一个可评分事实）、cognitive_targets（数组，1~2 个认知目标，"
+                "如理解/分析/应用）、allowed_question_types（数组，适用题型，如单选题/多选题/简答题）、"
+                "importance（整数 1~5，卡片重要性）、concept_cluster（简短主题簇名，3~10 字，如'量化训练'）、"
+                "answer_proposition（标准答案命题或答题要点，一句话）、"
+                "prompt_material（字符串数组，可空）、evidence_chunk_ids（字符串数组，从 citable_chunk_ids 中选择，不得为空）。"
+                "不要输出 assessment_units、code、title、source_locations 等其它字段。"
                 "示例：{\"exam_point_code\":\"EP-01\",\"cards\":[{\"name\":\"混合数据集与数据失衡\","
                 "\"performance_statement\":\"能说明混合数据集如何解决思考与非思考数据失衡\","
                 "\"assessable_content\":[\"混合数据集用于解决思考与非思考数据失衡\"],"
+                "\"cognitive_targets\":[\"理解\"],\"allowed_question_types\":[\"单选题\"],"
+                "\"importance\":3,\"concept_cluster\":\"数据与评测\","
+                "\"answer_proposition\":\"混合数据集通过混合思考与非思考数据解决数据失衡\","
                 "\"prompt_material\":[],\"evidence_chunk_ids\":[\"chunk-12\"]}]}。"
                 "输入还包含 chunks（准入证据的原文切片），仅用于理解语境与补全归属限定；"
                 "事实命题仍须逐条被 direct 决策的 support_claim 支撑，不得引入 support_claim 之外的新事实。"
