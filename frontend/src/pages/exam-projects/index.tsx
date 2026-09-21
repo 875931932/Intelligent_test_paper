@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/Button';
 import { Badge, Input, ProgressPanel } from '@/components/ui';
 import { SkeletonCardGrid } from '@/components/ui/Skeleton';
 import type { ContractSnapshot } from '@/api/domains/examProjects';
-import type { ExamProject, PlanItem, PaperVersionItem, TaskRun } from '@/types/api';
+import type { ExamProject, PlanItem, PaperVersionItem, TaskRun, PublishedKnowledgeResponse, CurrentFrameworkResponse } from '@/types/api';
 
 // ─── Stage pipeline ───
 type StageKey = 'blueprint' | 'contract' | 'generate' | 'review' | 'export';
@@ -49,6 +49,61 @@ const STATUS_TO_STAGE: Record<string, StageKey> = {
 
 function stageFromStatus(status: string): StageKey {
   return STATUS_TO_STAGE[status] ?? 'blueprint';
+}
+
+// ─── 展示标签：后端英文枚举 → 中文 ───
+const QUESTION_TYPE_LABELS: Record<string, string> = {
+  single_choice: '单选',
+  true_false: '判断',
+  fill_blank: '填空',
+  short_answer: '简答',
+  comprehensive: '综合',
+};
+
+const DIFFICULTY_LABELS: Record<string, string> = {
+  easy: '易',
+  medium: '中',
+  hard: '难',
+};
+
+const COGNITIVE_LABELS: Record<string, string> = {
+  remember: '记忆',
+  understand: '理解',
+  apply: '应用',
+  analyze: '分析',
+  evaluate: '评价',
+  create: '创造',
+};
+
+function qlabel(t: string): string {
+  return QUESTION_TYPE_LABELS[t] ?? t;
+}
+
+function dlabel(d: string): string {
+  return DIFFICULTY_LABELS[d] ?? d;
+}
+
+function clabel(c: string): string {
+  return COGNITIVE_LABELS[c] ?? c;
+}
+
+// 名称映射：把考点 / 章节 / 知识卡的 id 换成真实名称，未命中时回退原始值
+interface NameMaps {
+  examPoints: Record<string, string>; // exam_point_id → 考点名
+  anchors: Record<string, string>;    // anchor_key → 章节名
+  cards: Record<string, string>;      // card_id → 知识卡名
+}
+
+function examPointLabel(maps: NameMaps, id: string): string {
+  return maps.examPoints[id] || id;
+}
+
+function anchorLabel(maps: NameMaps, key: string): string {
+  return maps.anchors[key] || key;
+}
+
+function cardLabel(maps: NameMaps, id: string): string {
+  return maps.cards[id] || id;
 }
 
 // ═══════════════════════════════════════════════
@@ -135,18 +190,13 @@ function StageHeading({ title, right }: { title: string; right?: ReactNode }) {
 }
 
 function renderBlueprint({
-  sp, setStep, bpCreating, handleCreateBlueprint, loadPlanItems, planItems,
+  sp, setStep, bpCreating, handleCreateBlueprint, loadPlanItems, planItems, maps,
 }: {
   sp: ExamProject; setStep: (s: StageKey) => void;
   bpCreating: boolean; handleCreateBlueprint: () => Promise<void>;
   loadPlanItems: (p: ExamProject) => void; planItems: PlanItem[];
+  maps: NameMaps;
 }) {
-  const qlabel = (t: string) =>
-    (({ single_choice: '单选', true_false: '判断', fill_blank: '填空', short_answer: '简答', comprehensive: '综合' } as Record<string, string>)[t] ?? t);
-  const dlabel = (d: string) =>
-    (({ easy: '易', medium: '中', hard: '难' } as Record<string, string>)[d] ?? d);
-  const clabel = (c: string) =>
-    (({ remember: '记忆', understand: '理解', apply: '应用', analyze: '分析', evaluate: '评价', create: '创造' } as Record<string, string>)[c] ?? c);
   if (sp.active_blueprint_version_id) {
     const totalScore = planItems.reduce((s, i) => s + (i.score || 0), 0);
     const typeAcc = new Map<string, { score: number; count: number }>();
@@ -185,14 +235,14 @@ function renderBlueprint({
                 </div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px' }}>
                   {chapterDist.map(([c, s]) => (
-                    <span key={c} style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{c}：{s}分</span>
+                    <span key={c} style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{anchorLabel(maps, c)}：{s}分</span>
                   ))}
                 </div>
               </div>
             </div>
             <div className="table-wrapper">
               <table className="data-table">
-                <thead><tr><th>#</th><th>题型</th><th>分值</th><th>难度</th><th>章节</th><th>认知层级</th></tr></thead>
+                <thead><tr><th>#</th><th>题型</th><th>分值</th><th>难度</th><th>章节</th><th>考点</th><th>认知层级</th></tr></thead>
                 <tbody>
                   {planItems.map((item) => (
                     <tr key={item.item_index}>
@@ -200,7 +250,8 @@ function renderBlueprint({
                       <td>{qlabel(item.question_type)}</td>
                       <td><strong>{item.score}</strong></td>
                       <td>{dlabel(item.difficulty)}</td>
-                      <td>{item.anchor_key || '-'}</td>
+                      <td>{item.anchor_key ? anchorLabel(maps, item.anchor_key) : '-'}</td>
+                      <td>{item.exam_point_id ? examPointLabel(maps, item.exam_point_id) : '-'}</td>
                       <td>{clabel(item.cognitive_level) || '-'}</td>
                     </tr>
                   ))}
@@ -233,13 +284,14 @@ function renderBlueprint({
 
 function renderContract({
   sp, courseId, setStep, contractVariant, setContractVariant,
-  contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming, addToast,
+  contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming, addToast, maps,
 }: {
   sp: ExamProject; courseId: string; setStep: (s: StageKey) => void;
   contractVariant: number; setContractVariant: (n: number) => void;
   contractSnapshot: ContractSnapshot | null; setContractSnapshot: (s: ContractSnapshot | null) => void;
   contractConfirming: boolean; setContractConfirming: (b: boolean) => void;
   addToast: ToastFn;
+  maps: NameMaps;
 }) {
   const allocate = async () => {
     try {
@@ -300,11 +352,11 @@ function renderContract({
               {contractSnapshot.slots.map((s) => (
                 <tr key={s.item_index}>
                   <td>{s.item_index + 1}</td>
-                  <td>{s.question_type}</td>
+                  <td>{qlabel(s.question_type)}</td>
                   <td><strong>{s.score}</strong></td>
-                  <td>{s.difficulty}</td>
-                  <td>{s.exam_point_id}</td>
-                  <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.card_id}</td>
+                  <td>{dlabel(s.difficulty)}</td>
+                  <td>{examPointLabel(maps, s.exam_point_id)}</td>
+                  <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={cardLabel(maps, s.card_id)}>{cardLabel(maps, s.card_id)}</td>
                 </tr>
               ))}
             </tbody>
@@ -412,7 +464,7 @@ function renderGenerate({
   );
 }
 
-function renderReviewItems(items: PaperVersionItem[], onPatchItem: (idx: number, p: Record<string, unknown>) => Promise<void>) {
+function renderReviewItems(items: PaperVersionItem[], maps: NameMaps, onPatchItem: (idx: number, p: Record<string, unknown>) => Promise<void>) {
   return items.map((item) => {
     const flagged = (item.needs_review_reasons?.length ?? 0) > 0 || item.needs_review;
     const inputId = 'review-input-' + item.item_index;
@@ -429,8 +481,11 @@ function renderReviewItems(items: PaperVersionItem[], onPatchItem: (idx: number,
           <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-tertiary)' }}>
             #{item.item_index + 1}
           </span>
-          <Badge variant="info">{item.question_type}</Badge>
-          <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>{item.difficulty}</span>
+          <Badge variant="info">{qlabel(item.question_type)}</Badge>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>{dlabel(item.difficulty)}</span>
+          {item.exam_point_id && (
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>考点: {examPointLabel(maps, item.exam_point_id)}</span>
+          )}
           <strong style={{ marginLeft: 'auto', fontSize: '0.85rem' }}>{item.score} 分</strong>
         </div>
         <p style={{ fontSize: '0.9rem', lineHeight: 1.6 }}>{item.stem}</p>
@@ -473,13 +528,14 @@ function renderReviewItems(items: PaperVersionItem[], onPatchItem: (idx: number,
 }
 
 function renderReview({
-  setStep, paperVersion, pvId, pvConfirming, handleConfirmReview, handlePatchReviewItem,
+  setStep, paperVersion, pvId, pvConfirming, handleConfirmReview, handlePatchReviewItem, maps,
 }: {
   setStep: (s: StageKey) => void;
   paperVersion: any; pvId: string | undefined;
   pvConfirming: boolean;
   handleConfirmReview: () => Promise<void>;
   handlePatchReviewItem: (idx: number, p: Record<string, unknown>) => Promise<void>;
+  maps: NameMaps;
 }) {
   if (!paperVersion && !pvId) {
     return (
@@ -506,7 +562,7 @@ function renderReview({
         {items.length === 0 ? (
           <p style={{ textAlign: 'center', padding: '32px 0', color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>暂无题目</p>
         ) : (
-          renderReviewItems(items, handlePatchReviewItem)
+          renderReviewItems(items, maps, handlePatchReviewItem)
         )}
       </div>
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'space-between' }}>
@@ -577,6 +633,8 @@ export default function ExamProjectsPage() {
   const [paperVersion, setPaperVersion] = useState<any>(null);
   const [taskRun, setTaskRun] = useState<TaskRun | null>(null);
   const [exportUrls, setExportUrls] = useState<{ json?: string; student?: string; answerKey?: string }>({});
+  // 名称映射：接口只返回 id，这里从已发布知识目录/框架取回中文名称用于展示
+  const [maps, setMaps] = useState<NameMaps>({ examPoints: {}, anchors: {}, cards: {} });
 
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState('');
@@ -616,6 +674,43 @@ export default function ExamProjectsPage() {
     } catch {
       addToast('加载计划项失败', 'error');
     }
+  };
+
+  // 从已发布知识目录 + 当前框架构建 id → 中文名称 的映射；
+  // 任一接口失败时只丢对应映射，界面回退展示原始 id，不影响主流程。
+  const buildNameMaps = (
+    knowledge?: PublishedKnowledgeResponse,
+    framework?: CurrentFrameworkResponse,
+  ): NameMaps => {
+    const examPoints: Record<string, string> = {};
+    (knowledge?.exam_points || []).forEach((p) => {
+      const name = p.title || p.code || p.id;
+      if (p.id) examPoints[p.id] = name;
+      // 兼容历史数据用 code 作为 exam_point_id 的情况
+      if (p.code && p.code !== p.id) examPoints[p.code] = name;
+    });
+    const cards: Record<string, string> = {};
+    Object.entries(knowledge?.knowledge_cards || {}).forEach(([cid, card]) => {
+      cards[cid] = card?.name || cid;
+    });
+    const anchors: Record<string, string> = {};
+    const payloadAnchors = (framework?.payload as { anchors?: Array<{ key?: string; title?: string }> } | undefined)?.anchors;
+    (payloadAnchors || []).forEach((a) => {
+      if (a?.key) anchors[a.key] = a.title || a.key;
+    });
+    return { examPoints, anchors, cards };
+  };
+
+  const loadNameMaps = async (preloadedKnowledge?: PublishedKnowledgeResponse) => {
+    if (!courseId) return;
+    const [k, f] = await Promise.allSettled([
+      preloadedKnowledge ?? api.knowledge.getPublished(courseId),
+      api.framework.getCurrent(courseId),
+    ]);
+    setMaps(buildNameMaps(
+      k.status === 'fulfilled' ? k.value : undefined,
+      f.status === 'fulfilled' ? f.value : undefined,
+    ));
   };
 
   // 轮询生成任务
@@ -672,6 +767,7 @@ export default function ExamProjectsPage() {
     setPaperVersion(null);
     setTaskRun(null);
     setExportUrls({});
+    void loadNameMaps();
     if (proj.active_blueprint_version_id) {
       await loadPlanItems(proj);
     }
@@ -723,6 +819,8 @@ export default function ExamProjectsPage() {
         units,
       });
       addToast('蓝图已生成', 'success');
+      // 刚取过知识目录，直接复用刷新名称映射，保证考点/知识卡列显示中文名
+      void loadNameMaps(data);
       // 直接用创建响应的 blueprint_version_id 更新本地项目状态，界面立即展示蓝图
       // 并开放「进入合同阶段」，不依赖 list 接口的返回（后者可能因时序未包含新版本）。
       const updated: ExamProject = {
@@ -837,18 +935,18 @@ export default function ExamProjectsPage() {
 
         <div className="glass-card" style={{ padding: '24px' }}>
           {currentStage === 'blueprint' && renderBlueprint({
-            sp, setStep: setCurrentStage, bpCreating, handleCreateBlueprint, loadPlanItems, planItems,
+            sp, setStep: setCurrentStage, bpCreating, handleCreateBlueprint, loadPlanItems, planItems, maps,
           })}
           {currentStage === 'contract' && renderContract({
             sp, courseId, setStep: setCurrentStage, contractVariant, setContractVariant,
-            contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming, addToast,
+            contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming, addToast, maps,
           })}
           {currentStage === 'generate' && renderGenerate({
             sp, courseId, token, setStep: setCurrentStage, taskRun, setTaskRun, generating, setGenerating, addToast,
           })}
           {currentStage === 'review' && renderReview({
             setStep: setCurrentStage, paperVersion, pvId: paperVersion?.id,
-            pvConfirming, handleConfirmReview, handlePatchReviewItem,
+            pvConfirming, handleConfirmReview, handlePatchReviewItem, maps,
           })}
           {currentStage === 'export' && renderExport({
             exportUrls, pvId: sp.active_paper_version_id, setStep: setCurrentStage,
