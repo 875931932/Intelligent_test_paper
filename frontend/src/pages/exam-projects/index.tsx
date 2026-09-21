@@ -633,8 +633,10 @@ export default function ExamProjectsPage() {
       const chapter_weights: Record<string, number> = {};
       (data.exam_points || []).forEach((p) => {
         const key = p.anchor_key || p.id;
+        // 同一章（anchor_key）下可能有多个考点，权重需累加，而不是后者覆盖前者，
+        // 否则 chapter_weights 合计远小于 100，蓝图引擎的章节权重校验会失败。
         if (key && p.weight_value != null) {
-          chapter_weights[key] = p.weight_value;
+          chapter_weights[key] = (chapter_weights[key] ?? 0) + p.weight_value;
         }
       });
 

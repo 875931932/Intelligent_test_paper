@@ -16,6 +16,7 @@ from app.db.schema import (
     blueprint_sections,
     blueprint_versions,
     content_domains,
+    exam_points,
     exam_projects,
     knowledge_cards,
     plan_items,
@@ -34,6 +35,60 @@ from app.services.blueprint_service import (
 
 class BlueprintPersistenceError(Exception):
     """持久化蓝图时发生的 DB / 约束错误。"""
+
+
+# 当客户端未下发 type_rules（前端蓝图阶段无题型配置输入）时，
+# 依据已发布命题框架的允许题型推导出的默认题型分布，合计 100 分。
+# 仅保留框架实际允许的题型，避免造出框架不支持的题位。
+_DEFAULT_TYPE_RULES: dict[str, dict[str, int]] = {
+    "single_choice": {"count": 15, "score": 2},  # 30
+    "true_false": {"count": 10, "score": 1},     # 10
+    "fill_blank": {"count": 10, "score": 2},     # 20
+    "short_answer": {"count": 4, "score": 5},    # 20
+    "comprehensive": {"count": 2, "score": 10},  # 20
+}
+
+
+def _default_type_rules(
+    session: Session,
+    *,
+    course_id: str,
+    framework_version_id: str,
+) -> dict:
+    """从已发布命题框架的 exam_points 收集允许题型，生成默认题型分布。
+
+    framework_version_id 下无任何已确认 exam_points 或允许题型为空时，
+    回退到全部默认题型；只保留框架允许的题型（若存在）。
+    """
+    try:
+        rows = session.execute(
+            select(
+                exam_points.c.anchor_key,
+                exam_points.c.allowed_question_types,
+            ).where(
+                exam_points.c.framework_version_id == framework_version_id,
+                exam_points.c.course_id == course_id,
+                exam_points.c.status == "confirmed",
+            )
+        ).all()
+    except SQLAlchemyError:
+        return dict(_DEFAULT_TYPE_RULES)
+
+    allowed: set[str] = set()
+    for r in rows:
+        raw = r._mapping.get("allowed_question_types")
+        if isinstance(raw, list):
+            allowed.update(str(t) for t in raw if isinstance(t, str) and t)
+
+    if not allowed:
+        return dict(_DEFAULT_TYPE_RULES)
+
+    derived = {
+        t: dict(rule)
+        for t, rule in _DEFAULT_TYPE_RULES.items()
+        if t in allowed
+    }
+    return derived or dict(_DEFAULT_TYPE_RULES)
 
 
 def _nid() -> str:
@@ -68,6 +123,23 @@ def create_draft_blueprint(
         cid: CardSemanticProfile(**p) if isinstance(p, dict) else p
         for cid, p in card_semantic_profiles.items()
     }
+    # 未下发 type_rules（空 dict）时，依据已发布命题框架自动推导默认题型分布，
+    # 保证蓝图阶段零输入也能生成完整计划项。
+    if not type_rules:
+        type_rules = _default_type_rules(
+            session,
+            course_id=course_id,
+            framework_version_id=framework_version_id,
+        )
+    # 章节权重可能来自考核大纲的原始 weight_value，未必归一化到 100。
+    # 蓝图引擎要求各章权重合计 100，这里统一缩放。
+    if chapter_weights:
+        weight_sum = sum(float(w) for w in chapter_weights.values())
+        if weight_sum <= 0:
+            raise BlueprintValidationError("chapter weights must have a positive total")
+        if abs(weight_sum - 100) > 0.01:
+            scale = 100.0 / weight_sum
+            chapter_weights = {k: float(v) * scale for k, v in chapter_weights.items()}
     request = BlueprintRequest(
         total_score=sum(
             float(r.get("count", 0)) * float(r.get("score", 0))

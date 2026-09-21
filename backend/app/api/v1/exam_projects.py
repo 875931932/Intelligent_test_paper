@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -195,6 +195,16 @@ def create_blueprint(
         raise HTTPException(status_code=422, detail=msg)
     except exam_project_service.ExamProjectNotFoundError:
         raise _not_found()
+    except ValidationError as exc:
+        # UnitCoverage / CardSemanticProfile 等模型校验失败会抛 Pydantic
+        # ValidationError（不是 BlueprintValidationError），统一转为 422，
+        # 避免未知异常以 500 返回。
+        first = exc.errors()[0] if exc.errors() else {}
+        where = ".".join(str(x) for x in first.get("loc", []))
+        raise HTTPException(
+            status_code=422,
+            detail=f"蓝图参数校验失败: {where}: {first.get('msg', '')}".strip(),
+        )
 
     plan_items = list_plan_items(session, blueprint_version_id=bv_id)
     return {"blueprint_version_id": bv_id, "plan": plan_items}
