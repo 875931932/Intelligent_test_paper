@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.domain.blueprint.models import BlueprintRequest, PlanItem, UnitCoverage
+from app.domain.blueprint.models import BlueprintPlan, BlueprintRequest, PlanItem, UnitCoverage
 from app.domain.generation.archetypes import ARCHETYPE_CONTRACTS
 from app.domain.generation.contract import (
     DEFAULT_CENTRALITY_THRESHOLD,
@@ -58,6 +58,10 @@ class ContractRequest(BaseModel):
     # 分配种子：None 保持确定性分配（同池同卷）；给定整数时打破评分
     # 并列——同种子复现同卷，异种子在富余池上选出不同原子组合
     allocation_seed: int | None = None
+    # 已存储的蓝图计划（教师看到的版本）。合同分配必须忠于该计划而非
+    # 重跑 allocate_plan_items：unit 顺序差异会把同题型槽位漂移到别的
+    # 考点，导致合同与已确认蓝图不一致。
+    plan: BlueprintPlan | None = None
 
 
 def _comprehensive_fields(nth: int, pool: list[str]) -> dict:
@@ -90,7 +94,7 @@ def _comprehensive_fields(nth: int, pool: list[str]) -> dict:
 
 
 def allocate_paper_contract(request: ContractRequest) -> PaperContract:
-    plan = allocate_plan_items(request.blueprint)
+    plan = request.plan or allocate_plan_items(request.blueprint)
     pools = build_exam_point_pools(
         request.blueprint.units, request.knowledge_cards,
         threshold=request.centrality_threshold,

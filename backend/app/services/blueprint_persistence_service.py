@@ -187,14 +187,19 @@ def create_draft_blueprint(
             )
         )
         # 项目状态与蓝图草稿同步，前端才能区分“尚未生成”和“已生成待教师确认”。
+        # 同时把项目指向该蓝图版本：前端用 active_blueprint_version_id 判断
+        # “已有蓝图”并进入合同阶段，之前只改 status 不写该字段导致蓝图创建
+        # 成功后界面仍显示创建表单、无法进入合同。
         session.execute(
             exam_projects.update()
             .where(
                 exam_projects.c.id == project_id,
                 exam_projects.c.course_id == course_id,
-                exam_projects.c.status == "draft",
             )
-            .values(status="blueprint")
+            .values(
+                status="blueprint",
+                active_blueprint_version_id=bv_id,
+            )
         )
 
         # 5. 插入 blueprint_sections（如果 plan 有 sections 字段；当前 BlueprintPlan 不含

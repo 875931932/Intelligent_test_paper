@@ -23,8 +23,11 @@ from app.db.schema import (
     plan_items,
 )
 from app.domain.blueprint.models import (
+    ASSESSMENT_MODES,
+    BlueprintPlan,
     BlueprintRequest,
     CardSemanticProfile,
+    PlanItem,
     UnitCoverage,
 )
 from app.domain.generation.contract import PaperContract
@@ -70,48 +73,37 @@ def _build_contract_request_from_db(
     catalog_version_id = bv_data["catalog_version_id"]
     framework_version_id = bv_data["framework_version_id"]
 
-    # 加载 plan_items + assessment_units
-    pi_rows = session.execute(
+    # 聚合 units：用该 catalog 的全部 active assessment_units（而非仅 plan_items
+    # 覆盖到的 unit）。合同分配会按章节权重重新切分全部槽位，若 units 缺失某些
+    # 章节/单元，对应槽位无卡可配（fallback 到 0.45 仍冲突、总分不足 100）。
+    # 与蓝图创建阶段一致地使用全量 unit + 全量卡池，分配结果才完整且确定。
+    unit_rows = session.execute(
         select(
-            plan_items.c.item_index,
-            plan_items.c.question_type,
-            plan_items.c.score,
-            plan_items.c.assessment_mode,
-            plan_items.c.difficulty,
-            plan_items.c.cognitive_level,
-            plan_items.c.exam_point_id.label("pi_exam_point_id"),
-            plan_items.c.knowledge_card_id,
             assessment_units.c.id.label("au_id"),
-            assessment_units.c.code.label("au_code"),
             assessment_units.c.exam_point_id.label("au_exam_point_id"),
+            assessment_units.c.code.label("au_code"),
             content_domains.c.framework_anchor_key,
         )
-        .select_from(plan_items)
-        .join(assessment_units, assessment_units.c.id == plan_items.c.assessment_unit_id)
+        .select_from(assessment_units)
         .join(content_domains, content_domains.c.id == assessment_units.c.content_domain_id, isouter=True)
         .where(
-            plan_items.c.blueprint_version_id == blueprint_version_id,
-            plan_items.c.course_id == course_id,
+            assessment_units.c.catalog_version_id == catalog_version_id,
+            assessment_units.c.course_id == course_id,
+            assessment_units.c.status == "active",
         )
-        .order_by(plan_items.c.item_index)
+        .order_by(assessment_units.c.code)
     ).all()
 
-    # 聚合成 units：以 assessment_unit_id 为键
     units_map: dict[str, dict[str, Any]] = {}
-    for r in pi_rows:
+    for r in unit_rows:
         d = r._mapping
         au_id = d["au_id"]
-        ep_id = d["pi_exam_point_id"] or d["au_exam_point_id"] or ""
-        anchor = d["framework_anchor_key"] or au_id
-        card_id = d["knowledge_card_id"]
-        entry = units_map.setdefault(au_id, {
+        units_map[au_id] = {
             "unit_id": au_id,
-            "exam_point_id": ep_id,
-            "anchor_key": anchor,
+            "exam_point_id": d["au_exam_point_id"] or "",
+            "anchor_key": d["framework_anchor_key"] or au_id,
             "card_ids": [],
-        })
-        if card_id and card_id not in entry["card_ids"]:
-            entry["card_ids"].append(card_id)
+        }
 
     units_payload = list(units_map.values())
     # 确保每个 unit 至少有 1 张卡
@@ -134,12 +126,23 @@ def _build_contract_request_from_db(
             knowledge_cards.c.answer_proposition,
             knowledge_cards.c.prompt_material,
             knowledge_cards.c.relation_edges,
+            knowledge_cards.c.assessment_unit_id,
         )
         .where(
             knowledge_cards.c.catalog_version_id == catalog_version_id,
             knowledge_cards.c.course_id == course_id,
         )
     ).all()
+    # 按 assessment_unit_id 聚合全量卡，回填 units 的 card_ids
+    card_ids_by_unit: dict[str, list[str]] = {}
+    for r in card_rows:
+        au = r._mapping.get("assessment_unit_id")
+        if au:
+            card_ids_by_unit.setdefault(au, []).append(r._mapping["id"])
+    for u in units_payload:
+        ids = card_ids_by_unit.get(u["unit_id"])
+        if ids:
+            u["card_ids"] = ids
     cards_dict: dict[str, dict] = {}
     sem_profiles: dict[str, CardSemanticProfile] = {}
     card_qtypes: dict[str, list[str]] = {}
@@ -156,11 +159,16 @@ def _build_contract_request_from_db(
             "importance": c.get("importance") or 1,
             "concept_cluster": c.get("concept_cluster") or "",
             "answer_proposition": c.get("answer_proposition") or "",
-            "answer_boundary": c.get("answer_proposition") or "",
+            "answer_boundary": c.get("answer_boundary") or c.get("answer_proposition") or "",
             "prompt_material": list(c.get("prompt_material") or []),
-            "preferred_terms": [],
             "relation_edges": list(c.get("relation_edges") or []),
         }
+        # 注意：不把 knowledge_cards.allowed_question_types 填进 card_qtypes。
+        # 该字段是 AI 标注的中文展示名（如“单选题”“简答题”），与蓝图引擎的
+        # 英文题型键（single_choice / short_answer …）语义不对应；若用它过滤，
+        # 所有卡都会被判定为“不允许任何题型”，导致合同分配报
+        # “no eligible chapter”。卡的题型约束由蓝图阶段显式下发
+        # （card_question_types），这里保持与蓝图创建一致的不限语义。
         # 如果 assessable_content 为空，给一个兜底原子以保证合同分配不崩溃
         if not cards_dict[cid]["assessable_content"]:
             cards_dict[cid]["assessable_content"] = [f"{cid} 默认知识原子"]
@@ -170,7 +178,6 @@ def _build_contract_request_from_db(
             concept_cluster=c.get("concept_cluster") or cid,
             answer_proposition=c.get("answer_proposition") or cid,
         )
-        card_qtypes[cid] = list(c.get("allowed_question_types") or [])
 
     # 为 placeholder cards 生成最小条目
     for u in units_payload:
@@ -208,7 +215,14 @@ def _build_contract_request_from_db(
         for r in type_rules.values()
     )
     if total_from_rules <= 0:
-        total_from_rules = sum(float(r._mapping["score"]) for r in pi_rows)
+        total_from_rules = sum(
+            float(r._mapping["score"])
+            for r in session.execute(
+                select(plan_items.c.score).where(
+                    plan_items.c.blueprint_version_id == blueprint_version_id,
+                )
+            ).all()
+        )
 
     blueprint_req = BlueprintRequest(
         total_score=total_from_rules,
@@ -222,11 +236,66 @@ def _build_contract_request_from_db(
         card_question_types=card_qtypes,
     )
 
+    # 用存储的计划项重建 BlueprintPlan：合同必须忠于教师看到的蓝图，
+    # 不能重跑 allocate_plan_items（unit 顺序差异会把同题型槽位漂移到
+    # 别的考点，导致合同与已确认蓝图不一致、冲突集与展示不匹配）。
+    stored_rows = session.execute(
+        select(
+            plan_items.c.item_index,
+            plan_items.c.question_type,
+            plan_items.c.assessment_mode,
+            plan_items.c.score,
+            plan_items.c.difficulty,
+            plan_items.c.cognitive_level,
+            plan_items.c.exam_point_id,
+            plan_items.c.knowledge_card_id,
+            plan_items.c.assessment_unit_id,
+            content_domains.c.framework_anchor_key,
+        )
+        .select_from(plan_items)
+        .join(assessment_units, assessment_units.c.id == plan_items.c.assessment_unit_id, isouter=True)
+        .join(content_domains, content_domains.c.id == assessment_units.c.content_domain_id, isouter=True)
+        .where(plan_items.c.blueprint_version_id == blueprint_version_id)
+        .order_by(plan_items.c.item_index)
+    ).all()
+    plan_item_objs: list[PlanItem] = []
+    for r in stored_rows:
+        d = r._mapping
+        mode = d["assessment_mode"]
+        plan_item_objs.append(PlanItem(
+            item_index=d["item_index"],
+            question_type=d["question_type"],
+            score=float(d["score"]),
+            anchor_key=d["framework_anchor_key"] or d["assessment_unit_id"],
+            exam_point_id=d["exam_point_id"] or "",
+            unit_id=d["assessment_unit_id"],
+            card_id=d["knowledge_card_id"] or "",
+            difficulty=d["difficulty"] or "medium",
+            cognitive_level=d["cognitive_level"] or "understand",
+            assessment_mode=mode if mode in ASSESSMENT_MODES else "conceptual",
+        ))
+    type_counts: dict[str, int] = {}
+    difficulty_counts: dict[str, dict[str, int]] = {}
+    anchor_counts: dict[str, int] = {}
+    for it in plan_item_objs:
+        type_counts[it.question_type] = type_counts.get(it.question_type, 0) + 1
+        dmap = difficulty_counts.setdefault(it.difficulty, {})
+        dmap[it.question_type] = dmap.get(it.question_type, 0) + 1
+        anchor_counts[it.anchor_key] = anchor_counts.get(it.anchor_key, 0) + 1
+    stored_plan = BlueprintPlan(
+        total_score=sum(it.score for it in plan_item_objs),
+        items=plan_item_objs,
+        type_counts=type_counts,
+        difficulty_counts=difficulty_counts,
+        anchor_counts=anchor_counts,
+    )
+
     return ContractRequest(
         blueprint=blueprint_req,
         knowledge_cards=cards_dict,
         centrality_threshold=centrality_threshold,
         allocation_seed=allocation_seed,
+        plan=stored_plan,
     ), units_payload, cards_dict
 
 

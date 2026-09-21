@@ -715,7 +715,7 @@ export default function ExamProjectsPage() {
         }
       });
 
-      await api.examProjects.createBlueprint(courseId, activeProject.id, {
+      const bp = await api.examProjects.createBlueprint(courseId, activeProject.id, {
         framework_version_id: data.framework_version_id,
         catalog_version_id: data.catalog_version_id,
         type_rules: {},
@@ -723,14 +723,21 @@ export default function ExamProjectsPage() {
         units,
       });
       addToast('蓝图已生成', 'success');
-      // 刷新项目状态（active_blueprint_version_id 落地、status 变为 blueprint），
-      // 并停留在蓝图阶段让老师直接看到生成的命题计划，而不是直接跳去合同。
-      const refreshed = await api.examProjects.list(courseId);
-      const updated = refreshed.find((p) => p.id === activeProject.id) ?? activeProject;
-      setProjects(refreshed);
+      // 直接用创建响应的 blueprint_version_id 更新本地项目状态，界面立即展示蓝图
+      // 并开放「进入合同阶段」，不依赖 list 接口的返回（后者可能因时序未包含新版本）。
+      const updated: ExamProject = {
+        ...activeProject,
+        active_blueprint_version_id: bp.blueprint_version_id,
+        status: 'blueprint',
+      };
       setActiveProject(updated);
       setCurrentStage('blueprint');
-      await loadPlanItems(updated);
+      if (bp.plan && bp.plan.length > 0) {
+        setPlanItems(bp.plan);
+      } else {
+        await loadPlanItems(updated);
+      }
+      await loadProjects();
     } catch (e) {
       addToast('蓝图创建失败: ' + (e as Error).message, 'error');
     } finally {

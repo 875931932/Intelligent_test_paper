@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.db.schema import exam_projects, task_runs
+from app.db.schema import blueprint_versions, exam_projects, task_runs
 
 
 class ExamProjectConflictError(Exception):
@@ -16,6 +16,26 @@ class ExamProjectConflictError(Exception):
 
 class ExamProjectNotFoundError(Exception):
     """项目不存在。"""
+
+
+def _backfill_active_blueprint(
+    session: Session, course_id: str, project_id: str,
+) -> str | None:
+    """active_blueprint_version_id 为空时回填最新蓝图版本 id（含旧数据）。
+
+    早期版本创建蓝图只把 exam_projects.status 改为 blueprint，未写
+    active_blueprint_version_id，导致前端误判“尚无蓝图”。这里按版本号
+    取最新一个补上，避免老项目打开后停留在创建表单。
+    """
+    return session.execute(
+        select(blueprint_versions.c.id)
+        .where(
+            blueprint_versions.c.course_id == course_id,
+            blueprint_versions.c.exam_project_id == project_id,
+        )
+        .order_by(blueprint_versions.c.version_no.desc())
+        .limit(1)
+    ).scalar_one_or_none()
 
 
 def _with_generation_task_status(session: Session, course_id: str, projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -67,7 +87,13 @@ def list_projects(session: Session, course_id: str) -> list[dict[str, Any]]:
     rows = session.execute(
         select(exam_projects).where(exam_projects.c.course_id == course_id).order_by(exam_projects.c.id.desc())
     ).mappings().all()
-    return _with_generation_task_status(session, course_id, [dict(r) for r in rows])
+    projects = [dict(r) for r in rows]
+    for p in projects:
+        if not p.get("active_blueprint_version_id"):
+            p["active_blueprint_version_id"] = _backfill_active_blueprint(
+                session, course_id, p["id"]
+            )
+    return _with_generation_task_status(session, course_id, projects)
 
 
 def create_project(session: Session, course_id: str, name: str) -> dict[str, Any]:
@@ -94,7 +120,12 @@ def get_project(session: Session, course_id: str, project_id: str) -> dict[str, 
     ).mappings().first()
     if not row:
         raise ExamProjectNotFoundError(project_id)
-    return _with_generation_task_status(session, course_id, [dict(row)])[0]
+    project = dict(row)
+    if not project.get("active_blueprint_version_id"):
+        project["active_blueprint_version_id"] = _backfill_active_blueprint(
+            session, course_id, project_id
+        )
+    return _with_generation_task_status(session, course_id, [project])[0]
 
 
 def update_status(session: Session, course_id: str, project_id: str, status: str) -> dict[str, Any]:
