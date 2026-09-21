@@ -870,6 +870,45 @@ export default function ExamProjectsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentStage, paperVersion, activeProject]);
 
+  // 以服务端为权威数据源恢复项目状态。
+  // 合同快照持久化在 generation_runs.contract_snapshot，任务进度持久化在
+  // task_runs 并由项目摘要归并出 active_task_run_id。二者都与"任务是否仍在
+  // 进行中"无关，因此退出项目再进入（或刷新页面）后都不会消失 —— 前端不再
+  // 把组件内存态当作事实源。
+  const hydrateProjectState = async (proj: ExamProject) => {
+    // 1) 合同快照：未 confirm 过合同时后端返回 404，此时才回到"尚无合同"
+    try {
+      const cur = await api.examProjects.getCurrentContract(courseId, proj.id, token ?? undefined);
+      const snap = cur?.contract_snapshot;
+      setContractSnapshot(snap && Array.isArray(snap.slots) && snap.slots.length > 0 ? snap : null);
+    } catch {
+      setContractSnapshot(null);
+    }
+
+    // 2) 生成任务进度：无条件按 active_task_run_id 恢复
+    if (!proj.active_task_run_id) {
+      setTaskRun(null);
+      setGenerating(false);
+      return;
+    }
+    try {
+      const tr = await api.examProjects.getTaskRun(courseId, proj.active_task_run_id, token ?? undefined);
+      if (tr.status === 'succeeded') {
+        // 任务已完成：清掉进度态并落到审核阶段（仅从"生成中"前进，不降级）
+        setTaskRun(null);
+        setGenerating(false);
+        setCurrentStage((s) => (s === 'generate' ? 'review' : s));
+      } else {
+        // 失败/取消态恢复错误面板与「重新生成」入口；进行中则继续轮询
+        setGenerating(tr.status === 'queued' || tr.status === 'running' || tr.status === 'waiting_external');
+        setTaskRun(tr);
+      }
+    } catch {
+      setTaskRun(null);
+      setGenerating(false);
+    }
+  };
+
   const openProject = async (proj: ExamProject) => {
     setActiveProject(proj);
     setCurrentStage(stageFromStatus(proj.status));
@@ -881,23 +920,7 @@ export default function ExamProjectsPage() {
     if (proj.active_blueprint_version_id) {
       await loadPlanItems(proj);
     }
-    // 刷新后恢复进行中的生成任务：进度不丢失，继续轮询直到完成
-    if (proj.active_task_run_id && ['queued', 'running', 'waiting_external'].includes(proj.generation_task_status ?? '')) {
-      try {
-        const tr = await api.examProjects.getTaskRun(courseId, proj.active_task_run_id, token ?? undefined);
-        setGenerating(true);
-        if (tr.status === 'succeeded') {
-          // 任务实际已完成、只是项目状态字段滞后：直接落到审核阶段，
-          // 避免恢复出一个"永远在转圈"的已完成任务
-          setCurrentStage('review');
-        } else {
-          // 失败态也恢复：面板会展示错误详情与「重新生成」入口
-          setTaskRun(tr);
-        }
-      } catch {
-        // 任务查询失败则忽略，保持初始状态
-      }
-    }
+    await hydrateProjectState(proj);
   };
 
   const handleCreateBlueprint = async () => {

@@ -12,6 +12,12 @@ export interface AllocateContractResponse {
   contract_snapshot: ContractSnapshot;
 }
 
+/** 当前已确认合同的读取响应：快照持久化在 generation_runs，未确认时为 404。 */
+export interface CurrentContractResponse {
+  generation_run_id: string;
+  contract_snapshot: ContractSnapshot;
+}
+
 export interface CreateBlueprintResponse {
   blueprint_version_id: string;
   plan: PlanItem[];
@@ -42,6 +48,8 @@ export const examProjectsApi = {
     request('/courses/' + courseId + '/exam-projects/' + projectId + '/contracts/revise', { method: 'PATCH', body: JSON.stringify(body) }, token),
   confirmContract: (courseId: string, projectId: string, body: { blueprint_version_id?: string; slot_revisions?: unknown[]; allocation_seed?: number }, token?: string): Promise<Record<string, unknown>> =>
     request('/courses/' + courseId + '/exam-projects/' + projectId + '/contracts/confirm', { method: 'POST', body: JSON.stringify(body) }, token),
+  getCurrentContract: (courseId: string, projectId: string, token?: string): Promise<CurrentContractResponse> =>
+    request('/courses/' + courseId + '/exam-projects/' + projectId + '/contracts/current', undefined, token),
   startGeneration: (courseId: string, projectId: string, body?: { mock_graph?: boolean }, token?: string): Promise<GenerateResponse> =>
     request('/courses/' + courseId + '/exam-projects/' + projectId + '/generate', { method: 'POST', body: body ? JSON.stringify(body) : undefined }, token),
   getTaskRun: (courseId: string, taskRunId: string, token?: string): Promise<TaskRun> =>

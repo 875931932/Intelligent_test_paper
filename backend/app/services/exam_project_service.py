@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.db.schema import blueprint_versions, exam_projects, task_runs
+from app.db.schema import blueprint_versions, exam_projects, generation_runs, task_runs
 
 
 class ExamProjectConflictError(Exception):
@@ -16,6 +16,69 @@ class ExamProjectConflictError(Exception):
 
 class ExamProjectNotFoundError(Exception):
     """项目不存在。"""
+
+
+def get_current_contract_snapshot(
+    session: Session, *, course_id: str, project_id: str,
+) -> dict[str, Any] | None:
+    """读取项目当前已确认的合同快照。
+
+    合同快照持久化在 ``generation_runs.contract_snapshot``，由
+    ``exam_projects.active_generation_run_id`` 指向。这是“退出项目再进入”后
+    恢复合同界面的权威数据源 —— 前端不应依赖 allocate 时留在内存里的响应，
+    也不应依赖任务进度是否仍在进行中。
+
+    返回 None 表示该项目尚未确认过合同（含蓝图未确认、只 allocate 未 confirm）。
+    """
+    run_id = session.execute(
+        select(exam_projects.c.active_generation_run_id).where(
+            exam_projects.c.course_id == course_id,
+            exam_projects.c.id == project_id,
+        )
+    ).scalar_one_or_none()
+    if not run_id:
+        return None
+    row = session.execute(
+        select(generation_runs).where(generation_runs.c.id == run_id)
+    ).mappings().first()
+    if row is None:
+        return None
+    snap = dict(row.get("contract_snapshot") or {})
+    if not snap:
+        return None
+
+    slots = list(snap.get("slots") or [])
+    # 落库快照不含顶层 total_score（PaperContract.total_score 与槽位求和是两个
+    # 独立值），这里按槽位求和补齐，与前端既有的兜底逻辑保持一致。
+    total_score = snap.get("total_score")
+    if total_score is None:
+        total_score = sum(float(s.get("score") or 0) for s in slots)
+
+    # conflicts 归一化：allocate 的响应放顶层，落库快照放在 conflicts_pre_vs_post
+    conflicts = snap.get("conflicts")
+    if conflicts is None:
+        pre_post = snap.get("conflicts_pre_vs_post") or {}
+        conflicts = [
+            c for key in ("pre_revision", "post_revision") for c in (pre_post.get(key) or [])
+        ]
+
+    result: dict[str, Any] = {
+        "generation_run_id": run_id,
+        "slots": slots,
+        "total_score": total_score,
+        "conflicts": conflicts,
+        "audit_summary": snap.get("audit_summary") or {},
+    }
+    # 附带诊断信息，便于前端展示阈值/修订痕迹（均为可选）
+    for key in ("slot_revisions_applied", "conflicts_history"):
+        if snap.get(key) is not None:
+            result[key] = snap.get(key)
+    threshold = snap.get("centrality_threshold_used")
+    if threshold is None:
+        threshold = row.get("centrality_threshold_used")
+    if threshold is not None:
+        result["centrality_threshold_used"] = threshold
+    return result
 
 
 def _backfill_active_blueprint(

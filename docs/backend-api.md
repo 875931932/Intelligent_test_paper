@@ -314,12 +314,25 @@ body：`{ "blueprint_version_id?":"uuid", "slot_revisions":[...], "allocation_se
 `POST /api/v1/courses/{course_id}/exam-projects/{project_id}/contracts/confirm` → **201**
 body：`{ "blueprint_version_id?":"uuid", "slot_revisions":[...], "allocation_seed?":123 }`
 
-### 8.12 启动异步生成
+### 8.12 读取当前合同（退出项目再进入时恢复）
+`GET /api/v1/courses/{course_id}/exam-projects/{project_id}/contracts/current` → 200
+尚未 confirm 过合同时返回 **404**（前端据此区分"还没有合同"与"已有合同"）。响应：
+```json
+{ "generation_run_id":"uuid",
+  "contract_snapshot": { "slots":[ ...ContractSlot... ], "total_score":50.0,
+    "conflicts":[], "audit_summary":{}, "centrality_threshold_used":0.6,
+    "slot_revisions_applied":[], "conflicts_history":[] } }
+```
+说明：快照持久化在 `generation_runs.contract_snapshot`，由 `exam_projects.active_generation_run_id`
+指向，与生成任务是否仍在进行无关。`total_score` 缺失时由服务端按槽位分值求和补齐；`conflicts`
+已从落库位置 `conflicts_pre_vs_post` 归一化为顶层列表。这是"退出项目再进入后合同不消失"的权威数据源。
+
+### 8.13 启动异步生成
 `POST /api/v1/courses/{course_id}/exam-projects/{project_id}/generate` → **202**
 body 可选 `{ "mock_graph": false }`；生产必须配置 LLM，否则 503。响应：`{ "task_run_id":"uuid" }`
 
-### 8.13 任务运行详情
-`GET /api/v1/courses/{course_id}/task-runs/{task_run_id}` → **200**
+### 8.14 任务运行详情
+`GET /api/v1/courses/{course_id}/exam-projects/task-runs/{task_run_id}` → **200**
 ```json
 { "id":"uuid","course_id":"uuid","task_type":"string","status":"string","stage":"string","progress":0.0,"attempt":0,
   "payload":{},"result":{},"error_code":"string?","error_message":"string?",

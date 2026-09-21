@@ -392,6 +392,28 @@ def confirm_contract(
     return result
 
 
+@router.get("/{project_id}/contracts/current", response_model=dict)
+def get_current_contract(
+    course_id: str,
+    project_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    """读取项目当前已确认的合同快照。
+
+    供“退出项目再进入”时恢复合同界面使用：快照持久化在
+    generation_runs.contract_snapshot（由 exam_projects.active_generation_run_id
+    指向），与生成任务是否仍在进行无关。尚未 confirm 过合同时返回 404。
+    """
+    _get_project_or_404(session, course_id=course_id, project_id=project_id)
+    snapshot = exam_project_service.get_current_contract_snapshot(
+        session, course_id=course_id, project_id=project_id
+    )
+    if snapshot is None:
+        raise _not_found("该项目尚未确认合同")
+    run_id = snapshot.pop("generation_run_id", None)
+    return {"generation_run_id": run_id, "contract_snapshot": snapshot}
+
+
 # ===========================================================================
 # Generation 子端点
 # ===========================================================================

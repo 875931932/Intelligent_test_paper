@@ -410,6 +410,27 @@ def test_pipeline_e2e_tr6_1(client: TestClient):
     assert proj["status"] == "generating"
     assert proj["active_generation_run_id"] == generation_run_id
 
+    # 7b. GET contracts/current：合同确认后必须能读回持久化快照。
+    #     这是“退出项目再进入后合同不消失”的权威数据源 —— 前端不再依赖
+    #     allocate 时留在内存里的响应。
+    r = client.get(f"{PREFIX}/exam-projects/{project_id}/contracts/current")
+    assert r.status_code == 200, r.text
+    current = r.json()
+    assert current["generation_run_id"] == generation_run_id
+    cur_snap = current["contract_snapshot"]
+    assert isinstance(cur_snap, dict)
+    cur_slots = cur_snap.get("slots") or []
+    assert len(cur_slots) == len(slots), (
+        f"读回的槽位数 {len(cur_slots)} 与 allocate 时 {len(slots)} 不一致"
+    )
+    # 落库快照不含顶层 total_score，端点必须自行补齐
+    assert abs(float(cur_snap.get("total_score") or 0) - 50) < 0.001, (
+        f"合同总分应为 50，实际 {cur_snap.get('total_score')}"
+    )
+    # conflicts 需归一化为顶层列表（落库位置在 conflicts_pre_vs_post.pre_revision）
+    assert isinstance(cur_snap.get("conflicts"), list), cur_snap.get("conflicts")
+    assert isinstance(cur_snap.get("audit_summary"), dict)
+
     # 8. POST generate → 202 + task_run_id
     r = client.post(
         f"{PREFIX}/exam-projects/{project_id}/generate",
@@ -490,3 +511,74 @@ def test_pipeline_e2e_tr6_1(client: TestClient):
         },
     )
     assert r.status_code == 409, f"finalized 后 patch 应 409，实际 {r.status_code}: {r.text}"
+
+    # 16. 走完全链路后再读一次合同：模拟“退出项目再进入”，
+    #     合同快照仍应可用（不会因为流程推进而丢失）。
+    r = client.get(f"{PREFIX}/exam-projects/{project_id}/contracts/current")
+    assert r.status_code == 200, r.text
+    late_slots = (r.json()["contract_snapshot"] or {}).get("slots") or []
+    assert len(late_slots) == len(slots), (
+        f"生成完成后合同槽位数变为 {len(late_slots)}，预期 {len(slots)}"
+    )
+
+
+def test_contracts_current_before_allocate_returns_404(client: TestClient):
+    """尚未确认合同前 GET contracts/current 必须 404，而不是回传空合同。
+
+    前端据此区分“还没有合同”（走分配流程）与“已有合同”（直接恢复快照），
+    避免把 200+空 slots 误判成已分配。
+    """
+    r = client.post(f"{PREFIX}/exam-projects", json={"name": "P2"})
+    assert r.status_code == 201, r.text
+    project_id = r.json()["id"]
+
+    # draft 阶段：无蓝图、无合同
+    r = client.get(f"{PREFIX}/exam-projects/{project_id}/contracts/current")
+    assert r.status_code == 404, r.text
+
+    # 建蓝图并确认 → status=contract，但 allocate/confirm 未做，仍无合同
+    units, profiles, qtypes = _units_and_cards()
+    r = client.post(
+        f"{PREFIX}/exam-projects/{project_id}/blueprints",
+        json={
+            "framework_version_id": "fv1",
+            "catalog_version_id": "cv1",
+            "type_rules": {
+                "single_choice": {"count": 3, "score": 10},
+                "fill_blank": {"count": 2, "score": 10},
+            },
+            "chapter_weights": {"A1": 40, "A2": 40, "A3": 20},
+            "units": units,
+            "card_semantic_profiles": profiles,
+            "card_question_types": qtypes,
+        },
+    )
+    assert r.status_code == 201, r.text
+    r = client.post(
+        f"{PREFIX}/exam-projects/{project_id}/blueprints/current/confirm",
+        json={},
+    )
+    assert r.status_code == 200, r.text
+    r = client.get(f"{PREFIX}/exam-projects/{project_id}/contracts/current")
+    assert r.status_code == 404, r.text
+
+    # allocate 只是预览，不落库 → 仍应 404
+    r = client.post(
+        f"{PREFIX}/exam-projects/{project_id}/contracts/allocate",
+        json={},
+    )
+    assert r.status_code == 200, r.text
+    r = client.get(f"{PREFIX}/exam-projects/{project_id}/contracts/current")
+    assert r.status_code == 404, r.text
+
+    # confirm 之后才应可读
+    r = client.post(
+        f"{PREFIX}/exam-projects/{project_id}/contracts/confirm",
+        json={"slot_revisions": []},
+    )
+    assert r.status_code == 201, r.text
+    r = client.get(f"{PREFIX}/exam-projects/{project_id}/contracts/current")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["generation_run_id"]
+    assert len((body["contract_snapshot"] or {}).get("slots") or []) >= 5
