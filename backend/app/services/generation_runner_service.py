@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any, Callable
@@ -25,6 +26,8 @@ from app.db.schema import (
     task_runs,
 )
 from app.infrastructure.tasks.models import create_task_run
+
+logger = logging.getLogger("generation.runner")
 
 
 class GenerationRunnerError(Exception):
@@ -360,6 +363,11 @@ def execute_generation_task(
         )
         session.flush()
 
+        logger.info(
+            "生成任务开始 task=%s run=%s project=%s stage=executing",
+            task_run_id, generation_run_id, project_id,
+        )
+
         # 读取 generation_run 与 contract_snapshot
         gr = session.execute(
             select(generation_runs).where(
@@ -372,6 +380,9 @@ def execute_generation_task(
 
         # c) 调用图生成题目
         questions: list[dict] = graph_invoke(session, gr_dict, contract_snapshot)
+        logger.info(
+            "生成图返回 run=%s questions=%d", generation_run_id, len(questions),
+        )
 
         # d) 批量插入 generated_questions
         gq_rows = []
@@ -478,10 +489,18 @@ def execute_generation_task(
                 )
             )
         session.commit()
+        logger.info(
+            "生成任务完成 task=%s run=%s questions=%d paper_version=%s",
+            task_run_id, generation_run_id, len(questions), paper_version_id,
+        )
         return result
 
     except Exception as exc:
         # 异常处理：回滚，标记失败
+        logger.error(
+            "生成任务失败 task=%s run=%s project=%s err=%r",
+            task_run_id, generation_run_id, project_id, exc,
+        )
         session.rollback()
         err_msg = str(exc)[:2000]
         now3 = _now()

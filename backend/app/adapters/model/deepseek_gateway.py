@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -10,6 +11,8 @@ from typing import Any, Protocol
 import httpx
 
 from app.domain.model_calls import ModelCallContext
+
+logger = logging.getLogger("model.gateway")
 
 # 并发洪泛是分类/归并阶段 HTTP 429 限流的根源：organization_max_workers=16
 # 的并行线程同时轰击模型 API，网关虽带退避重试但退避窗口太短，无法等限流恢复。
@@ -106,8 +109,11 @@ class DeepSeekJsonClient:
         self,
         *,
         api_key: str,
-        base_url: str = "https://api.xiaomimimo.com/v1",
-        model: str = "mimo-v2.5-pro",
+        # 默认值与 DeepSeekGateway / settings 保持一致（StepFun step-3.7-flash）。
+        # 历史上这里误留 MiMo 默认值，任何未显式传 model/base_url 的构造路径
+        # 都会静默回落到 MiMo 端点，造成"配置改了却还在用旧模型"的排查盲区。
+        base_url: str = "https://api.stepfun.com/v1",
+        model: str = "step-3.7-flash",
         timeout: float = 90.0,
         max_attempts: int = 4,
         # 大 prompt（如知识目录分类批）失败重试非常昂贵：单次输入即数万 token，
@@ -489,6 +495,13 @@ class DeepSeekGateway:
             disable_thinking=disable_thinking,
             client=client,
             recorder=recorder,
+        )
+        # 打印生效配置：排查"配置改了却还在用旧模型"时，第一眼即可确认
+        # 进程实际使用的 base_url/model；api_key 绝不进日志。
+        logger.info(
+            "DeepSeekGateway 生效配置 base_url=%s model=%s timeout=%.1fs "
+            "max_attempts=%d disable_thinking=%s",
+            base_url, model, timeout, max_attempts, disable_thinking,
         )
 
     def _request_json(

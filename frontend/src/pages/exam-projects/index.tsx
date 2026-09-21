@@ -8,7 +8,7 @@ import { api } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
-import { Badge, Input, ProgressPanel } from '@/components/ui';
+import { Badge, Input, ProgressPanel, type ProgressStatus } from '@/components/ui';
 import { SkeletonCardGrid } from '@/components/ui/Skeleton';
 import type { ContractSnapshot } from '@/api/domains/examProjects';
 import type { ExamProject, PlanItem, PaperVersionItem, TaskRun, PublishedKnowledgeResponse, CurrentFrameworkResponse } from '@/types/api';
@@ -86,6 +86,22 @@ function dlabel(d: string): string {
 function clabel(c: string): string {
   return COGNITIVE_LABELS[c] ?? c;
 }
+
+// 生成阶段的阶段性文案。后端任务只上报「开始 5%」与「完成 100%」两档，
+// 中间没有细分百分比，所以这里用轮换文案 + 已等待时长表达推进感，
+// 而不是伪造一个会跳变的假进度条。
+const GENERATION_MESSAGES = [
+  '正在按合同生成题目…',
+  '正在进行答案与解析质检…',
+  '正在校验收分与题型…',
+  '正在整理试卷版本…',
+];
+
+const GENERATION_QUEUED_MESSAGES = ['等待 Celery worker 接管任务…'];
+
+// queued 超过该时长提示排查 worker：worker 未启动或繁忙时任务会一直排队，
+// 用户侧只看到一个"排队中"无法区分是正常等待还是卡死。
+const QUEUED_HINT_SECONDS = 60;
 
 // 名称映射：把考点 / 章节 / 知识卡的 id 换成真实名称，未命中时回退原始值
 interface NameMaps {
@@ -448,6 +464,62 @@ function renderContract({
   );
 }
 
+// ═══════════════════════════════════════════
+//  生成进度面板（状态感知）
+// ═══════════════════════════════════════════
+function GenerationProgressPanel({
+  taskRun, onRetry, onBack,
+}: {
+  taskRun: TaskRun;
+  onRetry: () => void;
+  onBack: () => void;
+}) {
+  const [now, setNow] = useState(() => Date.now());
+  const inFlight =
+    taskRun.status === 'queued' || taskRun.status === 'running' || taskRun.status === 'waiting_external';
+
+  useEffect(() => {
+    if (!inFlight) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [inFlight]);
+
+  const startedAt = Date.parse(taskRun.created_at);
+  const elapsedSeconds = Number.isFinite(startedAt)
+    ? Math.max(0, Math.floor((now - startedAt) / 1000))
+    : 0;
+
+  const status: ProgressStatus =
+    taskRun.status === 'failed' ? 'failed' : taskRun.status === 'queued' ? 'queued' : 'running';
+
+  return (
+    <ProgressPanel
+      title={
+        taskRun.status === 'failed'
+          ? '试题生成失败'
+          : taskRun.status === 'queued'
+            ? '任务排队中，等待执行…'
+            : '正在生成试题，请稍候…'
+      }
+      messages={taskRun.status === 'queued' ? GENERATION_QUEUED_MESSAGES : GENERATION_MESSAGES}
+      progress={taskRun.progress ?? null}
+      stageLabel={taskRun.stage ? `阶段：${taskRun.stage}` : undefined}
+      status={status}
+      elapsedSeconds={inFlight ? elapsedSeconds : undefined}
+      queuedHintAfterSeconds={QUEUED_HINT_SECONDS}
+      errorMessage={taskRun.error_message || taskRun.error_code || '未知错误，请重试或联系管理员'}
+      footer={
+        taskRun.status === 'failed' ? (
+          <>
+            <Button variant="secondary" onClick={onBack}><ArrowLeft size={16} /> 返回合同</Button>
+            <Button onClick={onRetry} icon={<RefreshCw size={16} />}>重新生成</Button>
+          </>
+        ) : undefined
+      }
+    />
+  );
+}
+
 function renderGenerate({
   sp, courseId, token, setStep, taskRun, setTaskRun, generating, setGenerating, addToast,
 }: {
@@ -456,6 +528,19 @@ function renderGenerate({
   generating: boolean; setGenerating: (b: boolean) => void;
   addToast: ToastFn;
 }) {
+  // 首次启动与失败后重试共用同一条链路：拿新 task_run 后立即回填进度面板
+  const startGeneration = async () => {
+    try {
+      setGenerating(true);
+      const res = await api.examProjects.startGeneration(courseId, sp.id);
+      const tr = await api.examProjects.getTaskRun(courseId, res.task_run_id, token ?? undefined);
+      setTaskRun(tr);
+      addToast('任务已启动', 'success');
+    } catch (e) {
+      addToast('生成失败: ' + (e as Error).message, 'error');
+      setGenerating(false);
+    }
+  };
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       <StageHeading title="AI 生成试题" />
@@ -467,18 +552,7 @@ function renderGenerate({
           <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
             <Button variant="secondary" onClick={() => setStep('contract')}><ArrowLeft size={16} /> 返回合同</Button>
             <Button
-              onClick={async () => {
-                try {
-                  setGenerating(true);
-                  const res = await api.examProjects.startGeneration(courseId, sp.id);
-                  const tr = await api.examProjects.getTaskRun(courseId, res.task_run_id, token ?? undefined);
-                  setTaskRun(tr);
-                  addToast('任务已启动', 'success');
-                } catch (e) {
-                  addToast('生成失败: ' + (e as Error).message, 'error');
-                  setGenerating(false);
-                }
-              }}
+              onClick={startGeneration}
               loading={generating}
               icon={<PlayCircle size={16} />}
             >
@@ -487,16 +561,10 @@ function renderGenerate({
           </div>
         </div>
       ) : (
-        <ProgressPanel
-          title="正在生成试题，请稍候…"
-          messages={[
-            '正在按合同生成题目…',
-            '正在进行答案与解析质检…',
-            '正在校验收分与题型…',
-            '正在整理试卷版本…',
-          ]}
-          progress={taskRun.progress ?? null}
-          stageLabel={taskRun.stage ? `阶段：${taskRun.stage}` : undefined}
+        <GenerationProgressPanel
+          taskRun={taskRun}
+          onRetry={startGeneration}
+          onBack={() => setStep('contract')}
         />
       )}
     </div>
@@ -764,6 +832,9 @@ export default function ExamProjectsPage() {
           setGenerating(false);
           if (tr.status === 'succeeded') {
             addToast('试题生成完成', 'success');
+            // 仍停留在生成页时自动进入审核：否则进度条会停在 100% 一直转圈，
+            // 用户不知道接下来该做什么
+            setCurrentStage((s) => (s === 'generate' ? 'review' : s));
           } else {
             addToast('生成失败: ' + (tr.error_message || '未知错误'), 'error');
           }
@@ -814,8 +885,15 @@ export default function ExamProjectsPage() {
     if (proj.active_task_run_id && ['queued', 'running', 'waiting_external'].includes(proj.generation_task_status ?? '')) {
       try {
         const tr = await api.examProjects.getTaskRun(courseId, proj.active_task_run_id, token ?? undefined);
-        setTaskRun(tr);
         setGenerating(true);
+        if (tr.status === 'succeeded') {
+          // 任务实际已完成、只是项目状态字段滞后：直接落到审核阶段，
+          // 避免恢复出一个"永远在转圈"的已完成任务
+          setCurrentStage('review');
+        } else {
+          // 失败态也恢复：面板会展示错误详情与「重新生成」入口
+          setTaskRun(tr);
+        }
       } catch {
         // 任务查询失败则忽略，保持初始状态
       }

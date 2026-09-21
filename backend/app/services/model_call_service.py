@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any
 from uuid import uuid4
@@ -11,6 +12,8 @@ from sqlalchemy.orm import Session
 
 from app.db.schema import model_calls
 from app.domain.model_calls import ModelCallContext
+
+logger = logging.getLogger("model.call")
 
 
 class DatabaseModelCallRecorder:
@@ -61,8 +64,35 @@ class DatabaseModelCallRecorder:
                 )
             )
             session.commit()
+        except Exception as exc:
+            # 落库失败不影响模型调用语义，但必须以 WARNING 暴露，
+            # 否则线上会出现"model_calls 查不到记录又无任何日志"的盲区。
+            session.rollback()
+            logger.warning(
+                "模型调用记录落库失败 stage=%s model=%s status=%s err=%r",
+                context.stage, model, status, exc,
+            )
+            return
         finally:
             session.close()
+        # 日志与落库解耦：任何日志框架异常都不得回写影响调用方。
+        try:
+            if status == "succeeded":
+                logger.info(
+                    "模型调用成功 stage=%s model=%s provider=%s status=%s "
+                    "duration_ms=%s input_tokens=%s output_tokens=%s",
+                    context.stage, model, provider, status, duration_ms,
+                    input_tokens, output_tokens,
+                )
+            else:
+                logger.warning(
+                    "模型调用失败 stage=%s model=%s provider=%s status=%s "
+                    "duration_ms=%s error_code=%s error_message=%s",
+                    context.stage, model, provider, status, duration_ms,
+                    error_code, error_message,
+                )
+        except Exception:
+            return
 
     def lookup_response(
         self,
