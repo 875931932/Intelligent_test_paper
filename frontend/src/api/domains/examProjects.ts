@@ -43,5 +43,5 @@ export const examProjectsApi = {
   startGeneration: (courseId: string, projectId: string, body?: { mock_graph?: boolean }, token?: string): Promise<GenerateResponse> =>
     request('/courses/' + courseId + '/exam-projects/' + projectId + '/generate', { method: 'POST', body: body ? JSON.stringify(body) : undefined }, token),
   getTaskRun: (courseId: string, taskRunId: string, token?: string): Promise<TaskRun> =>
-    request('/courses/' + courseId + '/task-runs/' + taskRunId, undefined, token),
+    request('/courses/' + courseId + '/exam-projects/task-runs/' + taskRunId, undefined, token),
 };
