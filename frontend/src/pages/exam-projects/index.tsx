@@ -141,7 +141,24 @@ function renderBlueprint({
   bpCreating: boolean; handleCreateBlueprint: () => Promise<void>;
   loadPlanItems: (p: ExamProject) => void; planItems: PlanItem[];
 }) {
+  const qlabel = (t: string) =>
+    (({ single_choice: '单选', true_false: '判断', fill_blank: '填空', short_answer: '简答', comprehensive: '综合' } as Record<string, string>)[t] ?? t);
+  const dlabel = (d: string) =>
+    (({ easy: '易', medium: '中', hard: '难' } as Record<string, string>)[d] ?? d);
+  const clabel = (c: string) =>
+    (({ remember: '记忆', understand: '理解', apply: '应用', analyze: '分析', evaluate: '评价', create: '创造' } as Record<string, string>)[c] ?? c);
   if (sp.active_blueprint_version_id) {
+    const totalScore = planItems.reduce((s, i) => s + (i.score || 0), 0);
+    const typeAcc = new Map<string, { score: number; count: number }>();
+    const chapterAcc = new Map<string, number>();
+    planItems.forEach((i) => {
+      const t = typeAcc.get(i.question_type) ?? { score: 0, count: 0 };
+      t.score += i.score || 0; t.count += 1; typeAcc.set(i.question_type, t);
+      const ck = i.anchor_key || '未分章';
+      chapterAcc.set(ck, (chapterAcc.get(ck) || 0) + (i.score || 0));
+    });
+    const typeDist = [...typeAcc.entries()];
+    const chapterDist = [...chapterAcc.entries()];
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
         <StageHeading
@@ -149,25 +166,50 @@ function renderBlueprint({
           right={<Button variant="secondary" size="sm" onClick={() => loadPlanItems(sp)} icon={<RefreshCw size={14} />}>刷新</Button>}
         />
         {planItems.length > 0 ? (
-          <div className="table-wrapper">
-            <table className="data-table">
-              <thead><tr><th>#</th><th>题型</th><th>分值</th><th>难度</th><th>考点</th><th>认知层级</th></tr></thead>
-              <tbody>
-                {planItems.map((item) => (
-                  <tr key={item.item_index}>
-                    <td>{item.item_index}</td>
-                    <td>{item.question_type}</td>
-                    <td><strong>{item.score}</strong></td>
-                    <td>{item.difficulty}</td>
-                    <td>{item.exam_point_id}</td>
-                    <td>{item.cognitive_level}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+          <div>
+            <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: '16px' }}>
+              <div style={{ minWidth: '120px' }}>
+                <div style={{ fontSize: '1.7rem', fontWeight: 700, lineHeight: 1 }}>{totalScore}</div>
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', marginTop: '4px' }}>总分 · {planItems.length} 题</div>
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, minWidth: '220px' }}>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {typeDist.map(([t, v]) => (
+                    <span key={t} style={{
+                      padding: '4px 10px', borderRadius: '999px', fontSize: '0.78rem', fontWeight: 600,
+                      background: 'rgba(0,113,227,0.08)', color: '#0071e3',
+                    }}>
+                      {qlabel(t)} {v.score}分·{v.count}题
+                    </span>
+                  ))}
+                </div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px' }}>
+                  {chapterDist.map(([c, s]) => (
+                    <span key={c} style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{c}：{s}分</span>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="table-wrapper">
+              <table className="data-table">
+                <thead><tr><th>#</th><th>题型</th><th>分值</th><th>难度</th><th>章节</th><th>认知层级</th></tr></thead>
+                <tbody>
+                  {planItems.map((item) => (
+                    <tr key={item.item_index}>
+                      <td>{item.item_index}</td>
+                      <td>{qlabel(item.question_type)}</td>
+                      <td><strong>{item.score}</strong></td>
+                      <td>{dlabel(item.difficulty)}</td>
+                      <td>{item.anchor_key || '-'}</td>
+                      <td>{clabel(item.cognitive_level) || '-'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         ) : (
-          <p style={{ textAlign: 'center', padding: '24px 0', color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>暂无计划项</p>
+          <p style={{ textAlign: 'center', padding: '24px 0', color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>暂无计划项，请点击「刷新」加载</p>
         )}
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
           <Button onClick={() => setStep('contract')} icon={<ChevronRight size={16} />}>进入合同阶段</Button>
@@ -190,11 +232,11 @@ function renderBlueprint({
 }
 
 function renderContract({
-  sp, courseId, setStep, contractSeed, setContractSeed,
+  sp, courseId, setStep, contractVariant, setContractVariant,
   contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming, addToast,
 }: {
   sp: ExamProject; courseId: string; setStep: (s: StageKey) => void;
-  contractSeed: number; setContractSeed: (n: number) => void;
+  contractVariant: number; setContractVariant: (n: number) => void;
   contractSnapshot: ContractSnapshot | null; setContractSnapshot: (s: ContractSnapshot | null) => void;
   contractConfirming: boolean; setContractConfirming: (b: boolean) => void;
   addToast: ToastFn;
@@ -203,7 +245,7 @@ function renderContract({
     try {
       const res = await api.examProjects.allocateContract(courseId, sp.id, {
         blueprint_version_id: sp.active_blueprint_version_id,
-        allocation_seed: contractSeed,
+        allocation_seed: contractVariant - 1,
       });
       setContractSnapshot(res.contract_snapshot);
       addToast('合同已分配', 'success');
@@ -211,13 +253,46 @@ function renderContract({
       addToast('分配失败: ' + (e as Error).message, 'error');
     }
   };
+  // 「分配方案」下拉：同一个版本结果固定、便于与同事讨论同一份卷子；
+  // 换一版会生成不同题目排布的方案。内部把第 N 版映射为分配种子 N-1。
+  const variantOptions = [1, 2, 3, 4, 5, 6];
+  const VariantSelect = ({ compact }: { compact?: boolean }) => (
+    <div style={{ minWidth: compact ? '150px' : '200px' }}>
+      {!compact && (
+        <label style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', display: 'block', marginBottom: '4px' }}>
+          分配方案
+        </label>
+      )}
+      <select
+        value={contractVariant}
+        onChange={(e) => setContractVariant(Number(e.target.value))}
+        className="input-field"
+        style={{ width: '100%' }}
+      >
+        {variantOptions.map((v) => (
+          <option key={v} value={v}>第 {v} 版</option>
+        ))}
+      </select>
+    </div>
+  );
   if (contractSnapshot) {
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
         <StageHeading
           title="合同槽位"
-          right={<Badge variant="info">总分: {contractSnapshot.total_score ?? '-'}</Badge>}
+          right={
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <Badge variant="info">总分: {contractSnapshot.total_score ?? '-'}</Badge>
+              <Badge variant="default">方案第 {contractVariant} 版</Badge>
+            </div>
+          }
         />
+        <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          <VariantSelect compact />
+          <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', margin: '0 0 6px 0' }}>
+            换一版并点击「重新分配」可预览不同题目排布；同一版本结果固定。
+          </p>
+        </div>
         <div className="table-wrapper">
           <table className="data-table">
             <thead><tr><th>#</th><th>题型</th><th>分值</th><th>难度</th><th>考点</th><th>知识卡</th></tr></thead>
@@ -244,7 +319,7 @@ function renderContract({
                 await api.examProjects.confirmContract(courseId, sp.id, {
                   blueprint_version_id: sp.active_blueprint_version_id,
                   slot_revisions: [],
-                  allocation_seed: contractSeed,
+                  allocation_seed: contractVariant - 1,
                 });
                 addToast('合同已确认', 'success');
                 setStep('generate');
@@ -269,10 +344,10 @@ function renderContract({
         根据蓝图规划分配具体的题型和分值，形成可执行的合同。
       </p>
       <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
-        <div style={{ minWidth: '180px' }}>
-          <label style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>分配种子</label>
-          <input type="number" value={contractSeed} onChange={(e) => setContractSeed(Number(e.target.value))} className="input-field" style={{ marginTop: '4px' }} />
-        </div>
+        <VariantSelect />
+        <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', margin: '0 0 6px 0' }}>
+          蓝图不变的前提下，不同版本会生成题目分布不同的合同方案；同一版本结果固定，方便与他人讨论同一份卷子。
+        </p>
       </div>
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
         <Button variant="secondary" onClick={() => setStep('blueprint')}><ArrowLeft size={16} /> 返回蓝图</Button>
@@ -506,7 +581,7 @@ export default function ExamProjectsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [bpCreating, setBpCreating] = useState(false);
-  const [contractSeed, setContractSeed] = useState(0);
+  const [contractVariant, setContractVariant] = useState(1);
   const [contractConfirming, setContractConfirming] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [pvConfirming, setPvConfirming] = useState(false);
@@ -648,8 +723,14 @@ export default function ExamProjectsPage() {
         units,
       });
       addToast('蓝图已生成', 'success');
-      setCurrentStage('contract');
-      await loadProjects();
+      // 刷新项目状态（active_blueprint_version_id 落地、status 变为 blueprint），
+      // 并停留在蓝图阶段让老师直接看到生成的命题计划，而不是直接跳去合同。
+      const refreshed = await api.examProjects.list(courseId);
+      const updated = refreshed.find((p) => p.id === activeProject.id) ?? activeProject;
+      setProjects(refreshed);
+      setActiveProject(updated);
+      setCurrentStage('blueprint');
+      await loadPlanItems(updated);
     } catch (e) {
       addToast('蓝图创建失败: ' + (e as Error).message, 'error');
     } finally {
@@ -752,7 +833,7 @@ export default function ExamProjectsPage() {
             sp, setStep: setCurrentStage, bpCreating, handleCreateBlueprint, loadPlanItems, planItems,
           })}
           {currentStage === 'contract' && renderContract({
-            sp, courseId, setStep: setCurrentStage, contractSeed, setContractSeed,
+            sp, courseId, setStep: setCurrentStage, contractVariant, setContractVariant,
             contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming, addToast,
           })}
           {currentStage === 'generate' && renderGenerate({
