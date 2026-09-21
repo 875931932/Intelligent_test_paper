@@ -113,6 +113,47 @@ def test_worker_entrypoint_claims_and_completes_registered_task(session, monkeyp
     assert row["result"] == {"received": 42}
 
 
+def test_worker_failure_surfaces_real_exception_instead_of_generic_text(session, monkeypatch):
+    task_id = create_task_run(session, course_id="course-a", task_type="unit.boom", idempotency_key="boom", input_version="v1", payload={})
+    session.commit()
+    monkeypatch.setattr("app.infrastructure.tasks.worker.get_session_factory", lambda: lambda: session)
+
+    def boom_handler(_context):
+        raise AttributeError("'Settings' object has no attribute 'deepseek_generation_disable_thinking'")
+
+    register_task_handler("unit.boom", boom_handler)
+
+    assert not execute_task(task_id, worker_id="worker")
+    row = session.execute(select(task_runs).where(task_runs.c.id == task_id)).one()._mapping
+    assert row["status"] == "failed"
+    assert row["error_code"] == "handler_error"
+    assert row["error_message"].startswith("task handler failed:")
+    assert "deepseek_generation_disable_thinking" in row["error_message"]
+
+
+def test_worker_failure_prefers_persisted_run_error(session, monkeypatch):
+    task_id = create_task_run(
+        session,
+        course_id="course-a",
+        task_type="unit.boom",
+        idempotency_key="boom-persisted",
+        input_version="v1",
+        payload={"generation_run_id": "run-1"},
+    )
+    session.commit()
+    monkeypatch.setattr("app.infrastructure.tasks.worker.get_session_factory", lambda: lambda: session)
+    monkeypatch.setattr("app.infrastructure.tasks.worker._persisted_run_error", lambda _payload: "persisted detail")
+
+    def boom_handler(_context):
+        raise ValueError("boom")
+
+    register_task_handler("unit.boom", boom_handler)
+
+    assert not execute_task(task_id, worker_id="worker")
+    row = session.execute(select(task_runs).where(task_runs.c.id == task_id)).one()._mapping
+    assert row["error_message"] == "task handler failed: persisted detail"
+
+
 def test_worker_context_can_pause_long_external_task(session, monkeypatch):
     task_id = create_task_run(session, course_id="course-a", task_type="unit.poll", idempotency_key="poll-worker", input_version="v1", payload={})
     session.commit()

@@ -75,6 +75,35 @@ def register_task_handler(task_type: str, handler: TaskHandler) -> None:
     _HANDLERS[task_type] = handler
 
 
+def _persisted_run_error(payload: dict) -> str | None:
+    """读取业务处理器已持久化的真实错误（如 generation_runs.error_message）。"""
+
+    run_id = (payload or {}).get("generation_run_id")
+    if not run_id:
+        return None
+    try:
+        from app.db.schema import generation_runs
+
+        probe = get_session_factory()()
+        try:
+            message = probe.execute(
+                select(generation_runs.c.error_message).where(generation_runs.c.id == run_id)
+            ).scalar_one_or_none()
+        finally:
+            probe.close()
+    except Exception:
+        return None
+    text = (message or "").strip()
+    return text or None
+
+
+def _handler_error_message(payload: dict, exc: BaseException) -> str:
+    """组装失败原因：保留原前缀，同时带出真实异常，避免只暴露 "task handler failed"。"""
+
+    detail = _persisted_run_error(payload) or str(exc).strip() or exc.__class__.__name__
+    return f"task handler failed: {detail}"[:2000]
+
+
 def execute_task(task_id: str, *, worker_id: str | None = None) -> bool:
     """Claim and execute one durable task, returning whether it was handled."""
 
@@ -119,14 +148,14 @@ def execute_task(task_id: str, *, worker_id: str | None = None) -> bool:
                 payload=dict(row["payload"] or {}),
             )
             result = handler(context)
-        except Exception:
+        except Exception as exc:
             fail_task(
                 session,
                 course_id=course_id,
                 task_id=task_id,
                 worker_id=worker_id,
                 error_code="handler_error",
-                error_message="task handler failed",
+                error_message=_handler_error_message(row["payload"], exc),
             )
             session.commit()
             return False
