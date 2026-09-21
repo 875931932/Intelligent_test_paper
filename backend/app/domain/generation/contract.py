@@ -160,12 +160,24 @@ class ExamPointProportion(BaseModel):
     proportion: float
 
 
+class BackfilledPoint(BaseModel):
+    """超配题位的同章回补记录：需求超过答案域容量时改派到同章兄弟考点。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    item_index: int
+    from_exam_point_id: str
+    to_exam_point_id: str
+    anchor_key: str
+
+
 class ContractAuditSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     exam_points: list[ExamPointProportion] = Field(default_factory=list)
     type_counts: dict[str, int] = Field(default_factory=dict)
     difficulty_counts: dict[str, int] = Field(default_factory=dict)
+    backfilled_points: list[BackfilledPoint] = Field(default_factory=list)
 
 
 class PaperContract(BaseModel):

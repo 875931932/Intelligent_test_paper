@@ -7,6 +7,7 @@ from app.domain.blueprint.models import BlueprintPlan, BlueprintRequest, PlanIte
 from app.domain.generation.archetypes import ARCHETYPE_CONTRACTS
 from app.domain.generation.contract import (
     DEFAULT_CENTRALITY_THRESHOLD,
+    BackfilledPoint,
     ContractAuditSummary,
     ContractConflict,
     ContractSlot,
@@ -93,17 +94,99 @@ def _comprehensive_fields(nth: int, pool: list[str]) -> dict:
     }
 
 
+def _point_capacity(pool: list) -> int:
+    """考点可供给题数：池内不同非空答案域数 + 空边界原子数。
+
+    答案域是卡级标量且全卷互斥：同一边界整卷只能出 1 题，故一张卡
+    （无论含多少原子）只贡献 1 题容量；空边界原子之间永不互斥，各自
+    独立计 1 题。
+    """
+    boundaries = {atom.boundary for atom in pool if atom.boundary}
+    empty = sum(1 for atom in pool if not atom.boundary)
+    return len(boundaries) + empty
+
+
+def _backfill_over_assigned_points(
+    items: list[PlanItem],
+    pools: dict[str, list],
+    point_anchor: dict[str, str],
+) -> tuple[list[PlanItem], list[BackfilledPoint]]:
+    """考点题位超配时，把超额题位改派到同章（anchor）内仍有余量的兄弟考点。
+
+    蓝图可能把 N 个题位压给只有 M（<N）个答案域的考点（线上事故：4 个
+    题位对 1 张卡，合同静默丢 6 题只得 83/100）。第一轮各考点在容量内
+    照单全收，超额题位第二轮只改派到同章富余考点：仅更换 exam_point_id，
+    题型/分值/难度/认知层级/考核模式/章锚点全部保留，题型配额、难度分布
+    与每章比例因此不变。同章确无余量时题位留在原考点，由配额检查与互斥
+    分配显式报冲突，绝不静默降分。
+    """
+    demand: dict[str, list[PlanItem]] = {}
+    passthrough: list[PlanItem] = []
+    for item in items:
+        if item.exam_point_id:
+            demand.setdefault(item.exam_point_id, []).append(item)
+        else:
+            passthrough.append(item)  # 未关联考点：交由 missing_exam_point 显式报告
+
+    capacity = {point: _point_capacity(pool) for point, pool in pools.items()}
+    room = dict(capacity)
+    for point, group in demand.items():
+        room[point] = room.get(point, 0) - len(group)
+
+    adjusted = list(passthrough)
+    backfilled: list[BackfilledPoint] = []
+    overflow: list[PlanItem] = []
+    for point in sorted(demand):
+        group = sorted(demand[point], key=lambda i: i.item_index)
+        keep = capacity.get(point, 0)
+        adjusted.extend(group[:keep])
+        overflow.extend(group[keep:])
+    for item in overflow:
+        anchor = point_anchor.get(item.exam_point_id, item.anchor_key)
+        target = next(
+            (
+                sibling for sibling in sorted(pools)
+                if sibling != item.exam_point_id
+                and point_anchor.get(sibling, "") == anchor
+                and room.get(sibling, 0) > 0
+            ),
+            None,
+        )
+        if target is None:
+            adjusted.append(item)  # 同章无余量：留在原考点，显式报冲突
+            continue
+        room[target] -= 1
+        adjusted.append(item.model_copy(update={"exam_point_id": target}))
+        backfilled.append(BackfilledPoint(
+            item_index=item.item_index,
+            from_exam_point_id=item.exam_point_id,
+            to_exam_point_id=target,
+            anchor_key=anchor,
+        ))
+    adjusted.sort(key=lambda i: i.item_index)
+    return adjusted, backfilled
+
+
 def allocate_paper_contract(request: ContractRequest) -> PaperContract:
     plan = request.plan or allocate_plan_items(request.blueprint)
     pools = build_exam_point_pools(
         request.blueprint.units, request.knowledge_cards,
         threshold=request.centrality_threshold,
     )
+    # 同章回补必须先于配额判定：超配题位改派到同章富余兄弟考点后，
+    # 配额检查与互斥分配只针对回补后仍无法安排的题位显式报冲突
+    point_anchor = {
+        unit.exam_point_id: unit.anchor_key
+        for unit in request.blueprint.units if unit.exam_point_id
+    }
+    items, backfilled_points = _backfill_over_assigned_points(
+        plan.items, pools, point_anchor,
+    )
 
     conflicts: list[ContractConflict] = []
     # 配额不足冲突（显式报告，不静默降级）
     quota: dict[str, int] = {}
-    for item in plan.items:
+    for item in items:
         if not item.exam_point_id:
             conflicts.append(ContractConflict(
                 code="missing_exam_point",
@@ -122,7 +205,7 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract:
             ))
 
     items_by_point: dict[str, list[PlanItem]] = {}
-    for item in plan.items:
+    for item in items:
         if item.exam_point_id:
             items_by_point.setdefault(item.exam_point_id, []).append(item)
     for group in items_by_point.values():
@@ -221,6 +304,7 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract:
             level: sum(1 for s in final_slots if s.difficulty == level)
             for level in sorted({s.difficulty for s in final_slots})
         },
+        backfilled_points=backfilled_points,
     )
     return PaperContract(total_score=total, slots=final_slots, conflicts=conflicts, audit_summary=summary)
 

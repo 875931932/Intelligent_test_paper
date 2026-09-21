@@ -1,9 +1,11 @@
 import { request } from '../http';
-import type { ExamProject, PlanItem, TaskRun, ContractSlot } from '../../types/api';
+import type { ExamProject, PlanItem, TaskRun, ContractSlot, ContractConflict, ContractAuditSummary } from '../../types/api';
 
 export interface ContractSnapshot {
   slots: ContractSlot[];
   total_score?: number;
+  conflicts?: ContractConflict[];
+  audit_summary?: ContractAuditSummary;
 }
 
 export interface AllocateContractResponse {

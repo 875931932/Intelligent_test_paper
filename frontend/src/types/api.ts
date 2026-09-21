@@ -392,10 +392,18 @@ export interface ExamPointProportion {
   proportion: number;
 }
 
+export interface BackfilledPoint {
+  item_index: number;
+  from_exam_point_id: string;
+  to_exam_point_id: string;
+  anchor_key: string;
+}
+
 export interface ContractAuditSummary {
   exam_points: ExamPointProportion[];
   type_counts: Record<string, number>;
   difficulty_counts: Record<string, number>;
+  backfilled_points?: BackfilledPoint[];
 }
 
 export interface PaperContract {

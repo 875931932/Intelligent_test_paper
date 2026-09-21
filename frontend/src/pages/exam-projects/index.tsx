@@ -284,7 +284,7 @@ function renderBlueprint({
 
 function renderContract({
   sp, courseId, setStep, contractVariant, setContractVariant,
-  contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming, addToast, maps,
+  contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming, addToast, maps, planItems,
 }: {
   sp: ExamProject; courseId: string; setStep: (s: StageKey) => void;
   contractVariant: number; setContractVariant: (n: number) => void;
@@ -292,6 +292,7 @@ function renderContract({
   contractConfirming: boolean; setContractConfirming: (b: boolean) => void;
   addToast: ToastFn;
   maps: NameMaps;
+  planItems: PlanItem[];
 }) {
   const allocate = async () => {
     try {
@@ -328,13 +329,23 @@ function renderContract({
     </div>
   );
   if (contractSnapshot) {
+    // 实际分配分 vs 蓝图计划分：合同曾因考点答案域容量不足静默丢题（83/100），
+    // 这里把缺口、冲突与同章回补全部显式呈现，不再只显示一个总分
+    const actualScore = contractSnapshot.total_score ?? contractSnapshot.slots.reduce((s, x) => s + (x.score || 0), 0);
+    const plannedScore = planItems.reduce((s, i) => s + (i.score || 0), 0) || sp.total_score || 0;
+    const deficit = plannedScore - actualScore;
+    const conflicts = contractSnapshot.conflicts ?? [];
+    const backfilled = contractSnapshot.audit_summary?.backfilled_points ?? [];
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
         <StageHeading
           title="合同槽位"
           right={
             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <Badge variant="info">总分: {contractSnapshot.total_score ?? '-'}</Badge>
+              <Badge variant="info">总分: {actualScore}</Badge>
+              {plannedScore > 0 && deficit > 0 && (
+                <Badge variant="warning">应有 {plannedScore} · 缺 {deficit}</Badge>
+              )}
               <Badge variant="default">方案第 {contractVariant} 版</Badge>
             </div>
           }
@@ -345,6 +356,34 @@ function renderContract({
             换一版并点击「重新分配」可预览不同题目排布；同一版本结果固定。
           </p>
         </div>
+        {deficit > 0 && (
+          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'rgba(255,149,0,0.08)', border: '1px solid rgba(255,149,0,0.25)', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+            蓝图计划 <strong>{plannedScore}</strong> 分，实际分配 <strong>{actualScore}</strong> 分，缺 <strong>{deficit}</strong> 分。
+            {backfilled.length > 0
+              ? ' 部分题位已按同章回补改派到富余考点；仍有缺口说明同章内答案域容量不足，请补充知识卡或调整蓝图。'
+              : ' 同章内没有可回补的富余考点，请补充知识卡或调整蓝图后重新分配。'}
+          </div>
+        )}
+        {conflicts.length > 0 && (
+          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'rgba(255,59,48,0.06)', border: '1px solid rgba(255,59,48,0.25)', fontSize: '0.8rem' }}>
+            <div style={{ fontWeight: 600, marginBottom: '6px', color: '#ff3b30' }}>合同冲突（{conflicts.length}）</div>
+            <ul style={{ margin: 0, paddingLeft: '18px', color: 'var(--text-secondary)' }}>
+              {conflicts.map((c, i) => (
+                <li key={i}>{c.exam_point_id ? examPointLabel(maps, c.exam_point_id) + '：' : ''}{c.message}</li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {backfilled.length > 0 && (
+          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'rgba(0,113,227,0.06)', border: '1px solid rgba(0,113,227,0.2)', fontSize: '0.8rem' }}>
+            <div style={{ fontWeight: 600, marginBottom: '6px', color: '#0071e3' }}>同章回补（{backfilled.length}）</div>
+            <ul style={{ margin: 0, paddingLeft: '18px', color: 'var(--text-secondary)' }}>
+              {backfilled.map((b) => (
+                <li key={b.item_index}>第 {b.item_index + 1} 题：{examPointLabel(maps, b.from_exam_point_id)} → {examPointLabel(maps, b.to_exam_point_id)}（原考点答案域容量不足，改派同章富余考点）</li>
+              ))}
+            </ul>
+          </div>
+        )}
         <div className="table-wrapper">
           <table className="data-table">
             <thead><tr><th>#</th><th>题型</th><th>分值</th><th>难度</th><th>考点</th><th>知识卡</th></tr></thead>
@@ -939,7 +978,7 @@ export default function ExamProjectsPage() {
           })}
           {currentStage === 'contract' && renderContract({
             sp, courseId, setStep: setCurrentStage, contractVariant, setContractVariant,
-            contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming, addToast, maps,
+            contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming, addToast, maps, planItems,
           })}
           {currentStage === 'generate' && renderGenerate({
             sp, courseId, token, setStep: setCurrentStage, taskRun, setTaskRun, generating, setGenerating, addToast,
