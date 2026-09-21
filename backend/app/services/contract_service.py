@@ -59,6 +59,11 @@ class ContractRequest(BaseModel):
     # 分配种子：None 保持确定性分配（同池同卷）；给定整数时打破评分
     # 并列——同种子复现同卷，异种子在富余池上选出不同原子组合
     allocation_seed: int | None = None
+    # 历史避重：其他试卷已用过的原子原文（coverage_atom）集合。命中者在
+    # 贪心评分中被计为软惩罚（排在本卷多样性目标之后、种子扰动之前），
+    # 池有富余时改挑没用过的原子，池耗尽时仍照常分配。key 在此层按
+    # atom_key 口径归一化，调用方直接传快照里的原文即可。
+    avoid_atoms: set[str] | None = None
     # 已存储的蓝图计划（教师看到的版本）。合同分配必须忠于该计划而非
     # 重跑 allocate_plan_items：unit 顺序差异会把同题型槽位漂移到别的
     # 考点，导致合同与已确认蓝图不一致。
@@ -222,12 +227,18 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract:
     # 全卷共享互斥状态：跨考点原子唯一 + 答案边界互斥（终检为全卷两两比较）
     used_keys: set[str] = set()
     used_boundaries: list[str] = []
+    # 历史避重键集：与 atom_key 同口径（atom_text 归一化）。空集与 None
+    # 等价——不传时完全保持原有确定性行为。
+    avoid_keys: set[str] | None = (
+        {_normalized(text) for text in request.avoid_atoms}
+        if request.avoid_atoms else None
+    )
     for point in sorted(items_by_point):
         clusters = cluster_pool_atoms(pools.get(point, []))
         assignments, point_conflicts = assign_atoms_to_items(
             items_by_point[point], clusters,
             shared_used_keys=used_keys, shared_used_boundaries=used_boundaries,
-            seed=request.allocation_seed,
+            seed=request.allocation_seed, avoid_keys=avoid_keys,
         )
         conflicts.extend(point_conflicts)
         for item, atom in assignments:

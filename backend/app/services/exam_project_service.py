@@ -69,8 +69,8 @@ def get_current_contract_snapshot(
         "conflicts": conflicts,
         "audit_summary": snap.get("audit_summary") or {},
     }
-    # 附带诊断信息，便于前端展示阈值/修订痕迹（均为可选）
-    for key in ("slot_revisions_applied", "conflicts_history"):
+    # 附带诊断信息，便于前端展示阈值/修订痕迹/分配方案（均为可选）
+    for key in ("slot_revisions_applied", "conflicts_history", "allocation_seed"):
         if snap.get(key) is not None:
             result[key] = snap.get(key)
     threshold = snap.get("centrality_threshold_used")

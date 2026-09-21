@@ -300,31 +300,46 @@ function renderBlueprint({
 
 function renderContract({
   sp, courseId, setStep, contractVariant, setContractVariant,
-  contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming, addToast, maps, planItems,
+  contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming,
+  contractAllocating, setContractAllocating, addToast, maps, planItems,
 }: {
   sp: ExamProject; courseId: string; setStep: (s: StageKey) => void;
   contractVariant: number; setContractVariant: (n: number) => void;
   contractSnapshot: ContractSnapshot | null; setContractSnapshot: (s: ContractSnapshot | null) => void;
   contractConfirming: boolean; setContractConfirming: (b: boolean) => void;
+  contractAllocating: boolean; setContractAllocating: (b: boolean) => void;
   addToast: ToastFn;
   maps: NameMaps;
   planItems: PlanItem[];
 }) {
-  const allocate = async () => {
+  // variantOverride：切换方案时 onChange 已把新版本号拿到手，直接用它发请求，
+  // 不等 state 重渲染后再读闭包值，避免切换到第 N 版却按第 N-1 版分配。
+  const allocate = async (variantOverride?: number) => {
+    const variant = variantOverride ?? contractVariant;
+    setContractAllocating(true);
     try {
       const res = await api.examProjects.allocateContract(courseId, sp.id, {
         blueprint_version_id: sp.active_blueprint_version_id,
-        allocation_seed: contractVariant - 1,
+        allocation_seed: variant - 1,
       });
       setContractSnapshot(res.contract_snapshot);
-      addToast('合同已分配', 'success');
+      addToast(`合同已分配（方案第 ${variant} 版）`, 'success');
     } catch (e) {
       addToast('分配失败: ' + (e as Error).message, 'error');
+    } finally {
+      setContractAllocating(false);
     }
   };
   // 「分配方案」下拉：同一个版本结果固定、便于与同事讨论同一份卷子；
   // 换一版会生成不同题目排布的方案。内部把第 N 版映射为分配种子 N-1。
   const variantOptions = [1, 2, 3, 4, 5, 6];
+  const changeVariant = async (next: number, reload: boolean) => {
+    setContractVariant(next);
+    // 已有合同快照时换版即重新分配：教师不必再点一次「重新分配」，
+    // 少一步手势，也避免"以为换了其实没换"的误解。尚无快照时不发请求，
+    // 由教师主动点「分配合同」。
+    if (reload) await allocate(next);
+  };
   const VariantSelect = ({ compact }: { compact?: boolean }) => (
     <div style={{ minWidth: compact ? '150px' : '200px' }}>
       {!compact && (
@@ -334,7 +349,8 @@ function renderContract({
       )}
       <select
         value={contractVariant}
-        onChange={(e) => setContractVariant(Number(e.target.value))}
+        onChange={(e) => { void changeVariant(Number(e.target.value), !!contractSnapshot); }}
+        disabled={contractAllocating}
         className="input-field"
         style={{ width: '100%' }}
       >
@@ -369,7 +385,7 @@ function renderContract({
         <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
           <VariantSelect compact />
           <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', margin: '0 0 6px 0' }}>
-            换一版并点击「重新分配」可预览不同题目排布；同一版本结果固定。
+            切换方案会自动重新分配；同一版本结果固定，方便与他人讨论同一份卷子。
           </p>
         </div>
         {deficit > 0 && (
@@ -418,7 +434,9 @@ function renderContract({
           </table>
         </div>
         <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-          <Button variant="secondary" onClick={async () => { setContractSnapshot(null); await allocate(); }} icon={<RefreshCw size={16} />}>重新分配</Button>
+          {/* 不再先 setContractSnapshot(null)：那会让整张表闪回"分配合同"空态，
+              再瞬间加载回来。原地刷新快照即可，加载中禁用操作避免重复请求。 */}
+          <Button variant="secondary" loading={contractAllocating} onClick={() => { void allocate(); }} icon={<RefreshCw size={16} />}>重新分配</Button>
           <Button
             onClick={async () => {
               setContractConfirming(true);
@@ -436,6 +454,7 @@ function renderContract({
               setContractConfirming(false);
             }}
             loading={contractConfirming}
+            disabled={contractAllocating}
             icon={<Check size={16} />}
           >
             确认合同
@@ -458,7 +477,7 @@ function renderContract({
       </div>
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
         <Button variant="secondary" onClick={() => setStep('blueprint')}><ArrowLeft size={16} /> 返回蓝图</Button>
-        <Button onClick={allocate} icon={<PlayCircle size={16} />}>分配合同</Button>
+        <Button onClick={() => { void allocate(); }} loading={contractAllocating} icon={<PlayCircle size={16} />}>分配合同</Button>
       </div>
     </div>
   );
@@ -746,8 +765,13 @@ export default function ExamProjectsPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [bpCreating, setBpCreating] = useState(false);
-  const [contractVariant, setContractVariant] = useState(1);
   const [contractConfirming, setContractConfirming] = useState(false);
+  const [contractAllocating, setContractAllocating] = useState(false);
+  // 「分配方案」默认随机一版：每次新建/刷新项目时不再固定回到第 1 版，
+  // 否则每套卷子都从同一套搭配起步。历史种子由 hydrate 覆盖回填。
+  const [contractVariant, setContractVariant] = useState(
+    () => 1 + Math.floor(Math.random() * 6),
+  );
   const [generating, setGenerating] = useState(false);
   const [pvConfirming, setPvConfirming] = useState(false);
 
@@ -881,6 +905,13 @@ export default function ExamProjectsPage() {
       const cur = await api.examProjects.getCurrentContract(courseId, proj.id, token ?? undefined);
       const snap = cur?.contract_snapshot;
       setContractSnapshot(snap && Array.isArray(snap.slots) && snap.slots.length > 0 ? snap : null);
+      // 分配方案回填：快照里记下了当初用的种子（前端第 N 版 = 种子 N-1），
+      // 退出再进入后下拉必须跟着回来，否则再次确认会静默换成另一套方案。
+      // 越界值（旧数据/手工改库）不采用，保留随机默认。
+      const seed = snap?.allocation_seed;
+      if (typeof seed === 'number' && seed >= 0 && seed <= 5) {
+        setContractVariant(seed + 1);
+      }
     } catch {
       setContractSnapshot(null);
     }
@@ -1079,7 +1110,8 @@ export default function ExamProjectsPage() {
           })}
           {currentStage === 'contract' && renderContract({
             sp, courseId, setStep: setCurrentStage, contractVariant, setContractVariant,
-            contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming, addToast, maps, planItems,
+            contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming,
+            contractAllocating, setContractAllocating, addToast, maps, planItems,
           })}
           {currentStage === 'generate' && renderGenerate({
             sp, courseId, token, setStep: setCurrentStage, taskRun, setTaskRun, generating, setGenerating, addToast,

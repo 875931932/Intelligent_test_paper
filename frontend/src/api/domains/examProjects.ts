@@ -6,6 +6,8 @@ export interface ContractSnapshot {
   total_score?: number;
   conflicts?: ContractConflict[];
   audit_summary?: ContractAuditSummary;
+  /** 确认合同时使用的分配种子（None/缺省 = 确定性默认）；退出项目再进入时用于回填「分配方案」下拉 */
+  allocation_seed?: number | null;
 }
 
 export interface AllocateContractResponse {

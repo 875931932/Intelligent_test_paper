@@ -159,6 +159,47 @@ def test_invalid_archetype_pool_falls_back_to_full_rotation():
     assert len(contract.slots) == 4
 
 
+def test_avoid_atoms_steers_allocation_to_fresh_atoms():
+    # 历史避重（服务层贯通）：把上一轮已用原子（coverage_atom 原文）作为
+    # avoid_atoms 传入，新一轮应改挑没用过的原子——软避重生效，同时不丢题、
+    # 不报冲突、题位数不变。
+    first = allocate_paper_contract(_request())
+    used = {s.coverage_atom for s in first.slots}
+    assert used
+    second = allocate_paper_contract(_request(avoid_atoms=used))
+    assert not second.conflicts
+    assert len(second.slots) == len(first.slots)
+    reused = used & {s.coverage_atom for s in second.slots}
+    assert len(reused) < len(used), f"避重未生效：仍复用 {sorted(reused)}"
+
+
+def test_avoid_atoms_is_soft_when_pool_exhausted():
+    # 软约束底线：唯一可用原子已被历史用过时仍照常分配——避重只改偏好，
+    # 不能为换新题而丢题或把冲突冒出来。
+    units = [
+        UnitCoverage(unit_id="U1a", exam_point_id="EP1", anchor_key="A1", card_ids=["C1a"]),
+    ]
+    cards = {
+        "C1a": {
+            "is_core": True, "performance_statement": "掌握量化格式",
+            "assessable_content": ["QLoRA使用NF4量化格式压缩"],
+            "preferred_terms": [], "answer_boundary": "量化格式NF4",
+        },
+    }
+    contract = allocate_paper_contract(ContractRequest(
+        blueprint=BlueprintRequest(
+            total_score=2,
+            type_rules={"single_choice": {"count": 1, "score": 2}},
+            chapter_weights={"A1": 100},
+            units=units,
+        ),
+        knowledge_cards=cards,
+        avoid_atoms={"QLoRA使用NF4量化格式压缩"},
+    ))
+    assert not contract.conflicts
+    assert [s.coverage_atom for s in contract.slots] == ["QLoRA使用NF4量化格式压缩"]
+
+
 def test_atoms_unique_across_paper_and_mutex_within_point():
     contract = allocate_paper_contract(_request())
     atoms = [s.coverage_atom for s in contract.slots]

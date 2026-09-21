@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import json
 import uuid
 from typing import Any
 
@@ -50,6 +51,50 @@ def _row_to_dict(row) -> dict[str, Any]:
     if hasattr(row, "_mapping"):
         return dict(row._mapping)
     return dict(row._asdict()) if hasattr(row, "_asdict") else dict(row)
+
+
+# 历史避重回看窗口：只统计该课程最近 N 份合同用过的原子。窗口有界，
+# 防止老试卷把整个池子标成"已用过"使避重退化成无效；更早的试卷允许
+# 复用，最近几套保证不重样。
+_HISTORY_RUN_LIMIT = 10
+
+
+def _collect_used_atom_texts(
+    session: Session,
+    *,
+    course_id: str,
+    limit: int = _HISTORY_RUN_LIMIT,
+) -> set[str]:
+    """汇总该课程最近 limit 份合同已用过的原子原文（coverage_atom）。
+
+    教师一旦确认合同，对应原子即视为占用——即便生成失败或尚未开始，
+    那也是教师已经看过的一套题。因此不按 status 过滤，凡带快照的 run
+    都计入。返回原子原文集合，键归一化由合同分配层按 atom_key 口径
+    统一处理（_normalized），此处保持与快照一致的原文即可。
+    """
+    rows = session.execute(
+        select(generation_runs.c.contract_snapshot)
+        .where(generation_runs.c.course_id == course_id)
+        .order_by(generation_runs.c.created_at.desc())
+        .limit(limit)
+    ).all()
+    used: set[str] = set()
+    for row in rows:
+        snap = row._mapping.get("contract_snapshot")
+        if isinstance(snap, str):  # JSON 列被存成文本时的兜底解析
+            try:
+                snap = json.loads(snap)
+            except ValueError:
+                continue
+        if not isinstance(snap, dict):
+            continue
+        for slot in snap.get("slots") or []:
+            if not isinstance(slot, dict):
+                continue
+            text = slot.get("coverage_atom")
+            if text:
+                used.add(str(text))
+    return used
 
 
 def _build_contract_request_from_db(
@@ -290,11 +335,18 @@ def _build_contract_request_from_db(
         anchor_counts=anchor_counts,
     )
 
+    # 历史避重：把该课程最近用过的原子喂进分配器，让新卷子在池有富余时
+    # 主动改挑没用过的原子。这是纯软惩罚（排在本卷多样性目标之后、种子
+    # 扰动之前），池耗尽时仍照常分配，绝不丢题或新增冲突。放在请求构建
+    # 处而非各端点，保证预览、确认、阈值回退每一轮看到的历史一致。
+    avoid_atoms = _collect_used_atom_texts(session, course_id=course_id)
+
     return ContractRequest(
         blueprint=blueprint_req,
         knowledge_cards=cards_dict,
         centrality_threshold=centrality_threshold,
         allocation_seed=allocation_seed,
+        avoid_atoms=avoid_atoms or None,
         plan=stored_plan,
     ), units_payload, cards_dict
 
@@ -387,6 +439,10 @@ def revise_and_confirm(
             "slots": slots_ser,
             "slot_revisions_applied": slot_revisions,
             "centrality_threshold_used": used_threshold,
+            # 种子落库：退出项目再进入时，前端凭此回填"分配方案"下拉，
+            # 保证再次确认用的是同一版而非静默回到第 1 版。None（确定性
+            # 默认）照原样写，前端按缺失处理。
+            "allocation_seed": allocation_seed,
             "conflicts_history": [
                 {"threshold": t, "count": c} for t, c in history
             ],

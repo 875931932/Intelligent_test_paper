@@ -312,16 +312,22 @@ def _pick_atom(
     item_type: str,
     selected_atoms: list[PoolAtom],
     rng: random.Random | None = None,
+    avoid_keys: set[str] | None = None,
 ) -> tuple[PoolAtom | None, int]:
     """约束过滤 + 软评分贪心：在全部可用原子中选分散度最优者。
 
     候选过滤只剩硬约束（原子未被用过、答案域与已选互斥）；多样性只进
     评分不进过滤：
     score = (该原子所在簇已供题数, 该簇已用当前题型次数, 与前一题位同簇,
-             题型适配惩罚, 与全部已选原子的最大 bigram Jaccard, 种子扰动)，
+             题型适配惩罚, 与全部已选原子的最大 bigram Jaccard,
+             历史避重惩罚, 种子扰动)，
     tuple 越小越优。
     题型适配惩罚：填空题要求简短唯一答案，多子句原子或长答案域
     （归一化 > 30 字符）的原子适配度差，仅对 fill_blank 题位计 1。
+    历史避重惩罚：原子出现在 avoid_keys（其他试卷已用过的
+    (考点, atom_key) 组合）时计 1。它排在全部本卷多样性目标之后、
+    种子扰动之前——卷内分散永远优先于跨卷避重，而避重优先于纯随机。
+    这是纯偏好而非过滤：唯一候选已被历史用过时仍照常分配，绝不丢题。
     种子扰动只在其余各项完全并列时打破平局（rng=None 时取 0 保持
     原确定性）：同种子可复现，异种子在富余池上换出不同原子组合。
     池充足时自然跨簇分散、簇内题型错开；池紧张时自动退化同簇多题但
@@ -331,7 +337,7 @@ def _pick_atom(
     """
     best: PoolAtom | None = None
     best_cluster = -1
-    best_score: tuple[int, int, int, int, float, float] | None = None
+    best_score: tuple[int, int, int, int, float, int, float] | None = None
     for cluster_idx, cluster in enumerate(clusters):
         supply = cluster_supply.get(cluster_idx, 0)
         type_supply = cluster_type_supply.get(cluster_idx, {}).get(item_type, 0)
@@ -353,8 +359,11 @@ def _pick_atom(
                  for other in selected_atoms),
                 default=0.0,
             )
+            avoided = 1 if avoid_keys and atom.atom_key in avoid_keys else 0
             tiebreak = rng.random() if rng is not None else 0.0
-            score = (supply, type_supply, adjacent, type_fit, max_jaccard, tiebreak)
+            score = (
+                supply, type_supply, adjacent, type_fit, max_jaccard, avoided, tiebreak,
+            )
             if best_score is None or score < best_score:
                 best, best_cluster, best_score = atom, cluster_idx, score
     return best, best_cluster
@@ -367,6 +376,7 @@ def assign_atoms_to_items(
     shared_used_keys: set[str] | None = None,
     shared_used_boundaries: list[str] | None = None,
     seed: int | None = None,
+    avoid_keys: set[str] | None = None,
 ) -> tuple[list[tuple[PlanItem, PoolAtom]], list[ContractConflict]]:
     """同考点题位按 item_index 顺序，软评分贪心 + 答案域互斥地取原子。
 
@@ -377,6 +387,11 @@ def assign_atoms_to_items(
     seed：仅打破评分并列（rng=None 保持原确定性）。同种子复现同卷，
     异种子在富余池上选出不同原子组合——池刚够配额时无论种子如何
     都只能全选，这也是抽取目标须大于配额的原因。
+    avoid_keys：其他试卷已用过的 atom_key 集合（跨卷避重）。命中者在
+    评分中计入惩罚，排在全部本卷多样性目标之后、种子扰动之前，因此
+    池有富余时会主动改选没用过的原子，池耗尽时仍照常分配——避重是
+    软约束，不会让任何题位掉队或变成冲突。键口径与 PoolAtom.atom_key
+    一致（atom_text 归一化结果）。
     传入 shared_used_keys/shared_used_boundaries 时直接读写共享集，
     使多个考点调用间互斥状态全卷贯通（与终检全卷两两比较口径一致）；
     不传则每次调用独立维护局部集。硬过滤后无候选（真正的原子池耗尽）
@@ -404,7 +419,7 @@ def assign_atoms_to_items(
         atom, cluster_idx = _pick_atom(
             clusters, used_keys, used_boundaries,
             cluster_supply, cluster_type_supply, previous_cluster,
-            item.question_type, selected_atoms, rng,
+            item.question_type, selected_atoms, rng, avoid_keys,
         )
         if atom is None:
             conflicts.append(ContractConflict(

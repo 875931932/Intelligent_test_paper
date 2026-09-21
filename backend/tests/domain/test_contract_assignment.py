@@ -101,6 +101,48 @@ def test_seed_never_violates_hard_constraints():
         assert len(set(bounds)) == 3
 
 
+def test_avoided_atom_is_deprioritized_behind_fresh_atom():
+    # 历史避重：其他试卷已用过的原子降为软惩罚。两簇评分完全并列时
+    # （无避重则并列取先遍历到者 = 甲簇），必须改选没用过的乙簇原子。
+    first = _atom("SFTTrainer需要SFTConfig配置参数", "甲边界一")
+    second = _atom("QLoRA使用NF4量化格式压缩", "乙边界一")
+    assignments, conflicts = assign_atoms_to_items(
+        [_item(1)], [[first], [second]], avoid_keys={first.atom_key},
+    )
+    assert not conflicts
+    assert assignments[0][1].atom_text == "QLoRA使用NF4量化格式压缩"
+
+
+def test_avoidance_is_soft_and_never_drops_an_item():
+    # 软约束的底线：唯一可用原子已被历史用过时，仍必须照常分配 ——
+    # 不能为避重而丢题或报冲突（避重只影响偏好，不是硬过滤）
+    only = _atom("唯一可用原子文本", "唯一边界")
+    assignments, conflicts = assign_atoms_to_items(
+        [_item(1)], [[only]], avoid_keys={only.atom_key},
+    )
+    assert not conflicts
+    assert len(assignments) == 1
+    assert assignments[0][1].atom_text == "唯一可用原子文本"
+
+
+def test_avoidance_loses_to_hard_diversity_constraints():
+    # 优先级：簇分散/互斥等硬多样性目标仍高于避重。题位2若按避重去选
+    # 未用过的甲簇第二个原子，就会与题位1同簇相邻；正确结果是仍按
+    # 簇轮换去乙簇，即使乙簇原子已被历史用过。
+    big = [
+        _atom("甲簇第一原子文本样本", "甲边界一"),
+        _atom("甲簇第二原子文本示例", "甲边界二"),
+    ]
+    small = [_atom("乙簇唯一原子文本样例", "乙边界一")]
+    used = {small[0].atom_key}
+    assignments, conflicts = assign_atoms_to_items(
+        [_item(1), _item(2)], [big, small], avoid_keys=used,
+    )
+    assert not conflicts
+    texts = [a[1].atom_text for a in assignments]
+    assert texts == ["甲簇第一原子文本样本", "乙簇唯一原子文本样例"]
+
+
 def test_same_cluster_reuse_when_clusters_fewer_than_items():
     # 单簇两个原子：池紧张时贪心自动退化同簇连供（同题型也不再被硬拒绝）
     clusters = [

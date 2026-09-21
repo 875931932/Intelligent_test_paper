@@ -30,6 +30,7 @@ from app.services.contract_execution_service import (
     get_contract_conflicts,
     revise_and_confirm,
 )
+from app.services.exam_project_service import get_current_contract_snapshot
 
 
 def _ep(id_, course, fv, anchor, code, title, req, w, group, intent):
@@ -281,6 +282,105 @@ def test_revise_and_confirm_moves_project_to_generating_and_sets_run_id(session)
     assert proj._mapping["status"] == "generating"
     assert proj._mapping["active_generation_run_id"] == result["generation_run_id"]
     assert result["slot_count"] == 5
+
+
+def test_second_paper_avoids_atoms_used_by_first(session):
+    # 历史避重（执行层贯通）：同一课程再确认一份新合同时，必须自动避开
+    # 上一份合同已用过的原子——每套卷子都不一样，而不是反复抽同一批。
+    bv_id = _setup_confirmed_blueprint(
+        session,
+        total_items=5,
+        per_score=20.0,
+        unit_card_ids={
+            "au1": ["c1a", "c1b", "c1c"],
+            "au2": ["c2a", "c2b", "c2c"],
+        },
+    )
+    first = revise_and_confirm(
+        session, course_id="c1", project_id="ep1",
+        blueprint_version_id=bv_id, slot_revisions=[],
+    )
+    first_atoms = _run_atoms(session, first["generation_run_id"])
+    assert first_atoms
+
+    second = revise_and_confirm(
+        session, course_id="c1", project_id="ep1",
+        blueprint_version_id=bv_id, slot_revisions=[],
+    )
+    second_atoms = _run_atoms(session, second["generation_run_id"])
+    reused = first_atoms & second_atoms
+    assert len(reused) < len(first_atoms), (
+        f"新合同仍复用上一份的原子: {sorted(reused)}"
+    )
+
+
+def test_contract_snapshot_records_allocation_seed(session):
+    # 种子落库：教师切换"分配方案"后确认合同，快照必须记下用的是哪一版，
+    # 否则退出项目再进入（或再次确认）时方案静默回到第 1 版，前后不一致。
+    bv_id = _setup_confirmed_blueprint(
+        session,
+        total_items=5,
+        per_score=20.0,
+        unit_card_ids={
+            "au1": ["c1a", "c1b", "c1c"],
+            "au2": ["c2a", "c2b", "c2c"],
+        },
+    )
+    result = revise_and_confirm(
+        session, course_id="c1", project_id="ep1",
+        blueprint_version_id=bv_id, slot_revisions=[],
+        allocation_seed=3,
+    )
+    snap = _run_snapshot(session, result["generation_run_id"])
+    assert snap.get("allocation_seed") == 3, (
+        f"合同快照未记录 allocation_seed，实际 {snap.get('allocation_seed')}"
+    )
+
+
+def test_current_contract_snapshot_exposes_allocation_seed(session):
+    # 种子透传：get_current_contract_snapshot（前端 hydrate 的数据源）必须
+    # 把 allocation_seed 一并带回，否则无法回填"分配方案"下拉。
+    bv_id = _setup_confirmed_blueprint(
+        session,
+        total_items=5,
+        per_score=20.0,
+        unit_card_ids={
+            "au1": ["c1a", "c1b", "c1c"],
+            "au2": ["c2a", "c2b", "c2c"],
+        },
+    )
+    result = revise_and_confirm(
+        session, course_id="c1", project_id="ep1",
+        blueprint_version_id=bv_id, slot_revisions=[],
+        allocation_seed=2,
+    )
+    current = get_current_contract_snapshot(
+        session, course_id="c1", project_id="ep1",
+    )
+    assert current is not None
+    assert current["generation_run_id"] == result["generation_run_id"]
+    assert current.get("allocation_seed") == 2, (
+        f"读回快照缺 allocation_seed，实际 {current.get('allocation_seed')}"
+    )
+
+
+def _run_snapshot(session, run_id: str) -> dict:
+    row = session.execute(
+        select(generation_runs.c.contract_snapshot).where(
+            generation_runs.c.id == run_id
+        )
+    ).one()
+    return row._mapping.get("contract_snapshot") or {}
+
+
+def _run_atoms(session, run_id: str) -> set[str]:
+    row = session.execute(
+        select(generation_runs.c.contract_snapshot).where(
+            generation_runs.c.id == run_id
+        )
+    ).one()
+    snap = row._mapping.get("contract_snapshot") or {}
+    return {s["coverage_atom"] for s in snap.get("slots") or [] if s.get("coverage_atom")}
 
 
 def test_get_contract_conflicts_extracts_conflicts_from_snapshot(session):
