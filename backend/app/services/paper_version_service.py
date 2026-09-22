@@ -1038,6 +1038,9 @@ def _render_question_html(q: dict, *, with_answer: bool) -> str:
     qt_label = _q_type_label(q.get("question_type"))
     options = q.get("options", [])
     answer = q.get("answer", "")
+    # 判断题答案是布尔值，直接渲染会输出 Python 的 True/False
+    if isinstance(answer, bool):
+        answer = "正确" if answer else "错误"
 
     parts = [f'<div class="question">', f'<div class="q-stem">{idx}. {stem}</div>']
 

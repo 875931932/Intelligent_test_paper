@@ -19,8 +19,9 @@ import type { ExamProject, PaperVersion, PaperVersionItem } from '@/types/api';
 
 // ─── 题型与选项工具 ───
 
-function isChoiceType(t: string): boolean {
-  return t === 'single_choice' || t === 'multiple_choice' || t === 'true_false';
+/** 有选项需要编辑的题型。判断题答案是布尔值、没有 options 字段，不能混进来 */
+function hasOptions(t: string): boolean {
+  return t === 'single_choice' || t === 'multiple_choice';
 }
 
 type OptEntry = { key: string; text: string };
@@ -40,17 +41,28 @@ function entriesToOptions(entries: OptEntry[]): Record<string, string> {
   return o;
 }
 
+/**
+ * 判断题答案在后端是布尔值（true/false）且没有 options；展示层统一成字符串口径，
+ * 否则对布尔值调字符串方法会直接抛 TypeError。
+ */
+function normalizeAnswer(answer: unknown): string {
+  if (typeof answer === 'boolean') return answer ? '正确' : '错误';
+  if (answer == null) return '';
+  return String(answer);
+}
+
 /** 多选答案在选项行上切换；单选直接替换。兼容 "AB" / "A,B" / "A、B" 等写法 */
-function toggleAnswerKey(answer: string, key: string, multi: boolean): string {
+function toggleAnswerKey(answer: string | boolean, key: string, multi: boolean): string {
+  const cur = normalizeAnswer(answer);
   if (!multi) return key;
-  const set = new Set((answer || '').toUpperCase().replace(/[^A-Z]/g, '').split(''));
+  const set = new Set(cur.toUpperCase().replace(/[^A-Z]/g, '').split(''));
   if (set.has(key)) set.delete(key);
   else set.add(key);
   return [...set].sort().join('');
 }
 
-function answerKeys(answer: string): Set<string> {
-  return new Set((answer || '').toUpperCase().replace(/[^A-Z]/g, '').split(''));
+function answerKeys(answer: string | boolean): Set<string> {
+  return new Set(normalizeAnswer(answer).toUpperCase().replace(/[^A-Z]/g, '').split(''));
 }
 
 // ─── 编辑草稿 ───
@@ -70,10 +82,20 @@ interface EditorSubmit {
   question_type: string;
   difficulty: string;
   score: number;
-  answer: string;
+  /** 判断题提交布尔值（后端该题型强校验 bool），其余题型为字符串 */
+  answer: string | boolean;
   explanation: string;
   options: Record<string, string>;
   clear_needs_review?: boolean;
+}
+
+/** 编辑框按文本编辑，提交时判断题答案规范化回布尔值 */
+function answerForSubmit(questionType: string, answer: string): string | boolean {
+  if (questionType !== 'true_false') return answer;
+  const a = answer.trim();
+  if (['true', '正确', '对', '是', 'T'].includes(a)) return true;
+  if (['false', '错误', '错', '否', 'F'].includes(a)) return false;
+  return a;
 }
 
 function draftFromItem(item: PaperVersionItem): Draft {
@@ -82,7 +104,7 @@ function draftFromItem(item: PaperVersionItem): Draft {
     question_type: item.question_type || 'short_answer',
     difficulty: item.difficulty || 'medium',
     score: String(item.score ?? 0),
-    answer: item.answer ?? '',
+    answer: normalizeAnswer(item.answer),
     explanation: item.explanation ?? '',
     options: optionsToEntries(item.options),
   };
@@ -118,13 +140,13 @@ const QuestionEditor = forwardRef<QuestionEditorHandle, {
 ) {
   const [d, setD] = useState<Draft>(initial);
   const [clearReview, setClearReview] = useState(true);
-  const choice = isChoiceType(d.question_type);
+  const choice = hasOptions(d.question_type);
   const multi = d.question_type === 'multiple_choice';
 
   const patch = (p: Partial<Draft>) => setD((prev) => ({ ...prev, ...p }));
 
   const changeType = (t: string) => {
-    const nextChoice = isChoiceType(t);
+    const nextChoice = hasOptions(t);
     patch({
       question_type: t,
       options: nextChoice ? (d.options.length > 0 ? d.options : [{ key: 'A', text: '' }, { key: 'B', text: '' }]) : [],
@@ -138,7 +160,7 @@ const QuestionEditor = forwardRef<QuestionEditorHandle, {
       question_type: d.question_type,
       difficulty: d.difficulty,
       score: Number(d.score) || 0,
-      answer: d.answer,
+      answer: answerForSubmit(d.question_type, d.answer),
       explanation: d.explanation,
       options: choice ? entriesToOptions(d.options) : {},
       clear_needs_review: needsReview ? clearReview : undefined,
@@ -197,7 +219,7 @@ const QuestionEditor = forwardRef<QuestionEditorHandle, {
       )}
 
       <FieldLabel label="答案">
-        <input className="input-field" value={d.answer} onChange={(e) => patch({ answer: e.target.value })} placeholder={choice ? (multi ? '如 AB' : '如 B') : '填写参考答案或评分要点'} />
+        <input className="input-field" value={d.answer} onChange={(e) => patch({ answer: e.target.value })} placeholder={d.question_type === 'true_false' ? '正确 或 错误' : choice ? (multi ? '如 AB' : '如 B') : '填写参考答案或评分要点'} />
       </FieldLabel>
 
       <FieldLabel label="解析">
@@ -398,6 +420,7 @@ function QuestionDetail({
 }) {
   const flagged = item.needs_review || !!item.needs_review_reason;
   const keys = answerKeys(item.answer);
+  const answerText = normalizeAnswer(item.answer);
   const opts = optionsToEntries(item.options);
 
   return (
@@ -469,12 +492,12 @@ function QuestionDetail({
           ) : (
             <div style={{
               marginTop: '14px', padding: '10px 14px', borderRadius: 8, fontSize: '0.925rem', lineHeight: 1.75,
-              background: item.answer ? 'var(--accent-subtle)' : 'var(--warning-subtle)',
-              color: item.answer ? 'var(--text)' : 'var(--warning)',
+              background: answerText ? 'var(--accent-subtle)' : 'var(--warning-subtle)',
+              color: answerText ? 'var(--text)' : 'var(--warning)',
               whiteSpace: 'pre-wrap', wordBreak: 'break-word',
             }}>
               <span style={{ fontWeight: 600, fontSize: '0.78rem', display: 'block', marginBottom: 3, opacity: 0.7 }}>答案</span>
-              {item.answer || '未填写答案'}
+              {answerText || '未填写答案'}
             </div>
           )}
 

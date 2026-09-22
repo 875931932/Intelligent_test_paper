@@ -494,7 +494,8 @@ export interface PaperVersionItem {
   question_type: string;
   stem: string;
   options?: Record<string, string> | string[];
-  answer: string;
+  /** 判断题（true_false）答案在后端是布尔值且没有 options 字段，其余题型为字符串 */
+  answer: string | boolean;
   /** 模型产出，部分题型为 null，前端需降级 */
   explanation?: string | null;
   score: number;
