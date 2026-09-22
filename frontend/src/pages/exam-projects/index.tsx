@@ -689,26 +689,16 @@ function renderReviewItems(items: PaperVersionItem[], maps: NameMaps, onPatchIte
 }
 
 function renderReview({
-  setStep, paperVersion, pvId, pvLoading, pvConfirming, handleConfirmReview, handlePatchReviewItem, maps,
+  setStep, paperVersion, pvLoading, pvConfirming, handleConfirmReview, handlePatchReviewItem, maps,
 }: {
   setStep: (s: StageKey) => void;
-  paperVersion: any; pvId: string | undefined;
-  pvLoading: boolean;
-  pvConfirming: boolean;
+  paperVersion: any; pvLoading: boolean; pvConfirming: boolean;
   handleConfirmReview: () => Promise<void>;
   handlePatchReviewItem: (idx: number, p: Record<string, unknown>) => Promise<void>;
   maps: NameMaps;
 }) {
-  // 门禁只看后端解析出的版本指针：生成成功即存在 candidate，
-  // 不再依赖 active_paper_version_id（它只在确认定稿后才回写）。
-  if (!pvId) {
-    return (
-      <div style={{ textAlign: 'center', padding: '32px' }}>
-        <p style={{ color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>请先在生成阶段完成生成</p>
-        <Button variant="secondary" style={{ marginTop: '14px' }} onClick={() => setStep('generate')}>返回生成</Button>
-      </div>
-    );
-  }
+  // 三态门禁：还在取版本 → 加载提示；版本本体存在 → 渲染题目；后端确认无版本
+  // （404）→ 才提示去生成。不依赖任何摘要快照指针。
   if (pvLoading && !paperVersion) {
     return (
       <div style={{ textAlign: 'center', padding: '32px' }}>
@@ -716,8 +706,16 @@ function renderReview({
       </div>
     );
   }
+  if (!paperVersion) {
+    return (
+      <div style={{ textAlign: 'center', padding: '32px' }}>
+        <p style={{ color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>请先在生成阶段完成生成</p>
+        <Button variant="secondary" style={{ marginTop: '14px' }} onClick={() => setStep('generate')}>返回生成</Button>
+      </div>
+    );
+  }
   // 后端逐题数组字段名为 questions（不是 items）
-  const items: PaperVersionItem[] = paperVersion?.questions || [];
+  const items: PaperVersionItem[] = paperVersion.questions || [];
   const needsReviewCount = items.filter((i) => i.needs_review).length;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -725,7 +723,7 @@ function renderReview({
         title="试卷审核"
         right={
           <div style={{ display: 'flex', gap: '8px' }}>
-            <Badge>总分: {paperVersion?.total_score}</Badge>
+            <Badge>总分: {paperVersion.total_score}</Badge>
             {needsReviewCount > 0 && <Badge variant="warning">待审: {needsReviewCount}</Badge>}
           </div>
         }
@@ -746,12 +744,12 @@ function renderReview({
 }
 
 function renderExport({
-  exportUrls, pvId, setStep,
+  exportUrls, paperVersion, setStep,
 }: {
   exportUrls: { json?: string; student?: string; answerKey?: string };
-  pvId: string | undefined; setStep: (s: StageKey) => void;
+  paperVersion: any; setStep: (s: StageKey) => void;
 }) {
-  if (!pvId) {
+  if (!paperVersion) {
     return (
       <div style={{ textAlign: 'center', padding: '32px' }}>
         <p style={{ color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>请先确认试卷</p>
@@ -835,12 +833,9 @@ export default function ExamProjectsPage() {
     }
   };
 
-  // 当前试卷版本一律由后端解析：优先未定稿 candidate，其次 active_paper_version_id
-  // （确认定稿时才回写），最后取版本号最大者。前端不再自行判断，也就不存在
-  // “生成成功了却拿不到卷子”的空洞。
-  const resolvePaperVersionId = (proj: ExamProject): string | undefined =>
-    paperVersion?.id ?? proj.paper_version_id ?? proj.active_paper_version_id ?? undefined;
-
+  // 当前试卷版本以 getCurrent 返回的 paperVersion 为唯一事实源，不再从项目摘要
+  // 快照里拼指针——摘要只在打开项目那一刻获取，生成前它恒为 null，用它当门禁
+  // 会让刚生成成功的卷子永远加载不出来。
   const loadPaperVersion = async () => {
     if (!activeProject || !token) return;
     setPvLoading(true);
@@ -918,8 +913,8 @@ export default function ExamProjectsPage() {
           if (tr.status === 'succeeded') {
             addToast('试题生成完成', 'success');
             // 生成完成会落库一张 candidate 试卷版本。项目摘要是在打开项目时取的
-            // 快照，此刻 paper_version_id 仍为 null，务必刷新才能让头部显示题数
-            // 与“N 分”、并让上方 loadPaperVersion 拿到后端解析出的 candidate。
+            // 快照，此刻 paper_version_id 仍为 null，务必刷新头部才显示题数与
+            // “N 分”。仅刷新展示用摘要，试卷本体交给 loadPaperVersion 异步取回。
             const refreshed = await api.examProjects
               .get(courseId, activeProject?.id ?? '', token ?? undefined)
               .catch(() => null);
@@ -941,26 +936,25 @@ export default function ExamProjectsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskRun, courseId, token, addToast]);
 
-  // 生成完成 / 进入审核阶段时加载试卷版本。
-  // 直接以“已加载版本”为准，不再依赖项目摘要里的 paper_version_id 作门禁：
-  // 摘要是在打开项目那一刻取的快照，生成成功前它恒为 null，用它当门禁会让
-  // 刚生成成功的卷子（进度条 100%）永远加载不出来。后端没有版本时 GET current
-  // 返回 404，由 loadPaperVersion 静默置空，审核门禁负责提示。
+  // 加载当前试卷版本：只要该项目的生成任务已成功，或用户停留在审核/导出阶段，
+  // 就把后端解析出的当前版本取回作为唯一事实源。这里不再读摘要快照里的
+  // paper_version_id 做门禁（摘要生成前恒为 null，读了会永远不触发），
+  // 后端没有版本时 GET current 返回 404，由 loadPaperVersion 静默置空。
   useEffect(() => {
-    const proj = activeProject;
-    if (!proj || !token) return;
-    const taskDone = taskRun?.status === 'succeeded';
-    if ((taskDone || currentStage === 'review') && !paperVersion) {
+    if (!activeProject || !token) return;
+    const taskDone = taskRun?.status === 'succeeded' || activeProject.status === 'review' || activeProject.status === 'exported';
+    const inReviewOrExport = currentStage === 'review' || currentStage === 'export';
+    if ((taskDone || inReviewOrExport) && !paperVersion && !pvLoading) {
       void loadPaperVersion();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskRun?.status, currentStage, activeProject, paperVersion]);
+  }, [taskRun?.status, currentStage, activeProject, paperVersion, pvLoading]);
 
-  // 进入导出阶段时确定下载地址（用已加载版本的 id，或摘要里的当前版本）
+  // 进入导出阶段时确定下载地址（用已加载版本的 id；无版本则交给导出页门禁提示）
   useEffect(() => {
     const proj = activeProject;
     if (currentStage !== 'export' || !proj || exportUrls.json !== undefined) return;
-    const pvId = paperVersion?.id ?? proj.active_paper_version_id ?? proj.paper_version_id;
+    const pvId = paperVersion?.id;
     if (!pvId) return;
     setExportUrls({
       json: api.paperVersions.exportJson(courseId, proj.id, pvId),
@@ -968,7 +962,7 @@ export default function ExamProjectsPage() {
       answerKey: api.paperVersions.exportAnswerKey(courseId, proj.id, pvId),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentStage, activeProject, paperVersion]);
+  }, [currentStage, activeProject, paperVersion, exportUrls.json]);
 
   // 以服务端为权威数据源恢复项目状态。
   // 合同快照持久化在 generation_runs.contract_snapshot，任务进度持久化在
@@ -1091,9 +1085,9 @@ export default function ExamProjectsPage() {
   };
 
   const handleConfirmReview = async () => {
-    // 版本指针以已加载版本为准，退化到项目摘要；生成后即有 candidate，
-    // 不要求 active_paper_version_id（那是定稿后才回写的字段）。
-    const pvId = paperVersion?.id ?? activeProject?.paper_version_id ?? activeProject?.active_paper_version_id;
+    // 版本指针取已加载的当前版本；审核页只有在取回版本后才渲染出「确认」按钮，
+    // 因此这里 paperVersion 必然存在（视图门禁保证）。不再拼摘要快照。
+    const pvId = paperVersion?.id;
     if (!activeProject || !pvId) return;
     setPvConfirming(true);
     try {
@@ -1103,7 +1097,6 @@ export default function ExamProjectsPage() {
       // 项目状态已变为 exported，同步本地项目态，避免导出按钮还指向旧指针
       const refreshed = await api.examProjects.get(courseId, activeProject.id, token ?? undefined).catch(() => null);
       if (refreshed) setActiveProject(refreshed);
-      setPaperVersion(null);
       setCurrentStage('export');
       setExportUrls({
         json: api.paperVersions.exportJson(courseId, activeProject.id, pvId),
@@ -1118,7 +1111,7 @@ export default function ExamProjectsPage() {
   };
 
   const handlePatchReviewItem = async (itemIndex: number, patch: Record<string, unknown>) => {
-    const pvId = paperVersion?.id ?? activeProject?.paper_version_id ?? activeProject?.active_paper_version_id;
+    const pvId = paperVersion?.id;
     if (!pvId) return;
     try {
       await api.paperVersions.patchItem(courseId, pvId, itemIndex, patch);
@@ -1200,11 +1193,11 @@ export default function ExamProjectsPage() {
             sp, courseId, token, setStep: setCurrentStage, taskRun, setTaskRun, generating, setGenerating, addToast,
           })}
           {currentStage === 'review' && renderReview({
-            setStep: setCurrentStage, paperVersion, pvId: resolvePaperVersionId(sp),
-            pvLoading, pvConfirming, handleConfirmReview, handlePatchReviewItem, maps,
+            setStep: setCurrentStage, paperVersion, pvLoading, pvConfirming,
+            handleConfirmReview, handlePatchReviewItem, maps,
           })}
           {currentStage === 'export' && renderExport({
-            exportUrls, pvId: resolvePaperVersionId(sp), setStep: setCurrentStage,
+            exportUrls, paperVersion, setStep: setCurrentStage,
           })}
         </div>
       </div>
