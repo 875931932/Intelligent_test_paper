@@ -917,6 +917,14 @@ export default function ExamProjectsPage() {
           setGenerating(false);
           if (tr.status === 'succeeded') {
             addToast('试题生成完成', 'success');
+            // 生成完成会落库一张 candidate 试卷版本。项目摘要是在打开项目时取的
+            // 快照，此刻 paper_version_id 仍为 null，务必刷新才能让头部显示题数
+            // 与“N 分”、并让上方 loadPaperVersion 拿到后端解析出的 candidate。
+            const refreshed = await api.examProjects
+              .get(courseId, activeProject?.id ?? '', token ?? undefined)
+              .catch(() => null);
+            if (refreshed) setActiveProject(refreshed);
+            await loadProjects().catch(() => {});
             // 仍停留在生成页时自动进入审核：否则进度条会停在 100% 一直转圈，
             // 用户不知道接下来该做什么
             setCurrentStage((s) => (s === 'generate' ? 'review' : s));
@@ -929,18 +937,20 @@ export default function ExamProjectsPage() {
       }
     }, 2500);
     return () => clearInterval(id);
+    // 轮询闭包有意捕获 taskRun 快照；在成功分支读取当前 activeProject 刷新摘要
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskRun, courseId, token, addToast]);
 
   // 生成完成 / 进入审核阶段时加载试卷版本。
-  // 门禁用项目摘要里的 paper_version_id（后端解析出的当前 candidate）：
-  // active_paper_version_id 只在确认定稿后回写，用它当门禁会让刚生成成功
-  // 的卷子永远加载不出来。
+  // 直接以“已加载版本”为准，不再依赖项目摘要里的 paper_version_id 作门禁：
+  // 摘要是在打开项目那一刻取的快照，生成成功前它恒为 null，用它当门禁会让
+  // 刚生成成功的卷子（进度条 100%）永远加载不出来。后端没有版本时 GET current
+  // 返回 404，由 loadPaperVersion 静默置空，审核门禁负责提示。
   useEffect(() => {
     const proj = activeProject;
     if (!proj || !token) return;
-    const known = proj.paper_version_id ?? proj.active_paper_version_id;
     const taskDone = taskRun?.status === 'succeeded';
-    if ((taskDone || currentStage === 'review') && !paperVersion && known) {
+    if ((taskDone || currentStage === 'review') && !paperVersion) {
       void loadPaperVersion();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
