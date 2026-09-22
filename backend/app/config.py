@@ -42,10 +42,12 @@ class Settings(BaseSettings):
     # 思考开关，改用 reasoning_effort=low（官方标注 low 档适合信息抽取），
     # 避免推理消耗输出额度导致 JSON 内容为空/被截断，并节省 token。true=关闭。
     deepseek_disable_thinking: bool = True
-    # 出题/命题阶段保留推理（StepFun 默认 medium 档，不额外设置）。出题需要较长
-    # 推理与质检，保留思考可提升题目质量与覆盖面；false=不关闭（保留思考）。
+    # 命题生成阶段同样关闭长链路推理：StepFun 走 reasoning_effort=low（官方
+    # low 档适合一次性命题，逐批出题所需的推理已足够，且能大幅缩短单次调用），
+    # MiMo 发 thinking=disabled。此前默认 false 会让推理型模型用高档思考把单次
+    # 请求拖到分钟级，是「出一套 41 题要近 50 分钟」的根因之一。true=关闭思考。
     # 此配置仅作用于命题生成，抽取/大纲阶段仍由 deepseek_disable_thinking 控制。
-    deepseek_generation_disable_thinking: bool = False
+    deepseek_generation_disable_thinking: bool = True
     embedding_base_url: str = "https://api.openai.com/v1"
     embedding_api_key: str = ""
     embedding_model: str = "qwen3.7-text-embedding"

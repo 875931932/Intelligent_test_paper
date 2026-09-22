@@ -157,7 +157,7 @@ def test_json_client_disables_thinking_by_default():
     client = DeepSeekJsonClient(
         api_key="test-key",
         base_url="https://deepseek.invalid/v1",
-        model="mimo-v2.5-pro",
+        model="test-model",
         max_attempts=1,
         client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
@@ -184,7 +184,7 @@ def test_json_client_can_enable_thinking():
     client = DeepSeekJsonClient(
         api_key="test-key",
         base_url="https://deepseek.invalid/v1",
-        model="mimo-v2.5-pro",
+        model="test-model",
         max_attempts=1,
         disable_thinking=False,
         client=httpx.Client(transport=httpx.MockTransport(handler)),
