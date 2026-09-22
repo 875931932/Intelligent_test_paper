@@ -7,6 +7,7 @@ import { getErrorMessage } from '@/api/errors';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
 import { Modal, Badge, Spinner, ProgressPanel } from '@/components/ui';
+import { ExamRulesCard } from './ExamRulesCard';
 import type { FrameworkCandidate, CurrentFrameworkResponse, AssessmentAnchor, FrameworkExamPoint } from '@/types/api';
 
 type BuildState = 'idle' | 'building' | 'candidate' | 'done';
@@ -209,15 +210,21 @@ export default function FrameworkPage() {
       const data = await api.framework.getCurrent(courseId) as CurrentFrameworkResponse;
       if (data.payload) {
         hasContent = true;
+        // 考试规则在后端是顶层字段（payload 里叫 final_exam_rules），
+        // 这里显式挂到视图模型上，规则卡才拿得到
+        const withRules = {
+          ...(data.payload as unknown as FrameworkCandidate),
+          exam_rules: data.exam_rules,
+        };
         // 兼容后端两种返回：显式 published 字段，或旧版返回的 status='published'
         const isPublished = data.published || (data as unknown as { status?: string }).status === 'published';
         if (isPublished) {
-          setPublished(data.payload as unknown as FrameworkCandidate);
+          setPublished(withRules);
           setBuildState('done');
         } else {
           // 未确认草稿：恢复候选视图，教师可继续确认/驳回，避免重复构建浪费算力。
           // run_id 兜底取 framework_build_run_id，避免旧后端未映射别名导致确认按钮静默失效。
-          setCandidate(data.payload as unknown as FrameworkCandidate);
+          setCandidate(withRules);
           setRunId(data.run_id ?? (data as unknown as { framework_build_run_id?: string | null }).framework_build_run_id ?? null);
           setBuildState('candidate');
         }
@@ -246,6 +253,11 @@ export default function FrameworkPage() {
     loadPublished();
     return () => clearPolling();
   }, [loadPublished, clearPolling]);
+
+  // 保存考核规则后重新拉取，让规则卡与框架内容同步
+  const refreshCandidate = useCallback(() => {
+    void loadPublished();
+  }, [loadPublished]);
 
   const loadSyllabusOptions = useCallback(async () => {
     if (!courseId) return;
@@ -414,16 +426,18 @@ export default function FrameworkPage() {
       {/* Candidate */}
       {buildState === 'candidate' && candidate && (
         <CandidateView
+          courseId={courseId}
           candidate={candidate}
           rejecting={rejecting}
           onReject={handleReject}
           onOpenConfirm={() => setConfirmOpen(true)}
+          onRulesSaved={refreshCandidate}
         />
       )}
 
       {/* Published */}
       {buildState === 'done' && published && (
-        <PublishedView candidate={published} />
+        <PublishedView courseId={courseId} candidate={published} onRulesSaved={refreshCandidate} />
       )}
 
       {/* Idle */}
@@ -504,11 +518,13 @@ export default function FrameworkPage() {
 }
 
 // ─── Candidate View ───
-function CandidateView({ candidate, rejecting, onReject, onOpenConfirm }: {
+function CandidateView({ courseId, candidate, rejecting, onReject, onOpenConfirm, onRulesSaved }: {
+  courseId: string;
   candidate: FrameworkCandidate;
   rejecting: boolean;
   onReject: () => void;
   onOpenConfirm: () => void;
+  onRulesSaved: () => void;
 }) {
   const anchors = candidate.anchors || [];
   const points = candidate.exam_points || [];
@@ -550,6 +566,13 @@ function CandidateView({ candidate, rejecting, onReject, onOpenConfirm }: {
           </p>
         </details>
       )}
+
+      <ExamRulesCard
+        courseId={courseId}
+        rules={candidate.exam_rules}
+        anchors={anchors.map((a) => ({ key: a.key, title: a.title }))}
+        onSaved={onRulesSaved}
+      />
 
       <FrameworkBreakdown anchors={anchors} points={points} />
 
@@ -663,13 +686,21 @@ function FrameworkBreakdown({ anchors, points }: {
 
 // ─── Published View ───
 
-function PublishedView({ candidate }: { candidate: FrameworkCandidate }) {
+function PublishedView({ courseId, candidate, onRulesSaved }: { courseId: string; candidate: FrameworkCandidate; onRulesSaved: () => void }) {
   const anchors = candidate.anchors || [];
   const points = candidate.exam_points || [];
 
   return (
-    <div className="glass-card" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
-      <FrameworkBreakdown anchors={anchors} points={points} />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      <ExamRulesCard
+        courseId={courseId}
+        rules={candidate.exam_rules}
+        anchors={anchors.map((a) => ({ key: a.key, title: a.title }))}
+        onSaved={onRulesSaved}
+      />
+      <div className="glass-card" style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        <FrameworkBreakdown anchors={anchors} points={points} />
+      </div>
     </div>
   );
 }

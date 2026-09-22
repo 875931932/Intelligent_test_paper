@@ -21,6 +21,7 @@ from app.db.schema import (
     materials,
 )
 from app.domain.framework.exam_points import ExamPoint
+from app.domain.framework.exam_rules import normalize_exam_rules
 from app.domain.framework.models import FrameworkCandidate, FrameworkConfirmation
 from app.services.course_service import get_course
 
@@ -250,6 +251,44 @@ class DatabaseFrameworkRepository:
         self.session.commit()
         return version_id
 
+    def update_exam_rules(self, state: dict, exam_rules: dict) -> str:
+        """教师修改考核大纲的考试规则（题型比例 / 章节命题权重）。
+
+        写回当前版本（已发布优先，否则候选）的 payload。蓝图创建时优先读这里，
+        因此教师改完比例，下一次出卷立刻按新比例分配。
+        """
+        course_id = state["course_id"]
+        version_id = state.get("candidate_id") or state.get("current_version_id")
+        row = self.session.execute(
+            select(framework_versions).where(
+                framework_versions.c.course_id == course_id,
+                framework_versions.c.status == "published",
+            ).order_by(framework_versions.c.version_no.desc()).limit(1)
+        ).mappings().one_or_none()
+        if row is None:
+            row = self.session.execute(
+                select(framework_versions).where(
+                    framework_versions.c.course_id == course_id,
+                    framework_versions.c.id == version_id,
+                )
+            ).mappings().one_or_none()
+        if row is None:
+            raise FrameworkNotFoundError
+        payload = dict(row["payload"] or {})
+        anchor_keys = [
+            str(a.get("key"))
+            for a in (payload.get("anchors") or [])
+            if isinstance(a, dict) and a.get("key")
+        ]
+        payload["final_exam_rules"] = normalize_exam_rules(exam_rules, anchor_keys=anchor_keys)
+        self.session.execute(
+            update(framework_versions)
+            .where(framework_versions.c.id == row["id"], framework_versions.c.course_id == course_id)
+            .values(payload=payload)
+        )
+        self.session.commit()
+        return row["id"]
+
     def _replace_candidate_rows(self, course_id: str, version_id: str, candidate: FrameworkCandidate) -> None:
         for anchor in candidate.anchors:
             self.session.execute(
@@ -412,6 +451,7 @@ def get_current_framework(session: Session, *, course_id: str) -> dict:
         # 显式标记已发布，供前端区分“已发布 / 待确认草稿”
         result["published"] = True
         result["run_id"] = result.get("framework_build_run_id")
+        result["exam_rules"] = _exam_rules_of(result.get("payload"))
         return result
     # 无已发布版本时，返回最近一次未确认的候选框架作为草稿，
     # 教师刷新/重进页面仍能看到，避免重复构建浪费算力。
@@ -429,8 +469,28 @@ def get_current_framework(session: Session, *, course_id: str) -> dict:
             "id": draft["id"],
             "run_id": draft["framework_build_run_id"],
             "payload": draft["payload"],
+            # 考核大纲的考试规则（题型比例/章节权重），提到顶层供前端展示与修改
+            "exam_rules": _exam_rules_of(draft["payload"]),
         }
     raise FrameworkNotFoundError
+
+
+def _exam_rules_of(payload) -> dict:
+    """从框架 payload 取考试规则；缺失时返回空规则而不是 None，前端无需判空两种形态。
+
+    持久化的字段名是领域模型的 final_exam_rules，对外统一暴露为 exam_rules。
+    """
+    if isinstance(payload, dict):
+        rules = payload.get("final_exam_rules")
+        if isinstance(rules, dict):
+            return rules
+    return {
+        "exam_form": "",
+        "duration_minutes": None,
+        "total_score": None,
+        "question_type_ratios": [],
+        "chapter_weights": [],
+    }
 
 
 def _ready_blocks(session: Session, course_id: str, material_version_id: str, expected_type: str) -> list[str]:

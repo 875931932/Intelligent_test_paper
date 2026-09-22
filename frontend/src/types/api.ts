@@ -135,6 +135,8 @@ export interface FrameworkCandidate {
   teaching_topics: any[];
   conflicts: FrameworkConflict[];
   final_exam_rules: Record<string, unknown>;
+  /** 考核大纲的考试规则，由 /framework-versions/current 顶层挂载（payload 里叫 final_exam_rules） */
+  exam_rules?: ExamRules;
 }
 
 export interface FrameworkConfirmation {
@@ -185,6 +187,27 @@ export interface CurrentFrameworkResponse {
   /** 草稿对应的构建 run id，用于继续确认/驳回 */
   run_id?: string;
   payload?: Record<string, unknown>;
+  /** 考核大纲抽取出的考试规则（题型比例 / 章节命题权重），可查看可修改 */
+  exam_rules?: ExamRules;
+}
+
+/** 考核大纲里的结构化考试规则 */
+export interface ExamRules {
+  exam_form?: string;
+  duration_minutes?: number | null;
+  total_score?: number | null;
+  question_type_ratios: ExamRuleTypeRatio[];
+  chapter_weights: ExamRuleChapterWeight[];
+}
+
+export interface ExamRuleTypeRatio {
+  question_type: string;
+  ratio: number;
+}
+
+export interface ExamRuleChapterWeight {
+  anchor_key: string;
+  weight: number;
 }
 
 // ── Knowledge ──

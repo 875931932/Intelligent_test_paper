@@ -1,4 +1,5 @@
 """导出渲染：题号去重、答案规范化、分节与缺答案标注。"""
+import app.services.paper_version_service as pvs
 from app.services.paper_version_service import (
     _answer_text,
     _difficulty_label,
@@ -8,7 +9,16 @@ from app.services.paper_version_service import (
     _section_groups,
     _sections_table_html,
     _strip_stem_noise,
+    export_answer_key_html,
+    export_student_paper_html,
 )
+
+
+class _FakeSession:
+    """只支撑 _paper_meta 需要的 scalar()；其余 DB 交互都在测试前被 monkeypatch 掉。"""
+
+    def scalar(self, statement):
+        return "大模型调优与部署技术"
 
 
 def test_stem_own_numbering_and_score_prefix_stripped():
@@ -103,3 +113,47 @@ def test_render_question_escapes_html_in_stem():
     )
     assert "<script>" not in html
     assert "&lt;script&gt;" in html
+
+
+_SAMPLE_PV = {
+    "id": "pv1",
+    "exam_project_id": "p1",
+    "project_name": "第一学期",
+    "version_no": 6,
+    "total_score": 4,
+    "status": "candidate",
+    "questions": [
+        {"item_index": 1, "question_type": "single_choice", "stem": "1. 题干一", "answer": "A", "score": 2,
+         "options": ["甲", "乙", "丙", "丁"], "difficulty": "medium"},
+        {"item_index": 2, "question_type": "true_false", "stem": "2. 题干二", "answer": False, "score": 2,
+         "options": [], "difficulty": "medium"},
+    ],
+}
+
+
+def test_export_end_to_end_builds_formal_document(monkeypatch):
+    """端到端走导出入口：曾经因 _paper_meta 引用不存在的 courses 表而 500。"""
+    monkeypatch.setattr(pvs, "get_paper_version", lambda *a, **k: dict(_SAMPLE_PV))
+    html = export_student_paper_html(_FakeSession(), "pv1", course_id="c1")
+    assert "考试卷" in html
+    assert "大模型调优与部署技术" in html
+    assert '<span class="q-no">1.</span> 题干一' in html
+    assert "<th>题次</th>" in html and "<th>评卷人</th>" in html
+    assert "一、单选题" in html and "二、判断题" in html
+    # 学生卷不含答案
+    assert "【答案】" not in html
+
+
+def test_export_answer_key_marks_answers_and_missing(monkeypatch):
+    pv = dict(_SAMPLE_PV)
+    pv["questions"] = _SAMPLE_PV["questions"] + [
+        {"item_index": 3, "question_type": "short_answer", "stem": "简述题", "answer": "", "score": 5,
+         "options": [], "difficulty": "medium"},
+    ]
+    monkeypatch.setattr(pvs, "get_paper_version", lambda *a, **k: pv)
+    html = export_answer_key_html(_FakeSession(), "pv1", course_id="c1")
+    assert "答卷（含答案）" in html
+    assert "装订线" in html
+    assert '<span class="ans-label">【答案】</span>错误' in html
+    assert "【缺答案·需人工补充】" in html
+    assert "1 题缺答案" in html

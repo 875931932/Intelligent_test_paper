@@ -18,6 +18,7 @@ from app.db.schema import (
     paper_versions,
     plan_items,
 )
+from app.services.generation_service import answer_option_keys
 
 
 class PaperVersionError(Exception):
@@ -682,10 +683,9 @@ def _validate_teacher_item(
         opts = options or []
         if len(opts) < 2:
             raise PaperVersionError("多选题至少需要两个选项")
-        keys = {chr(65 + i) for i in range(len(opts))}
-        picked = {c for c in text.upper() if c.isalpha()}
-        if not picked or not picked.issubset(keys):
-            raise PaperVersionError("多选题答案必须是选项字母（如 AB），且至少选中一项")
+        picked = answer_option_keys(answer, opts)
+        if len(picked) < 2:
+            raise PaperVersionError("多选题答案必须对应两个及以上选项（写选项字母如 AB，或选项原文）")
 
 
 def create_paper_item(
@@ -1137,13 +1137,9 @@ def _paper_meta(session: Session, *, course_id: str, pv: dict) -> dict:
     """导出头部能拿到的真实元数据：课程名（其余字段留空由教师填写）。"""
     course_name = ""
     try:
-        from app.db.schema import courses
+        from app.db.schema import Course
 
-        row = session.execute(
-            select(courses.c.name).where(courses.c.id == course_id)
-        ).first()
-        if row is not None:
-            course_name = row._mapping.get("name") or ""
+        course_name = session.scalar(select(Course.name).where(Course.id == course_id)) or ""
     except SQLAlchemyError:
         course_name = ""
     return {
@@ -1258,10 +1254,21 @@ def _sections_table_html(groups: list[dict], with_reviewer: bool = True) -> str:
 def _answer_grid_html(questions: list[dict]) -> str:
     """客观题答案速查表（题号横向排列，与命题范本的评分表一致）。"""
     cells = "".join(f"<th>{q['item_index']}</th>" for q in questions)
-    answers = "".join(
-        f"<td>{_esc(_answer_text(q.get('answer')) or '—')}</td>" for q in questions
-    )
+    answers = "".join(f"<td>{_esc(_answer_display(q) or '—')}</td>" for q in questions)
     return f'<table class="answer-grid"><tr><th>题号</th>{cells}</tr><tr><th>答案</th>{answers}</tr></table>'
+
+
+def _answer_keys(q: dict) -> set[str]:
+    """答案对应的选项字母。兼容 'B' / 'ABD' 与选项原文两种形态（模型两者都会给）。"""
+    return answer_option_keys(q.get("answer"), q.get("options") or [])
+
+
+def _answer_display(q: dict) -> str:
+    """给答案速查表用的紧凑答案：能解析成字母就显示字母，否则显示原文。"""
+    keys = _answer_keys(q)
+    if keys:
+        return "".join(sorted(keys))
+    return _answer_text(q.get("answer"))
 
 
 def _render_question_html(q: dict, *, with_answer: bool) -> str:
@@ -1269,7 +1276,7 @@ def _render_question_html(q: dict, *, with_answer: bool) -> str:
     stem = _strip_stem_noise(str(q.get("stem", "")))
     options = q.get("options") or []
     answer_text = _answer_text(q.get("answer"))
-    keys = set(_answer_text(q.get("answer")).upper().replace(" ", ""))
+    keys = _answer_keys(q)
 
     parts = [f'<div class="q-stem"><span class="q-no">{q.get("item_index", 0)}.</span> {_esc(stem)}</div>']
 

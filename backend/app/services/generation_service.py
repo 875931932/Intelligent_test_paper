@@ -11,6 +11,43 @@ def _compact_text(value) -> str:
     return re.sub(r"[^\w\u4e00-\u9fff]", "", str(value or "")).lower()
 
 
+def answer_option_keys(answer, options) -> set[str]:
+    """把答案解析成选项字母集合，同时兼容三种实际形态：
+
+    1. 字母形式 —— 模型经常无视"答案须与选项完全一致"的约定，直接返回 'B' / 'ABD'；
+    2. 选项原文 —— schema 规定的形态（generation_graph 的 _answer_hits_boundary 按此判分）；
+    3. 多个原文并列 —— 教师手写多选答案时常见的 '甲、丙'。
+
+    只有整串都是选项字母时才按字母解析，否则按原文匹配，避免把 'LoRA' 里的
+    L/O/R/A 误当成选项字母；两者都不命中时返回空集合，由调用方判为 blocker。
+    """
+    text = str(answer or "").strip()
+    if not text:
+        return set()
+    opts = [str(o) for o in (options or [])]
+    keys = {chr(65 + i) for i in range(len(opts))}
+
+    def resolve_one(part: str) -> set[str]:
+        part = part.strip()
+        if not part:
+            return set()
+        upper = part.upper()
+        if all(c in keys for c in upper):
+            return set(upper)
+        return {chr(65 + i) for i, o in enumerate(opts) if o == part}
+
+    compact = re.sub(r"[,，、；;\s]+", "", text.upper())
+    if compact and all(c in keys for c in compact):
+        return set(compact)
+    parts = [p for p in re.split(r"[,，、；;]+", text) if p.strip()]
+    if len(parts) > 1:
+        resolved: set[str] = set()
+        for part in parts:
+            resolved |= resolve_one(part)
+        return resolved
+    return resolve_one(text)
+
+
 def validate_generated_question(question: dict, atom_text: str = "") -> dict:
     qtype = question.get("question_type")
     stem = str(question.get("stem", "")).strip()
@@ -31,17 +68,24 @@ def validate_generated_question(question: dict, atom_text: str = "") -> dict:
                 "code": "difficulty_mismatch",
                 "message": "低难度题目题干包含高级认知要求关键词，与指定难度不匹配",
             }
-    if qtype == "single_choice" and (len(question.get("options", [])) != 4 or not question.get("answer")):
-        return {"status": "blocker", "code": "single_choice_schema", "message": "单选题必须有四个选项和答案"}
+    if qtype == "single_choice":
+        opts = question.get("options") or []
+        answer_raw = question.get("answer")
+        picked = answer_option_keys(answer_raw, opts)
+        if len(opts) != 4 or not answer_raw:
+            return {"status": "blocker", "code": "single_choice_schema", "message": "单选题必须有四个选项和答案"}
+        # 只查"有答案"不够：模型会给单选题返回 "AB"，于是单选题里出现多个正确项
+        if len(picked) != 1:
+            return {"status": "blocker", "code": "single_choice_answer",
+                    "message": "单选题答案必须唯一对应一个选项（写选项字母或选项原文），不能多选"}
     if qtype == "multiple_choice":
         opts = question.get("options") or []
         answer_raw = question.get("answer")
-        picked = {c for c in str(answer_raw or "").upper() if c.isalpha()}
-        keys = {chr(65 + i) for i in range(len(opts))}
+        picked = answer_option_keys(answer_raw, opts)
         if len(opts) < 4 or not answer_raw:
             return {"status": "blocker", "code": "multiple_choice_schema", "message": "多选题必须有至少四个选项和答案"}
-        if len(picked) < 2 or not picked.issubset(keys):
-            return {"status": "blocker", "code": "multiple_choice_answer", "message": "多选题答案必须是两个及以上选项字母（如 ABD）"}
+        if len(picked) < 2:
+            return {"status": "blocker", "code": "multiple_choice_answer", "message": "多选题答案必须对应两个及以上选项（写选项字母或选项原文）"}
     if qtype == "true_false" and not isinstance(question.get("answer"), bool):
         return {"status": "blocker", "code": "true_false_schema", "message": "判断题答案必须为布尔值"}
     if qtype in {"fill_blank", "short_answer", "comprehensive", "essay"} and not str(question.get("answer", "")).strip():

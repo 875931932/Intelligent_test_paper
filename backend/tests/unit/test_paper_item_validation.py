@@ -1,8 +1,8 @@
 """教师手动新增题目的最小约束：题干与答案必填。"""
 import pytest
 
+from app.services.generation_service import answer_option_keys, validate_generated_question
 from app.services.paper_version_service import PaperVersionError, _validate_teacher_item
-from app.services.generation_service import validate_generated_question
 
 
 def _item(**over):
@@ -57,6 +57,44 @@ def test_generated_multiple_choice_requires_answer_subset():
         "options": ["LoRA", "QLoRA", "SFT", "Prompt"], "answer": "A",
     })
     assert single["status"] == "blocker" and single["code"] == "multiple_choice_answer"
+
+
+def test_answer_option_keys_accepts_letters_and_option_text():
+    """模型有时返回字母，有时按 schema 约定返回选项原文，两种都要能解析。"""
+    opts = ["只调低秩矩阵", "更新全部权重", "仅用于推理", "改变预训练权重"]
+    assert answer_option_keys("B", opts) == {"B"}
+    assert answer_option_keys("ABD", opts) == {"A", "B", "D"}
+    assert answer_option_keys("A,B", opts) == {"A", "B"}
+    assert answer_option_keys("更新全部权重", opts) == {"B"}
+    # 非纯字母的串不能按字母解析，否则 'LoRA' 会误命中 L/O/R/A
+    assert answer_option_keys("LoRA 微调", opts) == set()
+    assert answer_option_keys("", opts) == set()
+    assert answer_option_keys("Z", opts) == set()
+
+
+def test_teacher_item_multiple_choice_accepts_letter_or_text_answer():
+    opts = ["甲", "乙", "丙", "丁"]
+    _validate_teacher_item(**_item(question_type="multiple_choice", options=opts, answer="AB"))
+    _validate_teacher_item(**_item(question_type="multiple_choice", options=opts, answer="甲、丙"))
+    with pytest.raises(PaperVersionError, match="两个及以上"):
+        _validate_teacher_item(**_item(question_type="multiple_choice", options=opts, answer="A"))
+
+
+def test_generated_single_choice_answer_must_be_exactly_one_option():
+    """模型曾给单选题返回 "AB"，导致单选题里出现多个正确项。"""
+    ok = validate_generated_question({
+        "question_type": "single_choice", "stem": "下列关于 LoRA 的说法正确的是",
+        "options": ["只调低秩矩阵", "更新全部权重", "仅用于推理", "改变预训练权重"], "answer": "B",
+    })
+    assert ok["status"] == "pass"
+
+    for bad_answer in ("AB", "", "E", "B、C"):
+        result = validate_generated_question({
+            "question_type": "single_choice", "stem": "下列关于 LoRA 的说法正确的是",
+            "options": ["只调低秩矩阵", "更新全部权重", "仅用于推理", "改变预训练权重"], "answer": bad_answer,
+        })
+        assert result["status"] == "blocker", bad_answer
+        assert result["code"] in {"single_choice_schema", "single_choice_answer"}, bad_answer
 
 
 def test_generated_essay_requires_answer():

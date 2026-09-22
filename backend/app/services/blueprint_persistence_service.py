@@ -18,6 +18,7 @@ from app.db.schema import (
     content_domains,
     exam_points,
     exam_projects,
+    framework_versions,
     knowledge_cards,
     plan_items,
 )
@@ -26,6 +27,11 @@ from app.domain.blueprint.models import (
     BlueprintRequest,
     CardSemanticProfile,
     UnitCoverage,
+)
+from app.domain.framework.exam_rules import (
+    canonical_question_type,
+    rules_have_type_ratios,
+    type_rules_from_ratios,
 )
 from app.services.blueprint_service import (
     BlueprintValidationError,
@@ -55,40 +61,60 @@ def _default_type_rules(
     course_id: str,
     framework_version_id: str,
 ) -> dict:
-    """从已发布命题框架的 exam_points 收集允许题型，生成默认题型分布。
+    """未下发 type_rules 时推导默认题型分布。
 
-    framework_version_id 下无任何已确认 exam_points 或允许题型为空时，
-    回退到全部默认题型；只保留框架允许的题型（若存在）。
+    优先采用考核大纲声明的题型比例（框架 payload 里的 exam_rules），那才是考纲
+    的硬约束；缺失或无法闭合到总分时才回退内置默认分布。
+    结果受考点"允许题型"约束：中文题型名也做归一化——模型在 allowed_question_types
+    里写的是"单选题"，早先直接与英文字段名比较，过滤几乎永远落空。
     """
+    allowed: set[str] = set()
     try:
         rows = session.execute(
-            select(
-                exam_points.c.anchor_key,
-                exam_points.c.allowed_question_types,
-            ).where(
+            select(exam_points.c.allowed_question_types).where(
                 exam_points.c.framework_version_id == framework_version_id,
                 exam_points.c.course_id == course_id,
                 exam_points.c.status == "confirmed",
             )
         ).all()
+        for r in rows:
+            raw = r._mapping.get("allowed_question_types")
+            if isinstance(raw, list):
+                for entry in raw:
+                    canonical = canonical_question_type(entry)
+                    if canonical:
+                        allowed.add(canonical)
     except SQLAlchemyError:
-        return dict(_DEFAULT_TYPE_RULES)
+        allowed = set()
 
-    allowed: set[str] = set()
-    for r in rows:
-        raw = r._mapping.get("allowed_question_types")
-        if isinstance(raw, list):
-            allowed.update(str(t) for t in raw if isinstance(t, str) and t)
+    def restrict(rules: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
+        if not allowed:
+            return rules
+        kept = {t: dict(rule) for t, rule in rules.items() if t in allowed}
+        return kept or dict(rules)
 
-    if not allowed:
-        return dict(_DEFAULT_TYPE_RULES)
+    payload = None
+    try:
+        payload = session.execute(
+            select(framework_versions.c.payload).where(
+                framework_versions.c.id == framework_version_id,
+                framework_versions.c.course_id == course_id,
+            )
+        ).scalar_one_or_none()
+    except SQLAlchemyError:
+        payload = None
 
-    derived = {
-        t: dict(rule)
-        for t, rule in _DEFAULT_TYPE_RULES.items()
-        if t in allowed
-    }
-    return derived or dict(_DEFAULT_TYPE_RULES)
+    if isinstance(payload, dict):
+        # payload 里字段名是领域模型的 final_exam_rules
+        exam_rules = payload.get("final_exam_rules")
+        if rules_have_type_ratios(exam_rules):
+            from_syllabus = type_rules_from_ratios(
+                exam_rules["question_type_ratios"], total_score=100
+            )
+            if from_syllabus:
+                return restrict(from_syllabus)
+
+    return restrict(dict(_DEFAULT_TYPE_RULES))
 
 
 def _nid() -> str:

@@ -689,7 +689,11 @@ export default function PipelinePanel({
   const handleCreateBlueprint = async () => {
     try {
       setBpCreating(true);
-      const data = await api.knowledge.getPublished(courseId);
+      // 同时取知识目录与当前框架：后者带考核大纲抽取出的考试规则（题型比例/章节权重）
+      const [data, fw] = await Promise.all([
+        api.knowledge.getPublished(courseId),
+        api.framework.getCurrent(courseId).catch(() => null),
+      ]);
       if (data?.published === false || !data?.units || data.units.length === 0) {
         addToast('请先发布知识目录', 'error');
         setBpCreating(false);
@@ -703,15 +707,31 @@ export default function PipelinePanel({
         card_ids: u.card_ids || [],
       }));
 
-      const chapter_weights: Record<string, number> = {};
-      (data.exam_points || []).forEach((p) => {
-        const key = p.anchor_key || p.id;
-        // 同一章（anchor_key）下可能有多个考点，权重需累加，而不是后者覆盖前者，
-        // 否则 chapter_weights 合计远小于 100，蓝图引擎的章节权重校验会失败。
-        if (key && p.weight_value != null) {
-          chapter_weights[key] = (chapter_weights[key] ?? 0) + p.weight_value;
-        }
+      // 章节权重：优先用考核大纲声明的命题权重（框架 payload 里的 exam_rules），
+      // 那才是考纲的硬约束；考纲没声明时才回退到考点权重累加（模型自报）。
+      // 未声明的锚点补 0，保证章权重覆盖全部考核单元——蓝图引擎要求一个都不能少。
+      const unitAnchors = new Set(units.map((u) => u.anchor_key).filter(Boolean));
+      const declared: Record<string, number> = {};
+      (fw?.exam_rules?.chapter_weights || []).forEach((c) => {
+        if (c.anchor_key) declared[c.anchor_key] = Number(c.weight) || 0;
       });
+      let chapter_weights: Record<string, number> = {};
+      const declaredKeys = Object.keys(declared);
+      if (declaredKeys.length > 0 && declaredKeys.some((k) => declared[k] > 0)) {
+        unitAnchors.forEach((a) => {
+          chapter_weights[a] = declared[a] ?? 0;
+        });
+      }
+      if (Object.keys(chapter_weights).length === 0) {
+        (data.exam_points || []).forEach((p) => {
+          const key = p.anchor_key || p.id;
+          // 同一章（anchor_key）下可能有多个考点，权重需累加，而不是后者覆盖前者，
+          // 否则 chapter_weights 合计远小于 100，蓝图引擎的章节权重校验会失败。
+          if (key && p.weight_value != null) {
+            chapter_weights[key] = (chapter_weights[key] ?? 0) + p.weight_value;
+          }
+        });
+      }
 
       const bp = await api.examProjects.createBlueprint(courseId, sp.id, {
         framework_version_id: data.framework_version_id,

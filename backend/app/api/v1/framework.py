@@ -135,6 +135,8 @@ def get_framework_candidate(course_id: str, run_id: str, session: Session = Depe
         payload = row.pop("payload", {})
         if isinstance(payload, dict):
             row.update(payload)
+        # 考核大纲的考试规则统一以 exam_rules 暴露（payload 里字段名是 final_exam_rules）
+        row["exam_rules"] = framework_service._exam_rules_of(payload)
         return row
     except framework_service.FrameworkNotFoundError:
         raise _not_found()
@@ -176,3 +178,25 @@ def get_current_framework(course_id: str, session: Session = Depends(get_session
         return framework_service.get_current_framework(session, course_id=course_id)
     except framework_service.FrameworkNotFoundError:
         return {"published": False, "detail": "no published framework version"}
+
+
+class ExamRulesUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    exam_form: str = ""
+    duration_minutes: int | None = None
+    total_score: float | None = None
+    question_type_ratios: list[dict] = []
+    chapter_weights: list[dict] = []
+
+
+@router.patch("/framework-versions/current/rules")
+def update_exam_rules(course_id: str, body: ExamRulesUpdate, session: Session = Depends(get_session)) -> dict:
+    """教师修改考核大纲的考试规则：题型比例与章节命题权重。"""
+    repo = framework_service.DatabaseFrameworkRepository(session)
+    try:
+        version_id = repo.update_exam_rules({"course_id": course_id}, body.model_dump())
+    except framework_service.FrameworkNotFoundError:
+        raise _not_found()
+    current = framework_service.get_current_framework(session, course_id=course_id)
+    return {"status": "ok", "framework_version_id": version_id, "exam_rules": current["exam_rules"]}

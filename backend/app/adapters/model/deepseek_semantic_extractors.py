@@ -18,6 +18,7 @@ from pydantic import (
 
 from app.adapters.model.deepseek_gateway import DeepSeekJsonClient, DeepSeekModelError
 from app.domain.framework.exam_points import ExamPoint, OperationalDetailPolicy
+from app.domain.framework.exam_rules import normalize_exam_rules
 from app.domain.framework.models import AssessmentAnchor, AssessmentOutline, TeachingTopic
 from app.domain.knowledge.models import AssessmentUnitDraft
 from app.domain.knowledge.relevance import (
@@ -183,6 +184,13 @@ def _normalize_assessment_outline(raw: dict[str, Any]) -> dict[str, Any]:
                         str(anchor.get("key") or anchor.get("anchor_key")),
                         anchor.get("exam_weight") or 0.0,
                     )
+    # 考试规则（题型比例 / 章节命题权重）确定性归一：题型名映射到英文枚举、
+    # 剔除未知题型与章节、比例归一到 100。考纲写明"选择题占 20%"这类硬约束，
+    # 必须原样带到蓝图，否则出卷比例与考纲声明脱节。
+    normalized["final_exam_rules"] = normalize_exam_rules(
+        normalized.get("final_exam_rules"),
+        anchor_keys=[str(a.get("key")) for a in anchors if isinstance(a, dict) and a.get("key")],
+    )
     return normalized
 
 
@@ -688,6 +696,15 @@ class DeepSeekSyllabusExtractor:
                 "标 directly_assessable——这些操作细节本身就是可考的知识点，可直接当 DIRECT 证据考；"
                 "只有纯概念、原理、比较、设计、方案的考核（考核要求是说明/比较/设计/选择/判断类型，"
                 "不要求写出命令或代码）才标 supporting_only。安装环境依赖等纯操作外壳禁止标记 forbidden。"
+                "final_exam_rules 必须原样抽取考核大纲里的考试规则，一个字段都别省："
+                "exam_form（考试形式原文，如『闭卷笔试』）、duration_minutes（考试时长分钟数的整数）、"
+                "total_score（试卷满分，数字）、"
+                "question_type_ratios（题型比例数组，每项 {\"question_type\": ..., \"ratio\": ...}；"
+                "question_type 只能取 single_choice/multiple_choice/true_false/fill_blank/"
+                "short_answer/comprehensive/essay/calculation，ratio 为该题型分值占比，各项合计 100）、"
+                "chapter_weights（命题权重数组，每项 {\"anchor_key\": ..., \"weight\": ...}；"
+                "anchor_key 必须与你输出的某个 anchor 的 key 完全一致，weight 为该章占比，各项合计 100）。"
+                "考纲没写明的字段填 null 或空数组，不要编造。"
                 "weight_source 仅允许 "
                 "assessment_syllabus 或 inherited_group。"
             ),

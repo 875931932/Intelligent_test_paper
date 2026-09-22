@@ -51,18 +51,45 @@ function normalizeAnswer(answer: unknown): string {
   return String(answer);
 }
 
-/** 多选答案在选项行上切换；单选直接替换。兼容 "AB" / "A,B" / "A、B" 等写法 */
-function toggleAnswerKey(answer: string | boolean, key: string, multi: boolean): string {
-  const cur = normalizeAnswer(answer);
-  if (!multi) return key;
-  const set = new Set(cur.toUpperCase().replace(/[^A-Z]/g, '').split(''));
-  if (set.has(key)) set.delete(key);
-  else set.add(key);
-  return [...set].sort().join('');
+/**
+ * 答案解析成选项字母，与后端 answer_option_keys 同口径：
+ * 模型有时返回 'B' / 'ABD'，有时按 schema 约定返回选项原文，教师手写时还会写成
+ * '甲、丙' 这种并列原文。只有整串都是选项字母时才按字母解析，否则按原文匹配，
+ * 避免把 'LoRA' 里的 L/O/R/A 误当成选项字母。
+ */
+function optionKeysOf(answer: unknown, optionTexts: string[]): Set<string> {
+  const text = normalizeAnswer(answer);
+  if (!text) return new Set();
+  const keys = optionTexts.map((_, i) => String.fromCharCode(65 + i));
+
+  const resolveOne = (part: string): Set<string> => {
+    const upper = part.toUpperCase();
+    if (upper && [...upper].every((c) => keys.includes(c))) return new Set(upper);
+    const exact = new Set<string>();
+    optionTexts.forEach((t, i) => {
+      if (t === part) exact.add(keys[i]);
+    });
+    return exact;
+  };
+
+  const compact = text.toUpperCase().replace(/[,，、；;\s]+/g, '');
+  if (compact && [...compact].every((c) => keys.includes(c))) return new Set(compact);
+  const parts = text.split(/[,，、；;]+/).filter((p) => p.trim());
+  if (parts.length > 1) {
+    const resolved = new Set<string>();
+    parts.forEach((p) => resolveOne(p.trim()).forEach((k) => resolved.add(k)));
+    return resolved;
+  }
+  return resolveOne(text);
 }
 
-function answerKeys(answer: string | boolean): Set<string> {
-  return new Set(normalizeAnswer(answer).toUpperCase().replace(/[^A-Z]/g, '').split(''));
+/** 在已解析的选项字母上切换（多选累加，单选替换） */
+function toggleAnswerKey(keys: Set<string>, key: string, multi: boolean): string {
+  if (!multi) return key;
+  const next = new Set(keys);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  return [...next].sort().join('');
 }
 
 // ─── 编辑草稿 ───
@@ -205,11 +232,11 @@ const QuestionEditor = forwardRef<QuestionEditorHandle, {
                 <input className="input-field" style={{ flex: 1 }} value={o.text} onChange={(e) => patch({ options: d.options.map((x, i) => (i === oi ? { ...x, text: e.target.value } : x)) })} />
                 <Button
                   variant="ghost" size="sm"
-                  onClick={() => patch({ answer: toggleAnswerKey(d.answer, o.key, multi) })}
-                  style={answerKeys(d.answer).has(o.key) ? { color: 'var(--success)' } : undefined}
+                  onClick={() => patch({ answer: toggleAnswerKey(optionKeysOf(d.answer, d.options.map((o) => o.text)), o.key, multi) })}
+                  style={optionKeysOf(d.answer, d.options.map((o) => o.text)).has(o.key) ? { color: 'var(--success)' } : undefined}
                   title={multi ? '切换选中' : '设为答案'}
                 >
-                  <Check size={14} /> {answerKeys(d.answer).has(o.key) ? '是答案' : '设为答案'}
+                  <Check size={14} /> {optionKeysOf(d.answer, d.options.map((o) => o.text)).has(o.key) ? '是答案' : '设为答案'}
                 </Button>
                 <Button variant="ghost" size="sm" onClick={() => patch({ options: d.options.filter((_, i) => i !== oi) })} icon={<Trash2 size={14} />} />
               </div>
@@ -422,9 +449,9 @@ function QuestionDetail({
   onNext: () => void;
 }) {
   const flagged = item.needs_review || !!item.needs_review_reason;
-  const keys = answerKeys(item.answer);
-  const answerText = normalizeAnswer(item.answer);
   const opts = optionsToEntries(item.options);
+  const keys = optionKeysOf(item.answer, opts.map((o) => o.text));
+  const answerText = normalizeAnswer(item.answer);
 
   return (
     <div
