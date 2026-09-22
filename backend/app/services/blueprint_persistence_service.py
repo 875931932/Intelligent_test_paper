@@ -55,6 +55,52 @@ _DEFAULT_TYPE_RULES: dict[str, dict[str, int]] = {
 }
 
 
+def _framework_payload(
+    session: Session,
+    *,
+    course_id: str,
+    framework_version_id: str = "",
+) -> dict | None:
+    """取框架 payload，优先指定版本；该版本没有题型比例时回退到当前已发布版本。
+
+    知识目录发布时会 pin 住一个 framework_version_id。教师之后重建框架（重新解析
+    考纲、拿到题型比例），已发布的知识目录仍指向旧版本——若不回退，蓝图就会拿旧
+    版本的 payload 推导题型分布，与命题框架页显示的考核规则对不上。
+    """
+    def load(version_id: str) -> dict | None:
+        try:
+            payload = session.execute(
+                select(framework_versions.c.payload).where(
+                    framework_versions.c.id == version_id,
+                    framework_versions.c.course_id == course_id,
+                )
+            ).scalar_one_or_none()
+        except SQLAlchemyError:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    if framework_version_id:
+        payload = load(framework_version_id)
+        if payload is not None and rules_have_type_ratios(payload.get("final_exam_rules")):
+            return payload
+
+    try:
+        published = session.execute(
+            select(framework_versions.c.payload)
+            .where(
+                framework_versions.c.course_id == course_id,
+                framework_versions.c.status == "published",
+            )
+            .order_by(framework_versions.c.version_no.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+    except SQLAlchemyError:
+        published = None
+    if isinstance(published, dict):
+        return published
+    return load(framework_version_id) if framework_version_id else None
+
+
 def _default_type_rules(
     session: Session,
     *,
@@ -93,18 +139,10 @@ def _default_type_rules(
         kept = {t: dict(rule) for t, rule in rules.items() if t in allowed}
         return kept or dict(rules)
 
-    payload = None
-    try:
-        payload = session.execute(
-            select(framework_versions.c.payload).where(
-                framework_versions.c.id == framework_version_id,
-                framework_versions.c.course_id == course_id,
-            )
-        ).scalar_one_or_none()
-    except SQLAlchemyError:
-        payload = None
-
-    if isinstance(payload, dict):
+    payload = _framework_payload(
+        session, course_id=course_id, framework_version_id=framework_version_id
+    )
+    if payload is not None:
         # payload 里字段名是领域模型的 final_exam_rules
         exam_rules = payload.get("final_exam_rules")
         if rules_have_type_ratios(exam_rules):

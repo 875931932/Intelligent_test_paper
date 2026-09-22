@@ -11,7 +11,7 @@ import { Badge, ProgressPanel, type ProgressStatus } from '@/components/ui';
 import { useNameMaps, type NameMaps } from '@/hooks/useNameMaps';
 import { clabel, dlabel, qlabel } from '@/lib/examDisplay';
 import type { ContractSnapshot } from '@/api/domains/examProjects';
-import type { ExamProject, PlanItem, TaskRun } from '@/types/api';
+import type { ExamProject, ExamRules, PlanItem, TaskRun } from '@/types/api';
 
 // ─── Stage pipeline ───
 // 流水线只负责「出题」：蓝图 → 合同 → 生成。审核/编辑/定稿/导出属于同一页面
@@ -143,13 +143,47 @@ function StageHeading({ title, right }: { title: string; right?: ReactNode }) {
   );
 }
 
+/**
+ * 蓝图题型分布与考核规则的比例差异（按分值，容差 1 分）。
+ * 蓝图可能在考核规则解析出来之前创建，或按默认分布生成——这时要能看出来并重建。
+ */
+function findTypeRatioMismatch(
+  planItems: PlanItem[],
+  rules: ExamRules | null,
+): Array<{ question_type: string; expected: number; actual: number }> {
+  const ratios = rules?.question_type_ratios ?? [];
+  if (ratios.length === 0 || planItems.length === 0) return [];
+  const total = planItems.reduce((s, i) => s + (i.score || 0), 0);
+  if (total <= 0) return [];
+  const actual = new Map<string, number>();
+  planItems.forEach((i) => {
+    actual.set(i.question_type, (actual.get(i.question_type) || 0) + (i.score || 0));
+  });
+  const out: Array<{ question_type: string; expected: number; actual: number }> = [];
+  ratios.forEach((r) => {
+    const expected = (Number(r.ratio) || 0) / 100 * total;
+    const got = actual.get(r.question_type) || 0;
+    if (Math.abs(got - expected) > 1) {
+      out.push({ question_type: r.question_type, expected, actual: got });
+    }
+  });
+  // 蓝图里存在、但考纲比例里没有的题型同样算不一致
+  actual.forEach((score, t) => {
+    if (!ratios.some((r) => r.question_type === t) && score > 1) {
+      out.push({ question_type: t, expected: 0, actual: score });
+    }
+  });
+  return out;
+}
+
 function renderBlueprint({
-  sp, setStep, bpCreating, handleCreateBlueprint, loadPlanItems, planItems, maps,
+  sp, setStep, bpCreating, handleCreateBlueprint, loadPlanItems, planItems, maps, examRules,
 }: {
   sp: ExamProject; setStep: (s: StageKey) => void;
   bpCreating: boolean; handleCreateBlueprint: () => Promise<void>;
   loadPlanItems: (p: ExamProject) => void; planItems: PlanItem[];
   maps: NameMaps;
+  examRules: ExamRules | null;
 }) {
   if (sp.active_blueprint_version_id) {
     const totalScore = planItems.reduce((s, i) => s + (i.score || 0), 0);
@@ -163,12 +197,35 @@ function renderBlueprint({
     });
     const typeDist = [...typeAcc.entries()];
     const chapterDist = [...chapterAcc.entries()];
+    const mismatch = findTypeRatioMismatch(planItems, examRules);
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
         <StageHeading
           title="蓝图规划"
           right={<Button variant="secondary" size="sm" onClick={() => loadPlanItems(sp)} icon={<RefreshCw size={14} />}>刷新</Button>}
         />
+        {mismatch.length > 0 && (
+          <div style={{
+            padding: '12px 14px', borderRadius: 10, fontSize: '0.8rem', lineHeight: 1.7,
+            background: 'var(--warning-subtle)', border: '1px solid rgba(255,149,0,0.3)',
+          }}>
+            <div style={{ fontWeight: 600, color: 'var(--warning)', marginBottom: '4px' }}>
+              这份蓝图的题型比例与「考核规则」不一致
+            </div>
+            <div style={{ color: 'var(--text-secondary)' }}>
+              {mismatch.map((m) => `${qlabel(m.question_type)} 考纲 ${m.expected.toFixed(0)} 分 / 蓝图 ${m.actual.toFixed(0)} 分`).join('；')}
+              。通常是蓝图建在考核规则解析出来之前，或当时按默认分布生成。
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '10px', flexWrap: 'wrap' }}>
+              <Button size="sm" loading={bpCreating} onClick={handleCreateBlueprint} icon={<PlayCircle size={16} />}>
+                按考核规则重新生成蓝图
+              </Button>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>
+                会创建新版本蓝图；教师对题位的手动调整将丢失
+              </span>
+            </div>
+          </div>
+        )}
         {planItems.length > 0 ? (
           <div>
             <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: '16px' }}>
@@ -589,6 +646,15 @@ export default function PipelinePanel({
     () => 1 + Math.floor(Math.random() * 6),
   );
   const [generating, setGenerating] = useState(false);
+  // 考核大纲的题型比例：用来核对已有蓝图是不是按考纲比例生成的
+  const [examRules, setExamRules] = useState<ExamRules | null>(null);
+
+  useEffect(() => {
+    if (!courseId) return;
+    api.framework.getCurrent(courseId)
+      .then((fw) => setExamRules(fw?.exam_rules ?? null))
+      .catch(() => setExamRules(null));
+  }, [courseId]);
 
   const loadPlanItems = async (proj: ExamProject) => {
     try {
@@ -761,7 +827,7 @@ export default function PipelinePanel({
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       <StageStepper current={currentStage} onSelect={setCurrentStage} />
       {currentStage === 'blueprint' && renderBlueprint({
-        sp, setStep: setCurrentStage, bpCreating, handleCreateBlueprint, loadPlanItems, planItems, maps,
+        sp, setStep: setCurrentStage, bpCreating, handleCreateBlueprint, loadPlanItems, planItems, maps, examRules,
       })}
       {currentStage === 'contract' && renderContract({
         sp, courseId, setStep: setCurrentStage, contractVariant, setContractVariant,
