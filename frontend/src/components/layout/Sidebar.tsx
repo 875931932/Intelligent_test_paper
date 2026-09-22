@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { NavLink, useParams, useNavigate } from 'react-router-dom';
 import {
   BookOpen,
@@ -12,6 +12,7 @@ import {
   ArrowLeft,
   PanelLeftClose,
   PanelLeft,
+  type LucideIcon,
 } from 'lucide-react';
 import { useCourseStore } from '@/stores/course';
 
@@ -37,13 +38,14 @@ export function Sidebar({ onLogout }: Props) {
 
   const base = courseId ? `/courses/${courseId}` : '/courses';
 
-  const navItems = [
+  // 「试卷项目」与「试卷中心」同属试卷模块：前者是出卷流水线，后者是成品查看/审核/导出
+  const navItems: Array<{ to: string; icon: LucideIcon; label: string; group?: string }> = [
     { to: base, icon: LayoutDashboard, label: '概览' },
     { to: `${base}/materials`, icon: FolderOpen, label: '资料库' },
     { to: `${base}/framework`, icon: FlaskConical, label: '命题框架' },
     { to: `${base}/knowledge`, icon: FolderTree, label: '知识目录' },
-    { to: `${base}/exam-projects`, icon: FileQuestion, label: '试卷项目' },
-    { to: `${base}/paper-center`, icon: ClipboardCheck, label: '试卷中心' },
+    { to: `${base}/exam-projects`, icon: FileQuestion, label: '试卷项目', group: '试卷' },
+    { to: `${base}/paper-center`, icon: ClipboardCheck, label: '试卷中心', group: '试卷' },
   ];
 
   return (
@@ -173,7 +175,16 @@ export function Sidebar({ onLogout }: Props) {
 
       {/* Navigation */}
       <nav style={{ flex: 1, padding: '10px 8px', overflowY: 'auto' }}>
-        {navItems.map(({ to, icon: Icon, label }) => (
+        {navItems.map(({ to, icon: Icon, label, group }, i) => (
+          <Fragment key={to}>
+            {!!group && navItems[i - 1]?.group !== group && !collapsed && (
+              <div style={{
+                fontSize: '0.68rem', fontWeight: 600, color: 'var(--text-tertiary)',
+                padding: '12px 11px 4px', letterSpacing: '0.04em',
+              }}>
+                {group}
+              </div>
+            )}
           <NavLink
             key={to}
             to={to}
@@ -197,6 +208,7 @@ export function Sidebar({ onLogout }: Props) {
             <Icon size={18} />
             {!collapsed && <span>{label}</span>}
           </NavLink>
+          </Fragment>
         ))}
       </nav>
 

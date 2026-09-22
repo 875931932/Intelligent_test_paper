@@ -1,40 +1,28 @@
-import { useEffect, useState, useMemo } from 'react';
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
-  ArrowLeft, ChevronDown, ChevronUp, Pencil, Trash2, Plus, Check,
-  FileJson, FileText, KeySquare, RotateCcw, Save,
+  ArrowRight, Check, ChevronDown, ChevronUp, FileJson, FileText, KeySquare,
+  LayoutGrid, ListOrdered, Pencil, Plus, RotateCcw, Save, Trash2,
 } from 'lucide-react';
 import { api } from '@/api/client';
-import { isApiError } from '@/api/errors';
+import { getErrorMessage, isApiError } from '@/api/errors';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
+import { Modal } from '@/components/ui';
 import { SkeletonCardGrid } from '@/components/ui/Skeleton';
-import type { ExamProject, PaperVersion } from '@/types/api';
+import { useNameMaps } from '@/hooks/useNameMaps';
+import {
+  DIFFICULTY_OPTIONS, EXAM_PROJECT_STATUS_META, PAPER_STATUS_META,
+  QUESTION_TYPE_OPTIONS, QUESTION_TYPE_ORDER, dlabel, qlabel, sectionLabel,
+} from '@/lib/examDisplay';
+import type { ExamProject, PaperVersion, PaperVersionItem } from '@/types/api';
 
-const QUESTION_TYPE_LABELS: Record<string, string> = {
-  single_choice: '单选',
-  multiple_choice: '多选',
-  true_false: '判断',
-  fill_blank: '填空',
-  short_answer: '简答',
-  comprehensive: '综合',
-  essay: '论述',
-};
-const QUESTION_TYPE_OPTIONS = Object.entries(QUESTION_TYPE_LABELS).map(([value, label]) => ({ value, label }));
-
-const DIFFICULTY_LABELS: Record<string, string> = {
-  easy: '易', medium: '中', hard: '难',
-};
-const DIFFICULTY_OPTIONS = Object.entries(DIFFICULTY_LABELS).map(([value, label]) => ({ value, label }));
-
-function qlabel(t: string): string {
-  return QUESTION_TYPE_LABELS[t] || t;
-}
+// ─── 题型与选项工具 ───
 
 function isChoiceType(t: string): boolean {
-  return t === 'single_choice' || t === 'multiple_choice';
+  return t === 'single_choice' || t === 'multiple_choice' || t === 'true_false';
 }
 
 type OptEntry = { key: string; text: string };
@@ -54,19 +42,57 @@ function entriesToOptions(entries: OptEntry[]): Record<string, string> {
   return o;
 }
 
+/** 多选答案在选项行上切换；单选直接替换。兼容 "AB" / "A,B" / "A、B" 等写法 */
+function toggleAnswerKey(answer: string, key: string, multi: boolean): string {
+  if (!multi) return key;
+  const set = new Set((answer || '').toUpperCase().replace(/[^A-Z]/g, '').split(''));
+  if (set.has(key)) set.delete(key);
+  else set.add(key);
+  return [...set].sort().join('');
+}
+
+function answerKeys(answer: string): Set<string> {
+  return new Set((answer || '').toUpperCase().replace(/[^A-Z]/g, '').split(''));
+}
+
+// ─── 编辑草稿 ───
+
 interface Draft {
   stem: string;
   question_type: string;
   difficulty: string;
-  score: string; // 文本便于编辑
+  score: string;
   answer: string;
   explanation: string;
   options: OptEntry[];
 }
 
+interface EditorSubmit {
+  stem: string;
+  question_type: string;
+  difficulty: string;
+  score: number;
+  answer: string;
+  explanation: string;
+  options: Record<string, string>;
+  clear_needs_review?: boolean;
+}
+
+function draftFromItem(item: PaperVersionItem): Draft {
+  return {
+    stem: item.stem ?? '',
+    question_type: item.question_type || 'short_answer',
+    difficulty: item.difficulty || 'medium',
+    score: String(item.score ?? 0),
+    answer: item.answer ?? '',
+    explanation: item.explanation ?? '',
+    options: optionsToEntries(item.options),
+  };
+}
+
 const emptyDraft = (): Draft => ({
   stem: '',
-  question_type: 'single_choice',
+  question_type: 'short_answer',
   difficulty: 'medium',
   score: '5',
   answer: '',
@@ -74,35 +100,436 @@ const emptyDraft = (): Draft => ({
   options: [{ key: 'A', text: '' }, { key: 'B', text: '' }],
 });
 
+// ─── 题目编辑器（原地编辑与「新增题目」弹窗共用） ───
+
+export interface QuestionEditorHandle {
+  submit: () => void;
+}
+
+const QuestionEditor = forwardRef<QuestionEditorHandle, {
+  initial: Draft;
+  needsReview: boolean;
+  submitting: boolean;
+  submitLabel: string;
+  showActions: boolean;
+  onSubmit: (v: EditorSubmit) => void;
+  onCancel: () => void;
+}>(function QuestionEditor(
+  { initial, needsReview, submitting, submitLabel, showActions, onSubmit, onCancel },
+  ref,
+) {
+  const [d, setD] = useState<Draft>(initial);
+  const [clearReview, setClearReview] = useState(true);
+  const choice = isChoiceType(d.question_type);
+  const multi = d.question_type === 'multiple_choice';
+
+  const patch = (p: Partial<Draft>) => setD((prev) => ({ ...prev, ...p }));
+
+  const changeType = (t: string) => {
+    const nextChoice = isChoiceType(t);
+    patch({
+      question_type: t,
+      options: nextChoice ? (d.options.length > 0 ? d.options : [{ key: 'A', text: '' }, { key: 'B', text: '' }]) : [],
+      answer: nextChoice ? d.answer : '',
+    });
+  };
+
+  const submit = () => {
+    onSubmit({
+      stem: d.stem.trim(),
+      question_type: d.question_type,
+      difficulty: d.difficulty,
+      score: Number(d.score) || 0,
+      answer: d.answer,
+      explanation: d.explanation,
+      options: choice ? entriesToOptions(d.options) : {},
+      clear_needs_review: needsReview ? clearReview : undefined,
+    });
+  };
+
+  // 供 Modal footer 之类的容器触发提交，避免把表单 state 提到父级
+  useImperativeHandle(ref, () => ({ submit }));
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+      <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+        <FieldLabel label="题型">
+          <select className="input-field" value={d.question_type} onChange={(e) => changeType(e.target.value)}>
+            {QUESTION_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </FieldLabel>
+        <FieldLabel label="难度">
+          <select className="input-field" value={d.difficulty} onChange={(e) => patch({ difficulty: e.target.value })}>
+            {DIFFICULTY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </FieldLabel>
+        <FieldLabel label="分值">
+          <input className="input-field" type="number" min={0} step="0.5" style={{ width: 90 }} value={d.score} onChange={(e) => patch({ score: e.target.value })} />
+        </FieldLabel>
+      </div>
+
+      <FieldLabel label="题干">
+        <textarea className="input-field" rows={3} value={d.stem} onChange={(e) => patch({ stem: e.target.value })} />
+      </FieldLabel>
+
+      {choice && (
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+            <span style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)' }}>选项</span>
+            <Button variant="ghost" size="sm" onClick={() => patch({ options: [...d.options, { key: String.fromCharCode(65 + d.options.length), text: '' }] })} icon={<Plus size={14} />}>加选项</Button>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+            {d.options.map((o, oi) => (
+              <div key={oi} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ width: 18, fontWeight: 600 }}>{o.key}.</span>
+                <input className="input-field" style={{ flex: 1 }} value={o.text} onChange={(e) => patch({ options: d.options.map((x, i) => (i === oi ? { ...x, text: e.target.value } : x)) })} />
+                <Button
+                  variant="ghost" size="sm"
+                  onClick={() => patch({ answer: toggleAnswerKey(d.answer, o.key, multi) })}
+                  style={answerKeys(d.answer).has(o.key) ? { color: 'var(--success)' } : undefined}
+                  title={multi ? '切换选中' : '设为答案'}
+                >
+                  <Check size={14} /> {answerKeys(d.answer).has(o.key) ? '是答案' : '设为答案'}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => patch({ options: d.options.filter((_, i) => i !== oi) })} icon={<Trash2 size={14} />} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <FieldLabel label="答案">
+        <input className="input-field" value={d.answer} onChange={(e) => patch({ answer: e.target.value })} placeholder={choice ? (multi ? '如 AB' : '如 B') : '填写参考答案或评分要点'} />
+      </FieldLabel>
+
+      <FieldLabel label="解析">
+        <textarea className="input-field" rows={2} value={d.explanation} onChange={(e) => patch({ explanation: e.target.value })} />
+      </FieldLabel>
+
+      {needsReview && (
+        <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8125rem', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+          <input type="checkbox" checked={clearReview} onChange={(e) => setClearReview(e.target.checked)} />
+          本题已处理完毕，保存时清除「需审核」标记
+        </label>
+      )}
+
+      {showActions && (
+        <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+          <Button variant="secondary" size="sm" onClick={onCancel}>取消</Button>
+          <Button size="sm" loading={submitting} onClick={submit} icon={<Save size={14} />}>{submitLabel}</Button>
+        </div>
+      )}
+    </div>
+  );
+});
+
+function FieldLabel({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 }}>
+      <label style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)' }}>{label}</label>
+      {children}
+    </div>
+  );
+}
+
+// ─── 题目卡片：阅读态 / 编辑态 ───
+
+function QuestionCard({
+  item, pos, total, examPointName, editing, readonly, reorderable, submitting,
+  onEdit, onCancelEdit, onSave, onDelete, onMove,
+}: {
+  item: PaperVersionItem;
+  pos: number;
+  total: number;
+  examPointName?: string;
+  editing: boolean;
+  readonly: boolean;
+  reorderable: boolean;
+  submitting: boolean;
+  onEdit: () => void;
+  onCancelEdit: () => void;
+  onSave: (v: EditorSubmit) => void;
+  onDelete: () => void;
+  onMove: (dir: -1 | 1) => void;
+}) {
+  const flagged = item.needs_review || !!item.needs_review_reason;
+  const keys = answerKeys(item.answer);
+  const opts = optionsToEntries(item.options);
+
+  return (
+    <div
+      className="glass-card"
+      style={{
+        padding: '18px 22px',
+        borderLeft: '3px solid ' + (flagged ? 'var(--warning)' : 'rgba(0,113,227,0.35)'),
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+        <span style={{ fontSize: '0.9rem', fontWeight: 700, color: 'var(--text-tertiary)', minWidth: 26 }}>{item.item_index}.</span>
+        <Badge variant="info">{qlabel(item.question_type)}</Badge>
+        <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{item.score} 分</span>
+        {item.difficulty && <Badge variant="default">{dlabel(item.difficulty)}</Badge>}
+        {item.has_override && <Badge variant="purple">已修改</Badge>}
+        {flagged && <Badge variant="warning">需审核</Badge>}
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: '4px' }}>
+          {reorderable && (
+            <>
+              <Button variant="ghost" size="sm" disabled={pos === 0} onClick={() => onMove(-1)} title="与上一题交换" icon={<ChevronUp size={16} />} />
+              <Button variant="ghost" size="sm" disabled={pos === total - 1} onClick={() => onMove(1)} title="与下一题交换" icon={<ChevronDown size={16} />} />
+            </>
+          )}
+          {!editing && !readonly && (
+            <Button variant="ghost" size="sm" onClick={onEdit} icon={<Pencil size={15} />}>编辑</Button>
+          )}
+        </div>
+      </div>
+
+      {editing ? (
+        <div style={{ marginTop: '14px' }}>
+          {/* 编辑态也要能看到标记原因，否则教师不知道该修什么 */}
+          {flagged && item.needs_review_reason && (
+            <div style={{
+              marginBottom: '12px', padding: '8px 12px', borderRadius: 8, fontSize: '0.8rem', lineHeight: 1.6,
+              background: 'var(--warning-subtle)', color: 'var(--text-secondary)',
+            }}>
+              <span style={{ fontWeight: 600, color: 'var(--warning)' }}>待审核原因：</span>{item.needs_review_reason}
+            </div>
+          )}
+          <QuestionEditor
+            initial={draftFromItem(item)}
+            needsReview={flagged}
+            submitting={submitting}
+            submitLabel="保存本题"
+            showActions
+            onSubmit={onSave}
+            onCancel={onCancelEdit}
+          />
+          <div style={{ marginTop: '10px' }}>
+            <Button variant="danger" size="sm" onClick={onDelete} icon={<Trash2 size={14} />}>删除本题</Button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ marginTop: '10px' }}>
+          {item.stem && (
+            <div style={{ fontSize: '0.95rem', lineHeight: 1.75, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{item.stem}</div>
+          )}
+
+          {opts.length > 0 ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '10px' }}>
+              {opts.map((o) => {
+                const isAns = keys.has(o.key.toUpperCase());
+                return (
+                  <div key={o.key} style={{
+                    display: 'flex', gap: '8px', alignItems: 'flex-start', padding: '6px 10px', borderRadius: 8,
+                    background: isAns ? 'var(--success-subtle)' : 'transparent',
+                    fontSize: '0.9rem', lineHeight: 1.6,
+                  }}>
+                    <span style={{ fontWeight: 600, color: isAns ? 'var(--success)' : 'var(--text-tertiary)', minWidth: 16 }}>{o.key}.</span>
+                    <span style={{ flex: 1, color: isAns ? 'var(--text)' : 'var(--text-secondary)' }}>{o.text}</span>
+                    {isAns && <Check size={15} style={{ color: 'var(--success)', flexShrink: 0, marginTop: 3 }} />}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div style={{
+              marginTop: '10px', padding: '8px 12px', borderRadius: 8, fontSize: '0.875rem', lineHeight: 1.7,
+              background: item.answer ? 'var(--accent-subtle)' : 'var(--warning-subtle)',
+              color: item.answer ? 'var(--text)' : 'var(--warning)',
+              whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+            }}>
+              <span style={{ fontWeight: 600, fontSize: '0.78rem', display: 'block', marginBottom: 2, opacity: 0.7 }}>答案</span>
+              {item.answer || '未填写答案'}
+            </div>
+          )}
+
+          {item.explanation && (
+            <details style={{ marginTop: '10px', fontSize: '0.85rem' }}>
+              <summary style={{ cursor: 'pointer', color: 'var(--text-tertiary)', userSelect: 'none' }}>解析</summary>
+              <div style={{ marginTop: '6px', color: 'var(--text-secondary)', lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{item.explanation}</div>
+            </details>
+          )}
+
+          {flagged && item.needs_review_reason && (
+            <div style={{
+              marginTop: '10px', padding: '8px 12px', borderRadius: 8, fontSize: '0.8rem', lineHeight: 1.6,
+              background: 'var(--warning-subtle)', color: 'var(--text-secondary)',
+            }}>
+              <span style={{ fontWeight: 600, color: 'var(--warning)' }}>待审核原因：</span>{item.needs_review_reason}
+            </div>
+          )}
+
+          {(examPointName || item.exam_point_id) && (
+            <div style={{ marginTop: '10px', fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
+              考点：{examPointName || item.exam_point_id}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── 项目切换条 ───
+
+function ProjectSwitcher({
+  projects, selectedId, onSelect,
+}: {
+  projects: ExamProject[];
+  selectedId: string;
+  onSelect: (id: string) => void;
+}) {
+  if (projects.length === 0) return null;
+  return (
+    <div style={{ display: 'flex', gap: '10px', overflowX: 'auto', paddingBottom: '2px' }}>
+      {projects.map((p) => {
+        const active = p.id === selectedId;
+        const hasPaper = (p.total_score ?? 0) > 0 || (p.item_count ?? 0) > 0;
+        const sm = EXAM_PROJECT_STATUS_META[p.status] ?? { label: p.status, variant: 'default' as const };
+        return (
+          <button
+            key={p.id}
+            onClick={() => onSelect(p.id)}
+            style={{
+              flexShrink: 0, display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 3,
+              padding: '8px 14px', borderRadius: 12, cursor: 'pointer', textAlign: 'left',
+              border: '1px solid ' + (active ? 'var(--accent)' : 'rgba(0,0,0,0.08)'),
+              background: active ? 'var(--accent-subtle)' : 'var(--surface)',
+              transition: 'all 150ms ease',
+            }}
+          >
+            <span style={{ fontSize: '0.85rem', fontWeight: active ? 600 : 500, color: active ? 'var(--accent)' : 'var(--text)' }}>{p.name}</span>
+            <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>
+              {hasPaper ? `${p.total_score ?? 0} 分 · ${p.item_count ?? 0} 题` : '待生成'} · {sm.label}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ─── 试卷档案卡 ───
+
+function PaperProfile({
+  pv, project, examPointCount, onExport, onFinalize, onRevert,
+}: {
+  pv: PaperVersion;
+  project?: ExamProject;
+  examPointCount: number;
+  onExport: (kind: 'student' | 'answer' | 'json') => void;
+  onFinalize: () => void;
+  onRevert: () => void;
+}) {
+  const questions = pv.questions;
+  const typeAcc = new Map<string, { score: number; count: number }>();
+  const diffAcc = new Map<string, number>();
+  questions.forEach((q) => {
+    const t = typeAcc.get(q.question_type) ?? { score: 0, count: 0 };
+    t.score += q.score || 0;
+    t.count += 1;
+    typeAcc.set(q.question_type, t);
+    const dk = q.difficulty || 'medium';
+    diffAcc.set(dk, (diffAcc.get(dk) || 0) + 1);
+  });
+  const pending = questions.filter((q) => q.needs_review || q.needs_review_reason).length;
+  const overridden = questions.filter((q) => q.has_override).length;
+  const psm = PAPER_STATUS_META[pv.status] ?? { label: pv.status, variant: 'default' as const };
+  const orderedTypes = [...typeAcc.keys()].sort(
+    (a, b) => QUESTION_TYPE_ORDER.indexOf(a) - QUESTION_TYPE_ORDER.indexOf(b),
+  );
+
+  return (
+    <div className="glass-card" style={{ padding: '20px 24px' }}>
+      <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div style={{ minWidth: 110 }}>
+          <div style={{ fontSize: '2rem', fontWeight: 700, lineHeight: 1, letterSpacing: '-0.03em' }}>{pv.total_score}</div>
+          <div style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', marginTop: 5 }}>
+            总分 · {questions.length} 题 · v{pv.version_no}
+          </div>
+          <div style={{ marginTop: '8px' }}><Badge variant={psm.variant}>{psm.label}</Badge></div>
+        </div>
+
+        <div style={{ flex: 1, minWidth: 240, display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            {orderedTypes.map((t) => {
+              const v = typeAcc.get(t)!;
+              return (
+                <span key={t} style={{
+                  padding: '4px 10px', borderRadius: 999, fontSize: '0.76rem', fontWeight: 600,
+                  background: 'var(--accent-subtle)', color: 'var(--accent)',
+                }}>
+                  {qlabel(t)} {v.score}分·{v.count}题
+                </span>
+              );
+            })}
+          </div>
+          <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+            <span>难度：{['easy', 'medium', 'hard'].map((d) => `${dlabel(d)} ${diffAcc.get(d) ?? 0}`).join(' · ')}</span>
+            <span>覆盖 {examPointCount} 个考点</span>
+            {overridden > 0 && <span>已修改 {overridden} 题</span>}
+            {pending > 0 && <span style={{ color: 'var(--warning)', fontWeight: 600 }}>待审核 {pending} 题</span>}
+          </div>
+          {project && (
+            <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
+              所属项目：{project.name} · {(EXAM_PROJECT_STATUS_META[project.status] ?? { label: project.status }).label}
+            </div>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <Button variant="secondary" size="sm" onClick={() => onExport('student')} icon={<FileText size={14} />}>学生卷</Button>
+          <Button variant="secondary" size="sm" onClick={() => onExport('answer')} icon={<KeySquare size={14} />}>答卷</Button>
+          <Button variant="secondary" size="sm" onClick={() => onExport('json')} icon={<FileJson size={14} />}>答案细则</Button>
+          {pv.status === 'finalized' ? (
+            <Button variant="secondary" size="sm" onClick={onRevert} icon={<RotateCcw size={14} />}>撤销定稿</Button>
+          ) : (
+            <Button size="sm" onClick={onFinalize} icon={<Check size={14} />}>确认定稿</Button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── 主页面 ───
+
 export default function PaperCenterPage() {
   const { courseId } = useParams<{ courseId: string }>();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const token = useAuthStore((s) => s.token);
   const addToast = useToastStore((s) => s.addToast);
+  const { maps, reload: reloadMaps } = useNameMaps(courseId);
 
   const [projects, setProjects] = useState<ExamProject[]>([]);
   const [loading, setLoading] = useState(true);
-  // 允许从试卷项目页带 ?project=<id> 直接选中目标项目
-  const initialProjectId = searchParams.get('project') || '';
-  const [selectedProjectId, setSelectedProjectId] = useState<string>(initialProjectId);
+  const [selectedProjectId, setSelectedProjectId] = useState(searchParams.get('project') || '');
   const [paperVersion, setPaperVersion] = useState<PaperVersion | null>(null);
   const [pvLoading, setPvLoading] = useState(false);
-  // 每题编辑草稿（item_index → Draft）；新增题用 -1 占位
-  const [drafts, setDrafts] = useState<Record<number, Draft>>({});
-  const [expanded, setExpanded] = useState<number>(0);
+
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
+  const [onlyNeedsReview, setOnlyNeedsReview] = useState(false);
+  const [orderView, setOrderView] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [finalizeOpen, setFinalizeOpen] = useState(false);
+  const addEditorRef = useRef<QuestionEditorHandle | null>(null);
+
+  const selectedProject = projects.find((p) => p.id === selectedProjectId);
+  const readonly = paperVersion?.status === 'finalized';
 
   const loadProjects = async () => {
     if (!courseId) return;
     try {
       const list = await api.examProjects.list(courseId, token ?? undefined);
       setProjects(list);
-      // 优先采用查询参数指定的项目；参数无效时回退到列表第一项
-      if (!selectedProjectId || !list.some((p) => p.id === selectedProjectId)) {
-        setSelectedProjectId(list.length > 0 ? list[0].id : '');
-      }
+      setSelectedProjectId((prev) => {
+        if (prev && list.some((p) => p.id === prev)) return prev;
+        const withPaper = list.find((p) => (p.total_score ?? 0) > 0 || (p.item_count ?? 0) > 0);
+        return (withPaper ?? list[0])?.id ?? '';
+      });
     } catch {
       addToast('加载试卷项目失败', 'error');
     } finally {
@@ -116,7 +543,7 @@ export default function PaperCenterPage() {
     try {
       const pv = await api.paperVersions.getCurrent(courseId, projectId, token ?? undefined);
       setPaperVersion(pv);
-      setExpanded(0);
+      setEditingIndex(null);
     } catch (e) {
       if (!isApiError(e) || e.status !== 404) {
         addToast('加载试卷失败', 'error');
@@ -127,132 +554,69 @@ export default function PaperCenterPage() {
     }
   };
 
-  // 首次加载项目列表
   useEffect(() => {
     loadProjects();
+    void reloadMaps();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [courseId]);
 
-  // 切换项目时载入对应试卷
   useEffect(() => {
     setPaperVersion(null);
-    setDrafts({});
+    setEditingIndex(null);
+    setOnlyNeedsReview(false);
     if (selectedProjectId) {
       void loadPaperVersion(selectedProjectId);
+      // 选中项写回 URL：刷新或分享链接后仍停在同一个项目
+      setSearchParams({ project: selectedProjectId }, { replace: true });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedProjectId]);
 
-  const withProjects = useMemo(() => projects.filter((p) => (p.total_score ?? 0) > 0 || (p.item_count ?? 0) > 0), [projects]);
-
-  // 有新试卷时自动选中第一个有试卷的项目
-  useEffect(() => {
-    if (!selectedProjectId && withProjects.length > 0) {
-      setSelectedProjectId(withProjects[0].id);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [withProjects.length]);
-
-  const statusMeta: Record<string, { label: string; variant: any }> = {
-    draft: { label: '草稿', variant: 'info' },
-    candidate: { label: '待审核', variant: 'warning' },
-    finalized: { label: '已定稿', variant: 'success' },
-  };
-  const pvStatus = paperVersion ? (statusMeta[paperVersion.status] ?? { label: paperVersion.status, variant: 'default' }) : null;
-
-  const refreshAll = async () => {
+  const refresh = async () => {
     await loadProjects();
     if (selectedProjectId) await loadPaperVersion(selectedProjectId);
   };
 
-  const getDraft = (idx: number): Draft => {
-    if (drafts[idx]) return drafts[idx];
-    const item = paperVersion?.questions.find((q) => q.item_index === idx);
-    if (!item) return drafts[-1] ?? emptyDraft();
-    return {
-      stem: item.stem ?? '',
-      question_type: item.question_type || 'short_answer',
-      difficulty: item.difficulty || 'medium',
-      score: String(item.score ?? 0),
-      answer: item.answer ?? '',
-      explanation: item.explanation ?? '',
-      options: optionsToEntries(item.options),
-    };
-  };
+  // ── 编辑操作 ──
 
-  const updateDraft = (idx: number, patch: Partial<Draft>) => {
-    setDrafts((prev) => ({ ...prev, [idx]: { ...getDraft(idx), ...patch } }));
-  };
-
-  const updateOption = (idx: number, optIdx: number, text: string) => {
-    const d = getDraft(idx);
-    const options = d.options.map((o, i) => (i === optIdx ? { ...o, text } : o));
-    updateDraft(idx, { options });
-  };
-
-  const addOption = (idx: number) => {
-    const d = getDraft(idx);
-    const nextKey = d.options.length > 0
-      ? String.fromCharCode(65 + d.options.length)
-      : 'A';
-    updateDraft(idx, { options: [...d.options, { key: nextKey, text: '' }] });
-  };
-
-  const removeOption = (idx: number, optIdx: number) => {
-    const d = getDraft(idx);
-    updateDraft(idx, { options: d.options.filter((_, i) => i !== optIdx) });
-  };
-
-  // 保存单题修改：把草稿合并进 teacher_override_patch 全量覆盖
-  const handleSave = async (idx: number) => {
-    const pvId = paperVersion?.id;
-    if (!pvId) return;
-    const d = getDraft(idx);
+  const handleSave = async (idx: number, v: EditorSubmit) => {
+    if (!courseId || !paperVersion) return;
+    const { clear_needs_review, ...patch } = v;
     setSaving(true);
     try {
-      const patch: Record<string, unknown> = {
-        stem: d.stem,
-        question_type: d.question_type,
-        difficulty: d.difficulty,
-        answer: d.answer,
-        explanation: d.explanation,
-        score: Number(d.score) || 0,
-      };
-      if (isChoiceType(d.question_type)) {
-        patch.options = entriesToOptions(d.options);
-      } else {
-        patch.options = [];
-      }
-      await api.paperVersions.patchItem(courseId!, pvId, idx, { teacher_override_patch: patch });
+      await api.paperVersions.patchItem(courseId, paperVersion.id, idx, {
+        teacher_override_patch: patch,
+        clear_needs_review,
+      });
       addToast(`第 ${idx} 题已保存`, 'success');
+      setEditingIndex(null);
       await loadPaperVersion(selectedProjectId);
-    } catch {
-      addToast('保存失败', 'error');
+    } catch (e) {
+      addToast('保存失败: ' + getErrorMessage(e), 'error');
     } finally {
       setSaving(false);
     }
   };
 
   const handleDelete = async (idx: number) => {
-    const pvId = paperVersion?.id;
-    if (!pvId) return;
-    if (!window.confirm('确认删除第 ' + idx + ' 题？此操作不可撤销。')) return;
+    if (!courseId || !paperVersion) return;
+    if (!window.confirm(`确认删除第 ${idx} 题？删除后其后的题目题号会前移。`)) return;
     setSaving(true);
     try {
-      await api.paperVersions.deleteItem(courseId!, pvId, idx, token ?? undefined);
+      await api.paperVersions.deleteItem(courseId, paperVersion.id, idx, token ?? undefined);
       addToast('题目已删除', 'success');
+      setEditingIndex(null);
       await loadPaperVersion(selectedProjectId);
-    } catch {
-      addToast('删除失败', 'error');
+    } catch (e) {
+      addToast('删除失败: ' + getErrorMessage(e), 'error');
     } finally {
       setSaving(false);
     }
   };
 
   const handleMove = async (pos: number, dir: -1 | 1) => {
-    const pvId = paperVersion?.id;
-    const qs = paperVersion?.questions;
-    if (!pvId || !qs) return;
+    if (!courseId || !paperVersion) return;
+    const qs = paperVersion.questions;
     const newPos = pos + dir;
     if (newPos < 0 || newPos >= qs.length) return;
     const ordered = qs.map((q) => q.item_index);
@@ -261,84 +625,114 @@ export default function PaperCenterPage() {
     ordered[newPos] = tmp;
     setSaving(true);
     try {
-      await api.paperVersions.reorderItems(courseId!, pvId, ordered, token ?? undefined);
-      addToast('顺序已调整', 'success');
+      await api.paperVersions.reorderItems(courseId, paperVersion.id, ordered, token ?? undefined);
       await loadPaperVersion(selectedProjectId);
-    } catch {
-      addToast('调整顺序失败', 'error');
+    } catch (e) {
+      addToast('调整顺序失败: ' + getErrorMessage(e), 'error');
     } finally {
       setSaving(false);
     }
   };
 
-  const handleAdd = async () => {
-    const pvId = paperVersion?.id;
-    if (!pvId) return;
-    const d = getDraft(-1);
+  const handleAdd = async (v: EditorSubmit) => {
+    if (!courseId || !paperVersion) return;
     setAdding(true);
     try {
-      const body: Record<string, unknown> = {
-        stem: d.stem,
-        question_type: d.question_type,
-        difficulty: d.difficulty,
-        answer: d.answer,
-        explanation: d.explanation,
-        score: Number(d.score) || 0,
-      };
-      if (isChoiceType(d.question_type)) {
-        body.options = entriesToOptions(d.options);
-      } else {
-        body.options = [];
-      }
-      await api.paperVersions.createItem(courseId!, pvId, body, token ?? undefined);
-      addToast('新题已加入', 'success');
-      setDrafts((prev) => {
-        const next = { ...prev };
-        delete next[-1];
-        return next;
-      });
+      await api.paperVersions.createItem(courseId, paperVersion.id, { ...v }, token ?? undefined);
+      addToast('新题已加入试卷末尾', 'success');
+      setAddOpen(false);
       await loadPaperVersion(selectedProjectId);
-    } catch {
-      addToast('新增失败', 'error');
+    } catch (e) {
+      addToast('新增失败: ' + getErrorMessage(e), 'error');
     } finally {
       setAdding(false);
     }
   };
 
-  const handleConfirm = async () => {
-    const pvId = paperVersion?.id;
-    if (!pvId) return;
+  // ── 定稿 ──
+
+  const pendingItems = useMemo(
+    () => (paperVersion?.questions ?? []).filter((q) => q.needs_review || q.needs_review_reason),
+    [paperVersion],
+  );
+
+  const doFinalize = async (force: boolean) => {
+    if (!courseId || !paperVersion) return;
     try {
-      await api.paperVersions.confirm(courseId!, pvId, {});
+      await api.paperVersions.confirm(courseId, paperVersion.id, force ? { force_ignore_needs_review: true } : {}, token ?? undefined);
       addToast('试卷已定稿', 'success');
-      await refreshAll();
+      setFinalizeOpen(false);
+      await refresh();
     } catch (e) {
-      addToast('定稿失败: ' + ((e as Error).message || '请先处理待审核题'), 'error');
+      addToast('定稿失败: ' + getErrorMessage(e), 'error');
     }
+  };
+
+  const handleFinalizeClick = () => {
+    if (pendingItems.length > 0) {
+      setFinalizeOpen(true);
+      return;
+    }
+    void doFinalize(false);
   };
 
   const handleRevert = async () => {
-    const pvId = paperVersion?.id;
-    if (!pvId) return;
+    if (!courseId || !paperVersion) return;
     if (!window.confirm('撤销定稿并回到待审核状态？')) return;
     try {
-      await api.paperVersions.revert(courseId!, pvId, token ?? undefined);
+      await api.paperVersions.revert(courseId, paperVersion.id, token ?? undefined);
       addToast('已撤销定稿', 'success');
-      await refreshAll();
-    } catch {
-      addToast('撤销失败', 'error');
+      await refresh();
+    } catch (e) {
+      addToast('撤销失败: ' + getErrorMessage(e), 'error');
     }
   };
 
+  // ── 导出 ──
+
+  const handleExport = (kind: 'student' | 'answer' | 'json') => {
+    if (!courseId || !paperVersion) return;
+    const url =
+      kind === 'student'
+        ? api.paperVersions.exportStudent(courseId, selectedProjectId, paperVersion.id)
+        : kind === 'answer'
+          ? api.paperVersions.exportAnswerKey(courseId, selectedProjectId, paperVersion.id)
+          : api.paperVersions.exportJson(courseId, selectedProjectId, paperVersion.id);
+    window.open(url, '_blank', 'noopener');
+  };
+
+  const goPipeline = () =>
+    navigate(`/courses/${courseId}/exam-projects` + (selectedProjectId ? '?project=' + selectedProjectId : ''));
+
+  // ── 卷面分组 / 过滤 ───
+
+  const groups = useMemo(() => {
+    const qs = paperVersion?.questions ?? [];
+    const filtered = onlyNeedsReview ? qs.filter((q) => q.needs_review || q.needs_review_reason) : qs;
+    if (orderView) {
+      return [{ key: '__order__', label: '按试卷顺序', items: filtered, score: filtered.reduce((s, q) => s + (q.score || 0), 0) }];
+    }
+    const byType = new Map<string, PaperVersionItem[]>();
+    filtered.forEach((q) => {
+      const arr = byType.get(q.question_type) ?? [];
+      arr.push(q);
+      byType.set(q.question_type, arr);
+    });
+    return [...byType.entries()]
+      .sort((a, b) => QUESTION_TYPE_ORDER.indexOf(a[0]) - QUESTION_TYPE_ORDER.indexOf(b[0]))
+      .map(([t, items]) => ({
+        key: t,
+        label: sectionLabel(t),
+        items,
+        score: items.reduce((s, q) => s + (q.score || 0), 0),
+      }));
+  }, [paperVersion, onlyNeedsReview, orderView]);
+
   // ── 页面骨架 ──
+
   if (loading) {
     return (
       <div className="page-enter">
-        <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '20px' }}>
-          <button onClick={() => navigate(-1)} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: '0.8125rem', display: 'flex', alignItems: 'center', gap: '4px' }}>
-            <ArrowLeft size={16} /> 返回
-          </button>
-        </div>
         <SkeletonCardGrid count={3} />
       </div>
     );
@@ -346,282 +740,188 @@ export default function PaperCenterPage() {
 
   return (
     <div className="page-enter">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '20px' }}>
-        <div>
-          <h1 style={{ fontSize: '1.6rem', fontWeight: 700, letterSpacing: '-0.03em', marginBottom: '6px' }}>试卷中心</h1>
-          <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)' }}>
-            独立编辑试卷：修改题目、调顺序、改分值、增删题目，定稿后可导出
-          </p>
-        </div>
-        <Button variant="secondary" size="sm" onClick={() => navigate(-1)} icon={<ArrowLeft size={14} />}>返回</Button>
+      <div style={{ marginBottom: '20px' }}>
+        <h1 style={{ fontSize: '1.6rem', fontWeight: 700, letterSpacing: '-0.03em', marginBottom: '6px' }}>试卷中心</h1>
+        <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)' }}>
+          查看、审核并导出试卷。出卷流水线（蓝图 → 合同 → 生成）请前往「试卷项目」。
+        </p>
       </div>
 
-      {/* 项目选择 */}
-      <div className="glass-card" style={{ padding: '16px 20px', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
-        <label style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>选择项目</label>
-        <select
-          value={selectedProjectId}
-          onChange={(e) => setSelectedProjectId(e.target.value)}
-          className="input-field"
-          style={{ width: '260px' }}
-        >
-          {projects.length === 0 && <option value="">暂无项目</option>}
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>{p.name}（{p.total_score ? p.total_score + '分·' + (p.item_count || 0) + '题' : '待生成'}）</option>
-          ))}
-        </select>
-        {pvStatus && (
-          <Badge variant={pvStatus.variant}>{pvStatus.label}</Badge>
+      <div style={{ maxWidth: 960, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        {projects.length === 0 ? (
+          <div className="glass-card" style={{ padding: '56px 20px', textAlign: 'center' }}>
+            <h3 style={{ fontWeight: 600, fontSize: '1.05rem', marginBottom: '8px' }}>还没有试卷项目</h3>
+            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '18px' }}>
+              试卷由「试卷项目」流水线生成，先去创建一个项目吧。
+            </p>
+            <Button onClick={() => navigate(`/courses/${courseId}/exam-projects`)} icon={<ArrowRight size={16} />}>前往试卷项目</Button>
+          </div>
+        ) : (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <ProjectSwitcher projects={projects} selectedId={selectedProjectId} onSelect={setSelectedProjectId} />
+              </div>
+              <Button variant="secondary" size="sm" onClick={goPipeline} icon={<ArrowRight size={14} />} title="前往出卷流水线">
+                出卷流水线
+              </Button>
+            </div>
+
+            {pvLoading && !paperVersion ? (
+              <div className="glass-card" style={{ padding: '48px 20px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>
+                正在加载试卷…
+              </div>
+            ) : !paperVersion ? (
+              <div className="glass-card" style={{ padding: '48px 20px', textAlign: 'center' }}>
+                <h3 style={{ fontWeight: 600, fontSize: '1rem', marginBottom: '8px' }}>该项目还没有生成试卷</h3>
+                <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '18px' }}>
+                  在出卷流水线中完成蓝图、合同并生成后，试卷会出现在这里。
+                </p>
+                <Button variant="secondary" onClick={goPipeline}>前往出卷流水线</Button>
+              </div>
+            ) : (
+              <>
+                <PaperProfile
+                  pv={paperVersion}
+                  project={selectedProject}
+                  examPointCount={new Set(paperVersion.questions.map((q) => q.exam_point_id).filter(Boolean)).size}
+                  onExport={handleExport}
+                  onFinalize={handleFinalizeClick}
+                  onRevert={handleRevert}
+                />
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+                  <Button
+                    variant={onlyNeedsReview ? 'primary' : 'secondary'} size="sm"
+                    onClick={() => setOnlyNeedsReview((v) => !v)}
+                  >
+                    仅看待审核{`（${pendingItems.length}）`}
+                  </Button>
+                  <div style={{ display: 'flex', borderRadius: 10, overflow: 'hidden', border: '1px solid rgba(0,0,0,0.1)' }}>
+                    {([
+                      { key: false, icon: <LayoutGrid size={14} />, label: '按题型' },
+                      { key: true, icon: <ListOrdered size={14} />, label: '按顺序' },
+                    ] as const).map((opt) => (
+                      <button
+                        key={String(opt.key)}
+                        onClick={() => setOrderView(opt.key)}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 6, padding: '7px 12px', border: 'none', cursor: 'pointer',
+                          fontSize: '0.8rem', fontWeight: orderView === opt.key ? 600 : 400,
+                          background: orderView === opt.key ? 'var(--accent-subtle)' : 'var(--surface)',
+                          color: orderView === opt.key ? 'var(--accent)' : 'var(--text-secondary)',
+                        }}
+                      >
+                        {opt.icon}{opt.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ marginLeft: 'auto' }}>
+                    {!readonly && (
+                      <Button variant="secondary" size="sm" onClick={() => setAddOpen(true)} icon={<Plus size={14} />}>新增题目</Button>
+                    )}
+                  </div>
+                </div>
+
+                {groups.length === 0 ? (
+                  <div className="glass-card" style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>
+                    {onlyNeedsReview ? '没有待审核的题目，全部通过。' : '这份试卷还没有题目。'}
+                  </div>
+                ) : (
+                  groups.map((g) => (
+                    <div key={g.key} style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      <div style={{
+                        display: 'flex', alignItems: 'baseline', gap: '10px',
+                        padding: '0 4px 8px', borderBottom: '1px solid rgba(0,0,0,0.06)',
+                      }}>
+                        <h2 style={{ fontSize: '1rem', fontWeight: 700, letterSpacing: '-0.01em' }}>{g.label}</h2>
+                        <span style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>
+                          {g.items.length} 题{g.score ? ` · ${g.score} 分` : ''}
+                        </span>
+                      </div>
+                      {g.items.map((item) => {
+                        const pos = paperVersion.questions.findIndex((q) => q.item_index === item.item_index);
+                        return (
+                          <QuestionCard
+                            key={item.item_index}
+                            item={item}
+                            pos={pos}
+                            total={paperVersion.questions.length}
+                            examPointName={item.exam_point_id ? maps.examPoints[item.exam_point_id] : undefined}
+                            editing={editingIndex === item.item_index}
+                            readonly={!!readonly}
+                            reorderable={orderView && !readonly}
+                            submitting={saving}
+                            onEdit={() => setEditingIndex(item.item_index)}
+                            onCancelEdit={() => setEditingIndex(null)}
+                            onSave={(v) => handleSave(item.item_index, v)}
+                            onDelete={() => handleDelete(item.item_index)}
+                            onMove={(dir) => handleMove(pos, dir)}
+                          />
+                        );
+                      })}
+                    </div>
+                  ))
+                )}
+              </>
+            )}
+          </>
         )}
       </div>
 
-      {pvLoading && !paperVersion ? (
-        <div className="glass-card" style={{ padding: '48px 20px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>
-          正在加载试卷…
+      <Modal
+        open={addOpen}
+        onClose={() => setAddOpen(false)}
+        title="新增题目"
+        maxWidth="720px"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setAddOpen(false)}>取消</Button>
+            <Button loading={adding} onClick={() => addEditorRef.current?.submit()} icon={<Plus size={14} />}>加入试卷</Button>
+          </>
+        }
+      >
+        <QuestionEditor
+          ref={addEditorRef}
+          initial={emptyDraft()}
+          needsReview={false}
+          submitting={adding}
+          submitLabel="加入试卷"
+          showActions={false}
+          onSubmit={handleAdd}
+          onCancel={() => setAddOpen(false)}
+        />
+      </Modal>
+
+      <Modal
+        open={finalizeOpen}
+        onClose={() => setFinalizeOpen(false)}
+        title="还有待审核的题目"
+        maxWidth="520px"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setFinalizeOpen(false)}>返回处理</Button>
+            <Button onClick={() => doFinalize(true)}>仍要定稿</Button>
+          </>
+        }
+      >
+        <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+          以下 {pendingItems.length} 道题被质量检查标记为待审核，建议先逐题处理：
+        </p>
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '12px' }}>
+          {pendingItems.map((q) => (
+            <span key={q.item_index} style={{
+              padding: '3px 10px', borderRadius: 999, fontSize: '0.78rem', fontWeight: 600,
+              background: 'var(--warning-subtle)', color: 'var(--warning)',
+            }}>
+              第 {q.item_index} 题
+            </span>
+          ))}
         </div>
-      ) : !paperVersion ? (
-        <div className="glass-card" style={{ padding: '48px 20px', textAlign: 'center', color: 'var(--text-secondary)', fontSize: '0.9rem' }}>
-          该项目还没有生成试卷。请先进入「试卷项目 → 生成」生成后再来编辑。
-          <div style={{ marginTop: '16px' }}>
-            <Button variant="secondary" size="sm" onClick={() => navigate(`/courses/${courseId}/exam-projects`)}>前往生成</Button>
-          </div>
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          {/* 试卷汇总 + 操作 */}
-          <div className="glass-card" style={{ padding: '18px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                <div style={{ fontSize: '1.5rem', fontWeight: 700 }}>{paperVersion.total_score}</div>
-                <div style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>总分 · {paperVersion.questions.length} 题 · v{paperVersion.version_no}</div>
-              </div>
-            </div>
-            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-              <a
-                href={api.paperVersions.exportJson(courseId!, selectedProjectId, paperVersion.id)}
-                target="_blank" rel="noreferrer"
-              >
-                <Button variant="secondary" size="sm" icon={<FileJson size={14} />}>答案细则</Button>
-              </a>
-              <a
-                href={api.paperVersions.exportStudent(courseId!, selectedProjectId, paperVersion.id)}
-                target="_blank" rel="noreferrer"
-              >
-                <Button variant="secondary" size="sm" icon={<FileText size={14} />}>学生卷</Button>
-              </a>
-              <a
-                href={api.paperVersions.exportAnswerKey(courseId!, selectedProjectId, paperVersion.id)}
-                target="_blank" rel="noreferrer"
-              >
-                <Button variant="secondary" size="sm" icon={<KeySquare size={14} />}>答卷</Button>
-              </a>
-              {paperVersion.status === 'finalized' ? (
-                <Button variant="secondary" size="sm" onClick={handleRevert} icon={<RotateCcw size={14} />}>撤销定稿</Button>
-              ) : (
-                <Button size="sm" onClick={handleConfirm} icon={<Check size={14} />}>确认定稿</Button>
-              )}
-            </div>
-          </div>
-
-          {/* 题目编辑列表 */}
-          {paperVersion.questions.map((item, pos) => {
-            const d = getDraft(item.item_index);
-            const open = expanded === item.item_index;
-            const flagged = item.needs_review || !!item.needs_review_reason;
-            return (
-              <div key={item.item_index} className="glass-card" style={{ padding: '16px 20px', borderLeft: '3px solid ' + (flagged ? '#ff9500' : 'rgba(0,113,227,0.35)') }}>
-                {/* 头部：题号 + 大概信息 + 排序/展开 */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-tertiary)' }}>#{item.item_index}</span>
-                  <Badge variant="info">{qlabel(d.question_type)}</Badge>
-                  <strong style={{ fontSize: '0.85rem' }}>{d.score} 分</strong>
-                  {flagged && <Badge variant="warning">需审核</Badge>}
-                  <div style={{ marginLeft: 'auto', display: 'flex', gap: '4px' }}>
-                    <Button variant="ghost" size="sm" disabled={pos === 0} onClick={() => handleMove(pos, -1)} icon={<ChevronUp size={16} />} />
-                    <Button variant="ghost" size="sm" disabled={pos === paperVersion.questions.length - 1} onClick={() => handleMove(pos, 1)} icon={<ChevronDown size={16} />} />
-                    <Button variant="ghost" size="sm" onClick={() => setExpanded(open ? -1 : item.item_index)} icon={open ? undefined : <Pencil size={15} />}>
-                      {open ? '收起' : d.stem ? truncate(d.stem, 60) : '编辑'}
-                    </Button>
-                  </div>
-                </div>
-
-                {open && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '14px' }}>
-                    <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-                      <Selectln
-                        label="题型"
-                        value={d.question_type}
-                        options={QUESTION_TYPE_OPTIONS}
-                        onChange={(e) => updateDraft(item.item_index, { question_type: e.target.value })}
-                      />
-                      <Selectln
-                        label="难度"
-                        value={d.difficulty}
-                        options={DIFFICULTY_OPTIONS}
-                        onChange={(e) => updateDraft(item.item_index, { difficulty: e.target.value })}
-                      />
-                      <Inputln label="分值" type="number" min={0} step="0.5" value={d.score} onChange={(e) => updateDraft(item.item_index, { score: e.target.value })} />
-                    </div>
-
-                    <Field label="题干">
-                      <textarea
-                        className="input-field"
-                        rows={2}
-                        value={d.stem}
-                        onChange={(e) => updateDraft(item.item_index, { stem: e.target.value })}
-                      />
-                    </Field>
-
-                    {isChoiceType(d.question_type) ? (
-                      <div>
-                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-                          <span style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)' }}>选项</span>
-                          <Button variant="ghost" size="sm" onClick={() => addOption(item.item_index)} icon={<Plus size={14} />}>加选项</Button>
-                        </div>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                          {d.options.map((o, oi) => (
-                            <div key={oi} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                              <span style={{ width: '18px', fontWeight: 600 }}>{o.key}.</span>
-                              <input
-                                className="input-field"
-                                style={{ flex: 1 }}
-                                value={o.text}
-                                onChange={(e) => updateOption(item.item_index, oi, e.target.value)}
-                              />
-                              <Button
-                                variant="ghost" size="sm"
-                                onClick={() => updateDraft(item.item_index, { answer: o.key })}
-                                style={d.answer === o.key ? { color: 'var(--success)' } : undefined}
-                              >
-                                <Check size={14} /> {d.answer === o.key ? '是答案' : '设为答案'}
-                              </Button>
-                              <Button variant="ghost" size="sm" onClick={() => removeOption(item.item_index, oi)} icon={<Trash2 size={14} />} />
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    ) : null}
-
-                    <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-                      <div style={{ flex: 1, minWidth: '220px' }}>
-                        <Field label="答案">
-                          <input className="input-field" value={d.answer} onChange={(e) => updateDraft(item.item_index, { answer: e.target.value })} />
-                        </Field>
-                      </div>
-                    </div>
-
-                    <Field label="解析">
-                      <textarea
-                        className="input-field"
-                        rows={2}
-                        value={d.explanation}
-                        onChange={(e) => updateDraft(item.item_index, { explanation: e.target.value })}
-                      />
-                    </Field>
-
-                    <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
-                      <Button variant="danger" size="sm" onClick={() => handleDelete(item.item_index)} icon={<Trash2 size={14} />}>删除</Button>
-                      <Button size="sm" loading={saving} onClick={() => handleSave(item.item_index)} icon={<Save size={14} />}>保存</Button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-
-          {/* 新增题目 */}
-          <div className="glass-card" style={{ padding: '16px 20px' }}>
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-              <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>新增题目</span>
-              <Button variant="secondary" size="sm" onClick={() => setExpanded(-1)} icon={<Plus size={14} />}>展开编辑</Button>
-            </div>
-            {(expanded === -1) && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-                <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-                  <Selectln label="题型" value={getDraft(-1).question_type} options={QUESTION_TYPE_OPTIONS} onChange={(e) => updateDraft(-1, { question_type: e.target.value })} />
-                  <Selectln label="难度" value={getDraft(-1).difficulty} options={DIFFICULTY_OPTIONS} onChange={(e) => updateDraft(-1, { difficulty: e.target.value })} />
-                  <Inputln label="分值" type="number" min={0} step="0.5" value={getDraft(-1).score} onChange={(e) => updateDraft(-1, { score: e.target.value })} />
-                </div>
-                <Field label="题干">
-                  <textarea className="input-field" rows={2} value={getDraft(-1).stem} onChange={(e) => updateDraft(-1, { stem: e.target.value })} />
-                </Field>
-                {isChoiceType(getDraft(-1).question_type) ? (
-                  <div>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                      <span style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)' }}>选项</span>
-                      <Button variant="ghost" size="sm" onClick={() => addOption(-1)} icon={<Plus size={14} />}>加选项</Button>
-                    </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                      {getDraft(-1).options.map((o, oi) => (
-                        <div key={oi} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                          <span style={{ width: '18px', fontWeight: 600 }}>{o.key}.</span>
-                          <input className="input-field" style={{ flex: 1 }} value={o.text} onChange={(e) => updateOption(-1, oi, e.target.value)} />
-                          <Button variant="ghost" size="sm" onClick={() => updateDraft(-1, { answer: o.key })}>
-                            <Check size={14} /> {getDraft(-1).answer === o.key ? '是答案' : '设为答案'}
-                          </Button>
-                          <Button variant="ghost" size="sm" onClick={() => removeOption(-1, oi)} icon={<Trash2 size={14} />} />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-                <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
-                  <div style={{ flex: 1, minWidth: '220px' }}>
-                    <Field label="答案">
-                      <input className="input-field" value={getDraft(-1).answer} onChange={(e) => updateDraft(-1, { answer: e.target.value })} />
-                    </Field>
-                  </div>
-                </div>
-                <Field label="解析">
-                  <textarea className="input-field" rows={2} value={getDraft(-1).explanation} onChange={(e) => updateDraft(-1, { explanation: e.target.value })} />
-                </Field>
-                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                  <Button loading={adding} onClick={handleAdd} icon={<Plus size={14} />}>加入试卷</Button>
-                </div>
-              </div>
-            )}
-            {expanded !== -1 && (
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)' }}>在试卷末尾新增一道自拟题目（题干/答案由您填写）。</p>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function truncate(s: string, n: number): string {
-  return s && s.length > n ? s.slice(0, n) + '…' : s || '';
-}
-
-// 轻量包装，复用现有样式类
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-      <label style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)' }}>{label}</label>
-      {children}
-    </div>
-  );
-}
-
-function Selectln(props: React.SelectHTMLAttributes<HTMLSelectElement> & { label: string; options: { value: string; label: string }[] }) {
-  const { label, options, ...rest } = props;
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: '120px' }}>
-      <label style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)' }}>{label}</label>
-      <select className="input-field" {...rest}>
-        {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
-    </div>
-  );
-}
-
-function Inputln(props: React.InputHTMLAttributes<HTMLInputElement> & { label: string }) {
-  const { label, ...rest } = props;
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', minWidth: '90px' }}>
-      <label style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)' }}>{label}</label>
-      <input className="input-field" {...rest} />
+        <p style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', marginTop: '14px', lineHeight: 1.6 }}>
+          也可以在工具栏打开「仅看待审核」逐题核对。确已知悉时可选择「仍要定稿」。
+        </p>
+      </Modal>
     </div>
   );
 }

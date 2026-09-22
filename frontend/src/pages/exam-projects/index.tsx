@@ -1,5 +1,5 @@
-import { useState, useEffect, Fragment, type ReactNode } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useState, useEffect, useRef, Fragment, type ReactNode } from 'react';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Plus, ChevronRight, ArrowLeft, ArrowRight, RefreshCw, Check, PlayCircle,
   ClipboardList, FileText,
@@ -10,8 +10,10 @@ import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
 import { Badge, Input, ProgressPanel, type ProgressStatus } from '@/components/ui';
 import { SkeletonCardGrid } from '@/components/ui/Skeleton';
+import { useNameMaps, type NameMaps } from '@/hooks/useNameMaps';
+import { clabel, dlabel, EXAM_PROJECT_STATUS_META, PAPER_STATUS_META, qlabel } from '@/lib/examDisplay';
 import type { ContractSnapshot } from '@/api/domains/examProjects';
-import type { ExamProject, PlanItem, TaskRun, PublishedKnowledgeResponse, CurrentFrameworkResponse } from '@/types/api';
+import type { ExamProject, PlanItem, TaskRun } from '@/types/api';
 
 // ─── Stage pipeline ───
 // 流水线只负责「出题」：蓝图 → 合同 → 生成。审核/编辑/定稿/导出已独立为
@@ -28,15 +30,8 @@ const STAGE_META: Record<StageKey, { label: string; icon: ReactNode; color: stri
   generate:  { label: '生成', icon: <PlayCircle size={16} />, color: '#34c759' },
 };
 
-type BadgeVariant = 'default' | 'success' | 'warning' | 'error' | 'info' | 'purple';
-
-const STATUS_META: Record<string, { label: string; variant: BadgeVariant }> = {
-  blueprint:  { label: '蓝图阶段', variant: 'info' },
-  contract:   { label: '合同阶段', variant: 'purple' },
-  generating: { label: '生成中',   variant: 'warning' },
-  review:     { label: '待审核',   variant: 'warning' },
-  exported:   { label: '已导出',   variant: 'success' },
-};
+// 项目状态徽标与试卷中心同源（lib/examDisplay），避免两页口径不一致
+const STATUS_META = EXAM_PROJECT_STATUS_META;
 
 const STATUS_TO_STAGE: Record<string, StageKey> = {
   draft: 'blueprint',
@@ -51,42 +46,6 @@ const STATUS_TO_STAGE: Record<string, StageKey> = {
 
 function stageFromStatus(status: string): StageKey {
   return STATUS_TO_STAGE[status] ?? 'blueprint';
-}
-
-// ─── 展示标签：后端英文枚举 → 中文 ───
-const QUESTION_TYPE_LABELS: Record<string, string> = {
-  single_choice: '单选',
-  true_false: '判断',
-  fill_blank: '填空',
-  short_answer: '简答',
-  comprehensive: '综合',
-};
-
-const DIFFICULTY_LABELS: Record<string, string> = {
-  easy: '易',
-  medium: '中',
-  hard: '难',
-};
-
-const COGNITIVE_LABELS: Record<string, string> = {
-  remember: '记忆',
-  understand: '理解',
-  apply: '应用',
-  analyze: '分析',
-  evaluate: '评价',
-  create: '创造',
-};
-
-function qlabel(t: string): string {
-  return QUESTION_TYPE_LABELS[t] ?? t;
-}
-
-function dlabel(d: string): string {
-  return DIFFICULTY_LABELS[d] ?? d;
-}
-
-function clabel(c: string): string {
-  return COGNITIVE_LABELS[c] ?? c;
 }
 
 // 生成阶段的阶段性文案。后端任务只上报「开始 5%」与「完成 100%」两档，
@@ -106,12 +65,7 @@ const GENERATION_QUEUED_MESSAGES = ['等待 Celery worker 接管任务…'];
 const QUEUED_HINT_SECONDS = 60;
 
 // 名称映射：把考点 / 章节 / 知识卡的 id 换成真实名称，未命中时回退原始值
-interface NameMaps {
-  examPoints: Record<string, string>; // exam_point_id → 考点名
-  anchors: Record<string, string>;    // anchor_key → 章节名
-  cards: Record<string, string>;      // card_id → 知识卡名
-}
-
+// （NameMaps 定义与构建逻辑见 hooks/useNameMaps，与试卷中心共用）
 function examPointLabel(maps: NameMaps, id: string): string {
   return maps.examPoints[id] || id;
 }
@@ -631,6 +585,7 @@ export default function ExamProjectsPage() {
   const token = useAuthStore((s) => s.token);
   const addToast = useToastStore((s) => s.addToast);
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   const [projects, setProjects] = useState<ExamProject[]>([]);
   const [loading, setLoading] = useState(true);
@@ -640,8 +595,8 @@ export default function ExamProjectsPage() {
   const [planItems, setPlanItems] = useState<PlanItem[]>([]);
   const [contractSnapshot, setContractSnapshot] = useState<ContractSnapshot | null>(null);
   const [taskRun, setTaskRun] = useState<TaskRun | null>(null);
-  // 名称映射：接口只返回 id，这里从已发布知识目录/框架取回中文名称用于展示
-  const [maps, setMaps] = useState<NameMaps>({ examPoints: {}, anchors: {}, cards: {} });
+  // 名称映射（id → 中文名）与试卷中心共用同一个 hook，两页口径一致
+  const { maps, reload: reloadNameMaps } = useNameMaps(courseId);
 
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState('');
@@ -654,6 +609,8 @@ export default function ExamProjectsPage() {
     () => 1 + Math.floor(Math.random() * 6),
   );
   const [generating, setGenerating] = useState(false);
+  // ?project=<id> 直达：从试卷中心点「出卷流水线」过来时自动展开该项目，只做一次
+  const autoOpenedRef = useRef(false);
 
   const loadProjects = async () => {
     if (!courseId) return;
@@ -661,6 +618,12 @@ export default function ExamProjectsPage() {
       setLoading(true);
       const res = await api.examProjects.list(courseId);
       setProjects(res);
+      const pid = searchParams.get('project');
+      const target = pid ? res.find((p) => p.id === pid) : undefined;
+      if (target && !autoOpenedRef.current) {
+        autoOpenedRef.current = true;
+        void openProject(target);
+      }
     } catch {
       addToast('加载项目失败', 'error');
     } finally {
@@ -675,43 +638,6 @@ export default function ExamProjectsPage() {
     } catch {
       addToast('加载计划项失败', 'error');
     }
-  };
-
-  // 从已发布知识目录 + 当前框架构建 id → 中文名称 的映射；
-  // 任一接口失败时只丢对应映射，界面回退展示原始 id，不影响主流程。
-  const buildNameMaps = (
-    knowledge?: PublishedKnowledgeResponse,
-    framework?: CurrentFrameworkResponse,
-  ): NameMaps => {
-    const examPoints: Record<string, string> = {};
-    (knowledge?.exam_points || []).forEach((p) => {
-      const name = p.title || p.code || p.id;
-      if (p.id) examPoints[p.id] = name;
-      // 兼容历史数据用 code 作为 exam_point_id 的情况
-      if (p.code && p.code !== p.id) examPoints[p.code] = name;
-    });
-    const cards: Record<string, string> = {};
-    Object.entries(knowledge?.knowledge_cards || {}).forEach(([cid, card]) => {
-      cards[cid] = card?.name || cid;
-    });
-    const anchors: Record<string, string> = {};
-    const payloadAnchors = (framework?.payload as { anchors?: Array<{ key?: string; title?: string }> } | undefined)?.anchors;
-    (payloadAnchors || []).forEach((a) => {
-      if (a?.key) anchors[a.key] = a.title || a.key;
-    });
-    return { examPoints, anchors, cards };
-  };
-
-  const loadNameMaps = async (preloadedKnowledge?: PublishedKnowledgeResponse) => {
-    if (!courseId) return;
-    const [k, f] = await Promise.allSettled([
-      preloadedKnowledge ?? api.knowledge.getPublished(courseId),
-      api.framework.getCurrent(courseId),
-    ]);
-    setMaps(buildNameMaps(
-      k.status === 'fulfilled' ? k.value : undefined,
-      f.status === 'fulfilled' ? f.value : undefined,
-    ));
   };
 
   // 轮询生成任务
@@ -801,7 +727,7 @@ export default function ExamProjectsPage() {
     setCurrentStage(stageFromStatus(proj.status));
     setContractSnapshot(null);
     setTaskRun(null);
-    void loadNameMaps();
+    void reloadNameMaps();
     if (proj.active_blueprint_version_id) {
       await loadPlanItems(proj);
     }
@@ -845,7 +771,7 @@ export default function ExamProjectsPage() {
       });
       addToast('蓝图已生成', 'success');
       // 刚取过知识目录，直接复用刷新名称映射，保证考点/知识卡列显示中文名
-      void loadNameMaps(data);
+      void reloadNameMaps(data);
       // 直接用创建响应的 blueprint_version_id 更新本地项目状态，界面立即展示蓝图
       // 并开放「进入合同阶段」，不依赖 list 接口的返回（后者可能因时序未包含新版本）。
       const updated: ExamProject = {
@@ -899,7 +825,7 @@ export default function ExamProjectsPage() {
   // ── 项目详情视图 ──
   if (activeProject) {
     const sp = activeProject;
-    const statusMeta = STATUS_META[sp.status] ?? { label: sp.status, variant: 'default' as BadgeVariant };
+    const statusMeta = STATUS_META[sp.status] ?? { label: sp.status, variant: 'default' as const };
     return (
       <div className="page-enter" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
         <button
@@ -923,12 +849,18 @@ export default function ExamProjectsPage() {
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <Badge variant={statusMeta.variant}>{statusMeta.label}</Badge>
+              {sp.paper_version_status && (
+                <Badge variant={(PAPER_STATUS_META[sp.paper_version_status] ?? { variant: 'default' }).variant}>
+                  试卷 {(PAPER_STATUS_META[sp.paper_version_status] ?? { label: sp.paper_version_status }).label}
+                  {sp.paper_version_no ? ' v' + sp.paper_version_no : ''}
+                </Badge>
+              )}
               <Button
                 variant="secondary" size="sm"
                 onClick={() => navigate('/courses/' + courseId + '/paper-center?project=' + sp.id)}
                 icon={<FileText size={14} />}
               >
-                试卷中心
+                查看试卷
               </Button>
             </div>
           </div>
@@ -960,7 +892,7 @@ export default function ExamProjectsPage() {
         <div>
           <h1 style={{ fontSize: '1.75rem', fontWeight: 700, letterSpacing: '-0.03em', marginBottom: '6px' }}>试卷项目</h1>
           <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)' }}>
-            蓝图 → 合同 → 生成，AI 驱动的出卷流水线；编辑、定稿、导出请前往「试卷中心」
+            蓝图 → 合同 → 生成，AI 驱动的出卷流水线。试卷的查看、审核与导出请前往「试卷中心」
           </p>
         </div>
         <Button onClick={() => { setNewName(''); setCreateOpen(true); }} icon={<Plus size={16} />}>新建项目</Button>
@@ -977,7 +909,7 @@ export default function ExamProjectsPage() {
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {projects.map((p) => {
-            const sm = STATUS_META[p.status] ?? { label: p.status, variant: 'default' as BadgeVariant };
+            const sm = STATUS_META[p.status] ?? { label: p.status, variant: 'default' as const };
             return (
               <div
                 key={p.id}
