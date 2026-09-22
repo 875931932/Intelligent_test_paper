@@ -33,9 +33,18 @@ def validate_generated_question(question: dict, atom_text: str = "") -> dict:
             }
     if qtype == "single_choice" and (len(question.get("options", [])) != 4 or not question.get("answer")):
         return {"status": "blocker", "code": "single_choice_schema", "message": "单选题必须有四个选项和答案"}
+    if qtype == "multiple_choice":
+        opts = question.get("options") or []
+        answer_raw = question.get("answer")
+        picked = {c for c in str(answer_raw or "").upper() if c.isalpha()}
+        keys = {chr(65 + i) for i in range(len(opts))}
+        if len(opts) < 4 or not answer_raw:
+            return {"status": "blocker", "code": "multiple_choice_schema", "message": "多选题必须有至少四个选项和答案"}
+        if len(picked) < 2 or not picked.issubset(keys):
+            return {"status": "blocker", "code": "multiple_choice_answer", "message": "多选题答案必须是两个及以上选项字母（如 ABD）"}
     if qtype == "true_false" and not isinstance(question.get("answer"), bool):
         return {"status": "blocker", "code": "true_false_schema", "message": "判断题答案必须为布尔值"}
-    if qtype in {"fill_blank", "short_answer", "comprehensive"} and not str(question.get("answer", "")).strip():
+    if qtype in {"fill_blank", "short_answer", "comprehensive", "essay"} and not str(question.get("answer", "")).strip():
         return {"status": "blocker", "code": "answer_missing", "message": "题目缺少答案"}
     if qtype == "fill_blank":
         blank_runs = re.findall(r"_{2,}", stem)

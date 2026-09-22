@@ -1,6 +1,8 @@
 """试卷版本服务：从生成结果创建 candidate → 评审覆写 → 确认/回滚。"""
 from __future__ import annotations
 
+import html
+import re
 import uuid
 from typing import Any
 
@@ -659,6 +661,33 @@ def reorder_paper_items(
         raise PaperVersionError(f"数据库错误: {exc}") from exc
 
 
+def _validate_teacher_item(
+    *,
+    stem: str,
+    question_type: str,
+    options: list | None,
+    answer: Any,
+) -> None:
+    """教师手动新增题目的最小约束：题干与答案必填，选择题答案须落在选项上。
+
+    生成链路有 validate_generated_question 把关，但手动新增此前完全不校验，
+    导致卷面出现无答案题目——导出答卷/答案细则时就是空白，属于不应出现的数据。
+    """
+    if not str(stem or "").strip():
+        raise PaperVersionError("题干不能为空")
+    text = _answer_text(answer)
+    if not text:
+        raise PaperVersionError("答案不能为空：每道题都必须有答案，否则答卷与答案细则会出现空答案")
+    if question_type == "multiple_choice":
+        opts = options or []
+        if len(opts) < 2:
+            raise PaperVersionError("多选题至少需要两个选项")
+        keys = {chr(65 + i) for i in range(len(opts))}
+        picked = {c for c in text.upper() if c.isalpha()}
+        if not picked or not picked.issubset(keys):
+            raise PaperVersionError("多选题答案必须是选项字母（如 AB），且至少选中一项")
+
+
 def create_paper_item(
     session: Session,
     *,
@@ -667,7 +696,7 @@ def create_paper_item(
     stem: str,
     question_type: str = "short_answer",
     options: list | None = None,
-    answer: str = "",
+    answer: Any = "",
     explanation: str = "",
     score: float = 0.0,
     difficulty: str = "medium",
@@ -678,6 +707,12 @@ def create_paper_item(
     paper_item，返回刷新后的完整试卷。新增题标记 payload.teacher_added=true。
     """
     try:
+        _validate_teacher_item(
+            stem=stem,
+            question_type=question_type,
+            options=options,
+            answer=answer,
+        )
         pv = session.execute(
             select(
                 paper_versions.c.status,
@@ -974,24 +1009,314 @@ def revert_to_candidate(
 
 # ─── 导出 ───────────────────────────────────────────────────
 
+_Q_TYPE_LABELS = {
+    "single_choice": "单选题",
+    "multiple_choice": "多选题",
+    "true_false": "判断题",
+    "short_answer": "简答题",
+    "comprehensive": "综合题",
+    "essay": "论述题",
+    "fill_blank": "填空题",
+    "calculation": "计算题",
+}
+
+# 卷面分节顺序：客观题在前，主观题在后
+_SECTION_ORDER = [
+    "single_choice",
+    "multiple_choice",
+    "true_false",
+    "fill_blank",
+    "short_answer",
+    "comprehensive",
+    "essay",
+    "calculation",
+]
+
+_CN_NUMERALS = "一二三四五六七八九十"
+
+# 题干自带的层级编号（"1." / "1.1" / "1.1."）与分值前缀（"（10分）"）。
+# 剥离后再加导出题号，否则会叠成用户看到的「1.1.」「2.2.」。
+# 单独编号里的点不能紧跟数字（否则 "3.14是圆周率" 会被误剥成 "14是…"）；
+# 层级编号后必须紧跟分隔符或空白，避免误伤正文里的版本号一类数字。
+_LEADING_INDEX_RE = re.compile(r"^\s*(?:\d+(?:\.\d+)+\s*(?:[\.、．:：]|\s)|\d+\s*(?:[、．:：]|\.(?!\d)))\s*")
+_LEADING_SCORE_RE = re.compile(r"^\s*[（(]\s*\d+(?:\.\d+)?\s*分\s*[）)]\s*")
+
+
 def _q_type_label(qt: str | None) -> str:
-    labels = {
-        "single_choice": "单选题",
-        "multiple_choice": "多选题",
-        "true_false": "判断题",
-        "short_answer": "简答题",
-        "essay": "论述题",
-        "fill_blank": "填空题",
-        "calculation": "计算题",
-    }
-    return labels.get(qt or "", qt or "题")
+    return _Q_TYPE_LABELS.get(qt or "", qt or "题")
 
 
 def _difficulty_label(d: Any) -> str:
-    labels = {1: "容易", 2: "较易", 3: "中等", 4: "较难", 5: "困难"}
+    # 生成链路用 easy/medium/hard 字符串，部分历史数据用 1-5 整数，两边都要能读
+    str_labels = {"easy": "容易", "low": "容易", "medium": "中等", "hard": "困难", "high": "困难"}
+    int_labels = {1: "容易", 2: "较易", 3: "中等", 4: "较难", 5: "困难"}
+    if isinstance(d, bool):
+        return "未知"
     if isinstance(d, (int, float)):
-        return labels.get(int(d), str(d))
-    return str(d) if d else "未知"
+        return int_labels.get(int(d), str(d))
+    text = str(d).strip() if d else ""
+    if not text:
+        return "未知"
+    return str_labels.get(text.lower(), text)
+
+
+def _strip_stem_noise(stem: str) -> str:
+    """剥掉题干自带的编号与分值前缀，避免与导出题号重复。"""
+    text = stem or ""
+    previous = None
+    while previous != text:
+        previous = text
+        text = _LEADING_SCORE_RE.sub("", text)
+        text = _LEADING_INDEX_RE.sub("", text)
+    return text.strip()
+
+
+def _answer_text(answer: Any) -> str:
+    """答案统一成可读文本。判断题在后端是布尔值，没有选项字段。"""
+    if isinstance(answer, bool):
+        return "正确" if answer else "错误"
+    if answer is None:
+        return ""
+    if isinstance(answer, (list, tuple)):
+        return "、".join(str(a).strip() for a in answer if str(a).strip())
+    return str(answer).strip()
+
+
+def _answer_missing(q: dict) -> bool:
+    return not _answer_text(q.get("answer"))
+
+
+def _cn_ordinal(index: int) -> str:
+    return _CN_NUMERALS[index] if 0 <= index < len(_CN_NUMERALS) else str(index + 1)
+
+
+def _section_groups(questions: list[dict]) -> list[dict]:
+    """按题型分节，节内保持卷面顺序；计算节总分与（Uniform 时的）每题分值。"""
+    position: dict[str, int] = {}
+    groups: list[dict] = []
+    for q in questions:
+        qt = q.get("question_type") or "short_answer"
+        if qt not in position:
+            position[qt] = len(groups)
+            groups.append({"type": qt, "items": []})
+        groups[position[qt]]["items"].append(q)
+
+    def sort_key(group: dict) -> int:
+        t = group["type"]
+        return _SECTION_ORDER.index(t) if t in _SECTION_ORDER else len(_SECTION_ORDER)
+
+    groups.sort(key=sort_key)
+    for i, group in enumerate(groups):
+        items = group["items"]
+        group["ordinal"] = _cn_ordinal(i)
+        group["total"] = sum(float(q.get("score") or 0) for q in items)
+        scores = {round(float(q.get("score") or 0), 2) for q in items}
+        group["per_score"] = scores.pop() if len(scores) == 1 else None
+    return groups
+
+
+def _section_caption(group: dict) -> str:
+    """「一、选择题（共10题，每题2分，共20分）」；分值不统一时省略"每题X分"。"""
+    count = len(group["items"])
+    per = group["per_score"]
+    total = _trim_number(group["total"])
+    head = f"{group['ordinal']}、{_q_type_label(group['type'])}（共{count}题，"
+    body = f"每题{_trim_number(per)}分，共{total}分）" if per is not None else f"共{total}分）"
+    return head + body
+
+
+def _trim_number(value: Any) -> str:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    return str(int(number)) if number.is_integer() else f"{number:g}"
+
+
+def _paper_meta(session: Session, *, course_id: str, pv: dict) -> dict:
+    """导出头部能拿到的真实元数据：课程名（其余字段留空由教师填写）。"""
+    course_name = ""
+    try:
+        from app.db.schema import courses
+
+        row = session.execute(
+            select(courses.c.name).where(courses.c.id == course_id)
+        ).first()
+        if row is not None:
+            course_name = row._mapping.get("name") or ""
+    except SQLAlchemyError:
+        course_name = ""
+    return {
+        "course_name": course_name,
+        "project_name": pv.get("project_name") or "",
+        "version_no": pv.get("version_no", 1),
+        "total_score": pv.get("total_score", 0),
+        "status": pv.get("status", ""),
+    }
+
+
+def _esc(text: Any) -> str:
+    return html.escape(str(text if text is not None else ""))
+
+
+def _exam_shell(
+    *,
+    title: str,
+    meta: dict,
+    sections_table: str,
+    body: str,
+    binding_lines: bool,
+    footer_note: str,
+) -> str:
+    """三份导出共用的正式卷面外壳：信息头 + 题次表 +（可选）装订线 + 页脚。"""
+    info_line = (
+        f"课程名称：{_esc(meta['course_name']) or '＿＿＿＿＿＿'}"
+        f"&emsp;&emsp;总分：{_trim_number(meta['total_score'])}分"
+        f"&emsp;&emsp;题量：{meta['question_count']}题"
+    )
+    blank_line = (
+        "考试时间：＿＿＿＿分钟&emsp;&emsp;考试形式：＿＿＿＿"
+        "&emsp;&emsp;试卷类型：＿＿＿＿&emsp;&emsp;学分：＿＿＿＿"
+    )
+    binding = (
+        '<div class="binding binding-left">装订线</div>'
+        '<div class="binding binding-center">装订线</div>'
+        '<div class="binding binding-right">装订线</div>'
+        if binding_lines
+        else ""
+    )
+    return f"""<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{_esc(title)}</title>
+<style>
+  * {{ box-sizing: border-box; }}
+  body {{ font-family: 'SimSun','宋体',serif; max-width: 780px; margin: 0 auto; padding: 36px 28px 60px; color: #1d1d1f; background: #fff; }}
+  .doc-title {{ text-align: center; font-size: 22px; font-weight: 700; letter-spacing: 2px; margin: 0 0 14px; }}
+  .doc-subtitle {{ text-align: center; font-size: 12px; color: #6e6e73; margin: -8px 0 14px; }}
+  .info-table {{ width: 100%; border-collapse: collapse; margin-bottom: 14px; font-size: 13px; }}
+  .info-table td {{ padding: 5px 6px; }}
+  .score-table {{ width: 100%; border-collapse: collapse; margin: 0 0 22px; font-size: 13px; text-align: center; }}
+  .score-table th, .score-table td {{ border: 1px solid #1d1d1f; padding: 6px 4px; }}
+  .score-table th {{ background: #f5f5f7; font-weight: 600; }}
+  .section {{ margin-bottom: 26px; page-break-inside: avoid; }}
+  .section-title {{ font-size: 15px; font-weight: 700; margin: 0 0 12px; }}
+  .question {{ margin-bottom: 16px; page-break-inside: avoid; }}
+  .q-stem {{ font-size: 14.5px; line-height: 1.85; }}
+  .q-stem .q-no {{ font-weight: 700; }}
+  .q-options {{ padding-left: 26px; margin-top: 4px; }}
+  .q-option {{ font-size: 14px; line-height: 1.9; }}
+  .q-option.is-answer {{ color: #1a7e34; font-weight: 700; }}
+  .q-answer-line {{ font-size: 14px; line-height: 1.85; margin-top: 6px; color: #1a7e34; }}
+  .q-answer-line .ans-label {{ font-weight: 700; }}
+  .q-answer-missing {{ color: #c2331d; font-weight: 700; }}
+  .q-explain {{ font-size: 12.5px; line-height: 1.8; color: #6e6e73; margin-top: 4px; }}
+  .q-meta {{ font-size: 12px; color: #8e8e93; margin-top: 3px; }}
+  .answer-grid {{ border-collapse: collapse; margin: 4px 0 18px; font-size: 13px; text-align: center; }}
+  .answer-grid th, .answer-grid td {{ border: 1px solid #b9b9bd; padding: 5px 9px; }}
+  .answer-grid th {{ background: #f5f5f7; font-weight: 600; }}
+  .blank-line {{ border-bottom: 1px solid #8e8e93; height: 30px; margin: 10px 0; }}
+  .write-area {{ margin: 8px 0 4px; }}
+  .write-area .blank-line {{ height: 26px; }}
+  .score-box {{ font-size: 13px; color: #6e6e73; margin-bottom: 2px; }}
+  .sign-row {{ display: flex; gap: 28px; margin-top: 30px; font-size: 13px; }}
+  .binding {{ position: fixed; top: 0; bottom: 0; writing-mode: vertical-rl; text-align: center;
+              font-size: 12px; color: #8e8e93; letter-spacing: 6px; }}
+  .binding-left {{ left: 26px; border-left: 1px dashed #b9b9bd; }}
+  .binding-center {{ left: 50%; border-left: 1px dashed #b9b9bd; }}
+  .binding-right {{ right: 26px; border-right: 1px dashed #b9b9bd; }}
+  .footer {{ margin-top: 34px; padding-top: 12px; border-top: 1px solid #e5e5e7;
+             text-align: center; font-size: 12px; color: #86868b; }}
+  @media print {{ body {{ padding: 18px 34px; }} .binding {{ display: block; }} }}
+</style></head>
+<body>
+  {binding}
+  <h1 class="doc-title">{_esc(title)}</h1>
+  <div class="doc-subtitle">{_esc(meta['project_name'])}</div>
+  <table class="info-table"><tr><td>{info_line}</td></tr><tr><td>{blank_line}</td></tr></table>
+  {sections_table}
+  {body}
+  <div class="sign-row"><span>学号：＿＿＿＿＿＿＿＿＿＿</span><span>姓名：＿＿＿＿＿＿＿＿＿＿</span></div>
+  <div class="footer">{_esc(footer_note)}</div>
+</body></html>"""
+
+
+def _sections_table_html(groups: list[dict], with_reviewer: bool = True) -> str:
+    """题次表：题次 | 一 | 二 | … | 总分 | 评卷人。"""
+    head_cells = "".join(f"<th>{_esc(g['ordinal'])}</th>" for g in groups)
+    score_cells = "".join(f"<td>{_trim_number(g['total'])}</td>" for g in groups)
+    total = sum(g["total"] for g in groups)
+    reviewer = "<th>评卷人</th><td></td>" if with_reviewer else ""
+    return (
+        '<table class="score-table">'
+        f"<tr><th>题次</th>{head_cells}<th>总分</th>{'<th>评卷人</th>' if with_reviewer else ''}</tr>"
+        f"<tr><th>分数</th>{score_cells}<td>{_trim_number(total)}</td>{'<td></td>' if with_reviewer else ''}</tr>"
+        f"<tr><th>评分</th>{'<td></td>' * (len(groups) + 1)}{'<td></td>' if with_reviewer else ''}</tr>"
+        "</table>"
+    )
+
+
+def _answer_grid_html(questions: list[dict]) -> str:
+    """客观题答案速查表（题号横向排列，与命题范本的评分表一致）。"""
+    cells = "".join(f"<th>{q['item_index']}</th>" for q in questions)
+    answers = "".join(
+        f"<td>{_esc(_answer_text(q.get('answer')) or '—')}</td>" for q in questions
+    )
+    return f'<table class="answer-grid"><tr><th>题号</th>{cells}</tr><tr><th>答案</th>{answers}</tr></table>'
+
+
+def _render_question_html(q: dict, *, with_answer: bool) -> str:
+    """渲染单题。with_answer=True 时给出答案（答卷）。"""
+    stem = _strip_stem_noise(str(q.get("stem", "")))
+    options = q.get("options") or []
+    answer_text = _answer_text(q.get("answer"))
+    keys = set(_answer_text(q.get("answer")).upper().replace(" ", ""))
+
+    parts = [f'<div class="q-stem"><span class="q-no">{q.get("item_index", 0)}.</span> {_esc(stem)}</div>']
+
+    if options:
+        option_html = []
+        for i, opt in enumerate(options):
+            label = chr(65 + i)
+            text = opt.get("text", str(opt)) if isinstance(opt, dict) else str(opt)
+            is_answer = with_answer and label in keys
+            css = ' class="q-option is-answer"' if is_answer else ' class="q-option"'
+            mark = " ✓" if is_answer else ""
+            option_html.append(f"<div{css}>{label}. {_esc(text)}{mark}</div>")
+        parts.append(f'<div class="q-options">{"".join(option_html)}</div>')
+
+    if with_answer:
+        if answer_text:
+            parts.append(
+                f'<div class="q-answer-line"><span class="ans-label">【答案】</span>{_esc(answer_text)}</div>'
+            )
+        else:
+            parts.append(
+                '<div class="q-answer-line q-answer-missing">【缺答案·需人工补充】</div>'
+            )
+        if q.get("explanation"):
+            parts.append(f'<div class="q-explain">解析：{_esc(q["explanation"])}</div>')
+
+    parts.append(
+        f'<div class="q-meta">难度：{_esc(_difficulty_label(q.get("difficulty")))}'
+        f' ｜ 分值：{_trim_number(q.get("score") or 0)}分</div>'
+    )
+    return f'<div class="question">{"".join(parts)}</div>'
+
+
+def _render_sections(groups: list[dict], *, with_answer: bool) -> str:
+    blocks = []
+    for group in groups:
+        questions = []
+        for q in group["items"]:
+            questions.append(_render_question_html(q, with_answer=with_answer))
+        grid = ""
+        if with_answer and group["type"] in {"single_choice", "multiple_choice", "true_false"}:
+            grid = _answer_grid_html(group["items"])
+        blocks.append(
+            f'<div class="section"><h2 class="section-title">{_esc(_section_caption(group))}</h2>'
+            f"{grid}{''.join(questions)}</div>"
+        )
+    return "".join(blocks)
 
 
 def export_answer_detail_json(
@@ -1008,15 +1333,17 @@ def export_answer_detail_json(
         "paper_version_id": paper_version_id,
         "version_no": pv.get("version_no"),
         "exam_project_id": pv.get("exam_project_id"),
+        "missing_answer_count": sum(1 for q in questions if _answer_missing(q)),
         "total_questions": len(questions),
         "questions": [
             {
                 "item_index": q["item_index"],
                 "question_type": q.get("question_type"),
                 "question_type_label": _q_type_label(q.get("question_type")),
-                "stem": q.get("stem", ""),
+                "stem": _strip_stem_noise(str(q.get("stem", ""))),
                 "options": q.get("options", []),
                 "answer": q.get("answer", ""),
+                "answer_missing": _answer_missing(q),
                 "difficulty": q.get("difficulty"),
                 "difficulty_label": _difficulty_label(q.get("difficulty")),
                 "cognitive_level": q.get("cognitive_level"),
@@ -1031,80 +1358,26 @@ def export_answer_detail_json(
     }
 
 
-def _render_question_html(q: dict, *, with_answer: bool) -> str:
-    """渲染单题 HTML。with_answer=True 时显示答案。"""
-    idx = q.get("item_index", 0)
-    stem = q.get("stem", "")
-    qt_label = _q_type_label(q.get("question_type"))
-    options = q.get("options", [])
-    answer = q.get("answer", "")
-    # 判断题答案是布尔值，直接渲染会输出 Python 的 True/False
-    if isinstance(answer, bool):
-        answer = "正确" if answer else "错误"
-
-    parts = [f'<div class="question">', f'<div class="q-stem">{idx}. {stem}</div>']
-
-    if options:
-        opts_html = []
-        for i, opt in enumerate(options):
-            label = chr(65 + i)  # A, B, C, D
-            if isinstance(opt, dict):
-                text = opt.get("text", str(opt))
-            else:
-                text = str(opt)
-            opts_html.append(f'<div class="q-option">{label}. {text}</div>')
-        parts.append(f'<div class="q-options">{"".join(opts_html)}</div>')
-
-    if with_answer:
-        diff = _difficulty_label(q.get("difficulty"))
-        cog = q.get("cognitive_level", "")
-        parts.append(
-            f'<div class="q-answer"><span class="ans-label">【答案】</span>{answer}</div>'
-            f'<div class="q-meta">难度: {diff}'
-            + (f' ｜ 认知层级: {cog}' if cog else '')
-            + '</div>'
-        )
-
-    parts.append('</div>')
-    return "".join(parts)
-
-
 def export_student_paper_html(
     session: Session,
     paper_version_id: str,
     *,
     course_id: str,
 ) -> str:
-    """学生卷 HTML（无答案，可打印为 PDF）。"""
+    """学生卷：正式卷面（信息头 + 题次表 + 分节题面），不含答案。"""
     pv = get_paper_version(session, paper_version_id, course_id=course_id)
-    questions = pv.get("questions", [])
-    version_no = pv.get("version_no", 1)
-    project_id = pv.get("exam_project_id", "")
-    body = "".join(_render_question_html(q, with_answer=False) for q in questions)
-    return f"""<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>试卷 - 版本{version_no}</title>
-<style>
-  body {{ font-family: 'SimSun','宋体',serif; max-width: 780px; margin: 0 auto; padding: 40px 20px; color: #1d1d1f; }}
-  .header {{ text-align: center; border-bottom: 2px solid #1d1d1f; padding-bottom: 16px; margin-bottom: 24px; }}
-  .header h1 {{ font-size: 22px; margin: 0 0 8px; }}
-  .header .meta {{ font-size: 13px; color: #6e6e73; }}
-  .question {{ margin-bottom: 20px; page-break-inside: avoid; }}
-  .q-stem {{ font-size: 15px; line-height: 1.8; margin-bottom: 8px; }}
-  .q-options {{ padding-left: 24px; }}
-  .q-option {{ font-size: 14px; line-height: 1.8; }}
-  .q-type-tag {{ display: inline-block; font-size: 12px; color: #6e6e73; margin-left: 8px; }}
-  .footer {{ margin-top: 40px; text-align: center; font-size: 12px; color: #86868b; border-top: 1px solid #e5e5e7; padding-top: 12px; }}
-  @media print {{ body {{ padding: 20px; }} .no-print {{ display: none; }} }}
-</style></head>
-<body>
-  <div class="header">
-    <h1>试卷</h1>
-    <div class="meta">版本 {version_no} ｜ 共 {len(questions)} 题</div>
-  </div>
-  {body}
-  <div class="footer">试卷版本号: {version_no} | 项目: {project_id[:8] if project_id else 'N/A'}</div>
-</body></html>"""
+    groups = _section_groups(pv.get("questions", []))
+    meta = _paper_meta(session, course_id=course_id, pv=pv)
+    meta["question_count"] = len(pv.get("questions", []))
+    body = _render_sections(groups, with_answer=False)
+    return _exam_shell(
+        title="考试卷",
+        meta=meta,
+        sections_table=_sections_table_html(groups),
+        body=body,
+        binding_lines=False,
+        footer_note=f"学生卷 ｜ 试卷版本 v{meta['version_no']} ｜ 请将答案作答在答卷上",
+    )
 
 
 def export_answer_key_html(
@@ -1113,35 +1386,22 @@ def export_answer_key_html(
     *,
     course_id: str,
 ) -> str:
-    """答卷 HTML（含答案，可打印为 PDF）。"""
+    """答卷：正式卷面 + 答案（客观题附答案速查表），缺答案显式标注。"""
     pv = get_paper_version(session, paper_version_id, course_id=course_id)
     questions = pv.get("questions", [])
-    version_no = pv.get("version_no", 1)
-    project_id = pv.get("exam_project_id", "")
-    body = "".join(_render_question_html(q, with_answer=True) for q in questions)
-    return f"""<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>答卷（含答案）- 版本{version_no}</title>
-<style>
-  body {{ font-family: 'SimSun','宋体',serif; max-width: 780px; margin: 0 auto; padding: 40px 20px; color: #1d1d1f; }}
-  .header {{ text-align: center; border-bottom: 2px solid #1d1d1f; padding-bottom: 16px; margin-bottom: 24px; }}
-  .header h1 {{ font-size: 22px; margin: 0 0 8px; }}
-  .header .meta {{ font-size: 13px; color: #6e6e73; }}
-  .question {{ margin-bottom: 24px; page-break-inside: avoid; }}
-  .q-stem {{ font-size: 15px; line-height: 1.8; margin-bottom: 8px; }}
-  .q-options {{ padding-left: 24px; }}
-  .q-option {{ font-size: 14px; line-height: 1.8; }}
-  .q-answer {{ font-size: 14px; line-height: 1.8; margin-top: 6px; color: #1a7e34; }}
-  .ans-label {{ font-weight: 700; }}
-  .q-meta {{ font-size: 12px; color: #6e6e73; margin-top: 4px; }}
-  .footer {{ margin-top: 40px; text-align: center; font-size: 12px; color: #86868b; border-top: 1px solid #e5e5e7; padding-top: 12px; }}
-  @media print {{ body {{ padding: 20px; }} .no-print {{ display: none; }} }}
-</style></head>
-<body>
-  <div class="header">
-    <h1>答卷（含答案）</h1>
-    <div class="meta">版本 {version_no} ｜ 共 {len(questions)} 题</div>
-  </div>
-  {body}
-  <div class="footer">试卷版本号: {version_no} | 项目: {project_id[:8] if project_id else 'N/A'}</div>
-</body></html>"""
+    groups = _section_groups(questions)
+    meta = _paper_meta(session, course_id=course_id, pv=pv)
+    meta["question_count"] = len(questions)
+    missing = sum(1 for q in questions if _answer_missing(q))
+    hint = (
+        f"答卷（含答案）｜ 试卷版本 v{meta['version_no']} ｜ 共 {len(questions)} 题"
+        + (f" ｜ 注意：{missing} 题缺答案，已标注待人工补充" if missing else "")
+    )
+    return _exam_shell(
+        title="答卷（含答案）",
+        meta=meta,
+        sections_table=_sections_table_html(groups),
+        body=_render_sections(groups, with_answer=True),
+        binding_lines=True,
+        footer_note=hint,
+    )

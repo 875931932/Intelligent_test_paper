@@ -384,6 +384,9 @@ function QuestionIndex({
                   {flagged && (
                     <span title="待审核" style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--warning)' }} />
                   )}
+                  {!normalizeAnswer(item.answer) && (
+                    <span title="缺答案" style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--error)' }} />
+                  )}
                   {item.has_override && (
                     <span title="已修改" style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--purple)' }} />
                   )}
@@ -438,6 +441,7 @@ function QuestionDetail({
         {item.difficulty && <Badge variant="default">{dlabel(item.difficulty)}</Badge>}
         {item.has_override && <Badge variant="purple">已修改</Badge>}
         {flagged && <Badge variant="warning">需审核</Badge>}
+        {!answerText && <Badge variant="error">缺答案</Badge>}
       </div>
 
       {editing ? (
@@ -497,7 +501,7 @@ function QuestionDetail({
               whiteSpace: 'pre-wrap', wordBreak: 'break-word',
             }}>
               <span style={{ fontWeight: 600, fontSize: '0.78rem', display: 'block', marginBottom: 3, opacity: 0.7 }}>答案</span>
-              {answerText || '未填写答案'}
+              {answerText || '未填写答案 —— 这道题导出答卷时会标注为「缺答案」，请补上'}
             </div>
           )}
 

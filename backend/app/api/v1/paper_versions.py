@@ -145,13 +145,16 @@ def create_paper_item(
         raise HTTPException(status_code=422, detail="body must be a dict")
     if not str(body.get("stem", "")).strip():
         raise HTTPException(status_code=422, detail="stem 不能为空")
+    # 判断题答案是布尔值：不能走 str(... or "")，否则 false 会变成空串被当成缺答案
+    raw_answer = body.get("answer")
+    answer_value = raw_answer if isinstance(raw_answer, bool) else str(raw_answer or "")
     try:
         return create_paper_item_svc(
             session, course_id=course_id, paper_version_id=pv_id,
             stem=str(body.get("stem", "")),
             question_type=str(body.get("question_type") or "short_answer"),
             options=body.get("options"),
-            answer=str(body.get("answer") or ""),
+            answer=answer_value,
             explanation=str(body.get("explanation") or ""),
             score=float(body.get("score") or 0),
             difficulty=str(body.get("difficulty") or "medium"),
