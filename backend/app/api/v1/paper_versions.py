@@ -13,11 +13,14 @@ from app.services.paper_version_service import (
     PendingNeedsReview,
     PaperVersionError,
     confirm_paper_version,
+    create_paper_item as create_paper_item_svc,
+    delete_paper_item as delete_paper_item_svc,
     export_answer_detail_json,
     export_answer_key_html,
     export_student_paper_html,
     get_paper_version,
     list_needs_review,
+    reorder_paper_items as reorder_paper_items_svc,
     resolve_current_paper_version_id,
     revert_to_candidate,
     update_paper_item,
@@ -105,6 +108,79 @@ def patch_paper_item(
         if "不在该试卷版本中" in msg or "不存在" in msg:
             raise HTTPException(status_code=404, detail=msg)
         raise HTTPException(status_code=422, detail=msg)
+
+
+@router.put("/paper-versions/{pv_id}/items/reorder", response_model=dict)
+def reorder_paper_items(
+    course_id: str,
+    pv_id: str,
+    body: dict,
+    session: Session = Depends(get_session),
+) -> dict:
+    """按新顺序重排题目（body 形如 {ordered_indices: [3,1,2]}）。"""
+    if not isinstance(body, dict) or not isinstance(body.get("ordered_indices"), list):
+        raise HTTPException(status_code=422, detail="body 需包含 ordered_indices 数组")
+    try:
+        return reorder_paper_items_svc(
+            session, course_id=course_id, paper_version_id=pv_id,
+            ordered_indices=body["ordered_indices"],
+        )
+    except Conflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except PaperVersionError as exc:
+        if "不存在" in str(exc):
+            raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.post("/paper-versions/{pv_id}/items", response_model=dict)
+def create_paper_item(
+    course_id: str,
+    pv_id: str,
+    body: dict,
+    session: Session = Depends(get_session),
+) -> dict:
+    """在试卷末尾新增一道教师自拟题目。"""
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="body must be a dict")
+    if not str(body.get("stem", "")).strip():
+        raise HTTPException(status_code=422, detail="stem 不能为空")
+    try:
+        return create_paper_item_svc(
+            session, course_id=course_id, paper_version_id=pv_id,
+            stem=str(body.get("stem", "")),
+            question_type=str(body.get("question_type") or "short_answer"),
+            options=body.get("options"),
+            answer=str(body.get("answer") or ""),
+            explanation=str(body.get("explanation") or ""),
+            score=float(body.get("score") or 0),
+            difficulty=str(body.get("difficulty") or "medium"),
+        )
+    except Conflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except PaperVersionError as exc:
+        if "不存在" in str(exc):
+            raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.delete("/paper-versions/{pv_id}/items/{item_index}", response_model=dict)
+def delete_paper_item(
+    course_id: str,
+    pv_id: str,
+    item_index: int,
+    session: Session = Depends(get_session),
+) -> dict:
+    try:
+        return delete_paper_item_svc(
+            session, course_id=course_id, paper_version_id=pv_id, item_index=item_index
+        )
+    except Conflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except PaperVersionError as exc:
+        if "不在该试卷版本中" in str(exc) or "不存在" in str(exc):
+            raise HTTPException(status_code=404, detail=str(exc))
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 @router.post("/paper-versions/{pv_id}/confirm", response_model=dict)

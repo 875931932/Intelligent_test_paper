@@ -7,6 +7,7 @@ import {
   FlaskConical,
   FolderTree,
   FileQuestion,
+  ClipboardCheck,
   LogOut,
   ArrowLeft,
   PanelLeftClose,
@@ -42,6 +43,7 @@ export function Sidebar({ onLogout }: Props) {
     { to: `${base}/framework`, icon: FlaskConical, label: '命题框架' },
     { to: `${base}/knowledge`, icon: FolderTree, label: '知识目录' },
     { to: `${base}/exam-projects`, icon: FileQuestion, label: '试卷项目' },
+    { to: `${base}/paper-center`, icon: ClipboardCheck, label: '试卷中心' },
   ];
 
   return (

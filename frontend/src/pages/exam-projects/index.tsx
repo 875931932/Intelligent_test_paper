@@ -1,32 +1,31 @@
 import { useState, useEffect, Fragment, type ReactNode } from 'react';
-import { useParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import {
   Plus, ChevronRight, ArrowLeft, ArrowRight, RefreshCw, Check, PlayCircle,
-  ClipboardList, FileText, Download, Eye, Pencil,
+  ClipboardList, FileText,
 } from 'lucide-react';
 import { api } from '@/api/client';
-import { isApiError } from '@/api/errors';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
 import { Badge, Input, ProgressPanel, type ProgressStatus } from '@/components/ui';
 import { SkeletonCardGrid } from '@/components/ui/Skeleton';
 import type { ContractSnapshot } from '@/api/domains/examProjects';
-import type { ExamProject, PlanItem, PaperVersionItem, TaskRun, PublishedKnowledgeResponse, CurrentFrameworkResponse } from '@/types/api';
+import type { ExamProject, PlanItem, TaskRun, PublishedKnowledgeResponse, CurrentFrameworkResponse } from '@/types/api';
 
 // ─── Stage pipeline ───
-type StageKey = 'blueprint' | 'contract' | 'generate' | 'review' | 'export';
+// 流水线只负责「出题」：蓝图 → 合同 → 生成。审核/编辑/定稿/导出已独立为
+// 「试卷中心」（/courses/:courseId/paper-center），不再占流水线阶段。
+type StageKey = 'blueprint' | 'contract' | 'generate';
 type ToastType = 'success' | 'error' | 'info';
 type ToastFn = (message: string, type?: ToastType) => void;
 
-const STAGE_ORDER: StageKey[] = ['blueprint', 'contract', 'generate', 'review', 'export'];
+const STAGE_ORDER: StageKey[] = ['blueprint', 'contract', 'generate'];
 
 const STAGE_META: Record<StageKey, { label: string; icon: ReactNode; color: string }> = {
   blueprint: { label: '蓝图', icon: <ClipboardList size={16} />, color: '#0071e3' },
   contract:  { label: '合同', icon: <FileText size={16} />, color: '#5856d6' },
   generate:  { label: '生成', icon: <PlayCircle size={16} />, color: '#34c759' },
-  review:    { label: '审核', icon: <Eye size={16} />, color: '#ff9500' },
-  export:    { label: '导出', icon: <Download size={16} />, color: '#af52de' },
 };
 
 type BadgeVariant = 'default' | 'success' | 'warning' | 'error' | 'info' | 'purple';
@@ -44,8 +43,10 @@ const STATUS_TO_STAGE: Record<string, StageKey> = {
   blueprint: 'blueprint',
   contract: 'contract',
   generating: 'generate',
-  review: 'review',
-  exported: 'export',
+  // 后端项目状态仍保留 review/exported（用于列表徽标）；这里归一到生成阶段，
+  // 因为审核与导出已迁至独立的「试卷中心」，流水线不再有对应阶段。
+  review: 'generate',
+  exported: 'generate',
 };
 
 function stageFromStatus(status: string): StageKey {
@@ -488,12 +489,12 @@ function renderContract({
 //  生成进度面板（状态感知）
 // ═══════════════════════════════════════════
 function GenerationProgressPanel({
-  taskRun, onRetry, onBack, onEnterReview,
+  taskRun, onRetry, onBack, onOpenPaper,
 }: {
   taskRun: TaskRun;
   onRetry: () => void;
   onBack: () => void;
-  onEnterReview: () => void;
+  onOpenPaper: () => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
   const inFlight =
@@ -524,8 +525,8 @@ function GenerationProgressPanel({
   const resultMessage =
     taskRun.status === 'succeeded'
       ? typeof result.generated_questions === 'number'
-        ? `已生成 ${result.generated_questions} 道试题，可进入审核逐题校对。`
-        : '试题已生成完毕，可进入审核逐题校对。'
+        ? `已生成 ${result.generated_questions} 道试题。`
+        : '试题已生成完毕。'
       : undefined;
 
   return (
@@ -560,7 +561,7 @@ function GenerationProgressPanel({
             <Button onClick={onRetry} icon={<RefreshCw size={16} />}>重新生成</Button>
           </>
         ) : taskRun.status === 'succeeded' ? (
-          <Button onClick={onEnterReview} icon={<ArrowRight size={16} />}>进入审核</Button>
+          <Button onClick={onOpenPaper} icon={<ArrowRight size={16} />}>进入试卷中心</Button>
         ) : undefined
       }
     />
@@ -568,12 +569,13 @@ function GenerationProgressPanel({
 }
 
 function renderGenerate({
-  sp, courseId, token, setStep, taskRun, setTaskRun, generating, setGenerating, addToast,
+  sp, courseId, token, setStep, taskRun, setTaskRun, generating, setGenerating, addToast, onOpenPaper,
 }: {
   sp: ExamProject; courseId: string; token: string | null; setStep: (s: StageKey) => void;
   taskRun: TaskRun | null; setTaskRun: (tr: TaskRun | null) => void;
   generating: boolean; setGenerating: (b: boolean) => void;
   addToast: ToastFn;
+  onOpenPaper: () => void;
 }) {
   // 首次启动与失败后重试共用同一条链路：拿新 task_run 后立即回填进度面板
   const startGeneration = async () => {
@@ -613,173 +615,9 @@ function renderGenerate({
           taskRun={taskRun}
           onRetry={startGeneration}
           onBack={() => setStep('contract')}
-          onEnterReview={() => setStep('review')}
+          onOpenPaper={onOpenPaper}
         />
       )}
-    </div>
-  );
-}
-
-function renderReviewItems(items: PaperVersionItem[], maps: NameMaps, onPatchItem: (idx: number, p: Record<string, unknown>) => Promise<void>) {
-  return items.map((item) => {
-    // needs_review_reason 是后端下发的单数字符串（理由以；连接）
-    const flagged = item.needs_review || !!item.needs_review_reason;
-    const inputId = 'review-input-' + item.item_index;
-    // 单选等题型的 options 为对象，部分载荷可能是数组，两者都要能渲染
-    const optionEntries: Array<[string, string]> = Array.isArray(item.options)
-      ? item.options.map((v, i) => [String(i + 1), String(v)])
-      : Object.entries(item.options || {});
-    return (
-      <div
-        key={item.item_index}
-        className="glass-card"
-        style={{
-          padding: '16px',
-          borderLeft: '3px solid ' + (flagged ? '#ff9500' : 'rgba(0,113,227,0.4)'),
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
-          <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-tertiary)' }}>
-            #{item.item_index}
-          </span>
-          <Badge variant="info">{qlabel(item.question_type)}</Badge>
-          <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>{dlabel(item.difficulty || '')}</span>
-          {item.exam_point_id && (
-            <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>考点: {examPointLabel(maps, item.exam_point_id)}</span>
-          )}
-          <strong style={{ marginLeft: 'auto', fontSize: '0.85rem' }}>{item.score} 分</strong>
-        </div>
-        <p style={{ fontSize: '0.9rem', lineHeight: 1.6 }}>{item.stem}</p>
-        {optionEntries.length > 0 && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginTop: '10px' }}>
-            {optionEntries.map(([k, v]) => (
-              <div key={k} style={{ fontSize: '0.8rem', padding: '6px 10px', borderRadius: '8px', background: 'rgba(0,0,0,0.03)' }}>
-                <strong>{k}.</strong> {v}
-              </div>
-            ))}
-          </div>
-        )}
-        <div style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', marginTop: '8px' }}>
-          答案: {item.answer}{item.explanation ? ` · 解析: ${item.explanation}` : ''}
-        </div>
-        {flagged && (
-          <div style={{ fontSize: '0.78rem', color: '#b36b00', marginTop: '6px', fontWeight: 500 }}>
-            需审核: {item.needs_review_reason || '有修改建议'}
-          </div>
-        )}
-        <div style={{ display: 'flex', gap: '8px', marginTop: '12px', alignItems: 'center' }}>
-          <Input id={inputId} placeholder="修正题干 (留空保留)" style={{ flex: 1 }} />
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={async () => {
-              const inputEl = document.getElementById(inputId) as HTMLInputElement | null;
-              const val = inputEl?.value;
-              if (val && val !== item.stem) {
-                await onPatchItem(item.item_index, { stem: val });
-              }
-            }}
-          >
-            <Pencil size={14} /> 保存
-          </Button>
-        </div>
-      </div>
-    );
-  });
-}
-
-function renderReview({
-  setStep, paperVersion, pvLoading, pvConfirming, handleConfirmReview, handlePatchReviewItem, maps,
-}: {
-  setStep: (s: StageKey) => void;
-  paperVersion: any; pvLoading: boolean; pvConfirming: boolean;
-  handleConfirmReview: () => Promise<void>;
-  handlePatchReviewItem: (idx: number, p: Record<string, unknown>) => Promise<void>;
-  maps: NameMaps;
-}) {
-  // 三态门禁：还在取版本 → 加载提示；版本本体存在 → 渲染题目；后端确认无版本
-  // （404）→ 才提示去生成。不依赖任何摘要快照指针。
-  if (pvLoading && !paperVersion) {
-    return (
-      <div style={{ textAlign: 'center', padding: '32px' }}>
-        <p style={{ color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>正在加载试卷…</p>
-      </div>
-    );
-  }
-  if (!paperVersion) {
-    return (
-      <div style={{ textAlign: 'center', padding: '32px' }}>
-        <p style={{ color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>请先在生成阶段完成生成</p>
-        <Button variant="secondary" style={{ marginTop: '14px' }} onClick={() => setStep('generate')}>返回生成</Button>
-      </div>
-    );
-  }
-  // 后端逐题数组字段名为 questions（不是 items）
-  const items: PaperVersionItem[] = paperVersion.questions || [];
-  const needsReviewCount = items.filter((i) => i.needs_review).length;
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      <StageHeading
-        title="试卷审核"
-        right={
-          <div style={{ display: 'flex', gap: '8px' }}>
-            <Badge>总分: {paperVersion.total_score}</Badge>
-            {needsReviewCount > 0 && <Badge variant="warning">待审: {needsReviewCount}</Badge>}
-          </div>
-        }
-      />
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', maxHeight: '600px', overflowY: 'auto', paddingRight: '4px' }}>
-        {items.length === 0 ? (
-          <p style={{ textAlign: 'center', padding: '32px 0', color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>暂无题目</p>
-        ) : (
-          renderReviewItems(items, maps, handlePatchReviewItem)
-        )}
-      </div>
-      <div style={{ display: 'flex', gap: '8px', justifyContent: 'space-between' }}>
-        <Button variant="secondary" onClick={() => setStep('generate')}><ArrowLeft size={16} /> 返回生成</Button>
-        <Button onClick={handleConfirmReview} loading={pvConfirming} icon={<Check size={16} />}>确认通过</Button>
-      </div>
-    </div>
-  );
-}
-
-function renderExport({
-  exportUrls, paperVersion, setStep,
-}: {
-  exportUrls: { json?: string; student?: string; answerKey?: string };
-  paperVersion: any; setStep: (s: StageKey) => void;
-}) {
-  if (!paperVersion) {
-    return (
-      <div style={{ textAlign: 'center', padding: '32px' }}>
-        <p style={{ color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>请先确认试卷</p>
-        <Button variant="secondary" style={{ marginTop: '14px' }} onClick={() => setStep('review')}>返回审核</Button>
-      </div>
-    );
-  }
-  const cards = [
-    { name: '答案细则 JSON', desc: '每题详细答案与评分标准，供阅卷端消费', icon: <FileText size={22} style={{ color: '#0071e3' }} />, url: exportUrls.json, label: '下载 JSON' },
-    { name: '学生卷 HTML', desc: '不含答案，可打印为 PDF', icon: <Eye size={22} style={{ color: '#34c759' }} />, url: exportUrls.student, label: '打开预览', external: true },
-    { name: '答卷 HTML', desc: '含答案与评分标准', icon: <ClipboardList size={22} style={{ color: '#ff9500' }} />, url: exportUrls.answerKey, label: '打开预览', external: true },
-  ];
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      <StageHeading title="导出试卷" />
-      <div className="card-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}>
-        {cards.map((ex) => (
-          <div key={ex.name} className="glass-card" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            {ex.icon}
-            <h4 style={{ fontWeight: 600, fontSize: '0.9rem' }}>{ex.name}</h4>
-            <p style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', flex: 1 }}>{ex.desc}</p>
-            <a href={ex.url} target="_blank" rel="noopener" download={!ex.external} style={{ display: 'flex' }}>
-              <Button variant="secondary" size="sm" style={{ width: '100%' }}>{ex.label}</Button>
-            </a>
-          </div>
-        ))}
-      </div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-        <Button variant="secondary" onClick={() => setStep('review')}><ArrowLeft size={16} /> 返回审核</Button>
-      </div>
     </div>
   );
 }
@@ -792,6 +630,7 @@ export default function ExamProjectsPage() {
   const courseId = routeCourseId || '';
   const token = useAuthStore((s) => s.token);
   const addToast = useToastStore((s) => s.addToast);
+  const navigate = useNavigate();
 
   const [projects, setProjects] = useState<ExamProject[]>([]);
   const [loading, setLoading] = useState(true);
@@ -800,9 +639,7 @@ export default function ExamProjectsPage() {
 
   const [planItems, setPlanItems] = useState<PlanItem[]>([]);
   const [contractSnapshot, setContractSnapshot] = useState<ContractSnapshot | null>(null);
-  const [paperVersion, setPaperVersion] = useState<any>(null);
   const [taskRun, setTaskRun] = useState<TaskRun | null>(null);
-  const [exportUrls, setExportUrls] = useState<{ json?: string; student?: string; answerKey?: string }>({});
   // 名称映射：接口只返回 id，这里从已发布知识目录/框架取回中文名称用于展示
   const [maps, setMaps] = useState<NameMaps>({ examPoints: {}, anchors: {}, cards: {} });
 
@@ -817,8 +654,6 @@ export default function ExamProjectsPage() {
     () => 1 + Math.floor(Math.random() * 6),
   );
   const [generating, setGenerating] = useState(false);
-  const [pvConfirming, setPvConfirming] = useState(false);
-  const [pvLoading, setPvLoading] = useState(false);
 
   const loadProjects = async () => {
     if (!courseId) return;
@@ -830,27 +665,6 @@ export default function ExamProjectsPage() {
       addToast('加载项目失败', 'error');
     } finally {
       setLoading(false);
-    }
-  };
-
-  // 当前试卷版本以 getCurrent 返回的 paperVersion 为唯一事实源，不再从项目摘要
-  // 快照里拼指针——摘要只在打开项目那一刻获取，生成前它恒为 null，用它当门禁
-  // 会让刚生成成功的卷子永远加载不出来。
-  const loadPaperVersion = async () => {
-    if (!activeProject || !token) return;
-    setPvLoading(true);
-    try {
-      const pv = await api.paperVersions.getCurrent(courseId, activeProject.id, token);
-      setPaperVersion(pv);
-    } catch (e) {
-      // 404 表示该项目尚未生成过试卷：这是预期状态而非错误，由审核/导出页的
-      // 门禁负责提示，不要弹错误打扰用户。
-      if (!isApiError(e) || e.status !== 404) {
-        addToast('加载试卷版本失败', 'error');
-      }
-      setPaperVersion(null);
-    } finally {
-      setPvLoading(false);
     }
   };
 
@@ -911,19 +725,19 @@ export default function ExamProjectsPage() {
           clearInterval(id);
           setGenerating(false);
           if (tr.status === 'succeeded') {
-            addToast('试题生成完成', 'success');
-            // 生成完成会落库一张 candidate 试卷版本。项目摘要是在打开项目时取的
-            // 快照，此刻 paper_version_id 仍为 null，务必刷新头部才显示题数与
-            // “N 分”。仅刷新展示用摘要，试卷本体交给 loadPaperVersion 异步取回。
-            const refreshed = await api.examProjects
-              .get(courseId, activeProject?.id ?? '', token ?? undefined)
-              .catch(() => null);
-            if (refreshed) setActiveProject(refreshed);
-            await loadProjects().catch(() => {});
-            // 仍停留在生成页时自动进入审核：否则进度条会停在 100% 一直转圈，
-            // 用户不知道接下来该做什么
-            setCurrentStage((s) => (s === 'generate' ? 'review' : s));
-          } else {
+              addToast('试题生成完成', 'success');
+              // 生成完成会落库一张 candidate 试卷版本。项目摘要是在打开项目时取的
+              // 快照，此刻 paper_version_id 仍为 null，务必刷新头部才显示题数与
+              // “N 分”。
+              const refreshed = await api.examProjects
+                .get(courseId, activeProject?.id ?? '', token ?? undefined)
+                .catch(() => null);
+              if (refreshed) setActiveProject(refreshed);
+              await loadProjects().catch(() => {});
+              // 自动跳转到独立的「试卷中心」：编辑/定稿/导出都在那里完成，
+              // 本页流水线不再承载审核或导出。
+              navigate('/courses/' + courseId + '/paper-center');
+            } else {
             addToast('生成失败: ' + (tr.error_message || '未知错误'), 'error');
           }
         }
@@ -935,34 +749,6 @@ export default function ExamProjectsPage() {
     // 轮询闭包有意捕获 taskRun 快照；在成功分支读取当前 activeProject 刷新摘要
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [taskRun, courseId, token, addToast]);
-
-  // 加载当前试卷版本：只要该项目的生成任务已成功，或用户停留在审核/导出阶段，
-  // 就把后端解析出的当前版本取回作为唯一事实源。这里不再读摘要快照里的
-  // paper_version_id 做门禁（摘要生成前恒为 null，读了会永远不触发），
-  // 后端没有版本时 GET current 返回 404，由 loadPaperVersion 静默置空。
-  useEffect(() => {
-    if (!activeProject || !token) return;
-    const taskDone = taskRun?.status === 'succeeded' || activeProject.status === 'review' || activeProject.status === 'exported';
-    const inReviewOrExport = currentStage === 'review' || currentStage === 'export';
-    if ((taskDone || inReviewOrExport) && !paperVersion && !pvLoading) {
-      void loadPaperVersion();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskRun?.status, currentStage, activeProject, paperVersion, pvLoading]);
-
-  // 进入导出阶段时确定下载地址（用已加载版本的 id；无版本则交给导出页门禁提示）
-  useEffect(() => {
-    const proj = activeProject;
-    if (currentStage !== 'export' || !proj || exportUrls.json !== undefined) return;
-    const pvId = paperVersion?.id;
-    if (!pvId) return;
-    setExportUrls({
-      json: api.paperVersions.exportJson(courseId, proj.id, pvId),
-      student: api.paperVersions.exportStudent(courseId, proj.id, pvId),
-      answerKey: api.paperVersions.exportAnswerKey(courseId, proj.id, pvId),
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentStage, activeProject, paperVersion, exportUrls.json]);
 
   // 以服务端为权威数据源恢复项目状态。
   // 合同快照持久化在 generation_runs.contract_snapshot，任务进度持久化在
@@ -995,10 +781,10 @@ export default function ExamProjectsPage() {
     try {
       const tr = await api.examProjects.getTaskRun(courseId, proj.active_task_run_id, token ?? undefined);
       if (tr.status === 'succeeded') {
-        // 任务已完成：清掉进度态并落到审核阶段（仅从"生成中"前进，不降级）
-        setTaskRun(null);
+        // 任务已完成：留在生成阶段展示成功面板，由「进入试卷中心」按钮跳转编辑
         setGenerating(false);
-        setCurrentStage((s) => (s === 'generate' ? 'review' : s));
+        setTaskRun(tr);
+        setCurrentStage('generate');
       } else {
         // 失败/取消态恢复错误面板与「重新生成」入口；进行中则继续轮询
         setGenerating(tr.status === 'queued' || tr.status === 'running' || tr.status === 'waiting_external');
@@ -1014,9 +800,7 @@ export default function ExamProjectsPage() {
     setActiveProject(proj);
     setCurrentStage(stageFromStatus(proj.status));
     setContractSnapshot(null);
-    setPaperVersion(null);
     setTaskRun(null);
-    setExportUrls({});
     void loadNameMaps();
     if (proj.active_blueprint_version_id) {
       await loadPlanItems(proj);
@@ -1084,44 +868,6 @@ export default function ExamProjectsPage() {
     }
   };
 
-  const handleConfirmReview = async () => {
-    // 版本指针取已加载的当前版本；审核页只有在取回版本后才渲染出「确认」按钮，
-    // 因此这里 paperVersion 必然存在（视图门禁保证）。不再拼摘要快照。
-    const pvId = paperVersion?.id;
-    if (!activeProject || !pvId) return;
-    setPvConfirming(true);
-    try {
-      await api.paperVersions.confirm(courseId, pvId, {});
-      addToast('试卷确认通过', 'success');
-      await loadProjects();
-      // 项目状态已变为 exported，同步本地项目态，避免导出按钮还指向旧指针
-      const refreshed = await api.examProjects.get(courseId, activeProject.id, token ?? undefined).catch(() => null);
-      if (refreshed) setActiveProject(refreshed);
-      setCurrentStage('export');
-      setExportUrls({
-        json: api.paperVersions.exportJson(courseId, activeProject.id, pvId),
-        student: api.paperVersions.exportStudent(courseId, activeProject.id, pvId),
-        answerKey: api.paperVersions.exportAnswerKey(courseId, activeProject.id, pvId),
-      });
-    } catch {
-      addToast('确认失败', 'error');
-    } finally {
-      setPvConfirming(false);
-    }
-  };
-
-  const handlePatchReviewItem = async (itemIndex: number, patch: Record<string, unknown>) => {
-    const pvId = paperVersion?.id;
-    if (!pvId) return;
-    try {
-      await api.paperVersions.patchItem(courseId, pvId, itemIndex, patch);
-      addToast('题目已更新', 'success');
-      await loadPaperVersion();
-    } catch {
-      addToast('修正失败', 'error');
-    }
-  };
-
   const handleCreateProject = async () => {
     const name = newName.trim();
     if (!name || !courseId) return;
@@ -1175,7 +921,16 @@ export default function ExamProjectsPage() {
                 {sp.total_score ? sp.total_score + ' 分 · ' + (sp.item_count || 0) + ' 题' : '尚未生成试卷'}
               </p>
             </div>
-            <Badge variant={statusMeta.variant}>{statusMeta.label}</Badge>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <Badge variant={statusMeta.variant}>{statusMeta.label}</Badge>
+              <Button
+                variant="secondary" size="sm"
+                onClick={() => navigate('/courses/' + courseId + '/paper-center?project=' + sp.id)}
+                icon={<FileText size={14} />}
+              >
+                试卷中心
+              </Button>
+            </div>
           </div>
           <StageStepper current={currentStage} onSelect={setCurrentStage} />
         </div>
@@ -1191,13 +946,7 @@ export default function ExamProjectsPage() {
           })}
           {currentStage === 'generate' && renderGenerate({
             sp, courseId, token, setStep: setCurrentStage, taskRun, setTaskRun, generating, setGenerating, addToast,
-          })}
-          {currentStage === 'review' && renderReview({
-            setStep: setCurrentStage, paperVersion, pvLoading, pvConfirming,
-            handleConfirmReview, handlePatchReviewItem, maps,
-          })}
-          {currentStage === 'export' && renderExport({
-            exportUrls, paperVersion, setStep: setCurrentStage,
+            onOpenPaper: () => navigate('/courses/' + courseId + '/paper-center?project=' + sp.id),
           })}
         </div>
       </div>
@@ -1211,7 +960,7 @@ export default function ExamProjectsPage() {
         <div>
           <h1 style={{ fontSize: '1.75rem', fontWeight: 700, letterSpacing: '-0.03em', marginBottom: '6px' }}>试卷项目</h1>
           <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)' }}>
-            蓝图 → 合同 → 生成 → 审核 → 导出，AI 驱动的完整试卷生产流程
+            蓝图 → 合同 → 生成，AI 驱动的出卷流水线；编辑、定稿、导出请前往「试卷中心」
           </p>
         </div>
         <Button onClick={() => { setNewName(''); setCreateOpen(true); }} icon={<Plus size={16} />}>新建项目</Button>

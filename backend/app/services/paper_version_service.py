@@ -4,7 +4,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -428,9 +428,9 @@ def get_paper_version(
             "answer": answer,
             "explanation": override.get("explanation", payload.get("explanation")),
             "score": override.get("score", plan_score),
-            "question_type": payload.get("question_type", override.get("question_type")),
-            "difficulty": payload.get("difficulty"),
-            "cognitive_level": payload.get("cognitive_level"),
+            "question_type": override.get("question_type") or payload.get("question_type"),
+            "difficulty": override.get("difficulty") or payload.get("difficulty"),
+            "cognitive_level": override.get("cognitive_level") or payload.get("cognitive_level"),
             "needs_review": d.get("needs_review", False),
             "needs_review_reason": d.get("needs_review_reason"),
             "teacher_override": override,
@@ -438,19 +438,9 @@ def get_paper_version(
             "finalized_text": d.get("finalized_text"),
             "quality_audit": d.get("quality_audit") or {},
         })
-    # 汇总总分：按 plan_items 分值求和（与合同 slots 求和同口径），
-    # 供审核页“总分 N 分”展示；paper_versions 表本身不存分值列。
-    total_score = session.execute(
-        select(func.coalesce(func.sum(plan_items.c.score), 0.0))
-        .select_from(paper_items)
-        .join(generated_questions, generated_questions.c.id == paper_items.c.generated_question_id)
-        .join(plan_items, plan_items.c.id == generated_questions.c.plan_item_id, isouter=True)
-        .where(
-            paper_items.c.paper_version_id == paper_version_id,
-            paper_items.c.course_id == course_id,
-        )
-    ).scalar_one()
-    pv["total_score"] = float(total_score or 0.0)
+    # 汇总总分：按每题解析后的分值求和（teacher_override.score 优先于
+    # plan_items 原值），确保教师改分后总分实时反映，供试卷中心“总分 N 分”展示。
+    pv["total_score"] = float(sum(q.get("score") or 0 for q in questions_out))
 
     pv["questions"] = questions_out
     return pv
@@ -602,6 +592,242 @@ def update_paper_item(
             select(paper_items).where(paper_items.c.id == pi_data["id"])
         ).one()
         return _row_to_dict(refreshed)
+
+    except (PaperVersionError, Conflict):
+        session.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        session.rollback()
+        raise PaperVersionError(f"数据库错误: {exc}") from exc
+
+
+def reorder_paper_items(
+    session: Session,
+    *,
+    course_id: str,
+    paper_version_id: str,
+    ordered_indices: list[int],
+) -> dict:
+    """按新顺序重排试卷题目。
+
+    ``ordered_indices`` 给出新顺序：其第 i 个元素是"当前第几个题的旧题号"。
+    例如 [3, 1, 2] 表示把原第 3 题放到第 1 位、原第 1 题第 2 位、原第 2 题第 3 位。
+    display_order 会写回为 1..N。
+    """
+    try:
+        pv = session.execute(
+            select(paper_versions.c.status).where(
+                paper_versions.c.id == paper_version_id,
+                paper_versions.c.course_id == course_id,
+            )
+        ).one_or_none()
+        if pv is None:
+            raise PaperVersionError("试卷版本不存在或不属于课程")
+        if pv._mapping["status"] == "finalized":
+            raise Conflict("paper version finalized")
+
+        rows = session.execute(
+            select(paper_items.c.id, paper_items.c.display_order).where(
+                paper_items.c.course_id == course_id,
+                paper_items.c.paper_version_id == paper_version_id,
+            )
+        ).all()
+        by_order = {r._mapping["display_order"]: r._mapping["id"] for r in rows}
+        if len(ordered_indices) != len(rows) or set(ordered_indices) != set(by_order):
+            raise PaperVersionError("ordered_indices 必须恰好包含当前全部题号且不重复")
+
+        # 分两步（先临时偏移再写回 1..N），避开 display_order 唯一约束冲突
+        for new_pos, old in enumerate(ordered_indices, start=1):
+            session.execute(
+                update(paper_items)
+                .where(paper_items.c.id == by_order[old], paper_items.c.course_id == course_id)
+                .values(display_order=-(new_pos + 10_000))
+            )
+        for new_pos, old in enumerate(ordered_indices, start=1):
+            session.execute(
+                update(paper_items)
+                .where(paper_items.c.id == by_order[old], paper_items.c.course_id == course_id)
+                .values(display_order=new_pos)
+            )
+        session.commit()
+        return {"status": "ok", "item_count": len(rows)}
+    except (PaperVersionError, Conflict):
+        session.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        session.rollback()
+        raise PaperVersionError(f"数据库错误: {exc}") from exc
+
+
+def create_paper_item(
+    session: Session,
+    *,
+    course_id: str,
+    paper_version_id: str,
+    stem: str,
+    question_type: str = "short_answer",
+    options: list | None = None,
+    answer: str = "",
+    explanation: str = "",
+    score: float = 0.0,
+    difficulty: str = "medium",
+) -> dict:
+    """在试卷末尾新增一道教师自拟题目。
+
+    生成一条 plan_item 槽位（接在蓝图既有槽位之后）＋ generated_question ＋
+    paper_item，返回刷新后的完整试卷。新增题标记 payload.teacher_added=true。
+    """
+    try:
+        pv = session.execute(
+            select(
+                paper_versions.c.status,
+                paper_versions.c.generation_run_id,
+                generation_runs.c.blueprint_version_id,
+            )
+            .select_from(paper_versions)
+            .join(generation_runs, generation_runs.c.id == paper_versions.c.generation_run_id)
+            .where(
+                paper_versions.c.id == paper_version_id,
+                paper_versions.c.course_id == course_id,
+            )
+        ).one_or_none()
+        if pv is None:
+            raise PaperVersionError("试卷版本不存在或不属于课程")
+        p = dict(pv._mapping)
+        if p["status"] == "finalized":
+            raise Conflict("paper version finalized")
+        bp_id = p.get("blueprint_version_id")
+        run_id = p.get("generation_run_id")
+        if not bp_id or not run_id:
+            raise PaperVersionError("该试卷版本缺少生成 run / 蓝图信息，无法新增题目")
+
+        # 复用同蓝图下任意一个 assessment_unit_id（新增题不绑定具体考核单元）
+        assessment_unit = session.execute(
+            select(plan_items.c.assessment_unit_id)
+            .where(plan_items.c.blueprint_version_id == bp_id, plan_items.c.course_id == course_id)
+            .limit(1)
+        ).scalar_one_or_none()
+        if assessment_unit is None:
+            raise PaperVersionError("蓝图无考核单元可关联，无法新增题目")
+
+        max_idx = session.execute(
+            select(func.max(plan_items.c.item_index))
+            .where(plan_items.c.blueprint_version_id == bp_id, plan_items.c.course_id == course_id)
+        ).scalar() or 0
+
+        new_plan_id = _nid()
+        session.execute(
+            plan_items.insert().values(
+                id=new_plan_id,
+                course_id=course_id,
+                blueprint_version_id=bp_id,
+                assessment_unit_id=assessment_unit,
+                question_type=question_type,
+                item_index=max_idx + 1,
+                score=score or 0.0,
+                difficulty=difficulty,
+                cognitive_level="understand",
+                assessment_mode="conceptual",
+                exam_point_id=None,
+                knowledge_card_id=None,
+            )
+        )
+
+        new_gq_id = _nid()
+        session.execute(
+            generated_questions.insert().values(
+                id=new_gq_id,
+                course_id=course_id,
+                generation_run_id=run_id,
+                plan_item_id=new_plan_id,
+                revision_no=1,
+                status="candidate",
+                payload={
+                    "stem": stem,
+                    "options": options or [],
+                    "answer": answer,
+                    "explanation": explanation,
+                    "score": score or 0.0,
+                    "question_type": question_type,
+                    "difficulty": difficulty,
+                    "cognitive_level": "understand",
+                    "teacher_added": True,
+                },
+            )
+        )
+
+        max_order = session.execute(
+            select(func.max(paper_items.c.display_order))
+            .where(paper_items.c.paper_version_id == paper_version_id, paper_items.c.course_id == course_id)
+        ).scalar() or 0
+        session.execute(
+            paper_items.insert().values(
+                id=_nid(),
+                course_id=course_id,
+                paper_version_id=paper_version_id,
+                generated_question_id=new_gq_id,
+                display_order=max_order + 1,
+                teacher_override={},
+                needs_review=False,
+                quality_audit={},
+                finalized_text=None,
+            )
+        )
+        session.commit()
+        return get_paper_version(session, paper_version_id, course_id=course_id)
+
+    except (PaperVersionError, Conflict):
+        session.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        session.rollback()
+        raise PaperVersionError(f"数据库错误: {exc}") from exc
+
+
+def delete_paper_item(
+    session: Session,
+    *,
+    course_id: str,
+    paper_version_id: str,
+    item_index: int,
+) -> dict:
+    """删除指定题目，并把其后所有题 display_order 前移 1。"""
+    try:
+        pv = session.execute(
+            select(paper_versions.c.status).where(
+                paper_versions.c.id == paper_version_id,
+                paper_versions.c.course_id == course_id,
+            )
+        ).one_or_none()
+        if pv is None:
+            raise PaperVersionError("试卷版本不存在或不属于课程")
+        if pv._mapping["status"] == "finalized":
+            raise Conflict("paper version finalized")
+
+        pi_id = session.execute(
+            select(paper_items.c.id).where(
+                paper_items.c.course_id == course_id,
+                paper_items.c.paper_version_id == paper_version_id,
+                paper_items.c.display_order == item_index,
+            )
+        ).scalar_one_or_none()
+        if pi_id is None:
+            raise PaperVersionError(f"item_index={item_index} 不在该试卷版本中")
+
+        session.execute(
+            delete(paper_items).where(paper_items.c.id == pi_id, paper_items.c.course_id == course_id)
+        )
+        session.execute(
+            update(paper_items)
+            .where(
+                paper_items.c.course_id == course_id,
+                paper_items.c.paper_version_id == paper_version_id,
+                paper_items.c.display_order > item_index,
+            )
+            .values(display_order=paper_items.c.display_order - 1)
+        )
+        session.commit()
+        return get_paper_version(session, paper_version_id, course_id=course_id)
 
     except (PaperVersionError, Conflict):
         session.rollback()

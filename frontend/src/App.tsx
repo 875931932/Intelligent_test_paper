@@ -10,6 +10,7 @@ import Materials from '@/pages/materials';
 import Framework from '@/pages/framework';
 import Knowledge from '@/pages/knowledge';
 import ExamProjectsPage from '@/pages/exam-projects';
+import PaperCenterPage from '@/pages/paper-center';
 import { LoginPage } from '@/pages/auth/LoginPage';
 
 function AppShell() {
@@ -47,6 +48,7 @@ export default function App() {
         <Route path="framework" element={<Framework />} />
         <Route path="knowledge" element={<Knowledge />} />
         <Route path="exam-projects" element={<ExamProjectsPage />} />
+        <Route path="paper-center" element={<PaperCenterPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/courses" replace />} />
     </Routes>
