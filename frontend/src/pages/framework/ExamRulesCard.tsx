@@ -33,21 +33,28 @@ export function ExamRulesCard({
 }) {
   const addToast = useToastStore((s) => s.addToast);
   const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState<ExamRules>(rules ?? EMPTY_RULES);
+  // 初始态也补齐数组：不能假设接口一定返回完整形态（旧框架的规则是空 dict）
+  const [draft, setDraft] = useState<ExamRules>(() => ({
+    ...EMPTY_RULES,
+    ...(rules ?? {}),
+    question_type_ratios: [...(rules?.question_type_ratios ?? [])],
+    chapter_weights: [...(rules?.chapter_weights ?? [])],
+  }));
   const [saving, setSaving] = useState(false);
 
   const startEdit = () => {
     setDraft({
       ...EMPTY_RULES,
       ...(rules ?? EMPTY_RULES),
+      // 后端应对旧框架补齐字段，这里再兜一层：不假设 API 一定返回完整数组
       question_type_ratios: [...(rules?.question_type_ratios ?? [])],
       chapter_weights: [...(rules?.chapter_weights ?? [])],
     });
     setEditing(true);
   };
 
-  const ratioSum = draft.question_type_ratios.reduce((s, r) => s + (Number(r.ratio) || 0), 0);
-  const chapterSum = draft.chapter_weights.reduce((s, c) => s + (Number(c.weight) || 0), 0);
+  const ratioSum = (draft.question_type_ratios ?? []).reduce((s, r) => s + (Number(r.ratio) || 0), 0);
+  const chapterSum = (draft.chapter_weights ?? []).reduce((s, c) => s + (Number(c.weight) || 0), 0);
   const hasRules = (rules?.question_type_ratios?.length ?? 0) > 0;
 
   const handleSave = async () => {

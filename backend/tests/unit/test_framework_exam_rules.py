@@ -1,4 +1,6 @@
 """考核大纲考试规则：归一化与按比例推导题型分布。"""
+import pytest
+
 from app.domain.framework.exam_rules import (
     DEFAULT_TYPE_RULES,
     canonical_question_type,
@@ -6,6 +8,7 @@ from app.domain.framework.exam_rules import (
     rules_have_type_ratios,
     type_rules_from_ratios,
 )
+from app.services.framework_service import _exam_rules_of
 
 
 def test_canonical_question_type_maps_chinese_names():
@@ -124,3 +127,40 @@ def test_rules_have_type_ratios():
 
 def test_default_type_rules_points_add_up():
     assert sum(v["count"] * v["score"] for v in DEFAULT_TYPE_RULES.values()) == 100
+
+
+def test_exam_rules_of_returns_full_shape_for_legacy_empty_rules():
+    """旧框架 payload 里 final_exam_rules 是空 dict，透传会让前端 .reduce 崩掉。"""
+    rules = _exam_rules_of({"final_exam_rules": {}})
+    assert rules["question_type_ratios"] == []
+    assert rules["chapter_weights"] == []
+    assert rules["exam_form"] == ""
+    assert rules["total_score"] is None and rules["duration_minutes"] is None
+
+
+def test_exam_rules_of_handles_missing_and_non_dict():
+    for payload in (None, {}, {"final_exam_rules": None}, {"final_exam_rules": "nope"}, {"other": 1}):
+        rules = _exam_rules_of(payload)
+        assert rules["question_type_ratios"] == []
+        assert rules["chapter_weights"] == []
+
+
+def test_exam_rules_of_preserves_declared_rules():
+    payload = {
+        "final_exam_rules": {
+            "exam_form": "闭卷笔试",
+            "duration_minutes": 90,
+            "total_score": 100,
+            "question_type_ratios": [
+                {"question_type": "选择题", "ratio": 20},
+                {"question_type": "综合题", "ratio": 30},
+            ],
+            "chapter_weights": [{"anchor_key": "第1章", "weight": 100}],
+        }
+    }
+    rules = _exam_rules_of(payload)
+    assert rules["exam_form"] == "闭卷笔试"
+    assert rules["duration_minutes"] == 90
+    assert [e["question_type"] for e in rules["question_type_ratios"]] == ["single_choice", "comprehensive"]
+    assert abs(sum(e["ratio"] for e in rules["question_type_ratios"]) - 100) < 0.01
+    assert rules["chapter_weights"][0]["anchor_key"] == "第1章"

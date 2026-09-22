@@ -476,21 +476,16 @@ def get_current_framework(session: Session, *, course_id: str) -> dict:
 
 
 def _exam_rules_of(payload) -> dict:
-    """从框架 payload 取考试规则；缺失时返回空规则而不是 None，前端无需判空两种形态。
+    """从框架 payload 取考试规则，并补齐成完整形态。
 
     持久化的字段名是领域模型的 final_exam_rules，对外统一暴露为 exam_rules。
+    旧框架（本次改动前构建的）payload 里这个字段是空 dict，直接透传会让前端
+    拿到缺少 question_type_ratios / chapter_weights 的半成品而崩掉，因此这里
+    一律过一遍归一化，保证字段齐全。
     """
-    if isinstance(payload, dict):
-        rules = payload.get("final_exam_rules")
-        if isinstance(rules, dict):
-            return rules
-    return {
-        "exam_form": "",
-        "duration_minutes": None,
-        "total_score": None,
-        "question_type_ratios": [],
-        "chapter_weights": [],
-    }
+    if isinstance(payload, dict) and isinstance(payload.get("final_exam_rules"), dict):
+        return normalize_exam_rules(payload["final_exam_rules"])
+    return normalize_exam_rules(None)
 
 
 def _ready_blocks(session: Session, course_id: str, material_version_id: str, expected_type: str) -> list[str]:
