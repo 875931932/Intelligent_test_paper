@@ -9,8 +9,7 @@ import Dashboard from '@/pages/dashboard';
 import Materials from '@/pages/materials';
 import Framework from '@/pages/framework';
 import Knowledge from '@/pages/knowledge';
-import ExamProjectsPage from '@/pages/exam-projects';
-import PaperCenterPage from '@/pages/paper-center';
+import PaperPage from '@/pages/paper';
 import { LoginPage } from '@/pages/auth/LoginPage';
 
 function AppShell() {
@@ -47,8 +46,10 @@ export default function App() {
         <Route path="materials" element={<Materials />} />
         <Route path="framework" element={<Framework />} />
         <Route path="knowledge" element={<Knowledge />} />
-        <Route path="exam-projects" element={<ExamProjectsPage />} />
-        <Route path="paper-center" element={<PaperCenterPage />} />
+        {/* 出卷流水线与试卷查看/审核/导出已合并为同一个「试卷」页面 */}
+        <Route path="paper" element={<PaperPage />} />
+        <Route path="exam-projects" element={<Navigate to="../paper" replace />} />
+        <Route path="paper-center" element={<Navigate to="../paper" replace />} />
       </Route>
       <Route path="*" element={<Navigate to="/courses" replace />} />
     </Routes>

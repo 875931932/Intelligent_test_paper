@@ -1,0 +1,307 @@
+import { useState, useEffect, useRef } from 'react';
+import { useParams, useSearchParams } from 'react-router-dom';
+import { Plus, ChevronRight, ArrowLeft, ClipboardList, FileText, PlayCircle } from 'lucide-react';
+import { api } from '@/api/client';
+import { isApiError } from '@/api/errors';
+import { useAuthStore } from '@/stores/auth';
+import { useToastStore } from '@/stores/toast';
+import { Button } from '@/components/ui/Button';
+import { Badge, Input } from '@/components/ui';
+import { SkeletonCardGrid } from '@/components/ui/Skeleton';
+import PipelinePanel from './PipelinePanel';
+import PaperPanel from './PaperPanel';
+import { EXAM_PROJECT_STATUS_META, PAPER_STATUS_META } from '@/lib/examDisplay';
+import type { ExamProject, PaperVersion } from '@/types/api';
+
+type TabKey = 'pipeline' | 'paper';
+
+const TABS: Array<{ key: TabKey; label: string; icon: React.ReactNode }> = [
+  { key: 'pipeline', label: '出卷流水线', icon: <ClipboardList size={15} /> },
+  { key: 'paper', label: '试卷', icon: <FileText size={15} /> },
+];
+
+/**
+ * 「试卷」模块：出卷流水线与试卷查看/审核/导出合为一个页面。
+ * 流水线只到生成为止；试卷页签承载查看、编辑、定稿与导出，两者通过页签切换，
+ * 不再分成两个入口、两套项目上下文。
+ */
+export default function PaperPage() {
+  const { courseId: routeCourseId } = useParams<{ courseId: string }>();
+  const courseId = routeCourseId || '';
+  const token = useAuthStore((s) => s.token);
+  const addToast = useToastStore((s) => s.addToast);
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const [projects, setProjects] = useState<ExamProject[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [activeProject, setActiveProject] = useState<ExamProject | null>(null);
+  const [tab, setTab] = useState<TabKey>('pipeline');
+  const [paper, setPaper] = useState<PaperVersion | null>(null);
+  const [paperLoading, setPaperLoading] = useState(false);
+
+  const [createOpen, setCreateOpen] = useState(false);
+  const [newName, setNewName] = useState('');
+  // ?project=<id> 直达（从其它位置带项目过来时自动展开），只做一次
+  const autoOpenedRef = useRef(false);
+
+  const loadProjects = async () => {
+    if (!courseId) return;
+    try {
+      setLoading(true);
+      const res = await api.examProjects.list(courseId, token ?? undefined);
+      setProjects(res);
+      const pid = searchParams.get('project');
+      const target = pid ? res.find((p) => p.id === pid) : undefined;
+      if (target && !autoOpenedRef.current) {
+        autoOpenedRef.current = true;
+        openProject(target);
+      }
+    } catch {
+      addToast('加载项目失败', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadPaper = async (projectId: string) => {
+    setPaperLoading(true);
+    try {
+      const pv = await api.paperVersions.getCurrent(courseId, projectId, token ?? undefined);
+      setPaper(pv);
+    } catch (e) {
+      if (!isApiError(e) || e.status !== 404) {
+        addToast('加载试卷失败', 'error');
+      }
+      setPaper(null);
+    } finally {
+      setPaperLoading(false);
+    }
+  };
+
+  const openProject = (proj: ExamProject) => {
+    setActiveProject(proj);
+    // 已生成试卷的项目直接落到「试卷」页签；未生成的落到流水线继续出题
+    const hasPaper = (proj.total_score ?? 0) > 0 || (proj.item_count ?? 0) > 0 || !!proj.paper_version_id;
+    setTab(hasPaper ? 'paper' : 'pipeline');
+    setPaper(null);
+    setSearchParams({ project: proj.id }, { replace: true });
+    void loadPaper(proj.id);
+  };
+
+  const refreshPaperAndProject = async () => {
+    if (!activeProject) return;
+    const [fresh, pv] = await Promise.all([
+      api.examProjects.get(courseId, activeProject.id, token ?? undefined).catch(() => null),
+      api.paperVersions.getCurrent(courseId, activeProject.id, token ?? undefined).catch(() => null),
+    ]);
+    if (fresh) setActiveProject(fresh);
+    setPaper(pv);
+    const list = await api.examProjects.list(courseId, token ?? undefined).catch(() => null);
+    if (list) setProjects(list);
+  };
+
+  const handleCreateProject = async () => {
+    const name = newName.trim();
+    if (!name || !courseId) return;
+    try {
+      const proj = await api.examProjects.create(courseId, { name }, token ?? undefined);
+      setProjects((s) => [...s, proj]);
+      setCreateOpen(false);
+      setNewName('');
+      addToast('项目创建成功', 'success');
+      openProject(proj);
+    } catch {
+      addToast('创建失败', 'error');
+    }
+  };
+
+  useEffect(() => {
+    loadProjects();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [courseId]);
+
+  if (loading) {
+    return (
+      <div className="page-enter">
+        <SkeletonCardGrid count={4} />
+      </div>
+    );
+  }
+
+  // ── 项目列表 ──
+  if (!activeProject) {
+    return (
+      <div className="page-enter">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
+          <div>
+            <h1 style={{ fontSize: '1.75rem', fontWeight: 700, letterSpacing: '-0.03em', marginBottom: '6px' }}>试卷</h1>
+            <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)' }}>
+              出卷流水线（蓝图 → 合同 → 生成）与试卷的查看、审核、导出，都在同一个项目里完成
+            </p>
+          </div>
+          <Button onClick={() => { setNewName(''); setCreateOpen(true); }} icon={<Plus size={16} />}>新建项目</Button>
+        </div>
+
+        {projects.length === 0 ? (
+          <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '72px 20px', gap: '16px' }}>
+            <div style={{ width: 60, height: 60, borderRadius: '18px', background: 'var(--accent-subtle)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <ClipboardList size={30} />
+            </div>
+            <h3 style={{ fontWeight: 600, fontSize: '1.05rem' }}>暂无试卷项目</h3>
+            <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>点击「新建项目」开始您的第一次出卷</p>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {projects.map((p) => {
+              const sm = EXAM_PROJECT_STATUS_META[p.status] ?? { label: p.status, variant: 'default' as const };
+              const psm = p.paper_version_status ? (PAPER_STATUS_META[p.paper_version_status] ?? null) : null;
+              return (
+                <div
+                  key={p.id}
+                  className="glass-card"
+                  style={{ padding: '16px 20px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+                  onClick={() => openProject(p)}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                    <div style={{
+                      width: 42, height: 42, borderRadius: '12px',
+                      background: 'rgba(0,113,227,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    }}>
+                      <ClipboardList size={20} style={{ color: '#0071e3' }} />
+                    </div>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>{p.name}</div>
+                      <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '3px' }}>
+                        {p.total_score ? `${p.total_score} 分 · ${p.item_count ?? 0} 题` : '待生成'}
+                        {p.paper_version_no ? ` · 试卷 v${p.paper_version_no}` : ''}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    {psm && <Badge variant={psm.variant}>试卷 {psm.label}</Badge>}
+                    <Badge variant={sm.variant}>{sm.label}</Badge>
+                    <ChevronRight size={18} style={{ color: 'var(--text-tertiary)' }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {createOpen && (
+          <div className="modal-overlay" onClick={() => setCreateOpen(false)}>
+            <div className="modal-content" style={{ maxWidth: '420px' }} onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h3 className="modal-title">新建项目</h3>
+              </div>
+              <div className="modal-body">
+                <Input label="项目名称" placeholder="请输入项目名称" value={newName} onChange={(e) => setNewName(e.target.value)} autoFocus />
+              </div>
+              <div className="modal-footer">
+                <Button variant="secondary" onClick={() => setCreateOpen(false)}>取消</Button>
+                <Button onClick={handleCreateProject}>创建</Button>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── 项目详情 ──
+  const sp = activeProject;
+  const statusMeta = EXAM_PROJECT_STATUS_META[sp.status] ?? { label: sp.status, variant: 'default' as const };
+  const paperMeta = sp.paper_version_status ? (PAPER_STATUS_META[sp.paper_version_status] ?? null) : null;
+  const pipelineStage = sp.status === 'generating' ? '生成中' : statusMeta.label;
+
+  return (
+    <div className="page-enter" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      <button
+        onClick={() => { setActiveProject(null); setSearchParams({}, { replace: true }); }}
+        style={{
+          background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)',
+          fontSize: '0.8125rem', display: 'flex', alignItems: 'center', gap: '4px',
+          padding: 0, marginBottom: '-4px', alignSelf: 'flex-start',
+        }}
+      >
+        <ArrowLeft size={16} /> 返回项目列表
+      </button>
+
+      <div className="glass-card" style={{ padding: '22px 24px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+          <div>
+            <h1 style={{ fontWeight: 700, fontSize: '1.3rem', letterSpacing: '-0.02em' }}>{sp.name}</h1>
+            <p style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+              {sp.total_score ? `${sp.total_score} 分 · ${sp.item_count ?? 0} 题` : '尚未生成试卷'}
+              {' · 流水线：'}{pipelineStage}
+            </p>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+            <Badge variant={statusMeta.variant}>{statusMeta.label}</Badge>
+            {paperMeta && sp.paper_version_no && (
+              <Badge variant={paperMeta.variant}>试卷 {paperMeta.label} v{sp.paper_version_no}</Badge>
+            )}
+          </div>
+        </div>
+
+        {/* 页签：出卷流水线 / 试卷 */}
+        <div style={{ display: 'flex', gap: '4px', marginTop: '16px', borderBottom: '1px solid rgba(0,0,0,0.07)' }}>
+          {TABS.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: '7px',
+                padding: '10px 16px', border: 'none', cursor: 'pointer', background: 'none',
+                fontSize: '0.875rem', fontWeight: tab === t.key ? 600 : 500,
+                color: tab === t.key ? 'var(--accent)' : 'var(--text-secondary)',
+                borderBottom: '2px solid ' + (tab === t.key ? 'var(--accent)' : 'transparent'),
+                marginBottom: '-1px',
+              }}
+            >
+              {t.icon}{t.label}
+              {t.key === 'paper' && (sp.item_count ?? 0) > 0 && (
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>{sp.item_count}</span>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {tab === 'pipeline' ? (
+        <div className="glass-card" style={{ padding: '24px' }}>
+          <PipelinePanel
+            sp={sp}
+            courseId={courseId}
+            onOpenPaper={() => {
+              void refreshPaperAndProject();
+              setTab('paper');
+            }}
+            onBlueprintCreated={(blueprintVersionId) => {
+              setActiveProject({ ...sp, active_blueprint_version_id: blueprintVersionId, status: 'blueprint' });
+            }}
+          />
+        </div>
+      ) : paperLoading && !paper ? (
+        <div className="glass-card" style={{ padding: '48px 20px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>
+          正在加载试卷…
+        </div>
+      ) : !paper ? (
+        <div className="glass-card" style={{ padding: '48px 20px', textAlign: 'center' }}>
+          <h3 style={{ fontWeight: 600, fontSize: '1rem', marginBottom: '8px' }}>该项目还没有生成试卷</h3>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '18px' }}>
+            在出卷流水线中完成蓝图、合同并生成后，试卷会出现在这里。
+          </p>
+          <Button onClick={() => setTab('pipeline')} icon={<PlayCircle size={16} />}>去出卷流水线</Button>
+        </div>
+      ) : (
+        <PaperPanel
+          pv={paper}
+          project={sp}
+          courseId={courseId}
+          onChanged={refreshPaperAndProject}
+        />
+      )}
+    </div>
+  );
+}

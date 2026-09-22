@@ -1,23 +1,21 @@
-import { useState, useEffect, useRef, Fragment, type ReactNode } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useState, useEffect, Fragment, type ReactNode } from 'react';
 import {
-  Plus, ChevronRight, ArrowLeft, ArrowRight, RefreshCw, Check, PlayCircle,
+  ChevronRight, ArrowLeft, ArrowRight, RefreshCw, Check, PlayCircle,
   ClipboardList, FileText,
 } from 'lucide-react';
 import { api } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
-import { Badge, Input, ProgressPanel, type ProgressStatus } from '@/components/ui';
-import { SkeletonCardGrid } from '@/components/ui/Skeleton';
+import { Badge, ProgressPanel, type ProgressStatus } from '@/components/ui';
 import { useNameMaps, type NameMaps } from '@/hooks/useNameMaps';
-import { clabel, dlabel, EXAM_PROJECT_STATUS_META, PAPER_STATUS_META, qlabel } from '@/lib/examDisplay';
+import { clabel, dlabel, qlabel } from '@/lib/examDisplay';
 import type { ContractSnapshot } from '@/api/domains/examProjects';
 import type { ExamProject, PlanItem, TaskRun } from '@/types/api';
 
 // ─── Stage pipeline ───
-// 流水线只负责「出题」：蓝图 → 合同 → 生成。审核/编辑/定稿/导出已独立为
-// 「试卷中心」（/courses/:courseId/paper-center），不再占流水线阶段。
+// 流水线只负责「出题」：蓝图 → 合同 → 生成。审核/编辑/定稿/导出属于同一页面
+// 的「试卷」页签（PaperPanel），不占流水线阶段。
 type StageKey = 'blueprint' | 'contract' | 'generate';
 type ToastType = 'success' | 'error' | 'info';
 type ToastFn = (message: string, type?: ToastType) => void;
@@ -30,16 +28,13 @@ const STAGE_META: Record<StageKey, { label: string; icon: ReactNode; color: stri
   generate:  { label: '生成', icon: <PlayCircle size={16} />, color: '#34c759' },
 };
 
-// 项目状态徽标与试卷中心同源（lib/examDisplay），避免两页口径不一致
-const STATUS_META = EXAM_PROJECT_STATUS_META;
-
 const STATUS_TO_STAGE: Record<string, StageKey> = {
   draft: 'blueprint',
   blueprint: 'blueprint',
   contract: 'contract',
   generating: 'generate',
-  // 后端项目状态仍保留 review/exported（用于列表徽标）；这里归一到生成阶段，
-  // 因为审核与导出已迁至独立的「试卷中心」，流水线不再有对应阶段。
+  // 后端项目状态仍保留 review/exported（试卷已生成）；归一到生成阶段，
+  // 后续查看/审核在「试卷」页签进行，流水线到此为止。
   review: 'generate',
   exported: 'generate',
 };
@@ -49,7 +44,7 @@ function stageFromStatus(status: string): StageKey {
 }
 
 // 生成阶段的阶段性文案。后端任务只上报「开始 5%」与「完成 100%」两档，
-// 中间没有细分百分比，所以这里用轮换文案 + 已等待时长表达推进感，
+// 中间没有细分百分比，所以这里用轮旋文案 + 已等待时长表达推进感，
 // 而不是伪造一个会跳变的假进度条。
 const GENERATION_MESSAGES = [
   '正在按合同生成题目…',
@@ -64,8 +59,6 @@ const GENERATION_QUEUED_MESSAGES = ['等待 Celery worker 接管任务…'];
 // 用户侧只看到一个"排队中"无法区分是正常等待还是卡死。
 const QUEUED_HINT_SECONDS = 60;
 
-// 名称映射：把考点 / 章节 / 知识卡的 id 换成真实名称，未命中时回退原始值
-// （NameMaps 定义与构建逻辑见 hooks/useNameMaps，与试卷中心共用）
 function examPointLabel(maps: NameMaps, id: string): string {
   return maps.examPoints[id] || id;
 }
@@ -108,24 +101,14 @@ function StageStepper({ current, onSelect }: { current: StageKey; onSelect: (s: 
               onClick={() => onSelect(key)}
               disabled={!reachable}
               style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                gap: 7,
-                background: 'none',
-                border: 'none',
-                padding: 0,
-                minWidth: 58,
-                cursor: reachable ? 'pointer' : 'not-allowed',
+                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 7,
+                background: 'none', border: 'none', padding: 0,
+                minWidth: 58, cursor: reachable ? 'pointer' : 'not-allowed',
               }}
             >
               <span style={{
-                width: 32,
-                height: 32,
-                borderRadius: '50%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
+                width: 32, height: 32, borderRadius: '50%',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
                 color: active || done ? '#fff' : 'var(--text-tertiary)',
                 background: active || done ? meta.color : 'rgba(0,0,0,0.05)',
                 boxShadow: active ? '0 0 0 4px ' + meta.color + '30' : 'none',
@@ -134,8 +117,7 @@ function StageStepper({ current, onSelect }: { current: StageKey; onSelect: (s: 
                 {done ? <Check size={16} /> : meta.icon}
               </span>
               <span style={{
-                fontSize: '0.7rem',
-                fontWeight: active ? 600 : 400,
+                fontSize: '0.7rem', fontWeight: active ? 600 : 400,
                 color: active ? meta.color : done ? 'var(--text-secondary)' : 'var(--text-tertiary)',
                 whiteSpace: 'nowrap',
               }}>
@@ -406,8 +388,9 @@ function renderContract({
                 setStep('generate');
               } catch (e) {
                 addToast('确认失败: ' + (e as Error).message, 'error');
+              } finally {
+                setContractConfirming(false);
               }
-              setContractConfirming(false);
             }}
             loading={contractConfirming}
             disabled={contractAllocating}
@@ -439,9 +422,9 @@ function renderContract({
   );
 }
 
-// ═══════════════════════════════════════════
+// ═══════════════════════════════════════════════
 //  生成进度面板（状态感知）
-// ═══════════════════════════════════════════
+// ═══════════════════════════════════════════════
 function GenerationProgressPanel({
   taskRun, onRetry, onBack, onOpenPaper,
 }: {
@@ -515,7 +498,7 @@ function GenerationProgressPanel({
             <Button onClick={onRetry} icon={<RefreshCw size={16} />}>重新生成</Button>
           </>
         ) : taskRun.status === 'succeeded' ? (
-          <Button onClick={onOpenPaper} icon={<ArrowRight size={16} />}>进入试卷中心</Button>
+          <Button onClick={onOpenPaper} icon={<ArrowRight size={16} />}>查看试卷</Button>
         ) : undefined
       }
     />
@@ -577,29 +560,26 @@ function renderGenerate({
 }
 
 // ═══════════════════════════════════════════════
-//  主组件
+//  出卷流水线面板
 // ═══════════════════════════════════════════════
-export default function ExamProjectsPage() {
-  const { courseId: routeCourseId } = useParams<{ courseId: string }>();
-  const courseId = routeCourseId || '';
+export default function PipelinePanel({
+  sp, courseId, onOpenPaper, onBlueprintCreated,
+}: {
+  sp: ExamProject;
+  courseId: string;
+  /** 生成完成：父级切到「试卷」页签继续查看/审核 */
+  onOpenPaper: () => void;
+  /** 蓝图创建成功：父级用返回的版本号刷新项目，保证后续阶段立即可用 */
+  onBlueprintCreated: (blueprintVersionId: string) => void;
+}) {
   const token = useAuthStore((s) => s.token);
   const addToast = useToastStore((s) => s.addToast);
-  const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
+  const { maps, reload: reloadNameMaps } = useNameMaps(courseId);
 
-  const [projects, setProjects] = useState<ExamProject[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [activeProject, setActiveProject] = useState<ExamProject | null>(null);
-  const [currentStage, setCurrentStage] = useState<StageKey>('blueprint');
-
+  const [currentStage, setCurrentStage] = useState<StageKey>(() => stageFromStatus(sp.status));
   const [planItems, setPlanItems] = useState<PlanItem[]>([]);
   const [contractSnapshot, setContractSnapshot] = useState<ContractSnapshot | null>(null);
   const [taskRun, setTaskRun] = useState<TaskRun | null>(null);
-  // 名称映射（id → 中文名）与试卷中心共用同一个 hook，两页口径一致
-  const { maps, reload: reloadNameMaps } = useNameMaps(courseId);
-
-  const [createOpen, setCreateOpen] = useState(false);
-  const [newName, setNewName] = useState('');
   const [bpCreating, setBpCreating] = useState(false);
   const [contractConfirming, setContractConfirming] = useState(false);
   const [contractAllocating, setContractAllocating] = useState(false);
@@ -609,27 +589,6 @@ export default function ExamProjectsPage() {
     () => 1 + Math.floor(Math.random() * 6),
   );
   const [generating, setGenerating] = useState(false);
-  // ?project=<id> 直达：从试卷中心点「出卷流水线」过来时自动展开该项目，只做一次
-  const autoOpenedRef = useRef(false);
-
-  const loadProjects = async () => {
-    if (!courseId) return;
-    try {
-      setLoading(true);
-      const res = await api.examProjects.list(courseId);
-      setProjects(res);
-      const pid = searchParams.get('project');
-      const target = pid ? res.find((p) => p.id === pid) : undefined;
-      if (target && !autoOpenedRef.current) {
-        autoOpenedRef.current = true;
-        void openProject(target);
-      }
-    } catch {
-      addToast('加载项目失败', 'error');
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const loadPlanItems = async (proj: ExamProject) => {
     try {
@@ -640,43 +599,7 @@ export default function ExamProjectsPage() {
     }
   };
 
-  // 轮询生成任务
-  useEffect(() => {
-    if (!taskRun || taskRun.status === 'succeeded' || taskRun.status === 'failed') return;
-    const id = setInterval(async () => {
-      try {
-        const tr = await api.examProjects.getTaskRun(courseId, taskRun.id, token ?? undefined);
-        setTaskRun(tr);
-        if (tr.status === 'succeeded' || tr.status === 'failed') {
-          clearInterval(id);
-          setGenerating(false);
-          if (tr.status === 'succeeded') {
-              addToast('试题生成完成', 'success');
-              // 生成完成会落库一张 candidate 试卷版本。项目摘要是在打开项目时取的
-              // 快照，此刻 paper_version_id 仍为 null，务必刷新头部才显示题数与
-              // “N 分”。
-              const refreshed = await api.examProjects
-                .get(courseId, activeProject?.id ?? '', token ?? undefined)
-                .catch(() => null);
-              if (refreshed) setActiveProject(refreshed);
-              await loadProjects().catch(() => {});
-              // 自动跳转到独立的「试卷中心」：编辑/定稿/导出都在那里完成，
-              // 本页流水线不再承载审核或导出。
-              navigate('/courses/' + courseId + '/paper-center');
-            } else {
-            addToast('生成失败: ' + (tr.error_message || '未知错误'), 'error');
-          }
-        }
-      } catch {
-        /* ignore transient poll errors */
-      }
-    }, 2500);
-    return () => clearInterval(id);
-    // 轮询闭包有意捕获 taskRun 快照；在成功分支读取当前 activeProject 刷新摘要
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskRun, courseId, token, addToast]);
-
-  // 以服务端为权威数据源恢复项目状态。
+  // 以服务端为权威数据源恢复流水线状态。
   // 合同快照持久化在 generation_runs.contract_snapshot，任务进度持久化在
   // task_runs 并由项目摘要归并出 active_task_run_id。二者都与"任务是否仍在
   // 进行中"无关，因此退出项目再进入（或刷新页面）后都不会消失 —— 前端不再
@@ -707,7 +630,7 @@ export default function ExamProjectsPage() {
     try {
       const tr = await api.examProjects.getTaskRun(courseId, proj.active_task_run_id, token ?? undefined);
       if (tr.status === 'succeeded') {
-        // 任务已完成：留在生成阶段展示成功面板，由「进入试卷中心」按钮跳转编辑
+        // 任务已完成：留在生成阶段展示成功面板，由「查看试卷」按钮切换到试卷页签
         setGenerating(false);
         setTaskRun(tr);
         setCurrentStage('generate');
@@ -722,20 +645,48 @@ export default function ExamProjectsPage() {
     }
   };
 
-  const openProject = async (proj: ExamProject) => {
-    setActiveProject(proj);
-    setCurrentStage(stageFromStatus(proj.status));
+  // 切换项目时重置并恢复状态
+  useEffect(() => {
+    setCurrentStage(stageFromStatus(sp.status));
     setContractSnapshot(null);
     setTaskRun(null);
     void reloadNameMaps();
-    if (proj.active_blueprint_version_id) {
-      await loadPlanItems(proj);
+    if (sp.active_blueprint_version_id) {
+      void loadPlanItems(sp);
     }
-    await hydrateProjectState(proj);
-  };
+    void hydrateProjectState(sp);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sp.id]);
+
+  // 轮询生成任务
+  useEffect(() => {
+    if (!taskRun || taskRun.status === 'succeeded' || taskRun.status === 'failed') return;
+    const id = setInterval(async () => {
+      try {
+        const tr = await api.examProjects.getTaskRun(courseId, taskRun.id, token ?? undefined);
+        setTaskRun(tr);
+        if (tr.status === 'succeeded' || tr.status === 'failed') {
+          clearInterval(id);
+          setGenerating(false);
+          if (tr.status === 'succeeded') {
+            addToast('试题生成完成', 'success');
+            // 项目摘要是打开项目时取的快照，此刻 paper_version_id 仍为 null，
+            // 父级刷新项目后再切到「试卷」页签，否则那边读不到新试卷。
+            onOpenPaper();
+          } else {
+            addToast('生成失败: ' + (tr.error_message || '未知错误'), 'error');
+          }
+        }
+      } catch {
+        /* ignore transient poll errors */
+      }
+    }, 2500);
+    return () => clearInterval(id);
+    // 轮询闭包有意捕获 taskRun 快照
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [taskRun, courseId, token, addToast]);
 
   const handleCreateBlueprint = async () => {
-    if (!activeProject) return;
     try {
       setBpCreating(true);
       const data = await api.knowledge.getPublished(courseId);
@@ -762,7 +713,7 @@ export default function ExamProjectsPage() {
         }
       });
 
-      const bp = await api.examProjects.createBlueprint(courseId, activeProject.id, {
+      const bp = await api.examProjects.createBlueprint(courseId, sp.id, {
         framework_version_id: data.framework_version_id,
         catalog_version_id: data.catalog_version_id,
         type_rules: {},
@@ -772,21 +723,13 @@ export default function ExamProjectsPage() {
       addToast('蓝图已生成', 'success');
       // 刚取过知识目录，直接复用刷新名称映射，保证考点/知识卡列显示中文名
       void reloadNameMaps(data);
-      // 直接用创建响应的 blueprint_version_id 更新本地项目状态，界面立即展示蓝图
-      // 并开放「进入合同阶段」，不依赖 list 接口的返回（后者可能因时序未包含新版本）。
-      const updated: ExamProject = {
-        ...activeProject,
-        active_blueprint_version_id: bp.blueprint_version_id,
-        status: 'blueprint',
-      };
-      setActiveProject(updated);
+      // 通知父级刷新项目（拿回 active_blueprint_version_id），界面立即展示蓝图
+      // 并开放「进入合同阶段」，不依赖 list 接口的返回（可能因时序未包含新版本）。
+      onBlueprintCreated(bp.blueprint_version_id);
       setCurrentStage('blueprint');
       if (bp.plan && bp.plan.length > 0) {
         setPlanItems(bp.plan);
-      } else {
-        await loadPlanItems(updated);
       }
-      await loadProjects();
     } catch (e) {
       addToast('蓝图创建失败: ' + (e as Error).message, 'error');
     } finally {
@@ -794,169 +737,21 @@ export default function ExamProjectsPage() {
     }
   };
 
-  const handleCreateProject = async () => {
-    const name = newName.trim();
-    if (!name || !courseId) return;
-    try {
-      const proj = await api.examProjects.create(courseId, { name });
-      setProjects((s) => [...s, proj]);
-      setCreateOpen(false);
-      setNewName('');
-      addToast('项目创建成功', 'success');
-    } catch {
-      addToast('创建失败', 'error');
-    }
-  };
-
-  useEffect(() => {
-    loadProjects();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [courseId]);
-
-  // ── 加载态：骨架屏 ──
-  if (loading) {
-    return (
-      <div className="page-enter">
-        <SkeletonCardGrid count={4} />
-      </div>
-    );
-  }
-
-  // ── 项目详情视图 ──
-  if (activeProject) {
-    const sp = activeProject;
-    const statusMeta = STATUS_META[sp.status] ?? { label: sp.status, variant: 'default' as const };
-    return (
-      <div className="page-enter" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-        <button
-          onClick={() => setActiveProject(null)}
-          style={{
-            background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)',
-            fontSize: '0.8125rem', display: 'flex', alignItems: 'center', gap: '4px',
-            padding: 0, marginBottom: '-4px',
-          }}
-        >
-          <ArrowLeft size={16} /> 返回项目列表
-        </button>
-
-        <div className="glass-card" style={{ padding: '24px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div>
-              <h1 style={{ fontWeight: 700, fontSize: '1.3rem', letterSpacing: '-0.02em' }}>{sp.name}</h1>
-              <p style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)', marginTop: '4px' }}>
-                {sp.total_score ? sp.total_score + ' 分 · ' + (sp.item_count || 0) + ' 题' : '尚未生成试卷'}
-              </p>
-            </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <Badge variant={statusMeta.variant}>{statusMeta.label}</Badge>
-              {sp.paper_version_status && (
-                <Badge variant={(PAPER_STATUS_META[sp.paper_version_status] ?? { variant: 'default' }).variant}>
-                  试卷 {(PAPER_STATUS_META[sp.paper_version_status] ?? { label: sp.paper_version_status }).label}
-                  {sp.paper_version_no ? ' v' + sp.paper_version_no : ''}
-                </Badge>
-              )}
-              <Button
-                variant="secondary" size="sm"
-                onClick={() => navigate('/courses/' + courseId + '/paper-center?project=' + sp.id)}
-                icon={<FileText size={14} />}
-              >
-                查看试卷
-              </Button>
-            </div>
-          </div>
-          <StageStepper current={currentStage} onSelect={setCurrentStage} />
-        </div>
-
-        <div className="glass-card" style={{ padding: '24px' }}>
-          {currentStage === 'blueprint' && renderBlueprint({
-            sp, setStep: setCurrentStage, bpCreating, handleCreateBlueprint, loadPlanItems, planItems, maps,
-          })}
-          {currentStage === 'contract' && renderContract({
-            sp, courseId, setStep: setCurrentStage, contractVariant, setContractVariant,
-            contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming,
-            contractAllocating, setContractAllocating, addToast, maps, planItems,
-          })}
-          {currentStage === 'generate' && renderGenerate({
-            sp, courseId, token, setStep: setCurrentStage, taskRun, setTaskRun, generating, setGenerating, addToast,
-            onOpenPaper: () => navigate('/courses/' + courseId + '/paper-center?project=' + sp.id),
-          })}
-        </div>
-      </div>
-    );
-  }
-
-  // ── 项目列表 ──
   return (
-    <div className="page-enter">
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
-        <div>
-          <h1 style={{ fontSize: '1.75rem', fontWeight: 700, letterSpacing: '-0.03em', marginBottom: '6px' }}>试卷项目</h1>
-          <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)' }}>
-            蓝图 → 合同 → 生成，AI 驱动的出卷流水线。试卷的查看、审核与导出请前往「试卷中心」
-          </p>
-        </div>
-        <Button onClick={() => { setNewName(''); setCreateOpen(true); }} icon={<Plus size={16} />}>新建项目</Button>
-      </div>
-
-      {projects.length === 0 ? (
-        <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '72px 20px', gap: '16px' }}>
-          <div style={{ width: 60, height: 60, borderRadius: '18px', background: 'var(--accent-subtle)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <ClipboardList size={30} />
-          </div>
-          <h3 style={{ fontWeight: 600, fontSize: '1.05rem' }}>暂无试卷项目</h3>
-          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>点击「新建项目」开始您的第一次出卷</p>
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-          {projects.map((p) => {
-            const sm = STATUS_META[p.status] ?? { label: p.status, variant: 'default' as const };
-            return (
-              <div
-                key={p.id}
-                className="glass-card"
-                style={{ padding: '16px 20px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
-                onClick={() => openProject(p)}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-                  <div style={{
-                    width: 42, height: 42, borderRadius: '12px',
-                    background: 'rgba(0,113,227,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  }}>
-                    <ClipboardList size={20} style={{ color: '#0071e3' }} />
-                  </div>
-                  <div>
-                    <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>{p.name}</div>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '3px' }}>
-                      {p.total_score ? p.total_score + ' 分 · ' + (p.item_count || 0) + ' 题' : '待生成'}
-                    </div>
-                  </div>
-                </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                  <Badge variant={sm.variant}>{sm.label}</Badge>
-                  <ChevronRight size={18} style={{ color: 'var(--text-tertiary)' }} />
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {createOpen && (
-        <div className="modal-overlay" onClick={() => setCreateOpen(false)}>
-          <div className="modal-content" style={{ maxWidth: '420px' }} onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3 className="modal-title">新建项目</h3>
-            </div>
-            <div className="modal-body">
-              <Input label="项目名称" placeholder="请输入项目名称" value={newName} onChange={(e) => setNewName(e.target.value)} autoFocus />
-            </div>
-            <div className="modal-footer">
-              <Button variant="secondary" onClick={() => setCreateOpen(false)}>取消</Button>
-              <Button onClick={handleCreateProject}>创建</Button>
-            </div>
-          </div>
-        </div>
-      )}
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      <StageStepper current={currentStage} onSelect={setCurrentStage} />
+      {currentStage === 'blueprint' && renderBlueprint({
+        sp, setStep: setCurrentStage, bpCreating, handleCreateBlueprint, loadPlanItems, planItems, maps,
+      })}
+      {currentStage === 'contract' && renderContract({
+        sp, courseId, setStep: setCurrentStage, contractVariant, setContractVariant,
+        contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming,
+        contractAllocating, setContractAllocating, addToast, maps, planItems,
+      })}
+      {currentStage === 'generate' && renderGenerate({
+        sp, courseId, token, setStep: setCurrentStage, taskRun, setTaskRun, generating, setGenerating, addToast,
+        onOpenPaper,
+      })}
     </div>
   );
 }

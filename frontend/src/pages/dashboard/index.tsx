@@ -278,11 +278,11 @@ const DashboardPage: FC = () => {
         <div
           role="button"
           tabIndex={0}
-          onClick={() => handleCardNavigate(`/courses/${activeCourseId}/exam-projects`)}
+          onClick={() => handleCardNavigate(`/courses/${activeCourseId}/paper`)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') {
               e.preventDefault();
-              handleCardNavigate(`/courses/${activeCourseId}/exam-projects`);
+              handleCardNavigate(`/courses/${activeCourseId}/paper`);
             }
           }}
           style={{ cursor: 'pointer' }}
@@ -327,7 +327,7 @@ const DashboardPage: FC = () => {
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <Button
                 size="sm"
-                onClick={(e) => handleButtonClick(e, `/courses/${activeCourseId}/exam-projects`)}
+                onClick={(e) => handleButtonClick(e, `/courses/${activeCourseId}/paper`)}
               >
                 <Plus size={16} />
                 新建试卷项目

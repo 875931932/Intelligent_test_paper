@@ -11,8 +11,9 @@ const routeLabels: Record<string, string> = {
   'materials': '资料库',
   'framework': '命题框架',
   'knowledge': '知识目录',
-  'exam-projects': '试卷项目',
-  'projects': '试卷项目',
+  'paper': '试卷',
+  'exam-projects': '试卷',
+  'paper-center': '试卷',
 };
 
 export function Breadcrumbs() {
