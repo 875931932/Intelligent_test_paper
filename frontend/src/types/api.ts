@@ -469,9 +469,13 @@ export interface ExamProject {
   status: string;
   active_blueprint_version_id?: string;
   active_paper_version_id?: string;
+  /** 后端摘要解析出的“当前可审核版本”（未定稿 candidate 优先），仅用于展示门禁 */
+  paper_version_id?: string | null;
+  paper_version_no?: number | null;
+  paper_version_status?: string | null;
   model?: string;
-  total_score?: number;
-  item_count?: number;
+  total_score?: number | null;
+  item_count?: number | null;
   active_task_run_id?: string | null;
   generation_task_status?: string | null;
   generation_progress?: number | null;
@@ -484,38 +488,49 @@ export interface ExamProject {
 // ── Paper Versons ──
 export interface PaperVersionItem {
   item_index: number;
+  plan_item_id?: string | null;
+  knowledge_card_id?: string | null;
+  exam_point_id?: string | null;
   question_type: string;
   stem: string;
-  options: Record<string, string>;
+  options?: Record<string, string> | string[];
   answer: string;
-  explanation: string;
+  /** 模型产出，部分题型为 null，前端需降级 */
+  explanation?: string | null;
   score: number;
-  difficulty: string;
-  cognitive_level: string;
-  exam_point_id: string;
-  scoring_detail: string;
+  difficulty?: string;
+  cognitive_level?: string;
   needs_review: boolean;
-  needs_review_reasons: string[];
-  traceability: Record<string, string>;
-  teacher_override_patch: Record<string, unknown>;
-  teacher_override_at: string;
+  /** 理由串（；连接，最长 200 字），非数组 */
+  needs_review_reason?: string | null;
+  teacher_override: Record<string, unknown>;
+  has_override: boolean;
+  finalized_text?: Record<string, unknown> | null;
+  quality_audit: Record<string, unknown>;
 }
 
 export interface PaperVersion {
   id: string;
   exam_project_id: string;
+  generation_run_id?: string | null;
   version_no: number;
   total_score: number;
   status: string;
-  items: PaperVersionItem[];
+  project_status?: string;
+  /** 逐题数组，按题号升序；item_index 与 PATCH items/{item_index} 同源 */
+  questions: PaperVersionItem[];
   created_at: string;
+  confirmed_at?: string | null;
+  finalized_at?: string | null;
 }
 
 export interface NeedsReviewItem {
   item_index: number;
   question_type: string;
-  stem_preview: string;
-  reasons: string[];
+  needs_review_reason: string;
+  quality_message: string;
+  exam_point_id?: string | null;
+  card_id?: string | null;
 }
 
 export interface TaskRun {

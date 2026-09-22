@@ -6,7 +6,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.schema import exam_projects, paper_versions
+from app.db.schema import paper_versions
 from app.db.session import get_session
 from app.services.paper_version_service import (
     Conflict,
@@ -18,6 +18,7 @@ from app.services.paper_version_service import (
     export_student_paper_html,
     get_paper_version,
     list_needs_review,
+    resolve_current_paper_version_id,
     revert_to_candidate,
     update_paper_item,
 )
@@ -28,33 +29,17 @@ router = APIRouter(prefix="/api/v1/courses/{course_id}", tags=["paper-versions"]
 def _resolve_pv_for_project(
     session: Session, *, course_id: str, project_id: str
 ) -> str:
-    """解析项目当前 paper_version：active_paper_version_id → 最新版本号。"""
-    proj = session.execute(
-        select(
-            exam_projects.c.active_paper_version_id,
-            exam_projects.c.id,
-        ).where(
-            exam_projects.c.id == project_id,
-            exam_projects.c.course_id == course_id,
+    """解析项目当前 paper_version：优先未定稿的最新 candidate，否则已定稿指针。
+
+    解析规则集中在 paper_version_service（pick_current_paper_version_id），
+    与项目摘要、导出共用同一语义，避免各处规则漂移。
+    """
+    try:
+        return resolve_current_paper_version_id(
+            session, course_id=course_id, project_id=project_id
         )
-    ).one_or_none()
-    if proj is None:
-        raise HTTPException(status_code=404, detail="exam project not found")
-    active = proj._mapping["active_paper_version_id"]
-    if active:
-        return active
-    latest = session.execute(
-        select(paper_versions.c.id)
-        .where(
-            paper_versions.c.exam_project_id == project_id,
-            paper_versions.c.course_id == course_id,
-        )
-        .order_by(paper_versions.c.version_no.desc())
-        .limit(1)
-    ).one_or_none()
-    if latest is None:
-        raise HTTPException(status_code=404, detail="no paper version exists for project")
-    return latest._mapping["id"]
+    except PaperVersionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
 
 
 @router.get("/exam-projects/{project_id}/paper-versions/current", response_model=dict)

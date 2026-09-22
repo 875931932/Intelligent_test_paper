@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.schema import blueprint_versions, exam_projects, generation_runs, task_runs
+from app.services.paper_version_service import summarize_paper_versions_for_projects
 
 
 class ExamProjectConflictError(Exception):
@@ -146,6 +147,43 @@ def _with_generation_task_status(session: Session, course_id: str, projects: lis
     return enriched
 
 
+def _with_paper_summary(session: Session, course_id: str, projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """附带项目当前试卷版本的分值/题数，供列表卡片与详情头部展示。
+
+    exam_projects 表不存分值、题数（它们由蓝图 plan_items 决定），历史上这两个
+    字段后端从不填充，前端只能恒显示“尚未生成试卷”。这里按与审核/导出完全
+    同一套版本解析规则（paper_version_service）取当前版本并汇总，保证头部
+    显示的就是审核页正在看的那一版卷子。无任何试卷版本的项目补 None，
+    前端据此显示“尚未生成试卷 / 待生成”。
+    """
+    if not projects:
+        return projects
+    summaries = summarize_paper_versions_for_projects(
+        session,
+        course_id=course_id,
+        project_ids=[p["id"] for p in projects],
+    )
+    for project in projects:
+        summary = summaries.get(project.get("id"))
+        if summary:
+            project.update(
+                paper_version_id=summary["paper_version_id"],
+                paper_version_no=summary["version_no"],
+                paper_version_status=summary["status"],
+                total_score=summary["total_score"],
+                item_count=summary["item_count"],
+            )
+        else:
+            project.update(
+                paper_version_id=None,
+                paper_version_no=None,
+                paper_version_status=None,
+                total_score=None,
+                item_count=None,
+            )
+    return projects
+
+
 def list_projects(session: Session, course_id: str) -> list[dict[str, Any]]:
     rows = session.execute(
         select(exam_projects).where(exam_projects.c.course_id == course_id).order_by(exam_projects.c.id.desc())
@@ -156,6 +194,7 @@ def list_projects(session: Session, course_id: str) -> list[dict[str, Any]]:
             p["active_blueprint_version_id"] = _backfill_active_blueprint(
                 session, course_id, p["id"]
             )
+    projects = _with_paper_summary(session, course_id, projects)
     return _with_generation_task_status(session, course_id, projects)
 
 
@@ -188,6 +227,7 @@ def get_project(session: Session, course_id: str, project_id: str) -> dict[str, 
         project["active_blueprint_version_id"] = _backfill_active_blueprint(
             session, course_id, project_id
         )
+    project = _with_paper_summary(session, course_id, [project])[0]
     return _with_generation_task_status(session, course_id, [project])[0]
 
 

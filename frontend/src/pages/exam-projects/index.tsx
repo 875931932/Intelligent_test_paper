@@ -5,6 +5,7 @@ import {
   ClipboardList, FileText, Download, Eye, Pencil,
 } from 'lucide-react';
 import { api } from '@/api/client';
+import { isApiError } from '@/api/errors';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
@@ -621,8 +622,13 @@ function renderGenerate({
 
 function renderReviewItems(items: PaperVersionItem[], maps: NameMaps, onPatchItem: (idx: number, p: Record<string, unknown>) => Promise<void>) {
   return items.map((item) => {
-    const flagged = (item.needs_review_reasons?.length ?? 0) > 0 || item.needs_review;
+    // needs_review_reason 是后端下发的单数字符串（理由以；连接）
+    const flagged = item.needs_review || !!item.needs_review_reason;
     const inputId = 'review-input-' + item.item_index;
+    // 单选等题型的 options 为对象，部分载荷可能是数组，两者都要能渲染
+    const optionEntries: Array<[string, string]> = Array.isArray(item.options)
+      ? item.options.map((v, i) => [String(i + 1), String(v)])
+      : Object.entries(item.options || {});
     return (
       <div
         key={item.item_index}
@@ -634,31 +640,31 @@ function renderReviewItems(items: PaperVersionItem[], maps: NameMaps, onPatchIte
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
           <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-tertiary)' }}>
-            #{item.item_index + 1}
+            #{item.item_index}
           </span>
           <Badge variant="info">{qlabel(item.question_type)}</Badge>
-          <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>{dlabel(item.difficulty)}</span>
+          <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>{dlabel(item.difficulty || '')}</span>
           {item.exam_point_id && (
             <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>考点: {examPointLabel(maps, item.exam_point_id)}</span>
           )}
           <strong style={{ marginLeft: 'auto', fontSize: '0.85rem' }}>{item.score} 分</strong>
         </div>
         <p style={{ fontSize: '0.9rem', lineHeight: 1.6 }}>{item.stem}</p>
-        {item.options && Object.keys(item.options).length > 0 && (
+        {optionEntries.length > 0 && (
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px', marginTop: '10px' }}>
-            {Object.entries(item.options).map(([k, v]) => (
+            {optionEntries.map(([k, v]) => (
               <div key={k} style={{ fontSize: '0.8rem', padding: '6px 10px', borderRadius: '8px', background: 'rgba(0,0,0,0.03)' }}>
-                <strong>{k}.</strong> {v as string}
+                <strong>{k}.</strong> {v}
               </div>
             ))}
           </div>
         )}
         <div style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', marginTop: '8px' }}>
-          答案: {item.answer} · 解析: {item.explanation}
+          答案: {item.answer}{item.explanation ? ` · 解析: ${item.explanation}` : ''}
         </div>
         {flagged && (
           <div style={{ fontSize: '0.78rem', color: '#b36b00', marginTop: '6px', fontWeight: 500 }}>
-            需审核: {item.needs_review_reasons?.join('; ') || '有修改建议'}
+            需审核: {item.needs_review_reason || '有修改建议'}
           </div>
         )}
         <div style={{ display: 'flex', gap: '8px', marginTop: '12px', alignItems: 'center' }}>
@@ -683,16 +689,19 @@ function renderReviewItems(items: PaperVersionItem[], maps: NameMaps, onPatchIte
 }
 
 function renderReview({
-  setStep, paperVersion, pvId, pvConfirming, handleConfirmReview, handlePatchReviewItem, maps,
+  setStep, paperVersion, pvId, pvLoading, pvConfirming, handleConfirmReview, handlePatchReviewItem, maps,
 }: {
   setStep: (s: StageKey) => void;
   paperVersion: any; pvId: string | undefined;
+  pvLoading: boolean;
   pvConfirming: boolean;
   handleConfirmReview: () => Promise<void>;
   handlePatchReviewItem: (idx: number, p: Record<string, unknown>) => Promise<void>;
   maps: NameMaps;
 }) {
-  if (!paperVersion && !pvId) {
+  // 门禁只看后端解析出的版本指针：生成成功即存在 candidate，
+  // 不再依赖 active_paper_version_id（它只在确认定稿后才回写）。
+  if (!pvId) {
     return (
       <div style={{ textAlign: 'center', padding: '32px' }}>
         <p style={{ color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>请先在生成阶段完成生成</p>
@@ -700,7 +709,15 @@ function renderReview({
       </div>
     );
   }
-  const items: PaperVersionItem[] = paperVersion?.items || [];
+  if (pvLoading && !paperVersion) {
+    return (
+      <div style={{ textAlign: 'center', padding: '32px' }}>
+        <p style={{ color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>正在加载试卷…</p>
+      </div>
+    );
+  }
+  // 后端逐题数组字段名为 questions（不是 items）
+  const items: PaperVersionItem[] = paperVersion?.questions || [];
   const needsReviewCount = items.filter((i) => i.needs_review).length;
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
@@ -803,6 +820,7 @@ export default function ExamProjectsPage() {
   );
   const [generating, setGenerating] = useState(false);
   const [pvConfirming, setPvConfirming] = useState(false);
+  const [pvLoading, setPvLoading] = useState(false);
 
   const loadProjects = async () => {
     if (!courseId) return;
@@ -817,13 +835,27 @@ export default function ExamProjectsPage() {
     }
   };
 
+  // 当前试卷版本一律由后端解析：优先未定稿 candidate，其次 active_paper_version_id
+  // （确认定稿时才回写），最后取版本号最大者。前端不再自行判断，也就不存在
+  // “生成成功了却拿不到卷子”的空洞。
+  const resolvePaperVersionId = (proj: ExamProject): string | undefined =>
+    paperVersion?.id ?? proj.paper_version_id ?? proj.active_paper_version_id ?? undefined;
+
   const loadPaperVersion = async () => {
-    if (!activeProject?.active_paper_version_id || !token) return;
+    if (!activeProject || !token) return;
+    setPvLoading(true);
     try {
       const pv = await api.paperVersions.getCurrent(courseId, activeProject.id, token);
       setPaperVersion(pv);
-    } catch {
-      addToast('加载试卷版本失败', 'error');
+    } catch (e) {
+      // 404 表示该项目尚未生成过试卷：这是预期状态而非错误，由审核/导出页的
+      // 门禁负责提示，不要弹错误打扰用户。
+      if (!isApiError(e) || e.status !== 404) {
+        addToast('加载试卷版本失败', 'error');
+      }
+      setPaperVersion(null);
+    } finally {
+      setPvLoading(false);
     }
   };
 
@@ -899,29 +931,34 @@ export default function ExamProjectsPage() {
     return () => clearInterval(id);
   }, [taskRun, courseId, token, addToast]);
 
-  // 生成完成后加载试卷版本
+  // 生成完成 / 进入审核阶段时加载试卷版本。
+  // 门禁用项目摘要里的 paper_version_id（后端解析出的当前 candidate）：
+  // active_paper_version_id 只在确认定稿后回写，用它当门禁会让刚生成成功
+  // 的卷子永远加载不出来。
   useEffect(() => {
-    if (taskRun?.status === 'succeeded' && activeProject?.active_paper_version_id) {
-      loadPaperVersion();
+    const proj = activeProject;
+    if (!proj || !token) return;
+    const known = proj.paper_version_id ?? proj.active_paper_version_id;
+    const taskDone = taskRun?.status === 'succeeded';
+    if ((taskDone || currentStage === 'review') && !paperVersion && known) {
+      void loadPaperVersion();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskRun?.status, activeProject]);
+  }, [taskRun?.status, currentStage, activeProject, paperVersion]);
 
-  // 进入 review/export 阶段时加载版本 / 导出地址
+  // 进入导出阶段时确定下载地址（用已加载版本的 id，或摘要里的当前版本）
   useEffect(() => {
-    if (currentStage === 'review' && !paperVersion && activeProject?.active_paper_version_id) {
-      loadPaperVersion();
-    }
-    if (currentStage === 'export' && activeProject?.active_paper_version_id && exportUrls.json === undefined) {
-      const pvId = activeProject.active_paper_version_id;
-      setExportUrls({
-        json: api.paperVersions.exportJson(courseId, activeProject.id, pvId),
-        student: api.paperVersions.exportStudent(courseId, activeProject.id, pvId),
-        answerKey: api.paperVersions.exportAnswerKey(courseId, activeProject.id, pvId),
-      });
-    }
+    const proj = activeProject;
+    if (currentStage !== 'export' || !proj || exportUrls.json !== undefined) return;
+    const pvId = paperVersion?.id ?? proj.active_paper_version_id ?? proj.paper_version_id;
+    if (!pvId) return;
+    setExportUrls({
+      json: api.paperVersions.exportJson(courseId, proj.id, pvId),
+      student: api.paperVersions.exportStudent(courseId, proj.id, pvId),
+      answerKey: api.paperVersions.exportAnswerKey(courseId, proj.id, pvId),
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentStage, paperVersion, activeProject]);
+  }, [currentStage, activeProject, paperVersion]);
 
   // 以服务端为权威数据源恢复项目状态。
   // 合同快照持久化在 generation_runs.contract_snapshot，任务进度持久化在
@@ -1044,14 +1081,20 @@ export default function ExamProjectsPage() {
   };
 
   const handleConfirmReview = async () => {
-    if (!activeProject?.active_paper_version_id) return;
+    // 版本指针以已加载版本为准，退化到项目摘要；生成后即有 candidate，
+    // 不要求 active_paper_version_id（那是定稿后才回写的字段）。
+    const pvId = paperVersion?.id ?? activeProject?.paper_version_id ?? activeProject?.active_paper_version_id;
+    if (!activeProject || !pvId) return;
     setPvConfirming(true);
     try {
-      await api.paperVersions.confirm(courseId, activeProject.active_paper_version_id, {});
+      await api.paperVersions.confirm(courseId, pvId, {});
       addToast('试卷确认通过', 'success');
       await loadProjects();
+      // 项目状态已变为 exported，同步本地项目态，避免导出按钮还指向旧指针
+      const refreshed = await api.examProjects.get(courseId, activeProject.id, token ?? undefined).catch(() => null);
+      if (refreshed) setActiveProject(refreshed);
+      setPaperVersion(null);
       setCurrentStage('export');
-      const pvId = activeProject.active_paper_version_id;
       setExportUrls({
         json: api.paperVersions.exportJson(courseId, activeProject.id, pvId),
         student: api.paperVersions.exportStudent(courseId, activeProject.id, pvId),
@@ -1065,11 +1108,12 @@ export default function ExamProjectsPage() {
   };
 
   const handlePatchReviewItem = async (itemIndex: number, patch: Record<string, unknown>) => {
-    if (!activeProject?.active_paper_version_id) return;
+    const pvId = paperVersion?.id ?? activeProject?.paper_version_id ?? activeProject?.active_paper_version_id;
+    if (!pvId) return;
     try {
-      await api.paperVersions.patchItem(courseId, activeProject.active_paper_version_id, itemIndex, patch);
+      await api.paperVersions.patchItem(courseId, pvId, itemIndex, patch);
       addToast('题目已更新', 'success');
-      loadPaperVersion();
+      await loadPaperVersion();
     } catch {
       addToast('修正失败', 'error');
     }
@@ -1146,11 +1190,11 @@ export default function ExamProjectsPage() {
             sp, courseId, token, setStep: setCurrentStage, taskRun, setTaskRun, generating, setGenerating, addToast,
           })}
           {currentStage === 'review' && renderReview({
-            setStep: setCurrentStage, paperVersion, pvId: paperVersion?.id,
-            pvConfirming, handleConfirmReview, handlePatchReviewItem, maps,
+            setStep: setCurrentStage, paperVersion, pvId: resolvePaperVersionId(sp),
+            pvLoading, pvConfirming, handleConfirmReview, handlePatchReviewItem, maps,
           })}
           {currentStage === 'export' && renderExport({
-            exportUrls, pvId: sp.active_paper_version_id, setStep: setCurrentStage,
+            exportUrls, pvId: resolvePaperVersionId(sp), setStep: setCurrentStage,
           })}
         </div>
       </div>

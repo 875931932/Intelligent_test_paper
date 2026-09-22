@@ -44,6 +44,150 @@ def _row_to_dict(row) -> dict[str, Any]:
     return dict(row._asdict()) if hasattr(row, "_asdict") else dict(row)
 
 
+def pick_current_paper_version_id(
+    active_paper_version_id: str | None,
+    versions: list[dict],
+) -> str | None:
+    """从项目的试卷版本中挑选“当前正在处理”的版本 id。
+
+    判定规则（按优先级）：
+
+    1. 最新一个**未定稿**（status != 'finalized'）的版本 —— 生成刚完成、
+       待教师审核/修订的 candidate；
+    2. ``exam_projects.active_paper_version_id`` —— 已定稿导出的版本，项目
+       没有待审 candidate 时（导出、定稿回看）用的就是它；
+    3. 版本号最大的版本 —— 遗留数据兜底。
+
+    三条规则共用同一语义：审核流需要的是“项目当前这一版试卷”。
+    ``active_paper_version_id`` 只在确认定稿时回写、回滚时清空，若把它当作
+    审核门禁，生成成功后前端永远拿不到候选版本（报“请先在生成阶段完成生成”），
+    确认后重新生成也会拿到陈旧旧卷。
+    """
+    pending = [v for v in versions if v.get("status") != "finalized"]
+    if pending:
+        return str(max(pending, key=lambda v: v["version_no"])["id"])
+    if active_paper_version_id:
+        return str(active_paper_version_id)
+    if not versions:
+        return None
+    return str(max(versions, key=lambda v: v["version_no"])["id"])
+
+
+def resolve_current_paper_version_id(
+    session: Session,
+    *,
+    course_id: str,
+    project_id: str,
+) -> str:
+    """解析项目当前试卷版本 id，规则见 ``pick_current_paper_version_id``。
+
+    项目不存在或尚无任何试卷版本时抛 ``PaperVersionError``（API 层映射 404）。
+    """
+    proj = session.execute(
+        select(exam_projects.c.active_paper_version_id).where(
+            exam_projects.c.id == project_id,
+            exam_projects.c.course_id == course_id,
+        )
+    ).one_or_none()
+    if proj is None:
+        raise PaperVersionError("exam project not found")
+    version_rows = session.execute(
+        select(
+            paper_versions.c.id,
+            paper_versions.c.version_no,
+            paper_versions.c.status,
+        )
+        .where(
+            paper_versions.c.exam_project_id == project_id,
+            paper_versions.c.course_id == course_id,
+        )
+    ).mappings().all()
+    resolved = pick_current_paper_version_id(
+        proj._mapping["active_paper_version_id"],
+        [dict(r) for r in version_rows],
+    )
+    if resolved is None:
+        raise PaperVersionError("no paper version exists for project")
+    return resolved
+
+
+def summarize_paper_versions_for_projects(
+    session: Session,
+    *,
+    course_id: str,
+    project_ids: list[str],
+) -> dict[str, dict]:
+    """批量汇总各项目当前试卷版本的关键指标。
+
+    返回 ``{project_id: {paper_version_id, version_no, status,
+    total_score, item_count}}``；尚无任何试卷版本的项目不出现在结果里。
+    无版本项目的键由调用方补 None，保证接口字段稳定。
+    """
+    if not project_ids:
+        return {}
+    active_rows = session.execute(
+        select(exam_projects.c.id, exam_projects.c.active_paper_version_id).where(
+            exam_projects.c.course_id == course_id,
+            exam_projects.c.id.in_(project_ids),
+        )
+    ).mappings().all()
+    active_by_project = {r["id"]: r["active_paper_version_id"] for r in active_rows}
+
+    version_rows = session.execute(
+        select(
+            paper_versions.c.exam_project_id,
+            paper_versions.c.id,
+            paper_versions.c.version_no,
+            paper_versions.c.status,
+        )
+        .where(
+            paper_versions.c.course_id == course_id,
+            paper_versions.c.exam_project_id.in_(project_ids),
+        )
+    ).mappings().all()
+    by_project: dict[str, list[dict]] = {}
+    for row in version_rows:
+        by_project.setdefault(row["exam_project_id"], []).append(dict(row))
+
+    chosen: dict[str, str] = {}
+    for pid, versions in by_project.items():
+        picked = pick_current_paper_version_id(active_by_project.get(pid), versions)
+        if picked is not None:
+            chosen[pid] = picked
+    if not chosen:
+        return {}
+
+    aggregate_rows = session.execute(
+        select(
+            paper_items.c.paper_version_id,
+            func.count(paper_items.c.id).label("item_count"),
+            func.coalesce(func.sum(plan_items.c.score), 0.0).label("total_score"),
+        )
+        .select_from(paper_items)
+        .join(generated_questions, generated_questions.c.id == paper_items.c.generated_question_id)
+        .join(plan_items, plan_items.c.id == generated_questions.c.plan_item_id, isouter=True)
+        .where(paper_items.c.paper_version_id.in_(list(chosen.values())))
+        .group_by(paper_items.c.paper_version_id)
+    ).all()
+    stats = {
+        r._mapping["paper_version_id"]: (r._mapping["item_count"], r._mapping["total_score"])
+        for r in aggregate_rows
+    }
+
+    summaries: dict[str, dict] = {}
+    for pid, pv_id in chosen.items():
+        version = next(v for v in by_project[pid] if str(v["id"]) == pv_id)
+        item_count, total_score = stats.get(pv_id, (0, 0.0))
+        summaries[pid] = {
+            "paper_version_id": pv_id,
+            "version_no": version["version_no"],
+            "status": version["status"],
+            "total_score": float(total_score or 0.0),
+            "item_count": int(item_count or 0),
+        }
+    return summaries
+
+
 def create_paper_version_from_generation(
     session: Session,
     *,
@@ -246,9 +390,12 @@ def get_paper_version(
             generated_questions.c.payload.label("gq_payload"),
             generated_questions.c.plan_item_id,
             generated_questions.c.knowledge_card_id,
+            plan_items.c.score.label("plan_score"),
+            plan_items.c.exam_point_id.label("plan_exam_point_id"),
         )
         .select_from(paper_items)
         .join(generated_questions, generated_questions.c.id == paper_items.c.generated_question_id)
+        .join(plan_items, plan_items.c.id == generated_questions.c.plan_item_id, isouter=True)
         .where(
             paper_items.c.paper_version_id == paper_version_id,
             paper_items.c.course_id == course_id,
@@ -265,13 +412,22 @@ def get_paper_version(
         stem = override.get("stem", payload.get("stem", ""))
         options = override.get("options", payload.get("options", []))
         answer = override.get("answer", payload.get("answer", ""))
+        # 分值/考点以 plan_items 为准（合同同口径）：payload 的盖章值是生成时
+        # 快照，plan_items 是蓝图槽位的权威来源，两者在正常链路一致；对未关联
+        # plan_item 的历史数据退化为 payload，再退化为 0。
+        plan_score = d.get("plan_score")
+        if plan_score is None:
+            plan_score = payload.get("score", 0.0)
         questions_out.append({
             "item_index": d["display_order"],
             "plan_item_id": d.get("plan_item_id"),
             "knowledge_card_id": d.get("knowledge_card_id"),
+            "exam_point_id": payload.get("exam_point_id") or d.get("plan_exam_point_id"),
             "stem": stem,
             "options": options,
             "answer": answer,
+            "explanation": override.get("explanation", payload.get("explanation")),
+            "score": override.get("score", plan_score),
             "question_type": payload.get("question_type", override.get("question_type")),
             "difficulty": payload.get("difficulty"),
             "cognitive_level": payload.get("cognitive_level"),
@@ -282,6 +438,20 @@ def get_paper_version(
             "finalized_text": d.get("finalized_text"),
             "quality_audit": d.get("quality_audit") or {},
         })
+    # 汇总总分：按 plan_items 分值求和（与合同 slots 求和同口径），
+    # 供审核页“总分 N 分”展示；paper_versions 表本身不存分值列。
+    total_score = session.execute(
+        select(func.coalesce(func.sum(plan_items.c.score), 0.0))
+        .select_from(paper_items)
+        .join(generated_questions, generated_questions.c.id == paper_items.c.generated_question_id)
+        .join(plan_items, plan_items.c.id == generated_questions.c.plan_item_id, isouter=True)
+        .where(
+            paper_items.c.paper_version_id == paper_version_id,
+            paper_items.c.course_id == course_id,
+        )
+    ).scalar_one()
+    pv["total_score"] = float(total_score or 0.0)
+
     pv["questions"] = questions_out
     return pv
 

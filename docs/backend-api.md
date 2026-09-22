@@ -348,17 +348,42 @@ body 可选 `{ "mock_graph": false }`；生产必须配置 LLM，否则 503。�
 
 ### 9.1 当前试卷版本（按项目解析）
 `GET /api/v1/courses/{course_id}/exam-projects/{project_id}/paper-versions/current` → 200
+
+当前版本解析规则（`paper_version_service.resolve_current_paper_version_id`，API 与项目摘要共用）：
+1. 该生成轮次产生的 `paper_versions` 行中，最新一条**未定稿**（`status != "finalized"`）的 candidate；
+2. 否则 `exam_projects.active_paper_version_id`（确认定稿时回写）；
+3. 否则 `version_no` 最大的一条。
+解析不到时返回 404 —— 即"尚未生成试卷"，与其它错误区分。
+
 ```json
-{ "id":"uuid","exam_project_id":"uuid","version_no":1,"total_score":100.0,"status":"string",
-  "items":[ { "item_index":1,"question_type":"","stem":"","options":{},"answer":"","explanation":"","scoring_detail":"",
-              "needs_review":false,"needs_review_reasons":[],"traceability":{},"teacher_override_patch":{},"teacher_override_at":"ISO8601?" } ],
-  "created_at":"ISO8601" }
+{ "id":"uuid","exam_project_id":"uuid","generation_run_id":"uuid","version_no":1,
+  "status":"candidate|finalized","total_score":100.0,
+  "gen_run_id":"uuid","proj_id":"uuid","project_status":"review",
+  "questions":[
+    { "item_index":1,"plan_item_id":"uuid","knowledge_card_id":"uuid","exam_point_id":"uuid",
+      "question_type":"","stem":"","options":{},"answer":"","explanation":"string|null",
+      "score":2.0,"difficulty":"","cognitive_level":"",
+      "needs_review":false,"needs_review_reason":"string|null",
+      "teacher_override":{},"has_override":false,
+      "finalized_text":{},"quality_audit":{} }
+  ],
+  "created_at":"ISO8601","confirmed_at":"ISO8601?","finalized_at":"ISO8601?" }
 ```
+
+字段约定：
+
+- `questions`（不是 `items`）为逐题数组，按题号升序；`item_index` 即 `paper_items.display_order`（题号，从 1 起），与 `PATCH /items/{item_index}` 同源。
+- `score` 取 `plan_items.score`（合同同口径），逐题之和恒等于 `total_score`；`paper_versions` 表本身不存分值列。
+- `exam_point_id` 以生成载荷盖章值为准，缺失时退回 `plan_items.exam_point_id`。
+- `explanation` 由模型产出，部分题型（如单选）可能为 `null`，前端需对空值降级。
+- `needs_review_reason` 为单数字符串（理由以 `；` 连接，截断至 200 字），不是数组。
+- `teacher_override` 覆盖字段优先于生成载荷：`stem`/`options`/`answer`/`explanation`/`score` 可为教师手改值。
 
 ### 9.2 待审核项
 `GET /api/v1/courses/{course_id}/paper-versions/{pv_id}/needs-review` → 200
+query 可选过滤：`item_index_min` / `item_index_max` / `question_type`
 ```json
-[ { "item_index":1,"question_type":"","stem_preview":"","reasons":[] } ]
+[ { "item_index":1,"question_type":"","needs_review_reason":"","quality_message":"","exam_point_id":"uuid","card_id":"uuid" } ]
 ```
 
 ### 9.3 修改题目项
