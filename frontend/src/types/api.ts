@@ -491,6 +491,8 @@ export interface ExamProject {
   name: string;
   status: string;
   active_blueprint_version_id?: string;
+  /** 已确认合同所在的 generation_run（exam_projects.active_generation_run_id）；未确认合同时为 null */
+  active_generation_run_id?: string | null;
   active_paper_version_id?: string;
   /** 后端摘要解析出的“当前可审核版本”（未定稿 candidate 优先），仅用于展示门禁 */
   paper_version_id?: string | null;

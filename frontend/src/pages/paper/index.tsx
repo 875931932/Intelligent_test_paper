@@ -80,21 +80,31 @@ export default function PaperPage() {
 
   const openProject = (proj: ExamProject) => {
     setActiveProject(proj);
-    // 已生成试卷的项目直接落到「试卷」页签；未生成的落到流水线继续出题
+    // 已生成试卷的项目直接落到「试卷」页签；未生成的落到流水线继续出题。
+    // 项目摘要已经告诉我们有没有试卷，没有就完全不必去探 paper-versions/current
+    // ——那只会拿到 404，在控制台刷错误还多一次往返。
     const hasPaper = (proj.total_score ?? 0) > 0 || (proj.item_count ?? 0) > 0 || !!proj.paper_version_id;
     setTab(hasPaper ? 'paper' : 'pipeline');
     setPaper(null);
     setSearchParams({ project: proj.id }, { replace: true });
-    void loadPaper(proj.id);
+    if (hasPaper) {
+      void loadPaper(proj.id);
+    }
   };
 
   const refreshPaperAndProject = async () => {
     if (!activeProject) return;
-    const [fresh, pv] = await Promise.all([
-      api.examProjects.get(courseId, activeProject.id, token ?? undefined).catch(() => null),
-      api.paperVersions.getCurrent(courseId, activeProject.id, token ?? undefined).catch(() => null),
-    ]);
+    const fresh = await api.examProjects.get(courseId, activeProject.id, token ?? undefined).catch(() => null);
     if (fresh) setActiveProject(fresh);
+    const source = fresh ?? activeProject;
+    // 没有试卷就不探 paper-versions/current：刚建完蓝图时必然没有，探了也是 404。
+    // 已经加载过试卷时不依赖摘要判断——编辑保存后摘要可能短暂落后于实际数据。
+    const hasPaper =
+      (source.total_score ?? 0) > 0 || (source.item_count ?? 0) > 0
+      || !!source.paper_version_id || paper !== null;
+    const pv = hasPaper
+      ? await api.paperVersions.getCurrent(courseId, activeProject.id, token ?? undefined).catch(() => null)
+      : null;
     setPaper(pv);
     const list = await api.examProjects.list(courseId, token ?? undefined).catch(() => null);
     if (list) setProjects(list);

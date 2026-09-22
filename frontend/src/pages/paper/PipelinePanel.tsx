@@ -671,20 +671,26 @@ export default function PipelinePanel({
   // 进行中"无关，因此退出项目再进入（或刷新页面）后都不会消失 —— 前端不再
   // 把组件内存态当作事实源。
   const hydrateProjectState = async (proj: ExamProject) => {
-    // 1) 合同快照：未 confirm 过合同时后端返回 404，此时才回到"尚无合同"
-    try {
-      const cur = await api.examProjects.getCurrentContract(courseId, proj.id, token ?? undefined);
-      const snap = cur?.contract_snapshot;
-      setContractSnapshot(snap && Array.isArray(snap.slots) && snap.slots.length > 0 ? snap : null);
-      // 分配方案回填：快照里记下了当初用的种子（前端第 N 版 = 种子 N-1），
-      // 退出再进入后下拉必须跟着回来，否则再次确认会静默换成另一套方案。
-      // 越界值（旧数据/手工改库）不采用，保留随机默认。
-      const seed = snap?.allocation_seed;
-      if (typeof seed === 'number' && seed >= 0 && seed <= 5) {
-        setContractVariant(seed + 1);
-      }
-    } catch {
+    // 1) 合同快照：只有确认过合同（active_generation_run_id 有值）才可能读得到。
+    // 没确认过去探 contracts/current 只会拿到 404——既刷一屏控制台错误，又多一次往返；
+    // 蓝图重建后该指针被清空，顺带也避免了把旧蓝图留下的过期合同当现状展示。
+    if (!proj.active_generation_run_id) {
       setContractSnapshot(null);
+    } else {
+      try {
+        const cur = await api.examProjects.getCurrentContract(courseId, proj.id, token ?? undefined);
+        const snap = cur?.contract_snapshot;
+        setContractSnapshot(snap && Array.isArray(snap.slots) && snap.slots.length > 0 ? snap : null);
+        // 分配方案回填：快照里记下了当初用的种子（前端第 N 版 = 种子 N-1），
+        // 退出再进入后下拉必须跟着回来，否则再次确认会静默换成另一套方案。
+        // 越界值（旧数据/手工改库）不采用，保留随机默认。
+        const seed = snap?.allocation_seed;
+        if (typeof seed === 'number' && seed >= 0 && seed <= 5) {
+          setContractVariant(seed + 1);
+        }
+      } catch {
+        setContractSnapshot(null);
+      }
     }
 
     // 2) 生成任务进度：无条件按 active_task_run_id 恢复
