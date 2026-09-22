@@ -1,116 +1,104 @@
 # AI 期末试卷命题系统 · 交接文档
 
-> 更新日期：2026-08-19
-> 状态：S1（服务化收口）+ S2（PaperVersion 内核 & 审核）最小闭环 已完成；进入 S3（导出）与 S4（硬化验收）
+> 更新日期：2026-09-22
+> 状态：引擎层 + 教师工作台 + 试卷模块均已交付；出卷全链路可在浏览器端走通
 > 产品基线：`docs/superpowers/specs/2026-08-12-ai-final-exam-paper-design.md`（v2.3，务必先读）
 > 链路设计：`docs/superpowers/specs/2026-08-17-contract-first-generation-design.md`（合同优先生成）
-> 本次实施规格：`.trae/specs/paper-kernel-and-serviceization/spec.md`（S1+S2 最小闭环的需求与验收）
-> 本次实施任务：`.trae/specs/paper-kernel-and-serviceization/tasks.md`（T1–T9 执行记录）
+> 接口权威清单：`docs/backend-api.md`；代码全景：`CODE_WIKI.md`
 
 ---
 
 ## 1. 项目是什么
 
-面向高校教师的**纸质期末试卷生产线**：教师上传课程大纲与教学资料 → 系统整理出知识目录 → 教师确认蓝图与命题合同 → AI 按合同分批出题 → 教师审核编辑 → 导出学生卷/答卷（Word/PDF）与**答案细则 JSON**（评分点/分值/可接受答案结构化输出，供阅卷环节程序化消费——本项目是"阅卷出题"一体，答案细则是阅卷端的直接输入）。
+面向高校教师的**纸质期末试卷生产线**：教师上传课程大纲与教学资料 → 系统整理出知识目录 →
+教师确认蓝图与命题合同 → AI 按合同分批出题 → 教师审核编辑 → 导出学生卷/答卷与**答案细则 JSON**
+（评分点/分值/可接受答案结构化输出，供阅卷环节程序化消费——本项目是"阅卷出题"一体，
+答案细则是阅卷端的直接输入）。
 
-不是"一句话生成整卷"的玩具，而是**可控、可追溯、可审核**的考试资产生产流程。核心纪律：全局约束（不重复、不抄袭、比例对、不冷门）在命题前的"合同"阶段由确定性算法构造性保证，模型只负责写题。
+不是"一句话生成整卷"的玩具，而是**可控、可追溯、可审核**的考试资产生产流程。核心纪律：
+全局约束（不重复、不抄袭、比例对、不冷门）在命题前的"合同"阶段由确定性算法构造性保证，
+模型只负责写题。
 
-**当前定位**：各学科通用（已去除所有课程拟合点）。演示课程为"SK3020 大模型调优与部署技术"。
+**当前定位**：各学科通用（已去除所有课程拟合点）。演示课程为"SK3020 大模型调优与部署技术"，
+考纲素材在 `docs/素材/`（考核大纲权重 5/25/35/5/10/15/5 是所有配额测试的现实锚点）。
 
 ---
 
 ## 2. 仓库结构与环境
 
-### 2.1 Git Worktree 布局（新人最容易困惑的点）
+单仓库、单分支开发（代码就在仓库根，没有 worktree 陷阱）：
 
 ```
-f:\比赛项目\阅卷出题功能\                        ← 主仓库（大纲/素材/设计文档）
-└── .worktrees\core-implementation\             ← 开发 worktree（所有代码在此！）
-    ├── backend\                                ← FastAPI + 领域引擎（Python）
-    ├── frontend\                               ← Vite + React（目前仅 demo 查看器）
-    ├── docs\superpowers\                       ← 设计文档与实施计划
-    │   └── 素材\                               ← 17 份实验报告 + 2 份大纲 PDF
-    ├── docker-compose.dev.yml
-    └── .env                                    ← DeepSeek/MinerU/DB 密钥（不入库）
+f:\比赛项目\阅卷出题功能\
+├── backend\                 # FastAPI + 领域引擎（Python 3.12）
+├── frontend\                # Vite + React 19 + TypeScript 教师工作台
+├── deploy\                  # install/start/restart/stop 脚本 + nginx 模板
+├── docs\                    # 项目文档（API 清单 / 部署 / 交接）与素材
+├── CODE_WIKI.md             # 代码全景
+└── .env                     # 密钥（不入库）
 ```
 
-日常开发、跑测试、跑 demo 全部在 `core-implementation` worktree 内进行。
-
-### 2.2 环境与启动
-
-Ubuntu 服务器部署（Redis、PostgreSQL、API、Celery Worker、outbox dispatcher、Nginx）：见 [`DEPLOY_UBUNTU.md`](./DEPLOY_UBUNTU.md)。
+### 2.1 本地启动
 
 ```powershell
-# 后端（加载 .env，端口 8000）
-cd .worktrees\core-implementation\backend
+# 后端（自动加载仓库根 .env，端口 8000）
+cd backend
 .\start_dev.ps1
 
-# 前端（端口 5173，/api 已代理到 8000）
-cd .worktrees\core-implementation\frontend
-npx vite --host
-
-# 健康检查（deepseek/mineru 应为 configured）
-curl http://127.0.0.1:8000/api/v1/health
-```
-
-依赖：PostgreSQL（必须）、Redis（Celery broker，真实生成必须）、DeepSeek API Key（.env 的 `DEEPSEEK_API_KEY`）、MinerU 服务（文档解析，结果缓存在 `backend\.runtime\mineru`）。
-
-真实生成由 `POST /api/v1/courses/{course_id}/exam-projects/{project_id}/generate` 创建 durable task，经 outbox 投递给 Celery，再由 Worker 调用正式 LangGraph。部署时除了 API 进程，还必须运行：
-
-```powershell
-cd backend
+# Celery Worker（真实生成必须）
 celery -A app.infrastructure.tasks.celery_app.celery_app worker --loglevel=INFO
+
+# 前端（端口 5173，/api 已代理到 8000）
+cd frontend
+npm ci --registry=https://registry.npmmirror.com
+npm run dev
 ```
 
-并安排 outbox dispatcher 周期性执行（当前 API 在创建任务时会做一次即时投递；若 Redis 临时不可用，未发布事件会保留为 `pending`，需要 dispatcher/recovery 重新投递）。`mock_graph` 只保留给测试夹具，教师工作台默认不会再请求 mock。
+健康检查：`curl http://127.0.0.1:8000/api/v1/health`（deepseek/mineru 应为 configured）。
 
-### 2.3 常用命令
+依赖：PostgreSQL（必须）、Redis（Celery broker，真实生成必须）、DeepSeek API Key、
+MinerU（文档解析，结果缓存在 `backend\.runtime\mineru`）。
+对象存储用 MinIO；不可用时回退本地存储（`PUT /api/v1/_local-storage/{key}`）。
 
-```powershell
-# 跑 demo 全流程（MinerU 与模型调用均有缓存，改动机制后会真实重跑受影响阶段）
-cd backend
-python scripts\build_real_material_demo.py
+### 2.2 部署
 
-# 全量测试（test_material_service 需 boto3，环境缺依赖时 ignore）
-python -m pytest tests\ -q --ignore=tests\unit\test_material_service.py
+Ubuntu 服务器部署见 [`docs/DEPLOY_UBUNTU.md`](DEPLOY_UBUNTU.md)。一键脚本：
+
+```bash
+sudo bash deploy/start.sh      # 初始化 DB → 起 API + Worker → 构建前端
+sudo bash deploy/restart.sh
+sudo bash deploy/stop.sh
 ```
 
-demo 产物：`frontend\public\demo\pipeline.json`（全链路快照：框架/知识树/合同/37 题试卷/终检报告），前端页面直接渲染它。该文件入 git，用于版本间对比。
-
-### 2.4 部署前置条件（2026-08-20 已核验）
-
-当前可以作为**受控内部联调环境**部署，不能以“正式生产系统”直接暴露到公网。部署机器在启动应用前必须具备以下条件：
-
-| 项目 | 服务器验收动作 | 当前本机结论 |
-|---|---|---|
-| PostgreSQL + pgvector | 从后端容器/进程执行 `SELECT 1`，确认可访问目标数据库和 `vector` 扩展 | 本机出站策略拒绝远程 5432 连接，未验证 |
-| Redis | 配置为服务器可访问地址并执行 `PING` | 当前仍是 `localhost:6379`，未启动 |
-| MinIO/S3 | 配置可访问的服务端 endpoint、bucket、访问密钥；健康检查与上传各执行一次 | 当前仍是 `localhost:9000`，未启动；本地回退存储不适用于多进程部署 |
-| DashScope 向量模型 | `EMBEDDING_BASE_URL` 指向 `.../api/v1/services/embeddings/text-embedding/text-embedding`，`EMBEDDING_API_FORMAT=dashscope`，用一条短文本确认返回向量 | 本机出站策略拒绝连接，需在服务器验证 |
-| MinerU / LLM | 分别完成一份资料解析和一次真实出卷冒烟测试 | 本机仅确认配置存在，未完成网络实测 |
-| 前端 | 在 `frontend` 运行 `npm ci` 后执行 `npm run build` | lockfile 已存在；本工作区未安装 `node_modules` |
-
-`backend/start_dev.ps1` 会优先加载仓库根目录 `.env`，其不存在时回退加载 `backend/.env`。真实密钥只能放在部署环境的 `.env` 或密钥服务中，不能提交。曾在开发沟通中明文使用过的数据库或模型密钥应在部署前轮换。
-
-部署完成后的最小验收顺序：`/api/v1/health` 四项依赖均可用 → 创建课程 → 上传一份文件 → MinerU 解析 → 双大纲框架确认 → 知识目录发布 → 蓝图/合同确认 → 生成并审核一张候选试卷。生成任务必须观察到 `queued → running → succeeded/failed`，并核对 `model_calls` 有 `paper_generation` 记录；不能以 mock graph 的结果判断通过。
+部署后最小验收顺序：`/api/v1/health` 四项依赖均可用 → 创建课程 → 上传一份文件 →
+MinerU 解析 → 双大纲框架确认 → 知识目录发布 → 蓝图/合同确认 → 生成并审核一张候选试卷。
+生成任务必须观察到 `queued → running → succeeded/failed`，并核对 `model_calls` 有
+`paper_generation` 记录。
 
 ---
 
 ## 3. 系统架构（四层）
 
 ```
-┌─ 教师工作台（React，待正式新建；现为 demo 查看器）
-├─ 应用服务层（FastAPI API + Celery Worker + 试卷项目服务[待建]）
+┌─ 教师工作台（React 19 + TS，7 个页面路由）
+├─ 应用服务层（FastAPI API + Celery Worker + outbox 派发）
 ├─ 领域引擎 ★已验证·封存不动★
-│   ├─ 框架引擎    framework_graph       双大纲解析 → 考点表（权重/锚点/操作政策）
-│   ├─ 资料整理引擎 organization_graph   批式分类 → 事实抽取 → 语义画像 → 知识目录
-│   └─ 命题引擎    generation_graph      蓝图 → 合同 → 分批生成 → 终检
-└─ 基础设施（PostgreSQL+pgvector / S3 / 队列 / 模型网关[LLM+解析均适配器可替换]）
+│  ├─ 框架引擎    framework_graph       双大纲解析 → 考点表（权重/锚点/考试规则）
+│  ├─ 资料整理引擎 organization_graph   批式分类 → 事实抽取 → 语义画像 → 知识目录
+│  └─ 命题引擎    generation_graph      蓝图 → 合同 → 分批生成 → 终检
+└─ 基础设施（PostgreSQL / S3 / 队列 / 模型网关[LLM+解析均适配器可替换]）
 ```
 
-数据主线：`课程空间 → 资料库(四区) → 命题框架版本(冻结) → 知识目录(内容域→考核单元→知识卡↔证据) → 试卷项目 → 蓝图 → 试卷合同 → 生成运行 → PaperVersion[待建] → 导出[待建]（学生卷/答卷 PDF + 答案细则 JSON）`
+数据主线：
+`课程空间 → 资料库(四区) → 命题框架版本(冻结) → 知识目录(内容域→考核单元→知识卡↔证据)
+→ 试卷项目 → 蓝图 → 试卷合同 → 生成运行 → PaperVersion → 导出(学生卷/答卷 HTML + 答案细则 JSON)`
 
-关键数据边界（设计文档 §2.1，已落地）：**出题模型只见纯净知识卡**（原子/答案域/禁用上下文/卡片名），来源关系（文件名/页码/证据ID）由后端在生成后回链，绝不进模型请求。
+**前端一个「试卷」模块承载后半程**：项目详情页两个页签——「出卷流水线」（蓝图→合同→生成，
+`pages/paper/PipelinePanel.tsx`）与「试卷」（查看/编辑/定稿/导出，`pages/paper/PaperPanel.tsx`，
+左题号索引 + 右题目详情的双栏阅读器）。审核编辑**不在**流水线阶段里。
+
+关键数据边界（设计文档 §2.1，已落地）：**出题模型只见纯净知识卡**（原子/答案域/禁用上下文/
+卡片名），来源关系（文件名/页码/证据ID）由后端在生成后回链，绝不进模型请求。
 
 ---
 
@@ -121,16 +109,33 @@ demo 产物：`frontend\public\demo\pipeline.json`（全链路快照：框架/�
 | 阶段 | 实现位置 | 要点 |
 |---|---|---|
 | 1 解析 | MinerU 适配器 | 块级解析，缓存命中零成本 |
-| 2 框架 | `workflows/framework_graph.py` | 教学大纲→主题树；考核大纲→考点表（EP1-EP7，权重 5/25/35/5/10/15/5，来源 assessment_syllabus） |
+| 2 框架 | `workflows/framework_graph.py` | 教学大纲→主题树；考核大纲→考点表 + **考试规则**（题型比例/章节权重） |
 | 3 分类 | `deepseek_semantic_extractors.py`（分类器） | **批式**：每资料 1 次调用判全部考点（42 次→6 次的降本关键） |
-| 4 抽取 | demo 脚本 fact_prompt + `validate_extracted_facts` | 目标数 = ceil(权重×1.2)；不足则**补抽**（带已有事实清单对全部证据二轮抽取，语义 key 去重） |
+| 4 抽取 | demo fact_prompt + `validate_extracted_facts` | 目标数 = ceil(权重×1.2)；不足则**补抽**（带已有事实清单对全部证据二轮抽取，语义 key 去重） |
 | 5 画像 | 语义画像批 | 产出 concept_cluster / answer_proposition / relation_edges / instance_carriers，随卡片持久化 |
 | 6 蓝图+合同 | `blueprint_service.py` + `contract_service.py` | 见 §5 机制清单 |
 | 7 生成+终检 | `workflows/generation_graph.py` + `generation_service.py` | 按考点分批(≤6题)并行；终检五项 |
 
 ### 4.1 合同优先为什么重要（历史教训）
 
-旧链路"生成后审计→修复循环"治不了语义重复：每次调用只见自己那题。新链路把**原子选择、答案域互斥、禁用上下文、原型轮换**全部在命题前的合同分配阶段用确定性算法算死，生成阶段零跨题协调。模型调用从 ~50 次/卷降到 ~12 次。
+旧链路"生成后审计→修复循环"治不了语义重复：每次调用只见自己那题。新链路把**原子选择、
+答案域互斥、禁用上下文、原型轮换**全部在命题前的合同分配阶段用确定性算法算死，生成阶段
+零跨题协调。模型调用从 ~50 次/卷降到 ~12 次。
+
+### 4.2 考核规则的链路（新增，2026-09）
+
+考纲写明的"选择题占 20%…"与"第1章 5%…"命题权重表，现在**全链路可达**：
+
+```
+考纲 PDF → 提取提示词要求填 final_exam_rules
+        → domain/framework/exam_rules.py 归一化（题型名映射英文枚举、比例归一到 100）
+        → 框架 payload 持久化（发布时继承）
+        → 接口顶层 exam_rules（GET current / PATCH rules）
+        → 前端「考核规则」卡可查看可修改
+        → 蓝图：type_rules 按题型比例推导（总分精确闭合）；chapter_weights 优先取考纲声明值
+```
+
+> 引擎铁律依旧：这套归一化是**确定性**的，不交给模型；模型只负责从考纲里把数字读出来。
 
 ---
 
@@ -157,7 +162,9 @@ demo 产物：`frontend\public\demo\pipeline.json`（全链路快照：框架/�
 | 确定性校验 | 情境绑定正则：指示词(上一轮/本轮/本次/我们的…)+≤12字符+运行词(实验/训练/微调/运行/实践) → 拒绝入库 | `relevance.py SITUATIONAL_BINDING_LANGUAGE` + `is_transferable_fact` |
 | 汇聚点兜底 | 卡片组装时逐条过滤来源话术+情境绑定 | demo `source_free_card` |
 
-同类机制：**多子句原子按"；"切分**（填空题承载不了双子句语义，切分后子句是子串、证据包含判定不受影响）；**自包含归属限定**（"eval_batch_size参数…"→"大模型评测中，eval_batch_size参数…"，归属只能来自证据语境，防无主语碎片）。
+同类机制：**多子句原子按"；"切分**（填空题承载不了双子句语义，切分后子句是子串、证据包含判定
+不受影响）；**自包含归属限定**（"eval_batch_size参数…"→"大模型评测中，eval_batch_size参数…"，
+归属只能来自证据语境，防无主语碎片）。
 
 ### 5.3 生成三道防线（单题失败不阻塞整卷）
 
@@ -167,12 +174,28 @@ demo 产物：`frontend\public\demo\pipeline.json`（全链路快照：框架/�
 | 换原子兜底 | 重试耗尽 | 从同考点未用原子换一个重出（排除原原子、保持全卷互斥），成功则采用替换合同 |
 | 批缺失恢复 | 批调用漏题 | 漏题也走重试链，三道全失守才标 needs_review |
 
-### 5.4 其他已校准细节
+### 5.4 单题 schema 校验（答案口径，2026-09 补齐）
 
-- **难度关键词豁免**：低难度题干含"比较/分析"等词，若该词同时出现在合同原子原文中→是被考查术语本身，不拦截（`generation_service.py validate_generated_question(atom_text=...)`）
-- **综合题原型池教师可控**：`type_rules.comprehensive.archetypes` 白名单（文科可只留 case_analysis 等），轮换起点受 allocation_seed 扰动；非法名过滤、空池回退全池
+`generation_service.validate_generated_question` 是单题质量的确定性门禁：
+
+- 单选：四个选项 + 答案**唯一对应一个选项**（历史上模型返回 "AB" 导致"单选题里出现多选"）
+- 多选：至少四个选项 + 答案对应**两个及以上**选项
+- 判断：答案必须是布尔值（后端契约），且该题型**没有 options 字段**
+- 填空/简答/综合/论述：答案非空；主观题还必须有解析和评分细则
+- 答案解析统一走 `answer_option_keys`：兼容字母（`B`/`ABD`）、选项原文、多个原文并列
+  （`甲、丙`）三种形态——模型三种都会给。纯字母才按字母解析，避免把 `LoRA` 里的
+  L/O/R/A 误当成选项字母。
+
+### 5.5 其他已校准细节
+
+- **难度关键词豁免**：低难度题干含"比较/分析"等词，若该词同时出现在合同原子原文中→是被考查
+  术语本身，不拦截（`generation_service.py validate_generated_question(atom_text=...)`）
+- **综合题原型池教师可控**：`type_rules.comprehensive.archetypes` 白名单（文科可只留
+  case_analysis 等），轮换起点受 allocation_seed 扰动；非法名过滤、空池回退全池
 - **原型模板去课程化**：`archetypes.py` 所有模板不预设课程领域，场景以 prompt_material 为准
-- **画像字段持久化**：knowledge_cards 表的 concept_cluster / answer_proposition / prompt_material 三列（曾因发布时丢弃导致后端链路防重复机制静默退化——这是一个深刻教训：**改机制必须检查 demo 和后端两条链路**）
+- **画像字段持久化**：knowledge_cards 表的 concept_cluster / answer_proposition / prompt_material
+  三列（曾因发布时丢弃导致后端链路防重复机制静默退化——这是一个深刻教训：**改机制必须检查
+  demo 和后端两条链路**）
 
 ---
 
@@ -184,10 +207,16 @@ backend\app\
 │   ├─ contract.py          ★合同领域模型：PoolAtom/聚类/贪心分配/互斥/门槛
 │   ├─ archetypes.py        综合题 8 原型契约（模板+材料形式+认知序列）
 │   └─ batching.py          按考点分批(≤6)，子批携带禁用上下文
+├─ domain\framework\
+│   ├─ exam_rules.py        ★考核规则归一化 + 按比例推导题型分布
+│   ├─ exam_points.py       考点领域模型
+│   └─ models.py            AssessmentOutline / FrameworkCandidate …
 ├─ services\
 │   ├─ contract_service.py  ★合同分配器：配额→门槛→聚类→分配→禁用上下文→原型轮换
 │   ├─ blueprint_service.py 蓝图：type_rules→plan_items（难度/认知/考查方式分布）
-│   ├─ generation_service.py 单题校验(题型schema/来源话术/难度) + 全卷终检
+│   ├─ blueprint_persistence_service.py  蓝图持久化 + 默认题型分布（优先考纲比例）
+│   ├─ generation_service.py 单题校验(题型schema/来源话术/难度) + 全卷终检 + 答案解析
+│   ├─ paper_version_service.py  ★试卷版本内核 + 三份导出渲染（学生卷/答卷/答案细则）
 │   ├─ knowledge_publish_service.py  发布：候选→教师确认→原子入库(含画像字段)
 │   └─ knowledge_tree_service.py     知识树校验（证据落地/同考点准入）
 ├─ workflows\
@@ -198,160 +227,85 @@ backend\app\
 │   ├─ relevance.py         ★证据准入/事实落地判定/情境绑定/语义归一化
 │   └─ models.py            KnowledgeCardDraft 等领域对象
 ├─ adapters\model\
-│   └─ deepseek_semantic_extractors.py  分类/归并/大纲提取（含多子句切分）
+│   └─ deepseek_semantic_extractors.py  分类/归并/大纲提取（含考试规则）
 ├─ schemas\generation.py    批载荷编译（compile_batch_generation_payload）
 └─ db\schema.py             全部表结构（knowledge_cards 含画像三列）
 
-backend\scripts\build_real_material_demo.py   ★demo 全流程（活文档）
-backend\tests\                                640+ 单测（domain/workflow/unit/integration 四层）
-frontend\src\App.tsx                          demo 查看器（合同→生成→试卷展示）
+backend\scripts\
+├─ build_real_material_demo.py   ★demo 全流程（活文档）
+└─ build_pipeline_via_api.py     不依赖模型网关、走全部 API 的结构回归脚本
+
+frontend\src\
+├─ pages\paper\             ★「试卷」模块：index(外壳) / PipelinePanel(流水线) / PaperPanel(阅读器)
+├─ pages\framework\         命题框架 + ExamRulesCard（考核规则查看/修改）
+├─ pages\{dashboard,materials,knowledge}\  概览 / 资料库 / 知识目录
+├─ components\layout\       Layout + Sidebar（悬浮岛侧栏）
+├── hooks\useNameMaps.ts    id → 中文名映射
+├── lib\examDisplay.ts      题型/难度/状态展示常量
+└─ api\domains\             按业务域拆分的 fetch 封装
 ```
 
 ---
 
 ## 7. 当前状态
 
-### 已完成（引擎层，勿动）
+### 已完成
 
-- ✅ 全链路真实数据验证：37 题 / 100 分 / ~12 次模型调用 / final_check 全绿 / 0 needs_review
-- ✅ 考点比例严格等于考纲权重（25/35/10/15/5/5/5）
-- ✅ 原子不重复（唯一+互斥构造性保证）、语义簇分散、答案不互泄
-- ✅ 640+ 单测全绿（boto3 缺失的 test_material_service 除外，属环境问题）
-- ✅ 后端 API 骨架：materials/framework/knowledge/blueprints/generation + Celery worker + outbox 幂等恢复
-
-### 2026-08-19 新增：S1 服务化收口 + S2 PaperVersion 内核（T1–T9 完成）
-
-**交付范围**（对应实施计划 `.trae/specs/paper-kernel-and-serviceization/` 的 AC-1 至 AC-9）：
-
-#### 新增后端服务模块（引擎 0 重构、仅 import 公共函数）
-
-| 模块 | 文件 | 职责 |
-|---|---|---|
-| 蓝图持久化 | `app/services/blueprint_persistence_service.py` | 创建草稿蓝图 / plan_items 编辑校验 / 闸门 1 confirm（superseded 旧版本 + 激活 active_blueprint_version_id + project.status=contract） |
-| 合同执行 | `app/services/contract_execution_service.py` | 门槛兜底（centrality_threshold 0.6 → 0.5 → 0.45）/ apply_slot_revisions / revise_and_confirm 写入 generation_run.contract_snapshot |
-| 生成运行 | `app/services/generation_runner_service.py` + `app/services/inline_runner.py` | enqueue 幂等 (task_runs.idempotency_key) / execute 失败隔离 / 成功→自动创建 candidate paper_version |
-| 试卷版本内核 | `app/services/paper_version_service.py` | get/list needs_review/Patch paper item（覆写+清标+finalize 409）/ confirm（闸门 2）+ revert |
-
-#### 数据库 schema 扩展（`app/db/schema.py`）
-
-- `paper_versions` + `paper_items`：补齐 `metadata / created_at / confirmed_at / finalized_at / created_by / answer_detail_schema_version / teacher_override / finalized_text / needs_review / needs_review_reason / quality_audit` 22 列。
-- `generation_runs`：`contract_snapshot / centrality_threshold_used / updated_at / completed_at / error_message`。
-- `blueprint_versions`：`type_rules / chapter_weights / confirmed_at / created_at`。
-- `exam_projects`：`active_blueprint_version_id / active_generation_run_id / active_paper_version_id`（跨课程复合 FK，use_alter=True 解决 drop FK 循环排序问题）。
-- `plan_items` 加 `difficulty / cognitive_level / exam_point_id / knowledge_card_id`。
-
-#### 后端 API 装配（`app/api/v1/exam_projects.py` + `app/api/v1/paper_versions.py`）
-
-课程作用域 `/api/v1/courses/{courseId}` 下新增 14 个端点：
-- 蓝图：`POST exam-projects/{id}/blueprints` / `GET blueprints/current/plan-items` / `PATCH plan-items/{pid}` / `POST blueprints/current/confirm`
-- 合同：`POST contracts/allocate` / `PATCH contracts/revise` / `POST contracts/confirm`
-- 生成：`POST generate`（202 task_run_id；默认经 outbox/Celery 执行真实 LangGraph，测试夹具才允许 mock_graph）/ `GET task-runs/{id}`
-- PaperVersion：`GET paper-versions/current` / `GET paper-versions/{vid}/needs-review` / `PATCH paper-versions/{vid}/items/{idx}` / `POST {vid}/confirm`（闸门 2 force 模式）/ `POST {vid}/revert`
-- legacy `/blueprints/allocate`、`/blueprints/confirm`（纯算法）保持不动，供旧链路调用。
-
-#### 前端生产线接通（5 阶段 UI 接真实 API，不再只改 status 字符串）
-
-- `src/console/client.ts`：新增 `examPipelineApi`（14 个端点 fetch 封装，错误非 2xx throw）。
-- `blueprintStage.tsx`：输入 framework/catalog id → 生成蓝图 → 表格编辑 score（调用 patchPlanItem）→ confirm 闸门 1。
-- `contractStage.tsx`：mount 即 allocate → preview revise → confirm（project.status=generating）。
-- `generationStage.tsx`：startGeneration 202 → 轮询 task_run（pollInterval/pollTimeout 可配置）→ 成功渲染题卡，needs_review 徽标；失败展示 error_message。
-- `reviewExportStage.tsx`：needsReview 列表 + 覆写编辑器（patchPaperItem + clear_needs_review）→ confirm 闸门 2（force 对话框处理 409 pending）→ 终版 revert。
-- `examProjectWorkspace.tsx`：handleConfirm/Generate/Proceed/Export 不再调用 `projectsApi.updateStatus` 占位，统一阶段特定端点调用 + `refreshProject()` 刷新。
-
-#### demo 退位为回归脚本
-
-- 新增 `scripts/build_pipeline_via_api.py`：**完全不依赖真实模型网关**，走全部 14 个 API 端点（TestClient 调用）→ 合成种子数据 → 产出 37 题/100 分的 7 段式 `frontend/public/demo/pipeline.json`（94+ KB，结构字段集与旧 `build_real_material_demo.py` 一致）。
-- 扩展 `test_real_material_demo.py::test_via_api_builds_pipeline_with_seven_sections` 10 条断言锁定。
-- 实现 §9 双链路同步原则：旧 `build_real_material_demo.py` 保留做现实模型链路，新 via_api 脚本锁定服务端结构回归。
-
-#### 测试与回归（AC-9）
-
-| 套件 | 数量 | 命令 | 结果 |
-|---|---|---|---|
-| 后端 pytest（ignore boto3-only test） | **680/680** passed | `python -m pytest -q --ignore=tests/unit/test_material_service.py --basetemp=.pytest_tmp` | exit 0，~78s |
-| 新增 schema 单测 | 6/6 passed | `tests/unit/test_paper_kernel_schema_extensions.py` | - |
-| 蓝图持久化单测 | 4/4 passed | `tests/unit/test_blueprint_persistence.py` | - |
-| 合约执行单测 | 4/4 passed | `tests/unit/test_contract_execution.py` | - |
-| 生成持久化单测 | 4/4 passed | `tests/unit/test_generation_persistence.py` | - |
-| PaperVersion 单测 | 5/5 passed | `tests/unit/test_paper_version.py` | - |
-| 管线 E2E（FastAPI TestClient 15 步） | 1/1 passed | `tests/integration/test_pipeline_e2e.py` | ~2s |
-| via_api demo 单测 | 1/1 passed | `test_real_material_demo::test_via_api_builds_pipeline_with_seven_sections` | - |
-| 前端 vitest | **97/97** passed | `npx vitest run` | 3.2s |
-| 前端 `tsc -b` | 0 TS error | `npx tsc -b --pretty false` | exit 0 |
-| 前端生产构建 | ✓ ok | `npx vite build` | `index.js 285KB / css 21KB` |
-
-#### AC-6 引擎零重写验证
-
-对引擎关键文件 `domain/ services/blueprint_service.py services/contract_service.py services/generation_service.py workflows/generation_graph.py`，实施期间仅 `import`，**零逻辑/签名变更行**（可由 git diff 对基线 main 确认：spec 前 commit → HEAD 区间上述文件 diff 为空或仅有 docstring 变化）。
-
----
-
-### 未完成（= S3 / S4，本次未覆盖）
-
-- ❌ **S3 导出**：同一 PaperVersion → ①学生卷/答卷 Word→PDF（院校模板、版式检查）；②答案细则 JSON（schema 版号 `paper_versions.answer_detail_schema_version`）
-- ❌ **资料写端 UI**：上传、解析进度、框架/知识目录候选的教师确认——目前前端只有 Plan 2 的只读视图（知识目录的图谱+树双视图），写操作仍需落前端
-- ❌ **富文本编辑器**：当前 paper_items 的 teacher_override 只支持 JSON text override（题干/选项/答案字符串 patch），无图片/公式/复杂版式
-- ❌ **权限最小化 + 审计事件硬化**：目前 `users.role` 是 teacher，所有端点未鉴权；model_calls 已记录但 outbox 审计 publish 未挂事件总线；操作留痕写端未实现
-- ❌ **A/B 卷正式管理**：目前只有 `allocation_seed` 可传入换组合，但 AB 对比视图、版本归档/回滚、双卷差异化校验未实现
-- ✅ **真实模型网关接入 generate 端点**：默认生成任务经 outbox/Celery Worker 调用 `DeepSeekGateway` + `generation_graph.invoke()`；模型输入只含合同槽位与纯净知识卡，输出经过题位映射、质量标记后写入 `PaperVersion`。`mock_graph` 仅在测试进程显式注入 `app.state.mock_graph_invoke` 时可用
-
-### 未完成（= 正式开发计划 S1-S4，见 §8）
-
-- ❌ 前端仅为 demo 查看器，无教师工作台 ← **已部分完成：工作台已接通 5 阶段生产线真实 API**
-- ❌ demo 链路未完全走正式 API（部分逻辑在脚本内，需收口进服务边界）← **已完成：via_api 脚本 + E2E 全服务化**
-- ❌ PaperVersion 结构化内核 / 两次确认流 / 富文本编辑器 ← **已完成：内核+双闸门；富文本未完成**
-- ❌ 导出（学生卷/答卷 docx→PDF + 版式检查；答案细则 JSON）
-- ❌ 权限最小化与审计事件硬化
+- ✅ 引擎层全链路真实数据验证：37 题 / 100 分 / ~12 次模型调用 / final_check 全绿 / 0 needs_review
+- ✅ 考点比例严格等于考纲权重、原子不重复（唯一+互斥构造性保证）、语义簇分散、答案不互泄
+- ✅ 教师工作台七个页面路由全部接通真实 API（概览/资料库/命题框架/知识目录/试卷）
+- ✅ 「试卷」模块：出卷流水线（蓝图→合同→生成）+ 试卷双栏阅读器（查看/编辑/调序/增删/定稿）
+- ✅ 考核规则全链路：提取 → 归一化 → 持久化 → 查看/修改 → 蓝图消费（题型比例与章节权重）
+- ✅ 三份导出按高校卷面模板渲染：学生卷 / 答卷（信息头 + 题次表 + 装订线 + 答案速查表）/ 答案细则 JSON
+- ✅ 后端 pytest 全量（`--ignore=tests/unit/test_material_service.py`）：778 passed / 18 failed
+  （18 条均为历史存量失败，与本次改动无关，改动前后用 stash 对比确认过）
 
 ### 已知问题（不阻塞，接手时留意）
 
 1. `tests\unit\test_material_service.py` 因环境缺 boto3 无法收集（与代码无关）
-2. Redis 未连接：健康检查黄，当前链路不依赖；S4 硬化时补
-3. EP3（继续预训练）等池稀缺考点，同簇判断题可能到 3-4 题（互不相邻，属供给数学极限；根治靠补资料而非改算法）
+2. Redis 未连接时健康检查黄；Celery 不可用则真实生成无法派发（inline_runner 仅测试用）
+3. EP3（继续预训练）等池稀缺考点，同簇判断题可能到 3-4 题（互不相邻，属供给数学极限；
+   根治靠补资料而非改算法）
 4. 直接 `python -m uvicorn` 启动不加载 .env，必须用 `start_dev.ps1`
 5. 偶发 `Fact top-up failed: DeepSeekGatewayError`：补抽网络失败，非致命（首轮结果继续用）
+6. **旧框架没有考试规则**：本次改动前构建的框架 payload 里 `final_exam_rules` 是空 dict，
+   框架页会显示"没有解析出考试规则"并提供「补充规则」；重新构建一次框架即可自动带上考纲比例
+7. 前端无单元测试文件，门禁是 `npm run build` + `npm run lint`；端到端行为由后端 pytest 锁定
 
 ---
 
-## 8. 正式开发计划（S1-S4，已与负责人确认方向）
+## 8. 开发约定（血泪经验）
 
-| 阶段 | 内容 | 完成标准 |
-|---|---|---|
-| **S1 服务化收口** | 生成链路从 demo 脚本搬进正式 API 边界（上传→整理→发布→蓝图→合同→生成全走服务端任务）；教师工作台骨架（课程空间/资料区/整理进度） | 浏览器端到端走通一次完整出卷，无脚本参与；demo 退位为回归脚本 |
-| **S2 试卷项目与审核** | PaperVersion 结构化内核、两次确认流（蓝图合同确认→候选整卷→最终确认）、待处理清单（needs_review 处置）、富文本编辑器（结构化为唯一事实源） | 审核编辑排序确认全流程可操作 |
-| **S3 导出** | 同一 PaperVersion 的两类投影：①学生卷/答卷 docx→PDF（院校模板、一致性+版式检查）；②答案细则 JSON（题号→标准答案→评分点[{point, score, acceptable_answers, deduction}]→扣分说明→证据状态，schema 校验后导出） | 两者同源一致；学生卷无答案泄露；JSON 通过 schema 校验且可被阅卷端直接解析 |
-| **S4 硬化验收** | 权限最小化、审计事件、幂等恢复补全；按设计文档 §12 的 27 条必测场景逐项回归 | 验收标准 12 条全过 |
-
-> **与设计文档 §9.4 的差异（2026-08-18 决定）**：答案细则导出由 Word/PDF 改为 **JSON**——评分点/分值/可接受答案是结构化数据，JSON 可被阅卷环节直接程序化消费（客观题自动判分、主观题评分点辅助），也免去无意义的排版成本；学生卷与答卷仍为 Word/PDF。设计文档该节后续更新时同步修订。
-
-**引擎层铁律**：S1-S4 只在引擎外面包服务与界面，`domain/generation`、`workflows`、整理链路的内部机制**不重构、不"顺手优化"**——它们是被 640+ 测试和真实数据锁定的成品。发现疑似 bug 先写测试复现，再最小修复。
-
----
-
-## 9. 开发约定（血泪经验）
-
-1. **双链路同步**：机制改动必须同时落 demo 脚本与后端（consolidator/service），只改一边=另一边静默退化（画像字段丢失事故的教训）。
-2. **机制通用性自检**：改任何过滤/选择逻辑前问一句"这对任何学科都成立吗？"禁止出现课程专属词表、针对某张试卷的特判。
+1. **双链路同步**：机制改动必须同时落 demo 脚本与后端（consolidator/service），只改一边=另一边
+   静默退化（画像字段丢失事故的教训）。
+2. **机制通用性自检**：改任何过滤/选择逻辑前问一句"这对任何学科都成立吗？"禁止出现课程专属
+   词表、针对某张试卷的特判。
 3. **改动三件套**：改机制 → 补单测锁定新行为 → 跑 demo 全流程验证 + 全量测试。
-4. **改 prompt 后缓存失效**：模型调用缓存 key 含 prompt 内容，改 prompt 会触发对应阶段真实重跑（费钱费时），改前想清楚。
+4. **改 prompt 后缓存失效**：模型调用缓存 key 含 prompt 内容，改 prompt 会触发对应阶段真实重跑
+   （费钱费时），改前想清楚。
 5. **不拟合单卷**：验收标准是"重跑两次原子组合不同且都全绿"，不是"这张卷子好看"。
 6. **测试命名即文档**：中文注释写清"为什么"（根因/反例/防误伤），后来者靠测试理解机制边界。
+7. **前端不假设接口形态**：旧数据（如空 `final_exam_rules`）会让缺字段的响应打崩渲染，
+   API 边界上一律补齐/兜底（`_exam_rules_of` 与 `ExamRulesCard` 都因此加过防御）。
 
 ---
 
-## 10. 文档索引
+## 9. 文档索引
 
 | 文档 | 位置 | 内容 |
 |---|---|---|
-| 产品设计基线 v2.3 | `..\..\docs\superpowers\specs\2026-08-12-ai-final-exam-paper-design.md`（主仓库） | 产品对象/权限/数据边界/P0-P5/27条必测场景（**接手必读**） |
-| 合同优先生成设计 | `docs\superpowers\specs\2026-08-17-contract-first-generation-design.md` | 命题引擎重构的完整设计 rationale |
-| 实施计划存档 | `docs\superpowers\plans\` | 历轮迭代的实施记录 |
-| 试卷快照 | `frontend\public\demo\pipeline.json` | 最近一次 demo 产物（git 有历史版本可对比） |
+| 代码全景 | `CODE_WIKI.md` | 架构/领域模型/工作流/API/服务/数据库/前端/测试 |
+| 接口权威清单 | `docs/backend-api.md` | 从 FastAPI 路由逐条提取，联调唯一依据 |
+| 产品设计基线 v2.3 | `docs/superpowers/specs/2026-08-12-ai-final-exam-paper-design.md` | 产品对象/权限/数据边界/P0-P5/27条必测场景（**接手必读**） |
+| 合同优先生成设计 | `docs/superpowers/specs/2026-08-17-contract-first-generation-design.md` | 命题引擎重构的完整设计 rationale |
+| 实施计划存档 | `docs/superpowers/plans/` | 历轮迭代的实施记录（历史档案，路径可能已变） |
+| 部署 | `docs/DEPLOY_UBUNTU.md` | Ubuntu 部署前置条件与验收顺序 |
+| 演示素材 | `docs/素材/` | 考核大纲 + 17 份实验报告 + 答卷/评分标准范本 |
 
 ---
 
-## 11. 联系上下文
+## 10. 联系上下文
 
-- 演示课程素材：`docs\素材\`（考核大纲权重 5/25/35/5/10/15/5 是所有配额测试的现实锚点）
-- 模型：DeepSeek（.env `DEEPSEEK_MODEL`，默认 deepseek-v4-flash）；文档解析 MinerU
+- 模型：DeepSeek（.env `DEEPSEEK_MODEL`）；文档解析 MinerU；向量 DashScope qwen embedding
 - demo 每次运行会打印 `Contract allocation seed: <n>`——复现某张卷子时在代码里固定该种子即可
+- 试卷导出的版式范本在 `docs/素材/`（A卷试卷 / 答卷A卷 / 评分标准A 三件套）

@@ -255,16 +255,30 @@ npm run dev
 .
 ├── backend/                 # 后端代码
 │   └── app/
-│       ├── api/v1/          # REST API 路由
-│       ├── domain/          # 领域模型
-│       ├── workflows/       # LangGraph 工作流
+│       ├── api/v1/          # REST API 路由（9 个 router）
+│       ├── domain/          # 领域模型与确定性算法（含考核规则归一化）
+│       ├── workflows/       # LangGraph 工作流（框架/整理/生成/知识目录）
 │       ├── services/        # 业务服务
-│       ├── adapters/        # 外部适配器
+│       ├── adapters/        # 外部适配器（LLM/解析/存储）
 │       ├── db/              # 数据库 schema 与初始化
 │       ├── infrastructure/  # 基础设施（Celery 等）
 │       └── main.py          # FastAPI 入口
-├── frontend/                # 前端代码
-├── deploy/                  # 部署脚本
+├── frontend/                # 前端代码（React 19 + TS）
+│   └── src/
+│       ├── pages/           # 页面：概览/资料库/命题框架/知识目录/试卷
+│       ├── components/      # 布局与 UI 基础组件
+│       ├── api/             # HTTP 层，按业务域拆分的客户端
+│       └── stores/ hooks/ lib/
+├── deploy/                  # 部署脚本（install/start/restart/stop）
+├── docs/                    # 项目文档与素材
+│   ├── backend-api.md       # 接口权威清单
+│   ├── DEPLOY_UBUNTU.md     # Ubuntu 部署
+│   ├── HANDOVER.md          # 交接文档
+│   └── 素材/                # 演示课程素材与卷面范本
+├── CODE_WIKI.md             # 代码全景（架构/领域/工作流/API/数据库/前端）
 ├── docker-compose.dev.yml   # 开发环境 Docker 配置
 └── .env.example             # 环境变量模板
 ```
+
+产品形态：一个「试卷」模块承载后半程——项目详情页有两个页签，「出卷流水线」
+（蓝图 → 合同 → 生成）与「试卷」（查看 / 编辑 / 定稿 / 导出的双栏阅读器）。

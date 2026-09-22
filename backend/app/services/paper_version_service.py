@@ -442,7 +442,7 @@ def get_paper_version(
             "quality_audit": d.get("quality_audit") or {},
         })
     # 汇总总分：按每题解析后的分值求和（teacher_override.score 优先于
-    # plan_items 原值），确保教师改分后总分实时反映，供试卷中心“总分 N 分”展示。
+    # plan_items 原值），确保教师改分后总分实时反映，供试卷页签“总分 N 分”展示。
     pv["total_score"] = float(sum(q.get("score") or 0 for q in questions_out))
 
     pv["questions"] = questions_out

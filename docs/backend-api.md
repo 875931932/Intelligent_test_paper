@@ -14,6 +14,19 @@
 
 ## 1. 系统 / 健康
 
+### 1.0 `POST /api/v1/auth/login`
+> 来源 `app/api/v1/auth.py`。前端登录页调用，token 存入 localStorage（`exam_auth`）。
+```json
+// 请求
+{ "username": "teacher", "password": "***" }
+// 响应
+{ "token": "jwt", "user": { "id":"uuid","username":"teacher","name":"姓名","role":"teacher" } }
+```
+失败 401 `{"detail":"用户名或密码错误"}`。
+
+### 1.0b `GET /api/v1/auth/me`
+`Authorization: Bearer <token>` → 当前用户；未登录 / 登录失效 401。
+
 ### 1.1 `GET /api/v1/health`
 健康检查（不依赖 DB 即可返回）。
 ```json
@@ -151,6 +164,29 @@
 `GET /api/v1/courses/{course_id}/framework-versions/current` → 200
 已发布：`{ "published": true, "id": "uuid", "candidate_id": "uuid", "payload": {...} }`
 未发布：`{ "published": false, "detail": "no published framework version" }`
+
+两种形态都会在顶层附带 `exam_rules`（考核大纲的考试规则），字段齐全（缺失即为空数组）：
+
+```json
+{ "exam_rules": {
+    "exam_form": "闭卷笔试", "duration_minutes": 90, "total_score": 100,
+    "question_type_ratios": [ {"question_type":"single_choice","ratio":20} ],
+    "chapter_weights": [ {"anchor_key":"第1章 …","weight":5} ] } }
+```
+
+> `payload` 里持久化的字段名是 `final_exam_rules`，对外统一暴露为 `exam_rules`。
+> 旧框架（本次改动前构建的）该字段是空 dict，接口会补齐成完整形态再返回。
+
+### 4.8 修改考核规则
+`PATCH /api/v1/courses/{course_id}/framework-versions/current/rules`
+body 同 `exam_rules` 结构（`question_type_ratios` / `chapter_weights` 等）。
+→ 200 `{ "status":"ok", "framework_version_id":"uuid", "exam_rules":{...} }`
+
+归一化规则：题型名映射到英文枚举（"选择题"→`single_choice`）、剔除未知项、比例归一到 100、
+未声明的章节锚点补 0；考纲完全没有章节权重表时返回空列表，由消费方回退到考点权重。
+
+**消费**：蓝图在未下发 `type_rules` 时按 `question_type_ratios` 推导题型分布（题数折算后
+定点修正，保证总分精确 100）；创建蓝图时 `chapter_weights` 优先取 `chapter_weights`。
 
 ---
 
@@ -390,6 +426,29 @@ query 可选过滤：`item_index_min` / `item_index_max` / `question_type`
 `PATCH /api/v1/courses/{course_id}/paper-versions/{pv_id}/items/{item_index}`
 body：`{ "teacher_override_patch":{}, "clear_needs_review":false }`（仅这两 key）
 
+覆写字段与题型口径：
+- `answer` 对**判断题**是布尔值（`true`/`false`），其余题型为字符串；前端保存时会
+  把「正确/错误」规范化回布尔值。
+- `answer` 也兼容选项字母（`B`/`ABD`）与选项原文两种形态，由 `answer_option_keys` 统一解析；
+  单选题答案必须唯一对应一个选项，否则生成侧判 blocker（历史上曾出现"单选题多个正确项"）。
+
+### 9.3b 调整题目顺序
+`PUT /api/v1/courses/{course_id}/paper-versions/{pv_id}/items/reorder`
+body：`{ "ordered_indices":[3,1,2] }`（新顺序，须恰好包含当前全部题号且不重复）
+→ `{ "status":"ok","item_count":n }`；`display_order` 重写为 1..N。
+
+### 9.3c 新增教师自拟题目
+`POST /api/v1/courses/{course_id}/paper-versions/{pv_id}/items`
+body：`{ "stem":"","question_type":"short_answer","options":[],"answer":"","explanation":"","score":5,"difficulty":"medium" }`
+→ 201，返回刷新后的完整试卷。
+
+**题干与答案必填**（422）：卷面里不允许出现无答案的题——否则答卷与答案细则导出就是空白。
+判断题答案传布尔值；多选题答案须对应两个及以上选项（字母如 `AB` 或选项原文）。
+
+### 9.3d 删除题目
+`DELETE /api/v1/courses/{course_id}/paper-versions/{pv_id}/items/{item_index}`
+→ 200；其后题目的 `display_order` 自动前移 1。
+
 ### 9.4 确认试卷版本
 `POST /api/v1/courses/{course_id}/paper-versions/{pv_id}/confirm`
 body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409（detail 含 `item_indices`）。
@@ -400,14 +459,17 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
 ### 9.6 导出：答案细则 JSON
 `GET /api/v1/courses/{course_id}/exam-projects/{project_id}/paper-versions/{pv_id}/export/json`
 → 附件下载（`Content-Disposition: attachment; filename="answer_detail_v{n}.json"`）。
+含 `missing_answer_count` 与逐题 `answer_missing` 标记；`stem` 已剥离题干自带的编号/分值前缀。
 
 ### 9.7 导出：学生卷 HTML
 `GET /api/v1/courses/{course_id}/exam-projects/{project_id}/paper-versions/{pv_id}/export/student`
-→ `text/html`（无答案，可打印 PDF）。
+→ `text/html`（无答案，可打印 PDF）。正式卷面：信息头（课程名称/总分/题量，考试时间/形式/
+试卷类型/学分留空待填）+ 题次表 + 按题型分节（一、单选题（共N题，每题X分，共Y分））+ 连续题号。
 
 ### 9.8 导出：答卷（含答案）HTML
 `GET /api/v1/courses/{course_id}/exam-projects/{project_id}/paper-versions/{pv_id}/export/answer-key`
-→ `text/html`（含答案）。
+→ `text/html`（含答案）。在学生卷版式基础上加装订线、客观题答案速查表（题号|答案），
+答案选项打 ✓ 标绿；缺答案标注【缺答案·需人工补充】。
 
 ---
 
