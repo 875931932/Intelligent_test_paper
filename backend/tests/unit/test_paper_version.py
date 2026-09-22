@@ -183,7 +183,7 @@ def _full_pipeline_to_candidate_paper(session, *, fail_indices=None):
     task_id = enqueue_generation(session, course_id="c1", project_id="ep1")
     tr_row = session.execute(select(task_runs).where(task_runs.c.id == task_id)).one()
 
-    def mock_graph(session, gr, snap):
+    def mock_graph(session, gr, snap, progress=None):
         from app.db.schema import plan_items as pi_t
         rows = session.execute(
             select(pi_t.c.id, pi_t.c.item_index, pi_t.c.knowledge_card_id,

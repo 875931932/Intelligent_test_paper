@@ -350,7 +350,12 @@ def make_client(engine: Any, factory: sessionmaker[Session]) -> TestClient:
 
     # Mock graph_invoke：全部题 needs_review=False（避免 force=true 触发副作用），
     # 但为了让 "force=true" 代码路径确实走通一次，我们把第 1 道标记为 needs_review=True。
-    def _mock_graph_invoke(session: Session, generation_run: dict, contract_snapshot: dict):
+    def _mock_graph_invoke(
+        session: Session,
+        generation_run: dict,
+        contract_snapshot: dict,
+        progress=None,
+    ):
         from app.db.schema import plan_items as _pi
         bv_id = generation_run.get("blueprint_version_id")
         course_id = generation_run.get("course_id")

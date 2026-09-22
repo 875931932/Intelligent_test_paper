@@ -1,8 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react';
-import { AlertCircle, Clock, Loader } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Clock, Loader } from 'lucide-react';
 
-/** 任务状态：queued 排队中 / running（含 waiting_external）执行中 / failed 失败 */
-export type ProgressStatus = 'queued' | 'running' | 'failed';
+/** 任务状态：queued 排队中 / running（含 waiting_external）执行中 / succeeded 成功 / failed 失败 */
+export type ProgressStatus = 'queued' | 'running' | 'succeeded' | 'failed';
 
 interface ProgressPanelProps {
   /** 主标题，默认“正在处理，请稍候…” */
@@ -23,6 +23,8 @@ interface ProgressPanelProps {
   queuedHint?: string;
   /** failed 状态的错误详情 */
   errorMessage?: string;
+  /** succeeded 状态的结果摘要（如“已生成 42 道试题”） */
+  resultMessage?: string;
   /** 底部操作区（如「重试」「返回」按钮），由调用方注入 */
   footer?: ReactNode;
 }
@@ -47,18 +49,20 @@ export function ProgressPanel({
   queuedHintAfterSeconds = 60,
   queuedHint,
   errorMessage,
+  resultMessage,
   footer,
 }: ProgressPanelProps) {
   const [messageIndex, setMessageIndex] = useState(0);
 
   const failed = status === 'failed';
   const queued = status === 'queued';
+  const succeeded = status === 'succeeded';
 
   useEffect(() => {
-    if (!messages || messages.length === 0 || failed) return;
+    if (!messages || messages.length === 0 || failed || succeeded) return;
     const id = setInterval(() => setMessageIndex((i) => (i + 1) % messages.length), 3200);
     return () => clearInterval(id);
-  }, [messages, failed]);
+  }, [messages, failed, succeeded]);
 
   const determinate = typeof progress === 'number' && progress >= 0;
   const currentMessage = messages && messages.length > 0 ? messages[messageIndex] : null;
@@ -95,6 +99,50 @@ export function ProgressPanel({
           {errorMessage && (
             <p style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', marginTop: '6px', maxWidth: '520px' }}>
               {errorMessage}
+            </p>
+          )}
+        </div>
+        {footer && <div style={{ display: 'flex', gap: '8px', marginTop: '4px' }}>{footer}</div>}
+      </div>
+    );
+  }
+
+  // ── 成功态：结束转圈，落位结果摘要与后续入口 ──
+  if (succeeded) {
+    return (
+      <div
+        className="glass-panel"
+        style={{
+          padding: '40px 24px',
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          gap: '14px',
+          textAlign: 'center',
+        }}
+      >
+        <span style={{
+          width: 44,
+          height: 44,
+          borderRadius: '50%',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: 'rgba(52,199,89,0.1)',
+          color: '#34c759',
+        }}>
+          <CheckCircle2 size={22} />
+        </span>
+        <div>
+          <p style={{ fontWeight: 600, fontSize: '0.95rem' }}>{title ?? '处理完成'}</p>
+          {resultMessage && (
+            <p style={{ fontSize: '0.83rem', color: 'var(--text-secondary)', marginTop: '6px', maxWidth: '520px' }}>
+              {resultMessage}
+            </p>
+          )}
+          {typeof elapsedSeconds === 'number' && (
+            <p style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', marginTop: '6px' }}>
+              耗时 {formatElapsed(elapsedSeconds)}
             </p>
           )}
         </div>

@@ -1,4 +1,6 @@
 """合同驱动生成图测试：分批并行、批内互见、单题重试、合并终检。"""
+import logging
+
 import pytest
 
 from app.schemas.generation import BatchGenerationPayload
@@ -245,3 +247,110 @@ def test_no_replacement_atom_keeps_needs_review():
     question = next(q for q in result["questions"] if q["item_index"] == 1)
     assert question["quality"]["status"] == "blocker"
     assert question["needs_review"] is True
+
+
+# ---------------------------------------------------------------------------
+# 异常可观测性：三处 except Exception 不得静默吞掉
+# ---------------------------------------------------------------------------
+
+def test_batch_call_exception_is_logged_not_swallowed(caplog):
+    """批调用异常必须落 WARNING（含 batch 与错误摘要）——
+    此前静默吞掉，线上只有 needs_review、无从判断模型是否被调用。"""
+    class ExplodingGateway:
+        def generate_batch(self, payload):
+            raise RuntimeError("模型服务不可用")
+
+    with caplog.at_level(logging.WARNING, logger="generation.graph"):
+        result = build_generation_graph(ExplodingGateway()).invoke(
+            _state([_slot(1), _slot(2)]),
+        )
+    warnings = [
+        r for r in caplog.records
+        if r.name == "generation.graph" and r.levelno >= logging.WARNING
+    ]
+    assert warnings, "批调用失败必须产生 WARNING 日志"
+    joined = "\n".join(r.getMessage() for r in warnings)
+    assert "RuntimeError" in joined
+    assert "模型服务不可用" in joined
+    assert "batch" in joined
+    # 行为不回退：仍然全员 needs_review
+    for q in result["questions"]:
+        assert q["needs_review"] is True
+
+
+def test_retry_call_exception_is_logged(caplog):
+    """单题重试调用异常必须落 WARNING 且带题位与尝试次数。"""
+    bad = _question(1, stem="根据课件第3页的内容，关于原子1的问题", options=["甲"], answer="")
+
+    class ExplodeOnRetryGateway(FakeBatchGateway):
+        def generate_batch(self, payload):
+            if len(payload.questions) == 1:
+                raise RuntimeError("重试时模型服务不可用")
+            return super().generate_batch(payload)
+
+    gateway = ExplodeOnRetryGateway(scenarios={1: [bad, bad, bad]})
+    with caplog.at_level(logging.WARNING, logger="generation.graph"):
+        build_generation_graph(gateway).invoke(
+            _state([_slot(1), _slot(2)]),
+        )
+    warnings = [
+        r for r in caplog.records
+        if r.name == "generation.graph" and r.levelno >= logging.WARNING
+    ]
+    joined = "\n".join(r.getMessage() for r in warnings)
+    assert "重试" in joined
+    assert "item_index=1" in joined
+    assert "RuntimeError" in joined
+
+
+def test_swap_call_exception_is_logged(caplog):
+    """换原子兜底调用异常必须落 WARNING，与重试失败可区分。"""
+    bad = _question(1, stem="根据课件第3页的内容，关于原子1的问题", options=["甲"], answer="")
+    cards = {
+        "C1": {
+            "assessable_content": ["原子1", "替换原子文本样例"],
+            "answer_boundary": "正确的选项内容",
+        },
+    }
+    units = [{"exam_point_id": "EP1", "unit_id": "U-EP1", "card_ids": ["C1"]}]
+
+    class ExplodeOnSwapGateway(FakeBatchGateway):
+        def generate_batch(self, payload):
+            spec = payload.questions[0]
+            if spec.coverage_atom == "替换原子文本样例":
+                raise RuntimeError("换原子时模型服务不可用")
+            return super().generate_batch(payload)
+
+    gateway = ExplodeOnSwapGateway()
+    gateway.scenarios = {1: [bad, bad, bad]}
+    with caplog.at_level(logging.WARNING, logger="generation.graph"):
+        result = build_generation_graph(gateway).invoke({
+            "contract": [_slot(1), _slot(2)],
+            "knowledge_cards": cards,
+            "units": units,
+        })
+    warnings = [
+        r for r in caplog.records
+        if r.name == "generation.graph" and r.levelno >= logging.WARNING
+    ]
+    joined = "\n".join(r.getMessage() for r in warnings)
+    assert "换原子" in joined
+    assert "RuntimeError" in joined
+    question = next(q for q in result["questions"] if q["item_index"] == 1)
+    assert question["needs_review"] is True
+
+
+def test_batch_completion_logs_summary(caplog):
+    """批次完成输出 INFO 汇总（题数/模型调用数），便于核对批粒度消耗。"""
+    gateway = FakeBatchGateway()
+    with caplog.at_level(logging.INFO, logger="generation.graph"):
+        build_generation_graph(gateway).invoke(_state([_slot(1), _slot(2)]))
+    infos = [
+        r for r in caplog.records
+        if r.name == "generation.graph" and r.levelno == logging.INFO
+    ]
+    assert any("批次完成" in r.getMessage() for r in infos), [
+        r.getMessage() for r in caplog.records
+    ]
+    summary = next(r.getMessage() for r in infos if "批次完成" in r.getMessage())
+    assert "calls=" in summary

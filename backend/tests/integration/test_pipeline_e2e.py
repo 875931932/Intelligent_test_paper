@@ -180,7 +180,12 @@ def client(engine_and_factory):
 
     # Mock graph_invoke：每 plan_item 一题，质量 OK（第 1 个 needs_review=True，
     # 用于断言 needs_review 流程）；其余正常。
-    def _mock_graph_invoke(session: Session, generation_run: dict, contract_snapshot: dict):
+    def _mock_graph_invoke(
+        session: Session,
+        generation_run: dict,
+        contract_snapshot: dict,
+        progress=None,
+    ):
         from app.db.schema import plan_items as _pi
         bv_id = generation_run.get("blueprint_version_id")
         course_id = generation_run.get("course_id")

@@ -1,7 +1,7 @@
 import { useState, useEffect, Fragment, type ReactNode } from 'react';
 import { useParams } from 'react-router-dom';
 import {
-  Plus, ChevronRight, ArrowLeft, RefreshCw, Check, PlayCircle,
+  Plus, ChevronRight, ArrowLeft, ArrowRight, RefreshCw, Check, PlayCircle,
   ClipboardList, FileText, Download, Eye, Pencil,
 } from 'lucide-react';
 import { api } from '@/api/client';
@@ -487,11 +487,12 @@ function renderContract({
 //  生成进度面板（状态感知）
 // ═══════════════════════════════════════════
 function GenerationProgressPanel({
-  taskRun, onRetry, onBack,
+  taskRun, onRetry, onBack, onEnterReview,
 }: {
   taskRun: TaskRun;
   onRetry: () => void;
   onBack: () => void;
+  onEnterReview: () => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
   const inFlight =
@@ -509,30 +510,56 @@ function GenerationProgressPanel({
     : 0;
 
   const status: ProgressStatus =
-    taskRun.status === 'failed' ? 'failed' : taskRun.status === 'queued' ? 'queued' : 'running';
+    taskRun.status === 'failed'
+      ? 'failed'
+      : taskRun.status === 'succeeded'
+        ? 'succeeded'
+        : taskRun.status === 'queued'
+          ? 'queued'
+          : 'running';
+
+  // succeeded 后 result 带题目数与 paper_version_id；缺省时退化为通用文案
+  const result = (taskRun.result ?? {}) as Record<string, unknown>;
+  const resultMessage =
+    taskRun.status === 'succeeded'
+      ? typeof result.generated_questions === 'number'
+        ? `已生成 ${result.generated_questions} 道试题，可进入审核逐题校对。`
+        : '试题已生成完毕，可进入审核逐题校对。'
+      : undefined;
 
   return (
     <ProgressPanel
       title={
         taskRun.status === 'failed'
           ? '试题生成失败'
-          : taskRun.status === 'queued'
-            ? '任务排队中，等待执行…'
-            : '正在生成试题，请稍候…'
+          : taskRun.status === 'succeeded'
+            ? '试题生成完成'
+            : taskRun.status === 'queued'
+              ? '任务排队中，等待执行…'
+              : '正在生成试题，请稍候…'
       }
-      messages={taskRun.status === 'queued' ? GENERATION_QUEUED_MESSAGES : GENERATION_MESSAGES}
+      messages={
+        taskRun.status === 'succeeded' || taskRun.status === 'failed'
+          ? undefined
+          : taskRun.status === 'queued'
+            ? GENERATION_QUEUED_MESSAGES
+            : GENERATION_MESSAGES
+      }
       progress={taskRun.progress ?? null}
-      stageLabel={taskRun.stage ? `阶段：${taskRun.stage}` : undefined}
+      stageLabel={taskRun.stage && taskRun.status !== 'succeeded' ? `阶段：${taskRun.stage}` : undefined}
       status={status}
-      elapsedSeconds={inFlight ? elapsedSeconds : undefined}
+      elapsedSeconds={elapsedSeconds}
       queuedHintAfterSeconds={QUEUED_HINT_SECONDS}
       errorMessage={taskRun.error_message || taskRun.error_code || '未知错误，请重试或联系管理员'}
+      resultMessage={resultMessage}
       footer={
         taskRun.status === 'failed' ? (
           <>
             <Button variant="secondary" onClick={onBack}><ArrowLeft size={16} /> 返回合同</Button>
             <Button onClick={onRetry} icon={<RefreshCw size={16} />}>重新生成</Button>
           </>
+        ) : taskRun.status === 'succeeded' ? (
+          <Button onClick={onEnterReview} icon={<ArrowRight size={16} />}>进入审核</Button>
         ) : undefined
       }
     />
@@ -557,6 +584,7 @@ function renderGenerate({
       addToast('任务已启动', 'success');
     } catch (e) {
       addToast('生成失败: ' + (e as Error).message, 'error');
+    } finally {
       setGenerating(false);
     }
   };
@@ -584,6 +612,7 @@ function renderGenerate({
           taskRun={taskRun}
           onRetry={startGeneration}
           onBack={() => setStep('contract')}
+          onEnterReview={() => setStep('review')}
         />
       )}
     </div>

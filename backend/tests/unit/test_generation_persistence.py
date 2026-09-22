@@ -208,7 +208,7 @@ def _make_mock_37_graph(num_questions: int = 37):
     """返回一个闭包 graph_invoke：根据 generation_run 的 plan_items 长度
     生成 num_questions 道题。题量不足或超出时按 plan_items 循环填满。"""
 
-    def graph(session, gr, snap):
+    def graph(session, gr, snap, progress=None):
         slots = (snap or {}).get("slots") or []
         gr_id = gr.get("id")
         # 读取 DB 中的 plan_items（按 generation_run.blueprint_version_id）
@@ -332,7 +332,7 @@ def test_graph_invoke_raise_causes_run_failed_and_no_paper_version(session):
         select(task_runs).where(task_runs.c.id == task_id)
     ).one()
 
-    def exploding_graph(session, gr, snap):
+    def exploding_graph(session, gr, snap, progress=None):
         raise RuntimeError("boom 模型不可用")
 
     with pytest.raises(RuntimeError, match=r"boom"):
@@ -360,16 +360,9 @@ def test_graph_invoke_raise_causes_run_failed_and_no_paper_version(session):
     assert pv == 0
 
 
-def test_default_graph_invocation_uses_contract_and_pure_knowledge_cards(session, monkeypatch):
-    """正式装配链路：真实 LangGraph + 假模型网关，不向模型暴露来源元数据。"""
-    from app.adapters.model import deepseek_gateway
-    from app.config import settings
-
-    generation_run_id, _ = _setup_pipeline(session)
-    run = session.execute(
-        select(generation_runs).where(generation_runs.c.id == generation_run_id)
-    ).one()._mapping
-    captured_payloads = []
+def _capturing_gateway_factory(captured: list):
+    """返回可 monkeypatch 的 DeepSeekGateway 替身：按合同规格产出合规题干，
+    并把收到的 payload 记入 captured（断言"不向模型暴露来源元数据"）。"""
 
     class CapturingGateway:
         def __init__(self, **_kwargs):
@@ -377,10 +370,9 @@ def test_default_graph_invocation_uses_contract_and_pure_knowledge_cards(session
 
         def generate_batch(self, payload):
             rendered = payload.model_dump(mode="json")
-            captured_payloads.append(rendered)
-            assert "material_version_id" not in repr(rendered)
-            assert "source_locator" not in repr(rendered)
-            assert "evidence_chunk" not in repr(rendered)
+            captured.append(rendered)
+            for forbidden in ("material_version_id", "source_locator", "evidence_chunk"):
+                assert forbidden not in repr(rendered)
             questions = []
             for spec in payload.questions:
                 question = {
@@ -409,10 +401,26 @@ def test_default_graph_invocation_uses_contract_and_pure_knowledge_cards(session
                 questions.append(question)
             return questions
 
+    return CapturingGateway
+
+
+def test_default_graph_invocation_uses_contract_and_pure_knowledge_cards(session, monkeypatch):
+    """正式装配链路：真实 LangGraph + 假模型网关，不向模型暴露来源元数据。"""
+    from app.adapters.model import deepseek_gateway
+    from app.config import settings
+
+    generation_run_id, _ = _setup_pipeline(session)
+    run = session.execute(
+        select(generation_runs).where(generation_runs.c.id == generation_run_id)
+    ).one()._mapping
+    captured_payloads = []
+
     monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
     monkeypatch.setattr(settings, "deepseek_base_url", "https://model.invalid/v1")
     monkeypatch.setattr(settings, "deepseek_model", "test-model")
-    monkeypatch.setattr(deepseek_gateway, "DeepSeekGateway", CapturingGateway)
+    monkeypatch.setattr(
+        deepseek_gateway, "DeepSeekGateway", _capturing_gateway_factory(captured_payloads),
+    )
 
     questions = _default_graph_invoke(session, dict(run), run["contract_snapshot"])
 
@@ -420,3 +428,135 @@ def test_default_graph_invocation_uses_contract_and_pure_knowledge_cards(session
     assert {question["plan_item_id"] for question in questions}
     assert all(question["quality"]["needs_review"] is False for question in questions)
     assert captured_payloads
+
+
+# ---------------------------------------------------------------------------
+# 生成进度上报：graph_invoke 期间 task_runs.progress 必须逐批推进且立即可见
+# ---------------------------------------------------------------------------
+
+def _progress_from_independent_connection(session, task_id: str):
+    """用独立连接读 task_runs.progress，模拟前端轮询的连接视角。
+
+    进度写在任务的长事务里若不提交，轮询连接永远读不到——用户看到的就是
+    「卡在正在生成试题，请稍候…」。
+    """
+    probe = create_engine(str(session.bind.url))
+    try:
+        with probe.connect() as conn:
+            return conn.execute(
+                select(task_runs.c.progress).where(task_runs.c.id == task_id)
+            ).scalar_one()
+    finally:
+        probe.dispose()
+
+
+def test_execution_reports_intermediate_progress(session):
+    """整图执行期间 progress 回调必须把 task_runs.progress 推到 5~100 之间，
+    并以独立事务提交（前端轮询连接立即可见）。"""
+    _setup_pipeline(session)
+    task_id = enqueue_generation(session, course_id="c1", project_id="ep1")
+    tr_row = session.execute(
+        select(task_runs).where(task_runs.c.id == task_id)
+    ).one()
+
+    seen: list[int] = []
+
+    def progress_graph(session, gr, snap, progress=None):
+        assert progress is not None, "execute_generation_task 必须注入进度回调"
+        for done, total in ((1, 4), (2, 4), (4, 4)):
+            progress(done, total)
+            seen.append(_progress_from_independent_connection(session, task_id))
+        return _make_mock_37_graph(37)(session, gr, snap, progress=progress)
+
+    execute_generation_task_handler(
+        session,
+        tr_row,
+        graph_invoke=progress_graph,
+        write_paper_version=False,
+    )
+
+    assert seen, "进度回调一次都没有被调用"
+    assert all(5 < value < 100 for value in seen), seen
+    assert seen == sorted(seen), "进度必须单调递增"
+    # 成功收尾仍以 100% 落位
+    final = session.execute(
+        select(task_runs.c.status, task_runs.c.progress).where(task_runs.c.id == task_id)
+    ).one()
+    assert final._mapping["status"] == "succeeded"
+    assert final._mapping["progress"] == 100
+
+
+def test_default_graph_invoke_stream_progress_matches_batches(session, monkeypatch):
+    """真实图的 stream 路径：按批回调 (done, total)，最终题目与 invoke 一致。"""
+    from app.adapters.model import deepseek_gateway
+    from app.config import settings
+
+    generation_run_id, _ = _setup_pipeline(session)
+    run = session.execute(
+        select(generation_runs).where(generation_runs.c.id == generation_run_id)
+    ).one()._mapping
+    captured: list[dict] = []
+
+    monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
+    monkeypatch.setattr(settings, "deepseek_base_url", "https://model.invalid/v1")
+    monkeypatch.setattr(settings, "deepseek_model", "test-model")
+    monkeypatch.setattr(
+        deepseek_gateway, "DeepSeekGateway", _capturing_gateway_factory(captured),
+    )
+
+    baseline = _default_graph_invoke(session, dict(run), run["contract_snapshot"])
+    calls: list[tuple[int, int]] = []
+    streamed = _default_graph_invoke(
+        session,
+        dict(run),
+        run["contract_snapshot"],
+        progress=lambda done, total: calls.append((done, total)),
+    )
+
+    assert calls, "stream 路径未上报任何批次进度"
+    total = calls[0][1]
+    assert total >= 1
+    assert all(t == total for _, t in calls)
+    assert [done for done, _ in calls] == list(range(1, total + 1))
+    # stream 聚合结果与 invoke 完全一致
+    assert streamed == baseline
+    assert captured
+
+
+def test_worker_path_publishes_progress_for_polling(session, monkeypatch):
+    """Celery worker 是线上真实执行路径（manage_task_run=False）：
+    图跑批期间 task_runs.progress 必须可被轮询连接读到，收尾仍是 succeeded/100。"""
+    from app.infrastructure.tasks import worker
+    from app.services import generation_runner_service
+
+    _setup_pipeline(session)
+    task_id = enqueue_generation(session, course_id="c1", project_id="ep1")
+    mock = _make_mock_37_graph(37)
+    seen: list[int] = []
+
+    def worker_graph(session, gr, snap, progress=None):
+        assert progress is not None, "worker 路径同样必须注入进度回调"
+        progress(1, 2)
+        seen.append(_progress_from_independent_connection(session, task_id))
+        progress(2, 2)
+        seen.append(_progress_from_independent_connection(session, task_id))
+        return mock(session, gr, snap, progress=progress)
+
+    monkeypatch.setattr(worker, "get_session_factory", lambda: lambda: session)
+    monkeypatch.setattr(generation_runner_service, "_default_graph_invoke", worker_graph)
+
+    assert worker.execute_task(task_id, worker_id="w1") is True
+
+    assert seen == [50, 95], seen
+    # execute_task 会关闭借来的 session，收尾状态只能从独立连接读
+    probe = create_engine(str(session.bind.url))
+    try:
+        with probe.connect() as conn:
+            final = conn.execute(
+                select(task_runs.c.status, task_runs.c.progress)
+                .where(task_runs.c.id == task_id)
+            ).one()._mapping
+    finally:
+        probe.dispose()
+    assert final["status"] == "succeeded"
+    assert final["progress"] == 100

@@ -7,6 +7,7 @@ build_batches → Send(batch_generate) 按考点批并行 → merge_and_check �
 """
 from __future__ import annotations
 
+import logging
 import operator
 import re
 from typing import Annotated, Protocol, TypedDict
@@ -18,6 +19,17 @@ from app.domain.generation.batching import QuestionBatch, split_contract_into_ba
 from app.domain.generation.contract import ContractSlot, _normalized, boundaries_overlap
 from app.schemas.generation import compile_batch_generation_payload
 from app.services.generation_service import audit_paper_against_contract, validate_generated_question
+
+logger = logging.getLogger("generation.graph")
+
+
+def _error_digest(exc: BaseException) -> str:
+    """日志用错误摘要：模型网关异常只取脱敏 error_code（其原始 message
+    可能夹带模型输出），其余异常取类型名+消息。"""
+    code = getattr(exc, "error_code", None)
+    if code:
+        return f"{type(exc).__name__}({code})"
+    return f"{type(exc).__name__}: {exc}"
 
 
 class BatchGateway(Protocol):
@@ -194,7 +206,13 @@ def build_generation_graph(gateway: BatchGateway, *, max_retries: int = 2):
         try:
             raw_questions = list(gateway.generate_batch(compile_batch_generation_payload(batch, cards)))
             calls += 1
-        except Exception:
+        except Exception as exc:
+            # 批调用失败绝不能静默：整批缺失会连锁触发逐题重试，日志是
+            # 区分"模型服务不可用"与"模型在吐坏题"的唯一依据。
+            logger.warning(
+                "批次模型调用失败 batch=%s anchor=%s slots=%d error=%s",
+                batch.batch_id, batch.anchor_key, len(batch.slots), _error_digest(exc),
+            )
             raw_questions = []
             calls += 1
 
@@ -222,7 +240,11 @@ def build_generation_graph(gateway: BatchGateway, *, max_retries: int = 2):
                 )
                 try:
                     retried = list(gateway.generate_batch(retry_payload))
-                except Exception:
+                except Exception as exc:
+                    logger.warning(
+                        "单题重试模型调用失败 batch=%s item_index=%d attempt=%d error=%s",
+                        batch.batch_id, slot.item_index, attempts, _error_digest(exc),
+                    )
                     break
                 candidate = next((q for q in retried if q.get("item_index") == slot.item_index), None)
                 if candidate is None:
@@ -260,7 +282,13 @@ def build_generation_graph(gateway: BatchGateway, *, max_retries: int = 2):
                         swapped = list(gateway.generate_batch(
                             compile_batch_generation_payload(swap_batch, cards)
                         ))
-                    except Exception:
+                    except Exception as exc:
+                        logger.warning(
+                            "换原子模型调用失败 batch=%s item_index=%d "
+                            "replacement_atom=%s error=%s",
+                            batch.batch_id, slot.item_index, rep_atom,
+                            _error_digest(exc),
+                        )
                         swapped = []
                     candidate = next(
                         (q for q in swapped if q.get("item_index") == slot.item_index), None
@@ -283,6 +311,11 @@ def build_generation_graph(gateway: BatchGateway, *, max_retries: int = 2):
             produced[slot.item_index] = question
 
         ordered = [produced[s.item_index] for s in sorted(batch.slots, key=lambda s: s.item_index)]
+        review_count = sum(1 for q in ordered if q.get("needs_review"))
+        logger.info(
+            "批次完成 batch=%s anchor=%s produced=%d needs_review=%d calls=%d",
+            batch.batch_id, batch.anchor_key, len(ordered), review_count, calls,
+        )
         return {"questions": ordered, "model_call_count": calls}
 
     def merge_and_check(state: GenerationState) -> dict:

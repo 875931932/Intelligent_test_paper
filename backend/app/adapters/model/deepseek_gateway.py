@@ -192,6 +192,12 @@ class DeepSeekJsonClient:
                         request_id=None,
                         details={"cache_hit": True},
                     )
+                    logger.info(
+                        "模型调用命中缓存 stage=%s model=%s prompt_hash=%s",
+                        _stage_of(call_context),
+                        self.model,
+                        prompt_hash[:12],
+                    )
                     return cached
         started = time.perf_counter()
         attempts: list[dict[str, Any]] = []
@@ -326,6 +332,20 @@ class DeepSeekJsonClient:
                         "response": result,
                     },
                 )
+                # 请求级 INFO：线上排查"日志看不到模型调用"的核心埋点。
+                # 只带 stage/model/耗时/次数/token，不带 prompt 与 api_key。
+                logger.info(
+                    "模型调用成功 stage=%s model=%s status=succeeded "
+                    "request_id=%s duration_ms=%d attempts=%d "
+                    "input_tokens=%s output_tokens=%s",
+                    _stage_of(call_context),
+                    self.model,
+                    request_id,
+                    duration_ms,
+                    attempt,
+                    input_tokens,
+                    output_tokens,
+                )
                 return result
 
             if not should_retry:
@@ -374,6 +394,19 @@ class DeepSeekJsonClient:
             error=last_error,
             request_id=request_id,
             details=details,
+        )
+        # 请求级 WARNING：与成功日志同构，确保失败调用在日志里可见
+        # （此前只有落库无日志，排查时只能翻数据库）。
+        logger.warning(
+            "模型调用失败 stage=%s model=%s status=failed duration_ms=%d "
+            "attempts=%d error_code=%s http_status=%s request_id=%s",
+            _stage_of(call_context),
+            self.model,
+            duration_ms,
+            attempt_count,
+            persisted_code,
+            final_http_status,
+            request_id,
         )
         raise DeepSeekGatewayError(last_error.error_code, str(last_error), details=details) from last_error
 
@@ -567,6 +600,11 @@ class DeepSeekGateway:
 
 def _optional_text(value: Any) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
+
+
+def _stage_of(context: ModelCallContext | None) -> str:
+    """日志用的调用方标识：缺省 context 时用 "-" 占位，绝不让日志缺失。"""
+    return context.stage if context is not None else "-"
 
 
 def _optional_int(value: Any) -> int | None:

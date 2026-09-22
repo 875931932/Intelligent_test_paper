@@ -34,6 +34,12 @@ class GenerationRunnerError(Exception):
     """生成任务持久化 / 执行异常。"""
 
 
+# 进度上报契约：(done, total) 反映「已完成批次 / 总批数」。
+# 生成一次要跑十余分钟，只有 5% 和 100% 两档时前端只能不停转圈——
+# 批次粒度上报让进度条真正推进，也让人知道任务没死。
+ProgressReporter = Callable[[int, int], None]
+
+
 def _nid() -> str:
     return uuid.uuid4().hex[:16]
 
@@ -101,11 +107,16 @@ def _default_graph_invoke(
     session: Session,
     generation_run: dict,
     contract_snapshot: dict,
+    *,
+    progress: ProgressReporter | None = None,
 ) -> list[dict]:
     """运行正式 LangGraph，并把图输出映射回持久化题位。
 
     图只接收合同槽位和纯净知识卡；文件名、证据位置与其他资料来源均不进入
     模型请求。测试仍可通过 ``graph_invoke`` 显式替换此函数。
+
+    ``progress`` 注入时改用流式消费：每完成一批考点题目回调一次
+    ``(done, total)``，让调用方在十余分钟的生成过程中持续上报进度。
     """
     from app.adapters.model.deepseek_gateway import DeepSeekGateway
     from app.config import settings
@@ -155,11 +166,16 @@ def _default_graph_invoke(
         recorder=DatabaseModelCallRecorder(get_session_factory()),
         call_context=ModelCallContext(course_id=course_id, stage="paper_generation"),
     )
-    result = build_generation_graph(gateway).invoke({
+    graph = build_generation_graph(gateway)
+    base_state = {
         "contract": [slot.model_dump(mode="json") for slot in slots],
         "knowledge_cards": context_cards,
         "units": units,
-    })
+    }
+    if progress is None:
+        result = graph.invoke(base_state)
+    else:
+        result = _stream_graph_updates(graph, base_state, progress=progress)
     raw_questions = result.get("questions") if isinstance(result, dict) else None
     if not isinstance(raw_questions, list):
         raise GenerationRunnerError("generation graph returned no questions")
@@ -198,6 +214,39 @@ def _default_graph_invoke(
     if received_indexes != expected_indexes:
         raise GenerationRunnerError("generation graph did not return every contract slot")
     return sorted(questions, key=lambda question: question["item_index"])
+
+
+def _stream_graph_updates(
+    graph,
+    base_state: dict,
+    *,
+    progress: ProgressReporter,
+) -> dict:
+    """按节点增量流式消费编译后的图，边跑边回报批次进度。
+
+    ``stream_mode="updates"`` 在每个节点完成时给出增量：
+    ``build_batches`` 给出总批数，此后每收到一个 ``batch_generate`` 增量就
+    说明一批考点题目已落地，回调 ``progress(done, total)``。questions 通道
+    是按批完成顺序累加的，不等于题位顺序，所以收尾按 ``item_index`` 排序，
+    与 ``invoke`` 返回的全量终态保持同一语义。
+    """
+    total: int | None = None
+    done = 0
+    questions: list[dict] = []
+    for chunk in graph.stream(base_state, stream_mode="updates"):
+        for node_name, update in chunk.items():
+            update = update or {}
+            if node_name == "build_batches":
+                total = len(update.get("batches") or [])
+                continue
+            if node_name != "batch_generate":
+                continue
+            done += 1
+            questions.extend(update.get("questions") or [])
+            if total:
+                progress(done, total)
+    logger.debug("生成图流式完成 batches=%s questions=%d", total, len(questions))
+    return {"questions": sorted(questions, key=lambda q: q.get("item_index", 0))}
 
 
 def _load_generation_context(
@@ -286,10 +335,51 @@ def _plan_item_ids_by_index(
     return {row._mapping["item_index"]: row._mapping["id"] for row in rows}
 
 
+def _publish_task_progress(
+    session: Session,
+    *,
+    task_run_id: str,
+    course_id: str,
+    done: int,
+    total: int,
+) -> None:
+    """把 (done, total) 折算成 task_runs.progress，并立即独立提交。
+
+    进度若只写在任务的长事务里而不提交，前端轮询用的独立连接永远读不到——
+    用户看到的就是「卡在正在生成试题，请稍候…」。这里每次回调都单独提交，
+    让轮询立即可见。上报失败只告警并回滚本次写入，绝不中断已经跑了十几分钟
+    的生成任务；进度重试交由下一批回调自然补上。
+    """
+    if total <= 0:
+        return
+    done = max(0, min(done, total))
+    percent = 5 + (90 * done) // total
+    try:
+        session.execute(
+            task_runs.update()
+            .where(
+                task_runs.c.id == task_run_id,
+                task_runs.c.course_id == course_id,
+                task_runs.c.status == "running",
+            )
+            .values(stage="generating", progress=percent, updated_at=_now())
+        )
+        session.commit()
+    except SQLAlchemyError as exc:
+        logger.warning(
+            "进度上报失败 task=%s done=%s total=%s err=%r",
+            task_run_id, done, total, exc,
+        )
+        try:
+            session.rollback()
+        except SQLAlchemyError:  # pragma: no cover - 回滚失败只能放弃本次上报
+            pass
+
+
 def execute_generation_task(
     task_run: dict,
     *,
-    graph_invoke: Callable[[Session, dict, dict], list[dict]] | None = None,
+    graph_invoke: Callable[..., list[dict]] | None = None,
     write_paper_version: bool = True,
     manage_task_run: bool = True,
 ) -> dict:
@@ -301,9 +391,11 @@ def execute_generation_task(
         task_runs 行的 dict 表示（含 id, course_id, payload 等）。由调用方
         通过 session 加载后传入，避免该函数自行再开 session。
     graph_invoke:
-        ``graph_invoke(session, generation_run_dict, contract_snapshot) -> list[question_dict]``
+        ``graph_invoke(session, generation_run_dict, contract_snapshot, progress=None)
+        -> list[question_dict]``
         题目 dict 含 plan_item_id, knowledge_card_id, stem, options, answer,
-        difficulty, cognitive_level, quality 等字段。
+        difficulty, cognitive_level, quality 等字段。``progress`` 形参可选：
+        图每完成一批题目回调一次 ``progress(done, total)``。
     write_paper_version:
         True 时调用 Task 5 ``create_paper_version_from_generation`` 创建候选
         试卷版本；失败用例单独测试时可设为 False。
@@ -379,7 +471,18 @@ def execute_generation_task(
         contract_snapshot = gr_dict.get("contract_snapshot") or {}
 
         # c) 调用图生成题目
-        questions: list[dict] = graph_invoke(session, gr_dict, contract_snapshot)
+        def _report_progress(done: int, total: int) -> None:
+            _publish_task_progress(
+                session,
+                task_run_id=task_run_id,
+                course_id=course_id,
+                done=done,
+                total=total,
+            )
+
+        questions: list[dict] = graph_invoke(
+            session, gr_dict, contract_snapshot, progress=_report_progress,
+        )
         logger.info(
             "生成图返回 run=%s questions=%d", generation_run_id, len(questions),
         )

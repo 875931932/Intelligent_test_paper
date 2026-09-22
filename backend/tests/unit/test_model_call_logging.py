@@ -8,17 +8,26 @@
 2. 失败调用升级为 WARNING 且带 error_code；
 3. 生成任务 开始/图返回/完成/失败 四个节点均有日志，含 run 与题数；
 4. DeepSeekGateway 构造时打印生效的 base_url/model（api_key 脱敏）。
+5. request_json 每次真实调用输出一行 INFO（stage/model/耗时/attempts）；
+   失败升级 WARNING 且带 error_code——这是"日志看不到模型调用"的直接埋点。
 """
 
 from __future__ import annotations
 
+import json
 import logging
+from typing import Any
 
+import httpx
 import pytest
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.adapters.model.deepseek_gateway import DeepSeekGateway
+from app.adapters.model.deepseek_gateway import (
+    DeepSeekGateway,
+    DeepSeekGatewayError,
+    DeepSeekJsonClient,
+)
 from app.db.schema import (
     Base,
     Course,
@@ -184,7 +193,7 @@ def gen_env(tmp_path):
     engine.dispose()
 
 
-def _mock_graph(session, gr, snap):
+def _mock_graph(session, gr, snap, progress=None):
     return [{
         "plan_item_id": "pi1",
         "knowledge_card_id": None,
@@ -227,7 +236,7 @@ def test_generation_task_logs_start_and_completion(gen_env, caplog):
 def test_generation_task_logs_failure_with_run_id(gen_env, caplog):
     caplog.set_level(logging.INFO, logger="generation.runner")
 
-    def _boom(session, gr, snap):
+    def _boom(session, gr, snap, progress=None):
         raise RuntimeError("模型返回结构非法")
 
     with Session(gen_env) as s:
@@ -260,4 +269,117 @@ def test_gateway_logs_effective_configuration(caplog):
     message = records[0].getMessage()
     assert "step-3.7-flash" in message
     assert "api.stepfun.com" in message
+    assert "sk-secret-value" not in message
+
+
+# ---------------------------------------------------------------------------
+# request_json 请求级日志（"日志看不到模型调用"的核心埋点）
+# ---------------------------------------------------------------------------
+
+class _FakeSuccessResponse:
+    """最小 httpx.Response 替身：200 + 合法 JSON content + usage。"""
+
+    status_code = 200
+    headers = {"x-request-id": "req-fake-1"}
+    content = json.dumps({
+        "id": "cmpl-fake",
+        "choices": [{"message": {"content": '{"ok": true}'}}],
+        "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+    }).encode()
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict:
+        return json.loads(self.content.decode())
+
+
+class _FakeErrorResponse:
+    """500 响应替身：raise_for_status 抛 httpx.HTTPStatusError。"""
+
+    status_code = 500
+    headers: dict[str, str] = {}
+    content = b"upstream exploded"
+
+    def raise_for_status(self) -> None:
+        request = httpx.Request(
+            "POST", "https://api.stepfun.com/v1/chat/completions",
+        )
+        raise httpx.HTTPStatusError(
+            "500 Internal Server Error", request=request, response=httpx.Response(500),
+        )
+
+    def json(self) -> dict:
+        return {}
+
+
+class _FakeClient:
+    """httpx.Client 替身：记录 POST 次数并返回预设响应。"""
+
+    def __init__(self, response: Any) -> None:
+        self._response = response
+        self.calls: list[str] = []
+
+    def post(self, url: str, **_kwargs: Any) -> Any:
+        self.calls.append(url)
+        return self._response
+
+
+def test_request_json_logs_success_line(caplog):
+    caplog.set_level(logging.INFO, logger="model.gateway")
+    client = DeepSeekJsonClient(
+        api_key="sk-secret-value",
+        base_url="https://api.stepfun.com/v1",
+        model="step-3.7-flash",
+        client=_FakeClient(_FakeSuccessResponse()),
+    )
+    result = client.request_json(
+        system_prompt="你是出题助手",
+        payload={"q": "hi"},
+        temperature=0.2,
+        call_context=_ctx(),
+    )
+    assert result == {"ok": True}
+    records = [r for r in caplog.records if r.name == "model.gateway"]
+    assert len(records) == 1, [r.getMessage() for r in caplog.records]
+    record = records[0]
+    assert record.levelno == logging.INFO
+    message = record.getMessage()
+    assert "paper_generation" in message
+    assert "step-3.7-flash" in message
+    assert "succeeded" in message
+    assert "duration_ms=" in message
+    assert "attempts=1" in message
+    # api_key 与 prompt 内容不得进日志
+    assert "sk-secret-value" not in message
+    assert "你是出题助手" not in message
+
+
+def test_request_json_logs_failure_line_with_error_code(caplog):
+    caplog.set_level(logging.INFO, logger="model.gateway")
+    client = DeepSeekJsonClient(
+        api_key="sk-secret-value",
+        base_url="https://api.stepfun.com/v1",
+        model="step-3.7-flash",
+        # 单次尝试：避免失败测试触发真实退避睡眠
+        max_attempts=1,
+        client=_FakeClient(_FakeErrorResponse()),
+    )
+    with pytest.raises(DeepSeekGatewayError):
+        client.request_json(
+            system_prompt="你是出题助手",
+            payload={"q": "hi"},
+            temperature=0.2,
+            call_context=_ctx(),
+        )
+    records = [r for r in caplog.records if r.name == "model.gateway"]
+    assert len(records) == 1, [r.getMessage() for r in caplog.records]
+    record = records[0]
+    assert record.levelno == logging.WARNING
+    message = record.getMessage()
+    assert "paper_generation" in message
+    assert "step-3.7-flash" in message
+    assert "failed" in message
+    assert "deepseek_http_error" in message
+    assert "duration_ms=" in message
     assert "sk-secret-value" not in message
