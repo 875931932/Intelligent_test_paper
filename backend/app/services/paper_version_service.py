@@ -191,6 +191,25 @@ def summarize_paper_versions_for_projects(
     return summaries
 
 
+def _has_usable_content(payload: dict) -> bool:
+    """题目是否具备可交付的最小内容：题干 + 答案。
+
+    判断题答案是布尔值，false 也是有效答案（"错误"）；其余题型答案看
+    去空白后是否有实质内容。生成侧三道防线全失守留下的占位题（只有元数据）
+    与模型漏答案的题都过不了这一关，由调用方剔除并记录。
+    """
+    if not str(payload.get("stem") or "").strip():
+        return False
+    answer = payload.get("answer")
+    if isinstance(answer, bool):
+        return True
+    if isinstance(answer, (list, tuple)):
+        answer = "".join(str(item) for item in answer)
+    if answer is None:
+        return False
+    return bool(str(answer).strip())
+
+
 def create_paper_version_from_generation(
     session: Session,
     *,
@@ -223,6 +242,9 @@ def create_paper_version_from_generation(
         ).scalar_one_or_none() or 0
         version_no = int(current_max) + 1
 
+        # 因缺题干/缺答案被剔除的题位（写 paper_items 时填充，随版本元数据落库）
+        dropped_slots: list[dict] = []
+
         # 插入 paper_version
         pv_id = _nid()
         session.execute(
@@ -236,6 +258,8 @@ def create_paper_version_from_generation(
                 metadata={
                     "generation_run_id": generation_run_id,
                     "created_from": "generation_service",
+                    # 因缺题干/缺答案被剔除的题位：合同配额与实际题数的差额来源
+                    "dropped_slots": dropped_slots,
                 },
             )
         )
@@ -310,6 +334,18 @@ def create_paper_version_from_generation(
                 continue
             gq = gq_list.pop(0)
             gq_id = gq["id"]
+            payload = gq.get("payload") or {}
+            if not _has_usable_content(payload):
+                # 生成侧三道防线全失守时会留下"只有元数据"的占位题（无题干/无答案），
+                # 模型也可能返回漏答案的题。落库成 paper_item 就是卷面上一道空题，
+                # 教师除了整题手写无解——宁缺勿滥：不写入，记进 metadata 让缺口可见。
+                dropped_slots.append({
+                    "item_index": q.get("item_index"),
+                    "question_type": payload.get("question_type"),
+                    "exam_point_id": payload.get("exam_point_id"),
+                    "reason": "missing_stem" if not str(payload.get("stem") or "").strip() else "missing_answer",
+                })
+                continue
 
             pi_items_rows.append({
                 "id": _nid(),

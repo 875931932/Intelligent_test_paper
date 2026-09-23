@@ -401,6 +401,7 @@ def execute_generation_task(
         试卷版本；失败用例单独测试时可设为 False。
     """
     from app.services.paper_version_service import (
+        _has_usable_content,
         create_paper_version_from_generation,
     )
 
@@ -572,8 +573,19 @@ def execute_generation_task(
                 updated_at=now2,
             )
         )
+        # 计入卷面的只算"有题干且有答案"的题：缺内容的占位题在写 paper_items 时
+        # 就被剔除（见 create_paper_version_from_generation），这里必须同步，
+        # 否则前端提示"已生成 N 题"而卷面实际不足 N。
+        usable = [q for q in questions if _has_usable_content(q)]
+        dropped = len(questions) - len(usable)
+        if dropped:
+            logger.warning(
+                "生成结果有 %d 道题缺题干/缺答案，未写入试卷 run=%s project=%s",
+                dropped, generation_run_id, project_id,
+            )
         result = {
-            "generated_questions": len(questions),
+            "generated_questions": len(usable),
+            "dropped_questions": dropped,
             "paper_version_id": paper_version_id,
         }
         if manage_task_run:

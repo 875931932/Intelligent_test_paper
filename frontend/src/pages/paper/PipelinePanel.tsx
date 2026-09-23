@@ -516,10 +516,12 @@ function GenerationProgressPanel({
 
   // succeeded 后 result 带题目数与 paper_version_id；缺省时退化为通用文案
   const result = (taskRun.result ?? {}) as Record<string, unknown>;
+  const dropped = typeof result.dropped_questions === 'number' ? result.dropped_questions : 0;
   const resultMessage =
     taskRun.status === 'succeeded'
       ? typeof result.generated_questions === 'number'
         ? `已生成 ${result.generated_questions} 道试题。`
+          + (dropped > 0 ? ` 其中 ${dropped} 道因缺题干或缺答案未写入试卷，请重试或补充知识卡后再次生成。` : '')
         : '试题已生成完毕。'
       : undefined;
 
