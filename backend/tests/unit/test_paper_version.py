@@ -352,7 +352,8 @@ def test_revert_finalized_moves_back_to_candidate(session):
 
     proj = session.execute(select(exam_projects).where(exam_projects.c.id == "ep1")).one()
     assert proj._mapping["status"] == "review"
-    assert proj._mapping["active_paper_version_id"] is None
+    # 撤销定稿不清指针：这份卷仍是项目「当前卷」，只是状态回到 candidate
+    assert proj._mapping["active_paper_version_id"] == pv_id
 
 
 # --- 版本解析：项目“当前正在处理”的试卷版本 ---
@@ -363,15 +364,17 @@ def test_resolve_current_raises_when_no_paper_version(session):
         resolve_current_paper_version_id(session, course_id="c1", project_id="ep1")
 
 
-def test_resolve_current_returns_candidate_when_no_active(session):
-    """生成完成但未确认：current 必须指向刚生成的 candidate。
+def test_resolve_current_returns_fresh_candidate_after_generation(session):
+    """生成完成但未确认：current 必须指向刚生成的 candidate，且指针此时就已写入。
 
-    这是审核流的正常路径：active_paper_version_id 只在确认定稿时回写，
-    若解析规则依赖它，生成成功后前端永远拿不到可审核的版本。
+    指针在生成完成时写入、而非等到定稿，解析端才只认它一个真值；
+    若等到定稿才写，解析就只能靠「未定稿 candidate 优先」去猜。
     """
     pv_id, _ = _full_pipeline_to_candidate_paper(session)
     resolved = resolve_current_paper_version_id(session, course_id="c1", project_id="ep1")
     assert resolved == pv_id
+    proj = session.execute(select(exam_projects).where(exam_projects.c.id == "ep1")).one()
+    assert proj._mapping["active_paper_version_id"] == pv_id
 
 
 def test_resolve_current_falls_back_to_active_when_no_candidate(session):
@@ -407,6 +410,43 @@ def test_resolve_current_prefers_fresh_candidate_over_finalized(session):
 
     resolved = resolve_current_paper_version_id(session, course_id="c1", project_id="ep1")
     assert resolved == pv_v2
+
+
+def test_resolve_current_not_stolen_by_stale_candidate_after_finalize(session):
+    """定稿后不得被遗留的旧 candidate 抢走——「点定稿自动少一题」的回归用例。
+
+    实测故障（project 6457fb13）：生成两版后定稿 v2（42 题），旧 v1（41 题）
+    仍是 candidate。解析若「未定稿 candidate 优先」，定稿完成的瞬间当前卷就
+    跳回旧版，卷面凭空少一题。
+    """
+    pv_v1, _ = _full_pipeline_to_candidate_paper(session)
+    pv_v2, _ = _full_pipeline_to_candidate_paper(session)
+    confirm_paper_version(session, course_id="c1", paper_version_id=pv_v2,
+                          force_ignore_needs_review=True)
+
+    resolved = resolve_current_paper_version_id(session, course_id="c1", project_id="ep1")
+    assert resolved == pv_v2
+
+    # 旧 candidate 仍在库里（历史只追加、不原地改），但不再代表当前卷
+    old = session.execute(
+        select(paper_versions.c.status).where(paper_versions.c.id == pv_v1)
+    ).one()
+    assert old._mapping["status"] == "candidate"
+
+
+def test_resolve_current_falls_back_to_newest_when_pointer_missing(session):
+    """遗留项目（指针为空）按 version_no 最大兜底，不至读不到卷。"""
+    _full_pipeline_to_candidate_paper(session)
+    pv_new, _ = _full_pipeline_to_candidate_paper(session)
+    session.execute(
+        exam_projects.update()
+        .where(exam_projects.c.id == "ep1")
+        .values(active_paper_version_id=None)
+    )
+    session.commit()
+
+    resolved = resolve_current_paper_version_id(session, course_id="c1", project_id="ep1")
+    assert resolved == pv_new
 
 
 # --- get_paper_version 汇总分值 ---

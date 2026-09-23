@@ -346,10 +346,10 @@ body 可选 `{ "mock_graph": false }`；生产必须配置 LLM，否则 503。�
 `GET /api/v1/courses/{course_id}/exam-projects/{project_id}/paper-versions/current` → 200
 
 当前版本解析规则（`paper_version_service.resolve_current_paper_version_id`，API 与项目摘要共用）：
-1. 该生成轮次产生的 `paper_versions` 行中，最新一条**未定稿**（`status != "finalized"`）的 candidate；
-2. 否则 `exam_projects.active_paper_version_id`（确认定稿时回写）；
-3. 否则 `version_no` 最大的一条。
-解析不到时返回 404 —— 即"尚未生成试卷"，与其它错误区分。
+1. `exam_projects.active_paper_version_id` —— 单一真值：生成完成时写入、定稿时重写，撤销定稿不清空；
+2. 该指针为空（本规则落地前的遗留项目）时取 `version_no` 最大的一条。
+
+项目无任何版本时返回 404 —— 即"尚未生成试卷"，与其它错误区分。
 
 ```json
 { "id":"uuid","exam_project_id":"uuid","generation_run_id":"uuid","version_no":1,

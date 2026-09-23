@@ -51,24 +51,17 @@ def pick_current_paper_version_id(
     active_paper_version_id: str | None,
     versions: list[dict],
 ) -> str | None:
-    """从项目的试卷版本中挑选“当前正在处理”的版本 id。
+    """项目「当前这份卷」就是 ``exam_projects.active_paper_version_id``，只此一个真值。
 
-    判定规则（按优先级）：
+    指针在生成完成时写入（``create_paper_version_from_generation``）、定稿时重写，
+    撤销定稿不清空——撤销只是把这份卷打回 candidate，它依然是项目的当前卷。
 
-    1. 最新一个**未定稿**（status != 'finalized'）的版本 —— 生成刚完成、
-       待教师审核/修订的 candidate；
-    2. ``exam_projects.active_paper_version_id`` —— 已定稿导出的版本，项目
-       没有待审 candidate 时（导出、定稿回看）用的就是它；
-    3. 版本号最大的版本 —— 遗留数据兜底。
+    从前的实现还有一条「最新未定稿 candidate 优先」的规则：定稿之后遗留的旧
+    candidate 会反过来抢走当前卷，教师一点定稿，卷子就跳回旧版、凭空少题。
 
-    三条规则共用同一语义：审核流需要的是“项目当前这一版试卷”。
-    ``active_paper_version_id`` 只在确认定稿时回写、回滚时清空，若把它当作
-    审核门禁，生成成功后前端永远拿不到候选版本（报“请先在生成阶段完成生成”），
-    确认后重新生成也会拿到陈旧旧卷。
+    指针为空只剩规则落地前的遗留项目，用版本号最大的兜底；一份版本都没有则
+    返回 None，由调用方转 404（“尚未生成试卷”）。
     """
-    pending = [v for v in versions if v.get("status") != "finalized"]
-    if pending:
-        return str(max(pending, key=lambda v: v["version_no"])["id"])
     if active_paper_version_id:
         return str(active_paper_version_id)
     if not versions:
@@ -383,14 +376,16 @@ def create_paper_version_from_generation(
         if pi_items_rows:
             session.execute(paper_items.insert(), pi_items_rows)
 
-        # 更新项目状态为 review
+        # 生成完成 = 这份卷成为项目的「当前卷」，指针在此写入。
+        # 指针若只在定稿时才写，解析端就只能靠「未定稿 candidate 优先」去猜，
+        # 而遗留的旧 candidate 会在定稿瞬间反客为主，表现为点定稿后少一题。
         session.execute(
             exam_projects.update()
             .where(
                 exam_projects.c.id == project_id,
                 exam_projects.c.course_id == course_id,
             )
-            .values(status="review")
+            .values(status="review", active_paper_version_id=pv_id)
         )
 
         session.commit()
@@ -1039,13 +1034,12 @@ def revert_to_candidate(
         session.execute(
             exam_projects.update()
             .where(
-                exam_projects.c.active_paper_version_id == paper_version_id,
+                exam_projects.c.id == pv_data["exam_project_id"],
                 exam_projects.c.course_id == course_id,
             )
-            .values(
-                active_paper_version_id=None,
-                status="review",
-            )
+            # 指针不清空：撤销定稿只是把这份卷打回 candidate，它仍是当前卷。
+            # 清空会让解析回落到遗留 candidate，卷子凭空跳版。
+            .values(status="review")
         )
         session.commit()
         return {"status": "candidate", "paper_version_id": paper_version_id}

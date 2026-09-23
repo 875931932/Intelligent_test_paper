@@ -32,7 +32,7 @@ router = APIRouter(prefix="/api/v1/courses/{course_id}", tags=["paper-versions"]
 def _resolve_pv_for_project(
     session: Session, *, course_id: str, project_id: str
 ) -> str:
-    """解析项目当前 paper_version：优先未定稿的最新 candidate，否则已定稿指针。
+    """解析项目当前 paper_version：即项目的 ``active_paper_version_id``。
 
     解析规则集中在 paper_version_service（pick_current_paper_version_id），
     与项目摘要、导出共用同一语义，避免各处规则漂移。
