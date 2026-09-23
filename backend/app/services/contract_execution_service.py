@@ -357,20 +357,33 @@ def allocate_with_fallback(
     blueprint_version_id: str,
     allocation_seed: int | None = None,
 ) -> tuple[PaperContract, float, list[tuple[float, int]]]:
-    """阈值回退分配：0.6 → 0.5 → 0.45，首次无冲突（或最后一轮）即接受。"""
+    """阈值回退分配：0.6 → 0.5 → 0.45，首次无冲突（或最后一轮）即接受。
+
+    DB 侧的请求内容（蓝图计划项、全量卡池、历史避重）与阈值无关，只从
+    数据库构建一次；每轮回退仅替换 centrality_threshold 重新分配——此前
+    每轮都整份重建，同一事务里最多把同样的查询重复三遍。分配器对请求
+    全程只读（不改 plan.items、不改 knowledge_cards），复用同一请求与
+    逐轮重建结果等价。
+    """
     thresholds = [0.6, 0.5, 0.45]
     history: list[tuple[float, int]] = []
+    base_request, _, _ = _build_contract_request_from_db(
+        session,
+        blueprint_version_id=blueprint_version_id,
+        centrality_threshold=thresholds[0],
+        allocation_seed=allocation_seed,
+    )
+    current_request = base_request
+
     last_contract: PaperContract | None = None
     used_threshold: float = thresholds[-1]
 
     for idx, threshold in enumerate(thresholds):
-        contract_req, _, _ = _build_contract_request_from_db(
-            session,
-            blueprint_version_id=blueprint_version_id,
-            centrality_threshold=threshold,
-            allocation_seed=allocation_seed,
-        )
-        contract = allocate_paper_contract(contract_req)
+        if idx:
+            current_request = base_request.model_copy(
+                update={"centrality_threshold": threshold}
+            )
+        contract = allocate_paper_contract(current_request)
         conflict_count = len(contract.conflicts)
         history.append((threshold, conflict_count))
         last_contract = contract
@@ -413,14 +426,15 @@ def revise_and_confirm(
             allocation_seed=allocation_seed,
         )
 
-        # 3. 应用教师修订（若有）
-        _, units_payload, cards_dict = _build_contract_request_from_db(
-            session,
-            blueprint_version_id=blueprint_version_id,
-            centrality_threshold=used_threshold,
-            allocation_seed=allocation_seed,
-        )
+        # 3. 应用教师修订（若有）：无修订（重新生成的默认路径）时不必再做
+        # 一次全量 DB 重建，allocate_with_fallback 已经构建过同样的数据。
         if slot_revisions:
+            _, units_payload, cards_dict = _build_contract_request_from_db(
+                session,
+                blueprint_version_id=blueprint_version_id,
+                centrality_threshold=used_threshold,
+                allocation_seed=allocation_seed,
+            )
             try:
                 contract = apply_slot_revisions(
                     contract,

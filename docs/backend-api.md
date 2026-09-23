@@ -233,60 +233,20 @@ body 同 `exam_rules` 结构（`question_type_ratios` / `chapter_weights` 等）
 
 ---
 
-## 6. 蓝图（传统/独立路由）Blueprints
+## 6. 蓝图（传统/独立路由）Blueprints —— 已移除
 
-> 来源 `app/api/v1/blueprints.py`。前缀 `/api/v1/courses/{course_id}`
-> 注：生产主流程改用「试卷项目」下的蓝图子端点（见 §8.4–8.7）。此路由保留为无项目作用域的蓝图契约端点。
-
-### 6.1 分配合同（allocate）
-`POST /api/v1/courses/{course_id}/blueprints/allocate` → 200 `PaperContract`
-**ContractRequest**：
-```json
-{ "total_score": 100.0,
-  "type_rules": {"single_choice": {"weight": 0.3}},
-  "chapter_weights": {"<anchor_key>": 0.5},
-  "units": [ {"unit_id":"uuid","exam_point_id":"uuid","anchor_key":"","card_ids":["uuid"],"allowed_assessment_modes":[],"operational_detail_policy":"","core":false} ],
-  "card_question_types": {}, "card_semantic_profiles": {} }
-```
-**PaperContract**：
-```json
-{ "total_score": 100.0,
-  "slots": [ { "item_index":1,"question_type":"","score":5.0,"difficulty":"","cognitive_level":"","assessment_mode":"",
-               "exam_point_id":"uuid","anchor_key":"","unit_id":"uuid","card_id":"uuid","coverage_atom":"","answer_boundary":"",
-               "performance_statement":"","prompt_material":[],"scope_boundary":{},"preferred_terms":[],
-               "forbidden_context":{"atoms":[],"answer_cores":[]},"comprehensive_archetype":null,"material_form":null,
-               "cognitive_sequence":[],"subquestion_count_range":null,"subquestion_actions":[],"answer_boundaries":[] } ],
-  "conflicts": [ {"code":"atom_pool_insufficient|cluster_exhausted|missing_exam_point","exam_point_id":"","message":"","detail":{}} ],
-  "audit_summary": { "exam_points":[{"exam_point_id":"","weight":0.0,"question_count":0,"proportion":0.0}], "type_counts":{}, "difficulty_counts":{} } }
-```
-
-### 6.2 确认合同
-`POST /api/v1/courses/{course_id}/blueprints/confirm` → 200 `PaperContract`
-```json
-{ "contract": { ...PaperContract... },
-  "slot_revisions": [ ... ],
-  "units": [ ...UnitCoverage... ],
-  "knowledge_cards": {} }
-```
+> ⚠️ `app/api/v1/blueprints.py` 已删除。`/blueprints/allocate` 与 `/blueprints/confirm`
+> 在前端改走「试卷项目」子端点后已无任何调用方；且它们接受客户端提交的
+> `knowledge_cards` / `units`、不带 `course_id` 作用域校验，属于绕过服务层的旧入口。
+> 合同分配与修订一律使用 §8.9–8.11（服务端从 DB 重建请求、课程作用域过滤）。
 
 ---
 
-## 7. 生成 Generation（直接同步）
+## 7. 生成 Generation（直接同步）—— 已移除
 
-> 来源 `app/api/v1/generation.py`。前缀 `/api/v1/courses/{course_id}`
-> 注：生产主流程用「试卷项目」下的异步 `generate` + `task-runs`（见 §8.12–8.13）。此路由为同步候选生成，供调试/短流程。
-
-### 7.1 直接生成
-`POST /api/v1/courses/{course_id}/generation-runs` → **202**
-```json
-{ "contract": [ ...ContractSlot... ], "knowledge_cards": {} }
-```
-响应：
-```json
-{ "status": "candidate", "questions": [ { "item_index":1,"question_type":"","stem":"","options":{},"answer":"","explanation":"","score":5.0,"difficulty":"","cognitive_level":"","assessment_mode":"","exam_point_id":"","card_id":"","coverage_atom":"" } ],
-  "final_check": {}, "model_call_count": 0, "model": "step-3.7-flash" }
-```
-非法 contract 422；生成失败 502。
+> ⚠️ `app/api/v1/generation.py` 已删除。`POST /generation-runs` 在请求线程里同步调用
+> LLM，违反「长任务必须走 Celery + outbox」的架构纪律，且前端无调用方。
+> 生成一律使用 §8.13 的异步 `generate` + §8.14 的 `task-runs` 轮询。
 
 ---
 

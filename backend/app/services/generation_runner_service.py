@@ -481,6 +481,7 @@ def _publish_task_progress(
 def execute_generation_task(
     task_run: dict,
     *,
+    session: Session,
     graph_invoke: Callable[..., list[dict]] | None = None,
     write_paper_version: bool = True,
     manage_task_run: bool = True,
@@ -491,7 +492,10 @@ def execute_generation_task(
     ----------
     task_run:
         task_runs 行的 dict 表示（含 id, course_id, payload 等）。由调用方
-        通过 session 加载后传入，避免该函数自行再开 session。
+        通过 session 加载后传入。
+    session:
+        当前会话。调用方（``execute_generation_task_handler``）负责提供，
+        本函数不自行开 session——图回调与进度上报共用它提交中间状态。
     graph_invoke:
         ``graph_invoke(session, generation_run_dict, contract_snapshot, progress=None)
         -> list[question_dict]``
@@ -515,19 +519,6 @@ def execute_generation_task(
     project_id = payload["project_id"]
     generation_run_id = payload["generation_run_id"]
     task_run_id = task_run["id"]
-
-    # 构造当前 session：从 task_run 取 bind。这里允许调用方注入一个闭包来
-    # 获取 session；但为了简单，我们假设传入的 task_run 是 mapping，并且
-    # execute_generation_task_handler（见 inline_runner）会把 session 作为
-    # kwarg 传进来。为保持签名一致，这里用一个模块级私有 thread-local 不合适。
-    # 所以我们引入 session_ kwarg，兼容调用端。
-    # 由于无法简单地在该函数签名上增加 session，改用一个小技巧：让 task_run
-    # 对象附带 ``_session`` 属性；否则要求 graph_invoke 闭包捕获 session。
-    session: Session | None = task_run.get("_session") if isinstance(task_run, dict) else None
-    if session is None:  # pragma: no cover - 由 handler 保证
-        raise GenerationRunnerError(
-            "execute_generation_task 需要 task_run['_session'] 绑定当前会话"
-        )
 
     now = _now()
     paper_version_id: str | None = None
@@ -786,9 +777,9 @@ def execute_generation_task_handler(
         tr = dict(task_run_row)
     else:
         tr = dict(task_run_row._asdict()) if hasattr(task_run_row, "_asdict") else dict(task_run_row)
-    tr["_session"] = session
     return execute_generation_task(
         tr,
+        session=session,
         graph_invoke=graph_invoke,
         write_paper_version=write_paper_version,
         manage_task_run=manage_task_run,

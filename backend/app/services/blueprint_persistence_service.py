@@ -266,11 +266,8 @@ def create_draft_blueprint(
             )
         )
 
-        # 5. 插入 blueprint_sections（如果 plan 有 sections 字段；当前 BlueprintPlan 不含
-        # sections，留空以便后续扩展，不建立 section → plan_items 关联）
-        sections_map: dict[int, str] = {}
-
-        # 6. 插入 plan_items
+        # 5. 插入 plan_items（当前 BlueprintPlan 不含 sections，不建立
+        # section → plan_items 关联，blueprint_section_id 一律留空）
         # 构建 anchor_key → assessment_unit_id 查找：从当前 catalog 的 assessment_units
         unit_rows = session.execute(
             select(assessment_units.c.id, assessment_units.c.exam_point_id, assessment_units.c.code)
@@ -512,7 +509,10 @@ def confirm_blueprint(
                 raise BlueprintPersistenceError(f"单元 {uid} 不在当前 catalog 中")
             rebuilt_units.append({
                 "unit_id": uid,
-                "exam_point_id": (info.get("exam_point_id") or d.get("au_exam_point_id") or ""),
+                # info 即该单元自身在 assessment_units 中的行；此前还回退到
+                # 上一循环的残留变量 d（最后一行 stored_item 的考点），会把
+                # 别的单元的 exam_point_id 张冠李戴，故只认 info。
+                "exam_point_id": info.get("exam_point_id") or "",
                 "anchor_key": _anchor(uid),
                 "card_ids": sorted(card_set) if card_set else ["__placeholder__"],
             })

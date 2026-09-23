@@ -27,9 +27,11 @@ from app.services.blueprint_persistence_service import (
 )
 from app.services.contract_execution_service import (
     ContractExecutionError,
+    _build_contract_request_from_db,
     allocate_with_fallback,
     revise_and_confirm,
 )
+from app.domain.blueprint.models import UnitCoverage
 from app.services.contract_service import apply_slot_revisions
 from app.services.generation_runner_service import (
     GenerationRunnerError,
@@ -132,11 +134,7 @@ def create(course_id: str, payload: ExamProjectCreate, session: Session = Depend
 
 @router.get("/{project_id}", response_model=dict)
 def get_one(course_id: str, project_id: str, session: Session = Depends(get_session)) -> dict:
-    _get_project_or_404(session, course_id=course_id, project_id=project_id)
-    try:
-        return exam_project_service.get_project(session, course_id=course_id, project_id=project_id)
-    except exam_project_service.ExamProjectNotFoundError:
-        raise _not_found()
+    return _get_project_or_404(session, course_id=course_id, project_id=project_id)
 
 
 @router.patch("/{project_id}", response_model=dict)
@@ -285,11 +283,6 @@ def confirm_current_blueprint(
 # Contract 子端点
 # ===========================================================================
 
-def _contract_snapshot(contract) -> dict:
-    slots = [s.model_dump(mode="json") for s in contract.slots]
-    return {"slots": slots}
-
-
 @router.post("/{project_id}/contracts/allocate", response_model=dict)
 def allocate_contract(
     course_id: str,
@@ -313,10 +306,7 @@ def allocate_contract(
     except ContractExecutionError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
-    try:
-        snap = contract.model_dump(mode="json")
-    except Exception:
-        snap = _contract_snapshot(contract)
+    snap = contract.model_dump(mode="json")
     return {
         "used_threshold": used_threshold,
         "conflicts_history": [list(h) for h in history],
@@ -346,11 +336,9 @@ def revise_contract_preview(
             session, blueprint_version_id=bv_id, allocation_seed=seed
         )
         if slot_revisions:
-            from app.services.contract_execution_service import _build_contract_request_from_db
             _req, units_payload, cards_dict = _build_contract_request_from_db(
                 session, blueprint_version_id=bv_id, centrality_threshold=_used, allocation_seed=seed
             )
-            from app.domain.blueprint.models import UnitCoverage
             contract = apply_slot_revisions(
                 contract,
                 slot_revisions,
@@ -361,10 +349,7 @@ def revise_contract_preview(
         raise HTTPException(status_code=422, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"revision error: {exc}")
-    try:
-        snap = contract.model_dump(mode="json")
-    except Exception:
-        snap = _contract_snapshot(contract)
+    snap = contract.model_dump(mode="json")
     return {"revised_contract_snapshot": snap}
 
 

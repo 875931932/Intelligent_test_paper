@@ -392,7 +392,7 @@ class GenerationState(TypedDict, total=False):
 
 ### 6.1 路由结构
 
-FastAPI 应用在 [backend/app/main.py](backend/app/main.py) 中注册了 9 个路由器：
+FastAPI 应用在 [backend/app/main.py](backend/app/main.py) 中注册了 7 个路由器：
 
 ```python
 app = FastAPI(title="AI Exam System")
@@ -401,8 +401,6 @@ app.include_router(courses_router)           # /api/v1/courses/{course_id}
 app.include_router(materials_router)         # /api/v1/courses/{course_id}/materials
 app.include_router(framework_router)         # /api/v1/courses/{course_id}/framework-runs
 app.include_router(knowledge_router)         # /api/v1/courses/{course_id}/knowledge
-app.include_router(blueprints_router)        # /api/v1/courses/{course_id}/blueprints
-app.include_router(generation_router)        # /api/v1/courses/{course_id}/generation-runs
 app.include_router(exam_projects_router)     # /api/v1/courses/{course_id}/exam-projects
 app.include_router(paper_versions_router)    # /api/v1/courses/{course_id}/paper-versions
 ```
@@ -462,11 +460,13 @@ app.include_router(paper_versions_router)    # /api/v1/courses/{course_id}/paper
 
 #### Blueprints / Generation / Health
 
+> ⚠️ 传统独立路由 `POST .../blueprints/allocate`、`POST .../blueprints/confirm`、
+> `POST .../generation-runs` 已删除（前端无调用方；其中 `generation-runs` 在请求线程
+> 同步调 LLM，违反异步纪律）。合同分配/修订见 `exam-projects` 子端点，生成见
+> `POST .../exam-projects/{project_id}/generate`。
+
 | 方法 | 路径 | 功能 |
 |------|------|------|
-| POST | `/api/v1/courses/{course_id}/blueprints/allocate` | 分配试卷蓝图 |
-| POST | `/api/v1/courses/{course_id}/blueprints/confirm` | 确认蓝图 |
-| POST | `/api/v1/courses/{course_id}/generation-runs` | 创建试卷生成任务 |
 | GET | `/api/v1/health` | 健康检查（PostgreSQL、Redis、MinerU、LLM） |
 
 ---

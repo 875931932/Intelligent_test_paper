@@ -134,44 +134,6 @@ def test_full_pipeline_meets_all_success_criteria():
     assert gateway.batch_count == 2
 
 
-def test_api_level_flow_allocate_confirm_generate():
-    """API 层全流程：allocate → confirm（无修订）→ generation-runs。"""
-    from fastapi.testclient import TestClient
-    from app.main import app
-
-    app.state.generation_gateway = ScriptedGateway()
-    client = TestClient(app)
-    course = "/api/v1/courses/e2e-course"
-
-    allocate_resp = client.post(f"{course}/blueprints/allocate", json={
-        "blueprint": _blueprint().model_dump(mode="json"),
-        "knowledge_cards": CARDS,
-    })
-    assert allocate_resp.status_code == 200
-    contract = allocate_resp.json()
-    assert not contract["conflicts"]
-    assert len(contract["slots"]) == 6
-
-    confirm_resp = client.post(f"{course}/blueprints/confirm", json={
-        "contract": contract, "slot_revisions": [],
-        "units": [u.model_dump(mode="json") for u in UNITS], "knowledge_cards": CARDS,
-    })
-    assert confirm_resp.status_code == 200
-    confirmed = confirm_resp.json()
-
-    gen_resp = client.post(f"{course}/generation-runs", json={
-        "contract": confirmed["slots"], "knowledge_cards": CARDS,
-    })
-    assert gen_resp.status_code == 202
-    body = gen_resp.json()
-    assert body["status"] == "candidate"
-    assert len(body["questions"]) == 6
-    assert body["final_check"]["passed"] is True
-    assert body["model_call_count"] == 2
-    indexes = [q["item_index"] for q in body["questions"]]
-    assert indexes == sorted(indexes)
-
-
 def test_flawed_gateway_marks_review_not_blocks_pipeline():
     """部分题失败时：needs_review 标记 + 终检失败，但不阻塞其他题。"""
     contract = allocate_paper_contract(ContractRequest(

@@ -429,58 +429,6 @@ export interface ContractAuditSummary {
   backfilled_points?: BackfilledPoint[];
 }
 
-export interface PaperContract {
-  total_score: number;
-  slots: ContractSlot[];
-  conflicts: ContractConflict[];
-  audit_summary: ContractAuditSummary;
-}
-
-export interface UnitCoverage {
-  unit_id: string;
-  exam_point_id: string;
-  anchor_key: string;
-  card_ids: string[];
-  allowed_assessment_modes?: AssessmentMode[];
-  operational_detail_policy?: string;
-  core?: boolean;
-}
-
-export interface ContractRequest {
-  total_score: number;
-  type_rules: Record<string, Record<string, number>>;
-  chapter_weights: Record<string, number>;
-  units: UnitCoverage[];
-  card_question_types?: Record<string, string[]>;
-  card_semantic_profiles?: Record<string, unknown>;
-}
-
-// ── Generation ──
-export interface GeneratedQuestion {
-  item_index: number;
-  question_type: string;
-  stem: string;
-  options?: Record<string, string>;
-  answer: string;
-  explanation: string;
-  score: number;
-  difficulty: string;
-  cognitive_level: string;
-  assessment_mode: string;
-  exam_point_id: string;
-  card_id: string;
-  coverage_atom: string;
-  model_call_count?: number;
-}
-
-export interface GenerationResult {
-  status: 'candidate';
-  questions: GeneratedQuestion[];
-  final_check: Record<string, unknown>;
-  model_call_count: number;
-  model: string;
-}
-
 // ── Exam Projects ──
 export interface ExamProjectCreate {
   name: string;
