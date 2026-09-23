@@ -6,7 +6,11 @@ from app.config import Settings
 
 
 def test_health_endpoint_reports_all_required_component_states(monkeypatch):
-    monkeypatch.setattr(main, "settings", Settings(mineru_api_token="", deepseek_api_key=""))
+    monkeypatch.setattr(
+        main,
+        "settings",
+        Settings(mineru_api_token="", llm_api_key="", llm_base_url="", llm_model=""),
+    )
     monkeypatch.setattr(main, "_database_status", lambda: "unavailable")
     monkeypatch.setattr(main, "_redis_status", lambda: "unavailable")
 
@@ -18,12 +22,21 @@ def test_health_endpoint_reports_all_required_component_states(monkeypatch):
         "postgresql": "unavailable",
         "redis": "unavailable",
         "mineru": "not_configured",
-        "deepseek": "not_configured",
+        "llm": "not_configured",
     }
 
 
 def test_health_endpoint_reports_configured_external_providers_without_calling_them(monkeypatch):
-    monkeypatch.setattr(main, "settings", Settings(mineru_api_token="mineru-token", deepseek_api_key="deepseek-key"))
+    monkeypatch.setattr(
+        main,
+        "settings",
+        Settings(
+            mineru_api_token="mineru-token",
+            llm_api_key="llm-key",
+            llm_base_url="https://llm.example/v1",
+            llm_model="generic-model",
+        ),
+    )
     monkeypatch.setattr(main, "_database_status", lambda: "ok")
     monkeypatch.setattr(main, "_redis_status", lambda: "ok")
 
@@ -35,7 +48,7 @@ def test_health_endpoint_reports_configured_external_providers_without_calling_t
     assert payload["postgresql"] == "ok"
     assert payload["redis"] == "ok"
     assert payload["mineru"] == "configured"
-    assert payload["deepseek"] == "configured"
+    assert payload["llm"] == "configured"
 
 
 def test_database_status_disposes_engine_when_connection_fails(monkeypatch):

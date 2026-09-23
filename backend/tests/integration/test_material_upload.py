@@ -81,9 +81,9 @@ def test_organization_run_requires_all_semantic_dependencies(client, monkeypatch
     monkeypatch.setattr(settings, "embedding_api_key", "")
     monkeypatch.setattr(settings, "embedding_base_url", "")
     monkeypatch.setattr(settings, "embedding_model", "")
-    monkeypatch.setattr(settings, "deepseek_api_key", "")
-    monkeypatch.setattr(settings, "deepseek_base_url", "")
-    monkeypatch.setattr(settings, "deepseek_model", "")
+    monkeypatch.setattr(settings, "llm_api_key", "")
+    monkeypatch.setattr(settings, "llm_base_url", "")
+    monkeypatch.setattr(settings, "llm_model", "")
     attributes = {
         "organization_embedder": object(),
         "exam_point_evidence_classifier": object(),
@@ -130,7 +130,7 @@ def test_organization_dependency_lazily_builds_embedding_client(client, monkeypa
                 delattr(app.state, name)
 
 
-@pytest.mark.parametrize("missing_setting", ["deepseek_api_key", "deepseek_base_url", "deepseek_model"])
+@pytest.mark.parametrize("missing_setting", ["llm_api_key", "llm_base_url", "llm_model"])
 @pytest.mark.parametrize(
     ("injected_attribute", "missing_attribute", "expected_detail"),
     [
@@ -138,7 +138,7 @@ def test_organization_dependency_lazily_builds_embedding_client(client, monkeypa
         ("exam_point_evidence_classifier", "exam_point_knowledge_consolidator", "knowledge consolidator is not configured"),
     ],
 )
-def test_organization_semantic_dependencies_require_complete_deepseek_config(
+def test_organization_semantic_dependencies_require_complete_llm_config(
     client,
     monkeypatch,
     missing_setting,
@@ -146,9 +146,9 @@ def test_organization_semantic_dependencies_require_complete_deepseek_config(
     missing_attribute,
     expected_detail,
 ):
-    monkeypatch.setattr(settings, "deepseek_api_key", "configured-test-key")
-    monkeypatch.setattr(settings, "deepseek_base_url", "https://deepseek.invalid/v1")
-    monkeypatch.setattr(settings, "deepseek_model", "deepseek-v4-flash")
+    monkeypatch.setattr(settings, "llm_api_key", "configured-test-key")
+    monkeypatch.setattr(settings, "llm_base_url", "https://llm.invalid/v1")
+    monkeypatch.setattr(settings, "llm_model", "generic-model")
     monkeypatch.setattr(settings, missing_setting, "")
     app.state.organization_embedder = object()
     setattr(app.state, injected_attribute, object())

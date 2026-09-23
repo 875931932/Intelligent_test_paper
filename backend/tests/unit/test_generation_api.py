@@ -45,11 +45,11 @@ def _post_generation(client, contract):
     )
 
 
-@pytest.mark.parametrize("missing_setting", ["deepseek_api_key", "deepseek_base_url", "deepseek_model"])
-def test_generation_requires_complete_deepseek_configuration(monkeypatch, missing_setting):
-    monkeypatch.setattr(settings, "deepseek_api_key", "configured-test-key")
-    monkeypatch.setattr(settings, "deepseek_base_url", "https://deepseek.invalid/v1")
-    monkeypatch.setattr(settings, "deepseek_model", "deepseek-v4-flash")
+@pytest.mark.parametrize("missing_setting", ["llm_api_key", "llm_base_url", "llm_model"])
+def test_generation_requires_complete_llm_configuration(monkeypatch, missing_setting):
+    monkeypatch.setattr(settings, "llm_api_key", "configured-test-key")
+    monkeypatch.setattr(settings, "llm_base_url", "https://llm.invalid/v1")
+    monkeypatch.setattr(settings, "llm_model", "generic-model")
     monkeypatch.setattr(settings, missing_setting, "")
     if hasattr(app.state, "generation_gateway"):
         del app.state.generation_gateway
@@ -81,7 +81,7 @@ def test_generation_runs_returns_sorted_questions_with_final_check():
         assert all(q["needs_review"] is False for q in body["questions"])
         assert body["final_check"]["passed"] is True
         assert body["model_call_count"] == 2  # 两个考点各成一批，各一次模型调用
-        assert body["model"] == settings.deepseek_model
+        assert body["model"] == settings.llm_model
     finally:
         del app.state.generation_gateway
 

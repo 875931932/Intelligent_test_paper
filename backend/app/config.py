@@ -13,8 +13,8 @@ def _resolve_env_file(start: Path | str | None = None) -> str:
 
     历史上这里写死相对路径 `".env"`，而 pydantic-settings 按**进程 CWD** 解析它。
     后端按文档是在 `backend/` 里启动的（Celery worker 更是只能手工 `cd backend`），
-    仓库根的 `.env` 因此一次都没被读到，`settings` 静默回落到代码默认值——其中
-    `deepseek_base_url` 的默认值是 `https://api.stepfun.com/v1`，一个**能连通但
+    仓库根的 `.env` 因此一次都没被读到，`settings` 静默回落到当时代码里的默认值——
+    其中 `llm_base_url` 曾默认 `https://api.stepfun.com/v1`，一个**能连通但
     账号无额度**的 StepFun 端点。后果就是"框架/知识目录都正常，唯独生成试卷永远
     402 quota_exceeded"：那几个阶段跑在注入了环境变量的 uvicorn 里，出题跑在
     没注入的 worker 里。改配置后不重启进程也一样看不出来（settings 是 import
@@ -47,16 +47,19 @@ class Settings(BaseSettings):
     mineru_model_version: str = "vlm"
     mineru_poll_interval_seconds: int = 10
     mineru_max_poll_seconds: int = 1800
-    deepseek_api_key: str = ""
-    deepseek_base_url: str = "https://api.stepfun.com/v1"
-    deepseek_model: str = "step-3.7-flash"
+    # 模型配置唯一来源是仓库根 .env（LLM_API_KEY/BASE_URL/MODEL）：这里不设
+    # 代码默认值，缺配置时在网关构造期即抛 ValueError / health 报 not_configured，
+    # 而不是静默回落到某个"能连通却非所配"的端点（402 事故根因）。
+    llm_api_key: str = ""
+    llm_base_url: str = ""
+    llm_model: str = ""
     # 知识目录组织阶段按能力分层选模：分类只做相关性判断，可换经济模型；
-    # 归并做知识抽取，需更强模型。两者留空时回退到 deepseek_model，不受影响。
-    deepseek_classify_model: str = ""
-    deepseek_consolidate_model: str = ""
+    # 归并做知识抽取，需更强模型。两者留空时回退到 llm_model，不受影响。
+    llm_classify_model: str = ""
+    llm_consolidate_model: str = ""
     # 知识点抽取模型：把原始文本块蒸馏成自包含知识点陈述、剔除封面/行政/纯
-    # 操作流程等非知识块。留空回退到 deepseek_model，不受影响。
-    deepseek_extract_model: str = ""
+    # 操作流程等非知识块。留空回退到 llm_model，不受影响。
+    llm_extract_model: str = ""
     # 抽取阶段单次调用送入的原始块数：chunk 约 1200 字符，输出为每块 0~3 条
     # 陈述。step-3.7-flash 是推理型模型：批过大（6 块重型块）时模型把全部输出
     # 预算耗在 reasoning 字段，content 为空导致整批失败；批 3 重型块实测 14s 稳定
@@ -65,21 +68,23 @@ class Settings(BaseSettings):
     organization_extraction_max_tokens: int = Field(default=3072, gt=0)
     # 知识点抽取的推理强度（StepFun step-3.7-flash 的 reasoning_effort 三档：
     # low/medium/high）。信息抽取用 low 最省预算，避免思考占满输出额度导致
-    # content 为空/截断非 JSON。显式下发优先于全局 deepseek_disable_thinking。
+    # content 为空/截断非 JSON。显式下发优先于全局 llm_disable_thinking。
     organization_extraction_reasoning_effort: str = "low"
-    # 抽取/分类/归并阶段关闭长链路推理：MiMo 发 thinking=disabled；StepFun 无
-    # 思考开关，改用 reasoning_effort=low（官方标注 low 档适合信息抽取），
-    # 避免推理消耗输出额度导致 JSON 内容为空/被截断，并节省 token。true=关闭。
-    deepseek_disable_thinking: bool = True
+    # 抽取/分类/归并阶段关闭长链路推理：OpenAI 兼容端点发 thinking=disabled；
+    # StepFun 无思考开关，改用 reasoning_effort=low（官方标注 low 档适合信息
+    # 抽取），避免推理消耗输出额度导致 JSON 内容为空/被截断，并节省 token。true=关闭。
+    llm_disable_thinking: bool = True
     # 命题生成阶段同样关闭长链路推理：StepFun 走 reasoning_effort=low（官方
     # low 档适合一次性命题，逐批出题所需的推理已足够，且能大幅缩短单次调用），
-    # MiMo 发 thinking=disabled。此前默认 false 会让推理型模型用高档思考把单次
+    # 其余 OpenAI 兼容端点发 thinking=disabled。此前默认 false 会让推理型模型用高档思考把单次
     # 请求拖到分钟级，是「出一套 41 题要近 50 分钟」的根因之一。true=关闭思考。
-    # 此配置仅作用于命题生成，抽取/大纲阶段仍由 deepseek_disable_thinking 控制。
-    deepseek_generation_disable_thinking: bool = True
-    embedding_base_url: str = "https://api.openai.com/v1"
+    # 此配置仅作用于命题生成，抽取/大纲阶段仍由 llm_disable_thinking 控制。
+    llm_generation_disable_thinking: bool = True
+    # embedding 同样只认 .env（EMBEDDING_*）：不设代码默认端点/模型名，缺配置
+    # 在使用处响亮失败，避免静默打到某个公共端点上。
+    embedding_base_url: str = ""
     embedding_api_key: str = ""
-    embedding_model: str = "qwen3.7-text-embedding"
+    embedding_model: str = ""
     embedding_api_format: str = "openai"
     # 召回规模直接决定分类阶段的 (考点, chunk) 对数量与模型 token 消耗：
     # top_k 24→12 且 min_score 0.25→0.30，削减重复 chunk 传递与无效分类输出。
@@ -103,7 +108,7 @@ class Settings(BaseSettings):
     # 明确原因，而不是"成功"地产出一张大面积空题的卷子让教师踩坑。
     generation_min_usable_ratio: float = Field(default=0.5, ge=0, le=1)
     # 知识目录组织阶段的模型调用超时（秒）。分类/归并 prompt 较大（数万 token），
-    # 默认 90s 超时在 MiMo 上不足以完成响应，超时失败会整材料放弃并烧掉 token；
+    # 默认 90s 超时在推理型模型上不足以完成响应，超时失败会整材料放弃并烧掉 token；
     # 该阶段已异步化，放长超时不影响前端体验。
     organization_model_timeout: float = Field(default=240.0, gt=0)
     # 框架大纲抽取阶段的模型调用超时（秒）。考核大纲 prompt 较大（数万 token），

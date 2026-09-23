@@ -26,3 +26,9 @@ dev = ["pytest>=8.0"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+# flat-layout 自动发现会把 backend/ 下的杂散目录（backend/、uploads/ 等测试残留）
+# 也当成顶层包，导致 `uv run pytest` 在 editable 构建期报
+# "Multiple top-level packages discovered"。显式只打包 app*。
+[tool.setuptools.packages.find]
+include = ["app*"]

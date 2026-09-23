@@ -465,9 +465,10 @@ def test_organization_retrieval_settings_have_safe_defaults(monkeypatch):
 
     settings = Settings(_env_file=None)
 
-    assert settings.embedding_base_url == "https://api.openai.com/v1"
+    # embedding 的端点/模型名不设代码默认值：缺配置必须在使用处响亮失败。
+    assert settings.embedding_base_url == ""
     assert settings.embedding_api_key == ""
-    assert settings.embedding_model == "qwen3.7-text-embedding"
+    assert settings.embedding_model == ""
     assert settings.embedding_api_format == "openai"
     assert settings.organization_retrieval_top_k == 12
     assert settings.organization_retrieval_min_score == 0.30

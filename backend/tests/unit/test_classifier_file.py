@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from app.adapters.model.deepseek_semantic_extractors import (
-    DeepSeekExamPointEvidenceClassifier,
-    DeepSeekModelError,
+from app.adapters.model.llm_semantic_extractors import (
+    LLMExamPointEvidenceClassifier,
+    LLMModelError,
 )
 from app.domain.framework.exam_points import (
     ExamPoint,
@@ -74,7 +74,7 @@ def test_classify_file_returns_decisions_for_all_points():
         ]
     }
     client = FakeJsonClient(response)
-    classifier = DeepSeekExamPointEvidenceClassifier(client)
+    classifier = LLMExamPointEvidenceClassifier(client)
 
     decisions = classifier.classify_file(
         exam_points=[_point("EP1"), _point("EP2")],
@@ -99,7 +99,7 @@ def test_classify_file_completes_missing_pairs_as_out_of_scope():
             _file_item("EP2", chunk_ids=("c1",)),
         ]
     }
-    classifier = DeepSeekExamPointEvidenceClassifier(FakeJsonClient(response))
+    classifier = LLMExamPointEvidenceClassifier(FakeJsonClient(response))
 
     decisions = classifier.classify_file(
         exam_points=[_point("EP1"), _point("EP2")],
@@ -120,9 +120,9 @@ def test_classify_file_rejects_unknown_point():
             _file_item("EP3", chunk_ids=("c1", "c2")),
         ]
     }
-    classifier = DeepSeekExamPointEvidenceClassifier(FakeJsonClient(response))
+    classifier = LLMExamPointEvidenceClassifier(FakeJsonClient(response))
 
-    with pytest.raises(DeepSeekModelError) as caught:
+    with pytest.raises(LLMModelError) as caught:
         classifier.classify_file(
             exam_points=[_point("EP1"), _point("EP2")],
             material_version_id="M1",
@@ -138,9 +138,9 @@ def test_classify_file_rejects_foreign_material():
             _file_item("EP1", material="M2", chunk_ids=("c1", "c2")),
         ]
     }
-    classifier = DeepSeekExamPointEvidenceClassifier(FakeJsonClient(response))
+    classifier = LLMExamPointEvidenceClassifier(FakeJsonClient(response))
 
-    with pytest.raises(DeepSeekModelError) as caught:
+    with pytest.raises(LLMModelError) as caught:
         classifier.classify_file(
             exam_points=[_point("EP1")],
             material_version_id="M1",
@@ -151,9 +151,9 @@ def test_classify_file_rejects_foreign_material():
 
 
 def test_classify_file_rejects_chunks_from_another_material():
-    classifier = DeepSeekExamPointEvidenceClassifier(FakeJsonClient({}))
+    classifier = LLMExamPointEvidenceClassifier(FakeJsonClient({}))
 
-    with pytest.raises(DeepSeekModelError) as caught:
+    with pytest.raises(LLMModelError) as caught:
         classifier.classify_file(
             exam_points=[_point("EP1")],
             material_version_id="M1",
@@ -192,7 +192,7 @@ def test_classify_file_expands_compact_class_arrays():
         ]
     }
     client = FakeJsonClient(response)
-    classifier = DeepSeekExamPointEvidenceClassifier(client)
+    classifier = LLMExamPointEvidenceClassifier(client)
 
     decisions = classifier.classify_file(
         exam_points=[_point("EP1"), _point("EP2")],
@@ -229,7 +229,7 @@ def test_classify_file_dedupes_duplicate_chunk_within_decisions():
             }
         ]
     }
-    classifier = DeepSeekExamPointEvidenceClassifier(FakeJsonClient(response))
+    classifier = LLMExamPointEvidenceClassifier(FakeJsonClient(response))
 
     decisions = classifier.classify_file(
         exam_points=[_point("EP1")],
@@ -254,7 +254,7 @@ def test_classify_file_completes_compact_array_missing_chunk():
             }
         ]
     }
-    classifier = DeepSeekExamPointEvidenceClassifier(FakeJsonClient(response))
+    classifier = LLMExamPointEvidenceClassifier(FakeJsonClient(response))
 
     decisions = classifier.classify_file(
         exam_points=[_point("EP1")],
@@ -290,7 +290,7 @@ def test_classify_prompt_guides_kv_cache_and_storage_direct_judgment():
         ]
     }
     client = FakeJsonClient(response)
-    DeepSeekExamPointEvidenceClassifier(client).classify_file(
+    LLMExamPointEvidenceClassifier(client).classify_file(
         exam_points=[_point("EP1")],
         material_version_id="M1",
         chunks=[_chunk("c1"), _chunk("c2")],

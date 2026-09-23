@@ -1,4 +1,4 @@
-"""Strict DeepSeek adapters for syllabus-led semantic curation."""
+"""Strict LLM adapters for syllabus-led semantic curation."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from pydantic import (
     model_validator,
 )
 
-from app.adapters.model.deepseek_gateway import DeepSeekJsonClient, DeepSeekModelError
+from app.adapters.model.llm_gateway import LLMJsonClient, LLMModelError
 from app.domain.framework.exam_points import ExamPoint, OperationalDetailPolicy
 from app.domain.framework.exam_rules import normalize_exam_rules
 from app.domain.framework.models import AssessmentAnchor, AssessmentOutline, TeachingTopic
@@ -394,7 +394,7 @@ _CARD_FIELDS = {
 
 
 # 归并分批：每批最多 4 条 direct 证据、总证据 ≤6，控制单次输出规模，
-# 规避 MiMo 大 JSON 输出被截断导致的格式失败。
+# 规避大 JSON 输出被截断导致的格式失败。
 # 归并输出上限：给足余量避免截断，但不必过大（每批仅 1~3 张卡）。
 _BATCH_DIRECT_MAX = 4
 _BATCH_TOTAL_MAX = 6
@@ -609,7 +609,7 @@ class _ConsolidationResponse(BaseModel):
         return self
 
 
-class DeepSeekSyllabusExtractor:
+class LLMSyllabusExtractor:
     def __init__(self, client: JsonRequester) -> None:
         self.client = client
 
@@ -738,7 +738,7 @@ class DeepSeekSyllabusExtractor:
         return parsed[0]
 
 
-class DeepSeekExamPointEvidenceClassifier:
+class LLMExamPointEvidenceClassifier:
     def __init__(self, client: JsonRequester) -> None:
         self.client = client
 
@@ -752,7 +752,7 @@ class DeepSeekExamPointEvidenceClassifier:
     ) -> list[ExamPointFileDecision]:
         """一个资料文件 × 全部相关考点，一次调用完成分类。"""
         if any(chunk.material_version_id != material_version_id for chunk in chunks):
-            raise DeepSeekModelError(
+            raise LLMModelError(
                 "model_input_scope_violation",
                 "classification input contains another material version",
             )
@@ -786,18 +786,18 @@ class DeepSeekExamPointEvidenceClassifier:
             seen: list[tuple[str, str]] = []
             for item in response.file_decisions:
                 if item.material_version_id != material_version_id:
-                    raise DeepSeekModelError(
+                    raise LLMModelError(
                         "model_output_scope_violation",
                         "classification response belongs to another material version",
                     )
                 if item.exam_point_code not in {point.code for point in exam_points}:
-                    raise DeepSeekModelError(
+                    raise LLMModelError(
                         "model_output_scope_violation",
                         "classification response references unknown exam point",
                     )
                 for decision in item.decisions:
                     if decision.exam_point_code != item.exam_point_code:
-                        raise DeepSeekModelError(
+                        raise LLMModelError(
                             "model_output_scope_violation",
                             "classification decision belongs to another exam point",
                         )
@@ -813,12 +813,12 @@ class DeepSeekExamPointEvidenceClassifier:
                     ],
                 )
             if not (set(seen) <= expected_pairs):
-                raise DeepSeekModelError(
+                raise LLMModelError(
                     "model_output_scope_violation",
                     "classification output references an unknown chunk",
                 )
             if len(seen) != len(set(seen)):
-                raise DeepSeekModelError(
+                raise LLMModelError(
                     "model_output_scope_violation",
                     "classification output contains duplicate evidence decisions",
                 )
@@ -929,7 +929,7 @@ class DeepSeekExamPointEvidenceClassifier:
         return list(collected.values())
 
 
-class DeepSeekExamPointKnowledgeConsolidator:
+class LLMExamPointKnowledgeConsolidator:
     def __init__(self, client: JsonRequester) -> None:
         self.client = client
 
@@ -947,7 +947,7 @@ class DeepSeekExamPointKnowledgeConsolidator:
             if _evidence_admitted_for_consolidation(decision)
         ]
         if any(decision.exam_point_code != exam_point.code for decision in admitted):
-            raise DeepSeekModelError(
+            raise LLMModelError(
                 "model_input_scope_violation",
                 "consolidation input contains another exam point",
             )
@@ -956,7 +956,7 @@ class DeepSeekExamPointKnowledgeConsolidator:
             (chunk for chunk in chunks_by_id.values() if chunk.id in admitted_chunk_ids),
             key=lambda item: item.id,
         )
-        # 分批归并：一次只让模型产出一个小批，避免单次输出过长触发 MiMo 截断
+        # 分批归并：一次只让模型产出一个小批，避免单次输出过长触发截断
         # 或格式漂移。direct 证据按 support_claim 语义键排序后每批 ≤4 条；
         # supporting 只用于语境，按批补足。各批结果合并后统一校验与去重。
         direct = [
@@ -990,7 +990,7 @@ class DeepSeekExamPointKnowledgeConsolidator:
             except ValidationError as exc:
                 raise _schema_error(exc) from None
             if response.exam_point_code != exam_point.code:
-                raise DeepSeekModelError(
+                raise LLMModelError(
                     "model_output_scope_violation",
                     "consolidation output belongs to another exam point",
                 )
@@ -1126,7 +1126,7 @@ def validate_consolidated_units(
     # 支撑池取该考点全部准入证据（direct + supporting）：既含分类阶段
     # support_claim 概括，也含其对应 teaching chunk 的原文（经
     # assessable_fact_keys 按可评分事实边界切分为规范化 key）。模型归并时
-    # 虽被要求逐字落在 support_claim，但 MiMo 实际会用自己的措辞重述事实或
+    # 虽被要求逐字落在 support_claim，但模型实际会用自己的措辞重述事实或
     # 把某条 chunk 原句浓缩成更短可评分句；把原文一并纳入支撑池，配合
     # fact_key_supported 的双向子串判定，可放行措辞变体而仍拒绝凭空编造。
     # 误引的非准入 id 在下方确定性剔除。
@@ -1145,12 +1145,12 @@ def validate_consolidated_units(
     )
     for unit in units:
         if unit.exam_point_code != exam_point.code:
-            raise DeepSeekModelError(
+            raise LLMModelError(
                 "model_output_scope_violation",
                 "assessment unit belongs to another exam point",
             )
         if unit.status == "active" and not unit.cards:
-            raise DeepSeekModelError(
+            raise LLMModelError(
                 "model_output_evidence_gap",
                 "active assessment unit requires at least one knowledge card",
             )
@@ -1167,7 +1167,7 @@ def validate_consolidated_units(
             # 但从未被本考点准入）。非准入 id 从卡片剔除；只要剔除后仍剩有效
             # 引用且事实被支撑，卡片保留，避免整卡判死拖垮该考点覆盖。
             if not referenced_ids:
-                raise DeepSeekModelError(
+                raise LLMModelError(
                     "model_output_evidence_gap",
                     "knowledge card references no admitted evidence"
                     + (
@@ -1201,7 +1201,7 @@ def validate_consolidated_units(
                 ):
                     kept_ids.append(evidence_id)
             if not kept_ids:
-                raise DeepSeekModelError(
+                raise LLMModelError(
                     "model_output_evidence_gap",
                     "knowledge card references no evidence supporting its assessable facts",
                 )
@@ -1209,7 +1209,7 @@ def validate_consolidated_units(
             if not all_facts_supported(
                 assessable_fact_keys(card.assessable_content), point_evidence_keys
             ):
-                raise DeepSeekModelError(
+                raise LLMModelError(
                     "model_output_evidence_gap",
                     "knowledge card contains a fact not covered by direct evidence",
                 )
@@ -1220,14 +1220,14 @@ def validate_consolidated_units(
                 if not is_transferable_fact(text)
             ]
             if non_transferable:
-                raise DeepSeekModelError(
+                raise LLMModelError(
                     "model_output_evidence_gap",
                     "knowledge card contains case-narrative facts bound to a specific "
                     "experiment run; extract only the transferable conclusion",
                 )
 
 
-def _schema_error(exc: ValidationError) -> DeepSeekModelError:
+def _schema_error(exc: ValidationError) -> LLMModelError:
     errors = exc.errors()
     fields = sorted({".".join(str(part) for part in item["loc"]) for item in errors})
     invalid_values = {
@@ -1239,7 +1239,7 @@ def _schema_error(exc: ValidationError) -> DeepSeekModelError:
         {"loc": list(item.get("loc", [])), "msg": str(item.get("msg", ""))[:160]}
         for item in errors
     ]
-    return DeepSeekModelError(
+    return LLMModelError(
         "model_schema_validation_failed",
         "model JSON does not match the required schema",
         details={
@@ -1319,7 +1319,7 @@ class KnowledgePointExtractionResult(BaseModel):
     statements: list[KnowledgePointStatement]
 
 
-class DeepSeekKnowledgePointExtractor:
+class LLMKnowledgePointExtractor:
     """把原始文本块蒸馏成自包含知识点陈述，并剔除封面/行政/纯操作流程块。
 
     抽取在冻结资料之后、检索之前，对每份资料做一次性全局处理（与考点无关，
@@ -1342,7 +1342,7 @@ class DeepSeekKnowledgePointExtractor:
         max_tokens: int | None = None,
     ) -> KnowledgePointExtractionResult:
         if any(chunk.material_version_id != material_version_id for chunk in chunks):
-            raise DeepSeekModelError(
+            raise LLMModelError(
                 "model_input_scope_violation",
                 "extraction input contains another material version",
             )
@@ -1355,7 +1355,7 @@ class DeepSeekKnowledgePointExtractor:
             except ValidationError as exc:
                 raise _schema_error(exc) from None
             if response.material_version_id != material_version_id:
-                raise DeepSeekModelError(
+                raise LLMModelError(
                     "model_output_scope_violation",
                     "extraction response belongs to another material version",
                 )
@@ -1364,7 +1364,7 @@ class DeepSeekKnowledgePointExtractor:
             }
             unknown = referenced - set(all_ids)
             if unknown:
-                raise DeepSeekModelError(
+                raise LLMModelError(
                     "model_output_scope_violation",
                     "extraction response references an unknown chunk",
                     details={"unknown_chunk_ids": sorted(unknown)[:10]},
@@ -1455,7 +1455,7 @@ class DeepSeekKnowledgePointExtractor:
         )
 
 
-class DeepSeekSupplementRecommender:
+class LLMSupplementRecommender:
     """为覆盖不足考点推荐可改判为直接证据的间接证据。
 
     分类阶段判为 supporting/background 的证据中，部分实际承载考点可考核
@@ -1494,19 +1494,19 @@ class DeepSeekSupplementRecommender:
             except ValidationError as exc:
                 raise _schema_error(exc) from None
             if response.exam_point_code != exam_point.code:
-                raise DeepSeekModelError(
+                raise LLMModelError(
                     "model_output_scope_violation",
                     "recommendation response belongs to another exam point",
                 )
             seen: set[str] = set()
             for item in response.recommendations:
                 if item.evidence_chunk_id not in expected_ids:
-                    raise DeepSeekModelError(
+                    raise LLMModelError(
                         "model_output_scope_violation",
                         "recommendation references an unknown chunk",
                     )
                 if item.evidence_chunk_id in seen:
-                    raise DeepSeekModelError(
+                    raise LLMModelError(
                         "model_output_scope_violation",
                         "recommendation contains duplicate chunk",
                     )
@@ -1515,7 +1515,7 @@ class DeepSeekSupplementRecommender:
             # 漏报候选会被静默放过，该条指令就落了空。这里补齐覆盖性校验。
             if seen != expected_ids:
                 missing = sorted(expected_ids - seen)
-                raise DeepSeekModelError(
+                raise LLMModelError(
                     "model_output_incomplete",
                     "recommendation missing chunks: " + ",".join(missing[:10]),
                 )
@@ -1581,13 +1581,13 @@ class DeepSeekSupplementRecommender:
 
 
 __all__ = [
-    "DeepSeekExamPointEvidenceClassifier",
-    "DeepSeekExamPointKnowledgeConsolidator",
-    "DeepSeekSupplementRecommender",
-    "DeepSeekJsonClient",
-    "DeepSeekModelError",
-    "DeepSeekSyllabusExtractor",
-    "DeepSeekKnowledgePointExtractor",
+    "LLMExamPointEvidenceClassifier",
+    "LLMExamPointKnowledgeConsolidator",
+    "LLMSupplementRecommender",
+    "LLMJsonClient",
+    "LLMModelError",
+    "LLMSyllabusExtractor",
+    "LLMKnowledgePointExtractor",
     "KnowledgePointStatement",
     "KnowledgePointExtractionResult",
     "validate_consolidated_units",

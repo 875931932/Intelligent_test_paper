@@ -34,13 +34,13 @@ if str(BACKEND) not in sys.path:
 
 from app.adapters.document.mineru_client import MineruClient
 from app.adapters.document.protocol import ParseRequest, ParseState
-from app.adapters.model.deepseek_gateway import DeepSeekGateway, DeepSeekJsonClient
-from app.adapters.model.deepseek_semantic_extractors import (
-    DeepSeekExamPointEvidenceClassifier,
-    DeepSeekSyllabusExtractor,
+from app.adapters.model.llm_gateway import LLMGateway, LLMJsonClient
+from app.adapters.model.llm_semantic_extractors import (
+    LLMExamPointEvidenceClassifier,
+    LLMSyllabusExtractor,
 )
 # demo 与后端共用同一份配置来源（app.config.settings）。历史上这里直接读
-# os.environ 并自带默认端点 https://api.deepseek.com/v1——一旦没有从 shell
+# os.environ 并自带另一家厂商的默认端点——一旦没有从 shell
 # 导出环境变量，demo 就会静默打到另一个服务上，而后端用的是 .env 里的
 # StepFun 端点，两条链路"各自配各自的"，正是画像字段丢失那类双链路漂移的
 # 同款隐患。HANDOVER 约定：机制改动必须同时落 demo 与后端。
@@ -90,7 +90,7 @@ CURATION_SCHEMA_VERSION = os.environ.get(
 DEMO_LEXICAL_CANDIDATE_LIMIT = 3
 DEMO_FILES_PER_EXAM_POINT = 3
 DEMO_CLASSIFIER_MAX_WORKERS = 2
-DEMO_DEEPSEEK_TIMEOUT = 90
+DEMO_LLM_TIMEOUT = 90
 DEMO_SEMANTIC_PROFILE_BATCH_SIZE = 1
 _SOURCE_REFERENCE_LANGUAGE = re.compile(
     r"(?:根据|按照|依照)\s*(?:课件|资料|教材|讲义|实验手册|文件)"
@@ -601,7 +601,7 @@ def select_candidate_documents(
 class CachedJsonRequester:
     """Cache semantic curation calls while rerunning validators on every hit."""
 
-    def __init__(self, client: DeepSeekJsonClient, *, context: dict[str, Any]):
+    def __init__(self, client: LLMJsonClient, *, context: dict[str, Any]):
         self.client = client
         self.context = context
 
@@ -657,12 +657,12 @@ class CachedJsonRequester:
         return result
 
 
-def semantic_client() -> DeepSeekJsonClient:
-    return DeepSeekJsonClient(
-        api_key=settings.deepseek_api_key,
-        base_url=settings.deepseek_base_url,
-        model=settings.deepseek_model,
-        timeout=DEMO_DEEPSEEK_TIMEOUT,
+def semantic_client() -> LLMJsonClient:
+    return LLMJsonClient(
+        api_key=settings.llm_api_key,
+        base_url=settings.llm_base_url,
+        model=settings.llm_model,
+        timeout=DEMO_LLM_TIMEOUT,
         max_attempts=2,
     )
 
@@ -1298,7 +1298,7 @@ def assert_source_free(value: Any, *, path: str = "payload") -> None:
 
 def required_environment_missing() -> list[str]:
     required = [
-        "MINERU_API_TOKEN", "DEEPSEEK_API_KEY", "EMBEDDING_BASE_URL",
+        "MINERU_API_TOKEN", "LLM_API_KEY", "EMBEDDING_BASE_URL",
         "EMBEDDING_API_KEY", "EMBEDDING_MODEL", "MINERU_BASE_URL",
     ]
     missing = [name for name in required if not os.getenv(name, "").strip()]
@@ -1414,10 +1414,10 @@ async def generate_paper_from_blueprint(
     }
     write_snapshot(snapshot)
 
-    gateway = DeepSeekGateway(
-        api_key=settings.deepseek_api_key,
-        base_url=settings.deepseek_base_url,
-        model=settings.deepseek_model,
+    gateway = LLMGateway(
+        api_key=settings.llm_api_key,
+        base_url=settings.llm_base_url,
+        model=settings.llm_model,
         timeout=90,
         max_attempts=2,
     )
@@ -1503,8 +1503,8 @@ async def resume_from_cached_knowledge_tree() -> None:
 async def main() -> None:
     load_env()
     if os.getenv("DEMO_RESUME_FROM_SNAPSHOT", "").strip() == "1":
-        if not os.getenv("DEEPSEEK_API_KEY", "").strip():
-            raise RuntimeError("missing required environment variable: DEEPSEEK_API_KEY")
+        if not os.getenv("LLM_API_KEY", "").strip():
+            raise RuntimeError("missing required environment variable: LLM_API_KEY")
         await resume_from_cached_knowledge_tree()
         return
     missing = required_environment_missing()
@@ -1519,7 +1519,7 @@ async def main() -> None:
         "started_at": datetime.now().isoformat(),
         "source_directory": str(SOURCE_DIR.resolve()),
         "files_total": len(files),
-        "model": settings.deepseek_model,
+        "model": settings.llm_model,
         "curation_schema_version": CURATION_SCHEMA_VERSION,
     }
     write_snapshot(snapshot)
@@ -1554,10 +1554,10 @@ async def main() -> None:
 
     assessment_document = next(item for item in documents if item["material_type"] == "assessment_syllabus")
     teaching_document = next(item for item in documents if item["material_type"] == "teaching_syllabus")
-    teaching_extractor = DeepSeekSyllabusExtractor(
+    teaching_extractor = LLMSyllabusExtractor(
         CachedJsonRequester(semantic_client(), context={"stage": "teaching_syllabus", "material_hash": teaching_document["sha256"]})
     )
-    assessment_extractor = DeepSeekSyllabusExtractor(
+    assessment_extractor = LLMSyllabusExtractor(
         CachedJsonRequester(semantic_client(), context={"stage": "assessment_syllabus", "material_hash": assessment_document["sha256"]})
     )
     teaching_result, assessment_result = await asyncio.gather(
@@ -1625,7 +1625,7 @@ async def main() -> None:
                 "candidate_chunk_hashes": [hashlib.sha256(chunk.content.encode()).hexdigest() for chunk in recalled],
             },
         )
-        return DeepSeekExamPointEvidenceClassifier(requester).classify_file(
+        return LLMExamPointEvidenceClassifier(requester).classify_file(
             exam_points=[point],
             material_version_id=material_hash,
             chunks=recalled,

@@ -7,8 +7,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from app.domain.framework.exam_points import ExamPoint, OperationalDetailPolicy, WeightSource
-from app.adapters.model.deepseek_gateway import DeepSeekModelError
-from app.adapters.model.deepseek_semantic_extractors import (
+from app.adapters.model.llm_gateway import LLMModelError
+from app.adapters.model.llm_semantic_extractors import (
     KnowledgePointExtractionResult,
     KnowledgePointStatement,
 )
@@ -112,7 +112,7 @@ class SplittingExtractor:
     def extract_material(self, *, material_version_id, chunks, call_context=None, max_tokens=None):
         self.calls.append(sorted(chunk.id for chunk in chunks))
         if len(chunks) > 2:
-            raise DeepSeekModelError("model_empty_response", "model returned empty content")
+            raise LLMModelError("model_empty_response", "model returned empty content")
         return KnowledgePointExtractionResult(
             material_version_id=material_version_id,
             dropped_chunk_ids=[],
@@ -360,10 +360,10 @@ def test_extraction_skips_single_chunk_that_always_returns_non_json():
         def extract_material(self, *, material_version_id, chunks, call_context=None, max_tokens=None):
             self.calls.append(sorted(chunk.id for chunk in chunks))
             if len(chunks) == 1:
-                raise DeepSeekModelError(
+                raise LLMModelError(
                     "model_non_json_response", "model returned content that is not valid JSON"
                 )
-            raise DeepSeekModelError("model_empty_response", "model returned empty content")
+            raise LLMModelError("model_empty_response", "model returned empty content")
 
     chunks = [
         StagingChunk(id=f"c{i}", material_version_id="material-1", content=f"知识点{i}")
@@ -393,10 +393,10 @@ def test_extraction_skips_single_chunk_that_fails_schema_validation():
         def extract_material(self, *, material_version_id, chunks, call_context=None, max_tokens=None):
             self.calls.append(sorted(chunk.id for chunk in chunks))
             if len(chunks) == 1:
-                raise DeepSeekModelError(
+                raise LLMModelError(
                     "model_schema_validation_failed", "model JSON does not match the required schema"
                 )
-            raise DeepSeekModelError("model_empty_response", "model returned empty content")
+            raise LLMModelError("model_empty_response", "model returned empty content")
 
     chunks = [
         StagingChunk(id=f"c{i}", material_version_id="material-1", content=f"知识点{i}")
@@ -845,7 +845,7 @@ def test_empty_consolidation_with_direct_evidence_isolated_to_one_exam_point():
     failures = repository.persisted_state["failed_pairs"]
     assert len(failures) == 1
     assert failures[0]["exam_point_code"] == "EP-1"
-    # mock 直接返回空列表而非抛 DeepSeekModelError，走 fallback 错误码。
+    # mock 直接返回空列表而非抛 LLMModelError，走 fallback 错误码。
     assert failures[0]["error_code"] == "consolidation_failed"
     coverage = {item.exam_point_code: item.status for item in repository.candidate.coverage}
     assert coverage == {"EP-1": "insufficient", "EP-2": "sufficient"}

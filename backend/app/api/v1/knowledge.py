@@ -12,12 +12,12 @@ from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
-from app.adapters.model.deepseek_gateway import DeepSeekJsonClient, DeepSeekModelError
-from app.adapters.model.deepseek_semantic_extractors import (
-    DeepSeekExamPointEvidenceClassifier,
-    DeepSeekExamPointKnowledgeConsolidator,
-    DeepSeekKnowledgePointExtractor,
-    DeepSeekSupplementRecommender,
+from app.adapters.model.llm_gateway import LLMJsonClient, LLMModelError
+from app.adapters.model.llm_semantic_extractors import (
+    LLMExamPointEvidenceClassifier,
+    LLMExamPointKnowledgeConsolidator,
+    LLMKnowledgePointExtractor,
+    LLMSupplementRecommender,
 )
 from app.adapters.model.embedding_gateway import OpenAICompatibleEmbeddingGateway
 from app.config import settings
@@ -76,12 +76,12 @@ def get_exam_point_classifier(request: Request) -> ExamPointEvidenceClassifier:
         classifier = getattr(request.app.state, "exam_point_evidence_classifier", None)
         if classifier is not None:
             return classifier
-        if not _deepseek_configured():
+        if not _llm_configured():
             raise HTTPException(status_code=503, detail="semantic classifier is not configured")
         client = _get_semantic_json_client(
-            request, settings.deepseek_classify_model or settings.deepseek_model
+            request, settings.llm_classify_model or settings.llm_model
         )
-        classifier = DeepSeekExamPointEvidenceClassifier(client)
+        classifier = LLMExamPointEvidenceClassifier(client)
         request.app.state.exam_point_evidence_classifier = classifier
         return classifier
 
@@ -94,17 +94,17 @@ def get_exam_point_consolidator(request: Request) -> ExamPointKnowledgeConsolida
         consolidator = getattr(request.app.state, "exam_point_knowledge_consolidator", None)
         if consolidator is not None:
             return consolidator
-        if not _deepseek_configured():
+        if not _llm_configured():
             raise HTTPException(status_code=503, detail="knowledge consolidator is not configured")
         client = _get_semantic_json_client(
-            request, settings.deepseek_consolidate_model or settings.deepseek_model
+            request, settings.llm_consolidate_model or settings.llm_model
         )
-        consolidator = DeepSeekExamPointKnowledgeConsolidator(client)
+        consolidator = LLMExamPointKnowledgeConsolidator(client)
         request.app.state.exam_point_knowledge_consolidator = consolidator
         return consolidator
 
 
-def get_knowledge_point_extractor(request: Request) -> DeepSeekKnowledgePointExtractor:
+def get_knowledge_point_extractor(request: Request) -> LLMKnowledgePointExtractor:
     extractor = getattr(request.app.state, "knowledge_point_extractor", None)
     if extractor is not None:
         return extractor
@@ -112,12 +112,12 @@ def get_knowledge_point_extractor(request: Request) -> DeepSeekKnowledgePointExt
         extractor = getattr(request.app.state, "knowledge_point_extractor", None)
         if extractor is not None:
             return extractor
-        if not _deepseek_configured():
+        if not _llm_configured():
             raise HTTPException(status_code=503, detail="knowledge point extractor is not configured")
         client = _get_semantic_json_client(
-            request, settings.deepseek_extract_model or settings.deepseek_model
+            request, settings.llm_extract_model or settings.llm_model
         )
-        extractor = DeepSeekKnowledgePointExtractor(
+        extractor = LLMKnowledgePointExtractor(
             client,
             reasoning_effort=settings.organization_extraction_reasoning_effort,
         )
@@ -125,7 +125,7 @@ def get_knowledge_point_extractor(request: Request) -> DeepSeekKnowledgePointExt
         return extractor
 
 
-def get_supplement_recommender(request: Request) -> DeepSeekSupplementRecommender:
+def get_supplement_recommender(request: Request) -> LLMSupplementRecommender:
     """补证据推荐器：复用分类模型客户端，独立缓存实例。"""
     recommender = getattr(request.app.state, "supplement_recommender", None)
     if recommender is not None:
@@ -134,17 +134,17 @@ def get_supplement_recommender(request: Request) -> DeepSeekSupplementRecommende
         recommender = getattr(request.app.state, "supplement_recommender", None)
         if recommender is not None:
             return recommender
-        if not _deepseek_configured():
+        if not _llm_configured():
             raise HTTPException(status_code=503, detail="semantic recommender is not configured")
         client = _get_semantic_json_client(
-            request, settings.deepseek_classify_model or settings.deepseek_model
+            request, settings.llm_classify_model or settings.llm_model
         )
-        recommender = DeepSeekSupplementRecommender(client)
+        recommender = LLMSupplementRecommender(client)
         request.app.state.supplement_recommender = recommender
         return recommender
 
 
-def _get_semantic_json_client(request: Request, model: str) -> DeepSeekJsonClient:
+def _get_semantic_json_client(request: Request, model: str) -> LLMJsonClient:
     clients = getattr(request.app.state, "semantic_json_clients", None)
     if clients is None:
         clients = {}
@@ -156,11 +156,11 @@ def _get_semantic_json_client(request: Request, model: str) -> DeepSeekJsonClien
         client = clients.get(model)
         if client is not None:
             return client
-        client = DeepSeekJsonClient(
-            api_key=settings.deepseek_api_key,
-            base_url=settings.deepseek_base_url,
+        client = LLMJsonClient(
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
             model=model,
-            disable_thinking=settings.deepseek_disable_thinking,
+            disable_thinking=settings.llm_disable_thinking,
             timeout=settings.organization_model_timeout,
             recorder=DatabaseModelCallRecorder(get_session_factory()),
         )
@@ -168,13 +168,13 @@ def _get_semantic_json_client(request: Request, model: str) -> DeepSeekJsonClien
         return client
 
 
-def _deepseek_configured() -> bool:
+def _llm_configured() -> bool:
     return all(
         value.strip()
         for value in (
-            settings.deepseek_api_key,
-            settings.deepseek_base_url,
-            settings.deepseek_model,
+            settings.llm_api_key,
+            settings.llm_base_url,
+            settings.llm_model,
         )
     )
 
@@ -219,7 +219,7 @@ def _run_organization_pipeline(
     run_id: str,
     material_version_ids: list[str],
     embedder: EmbeddingClient,
-    extractor: DeepSeekKnowledgePointExtractor,
+    extractor: LLMKnowledgePointExtractor,
     classifier: ExamPointEvidenceClassifier,
     consolidator: ExamPointKnowledgeConsolidator,
     session_factory,
@@ -277,7 +277,7 @@ def create_organization_run(
     payload: OrganizationRunCreate,
     session: Session = Depends(get_session),
     embedder: EmbeddingClient = Depends(get_organization_embedder),
-    extractor: DeepSeekKnowledgePointExtractor = Depends(get_knowledge_point_extractor),
+    extractor: LLMKnowledgePointExtractor = Depends(get_knowledge_point_extractor),
     classifier: ExamPointEvidenceClassifier = Depends(get_exam_point_classifier),
     consolidator: ExamPointKnowledgeConsolidator = Depends(get_exam_point_consolidator),
 ) -> dict:
@@ -359,7 +359,7 @@ def recommend_supplements(
     run_id: str,
     body: SupplementRecommendationRequest,
     session: Session = Depends(get_session),
-    recommender: DeepSeekSupplementRecommender = Depends(get_supplement_recommender),
+    recommender: LLMSupplementRecommender = Depends(get_supplement_recommender),
 ) -> dict:
     """AI 推荐某覆盖不足考点可改判为直接证据的间接证据。
 
@@ -446,7 +446,7 @@ def recommend_supplements(
 
     try:
         recommended = recommender.recommend(exam_point=point, candidates=candidates)
-    except DeepSeekModelError as exc:
+    except LLMModelError as exc:
         _logger.warning("supplement recommendation failed for %s: %s", body.exam_point_code, exc)
         recommended = []
     return {
@@ -463,7 +463,7 @@ def publish_tree(
     run_id: str,
     confirmation: KnowledgeTreeConfirmation,
     session: Session = Depends(get_session),
-    recommender: DeepSeekSupplementRecommender = Depends(get_supplement_recommender),
+    recommender: LLMSupplementRecommender = Depends(get_supplement_recommender),
 ) -> dict:
     try:
         candidate = knowledge_publish_service.get_organization_candidate(session, course_id=course_id, run_id=run_id)
@@ -495,7 +495,7 @@ def _apply_auto_supplement(
     candidate: dict,
     confirmation: KnowledgeTreeConfirmation,
     session: Session,
-    recommender: DeepSeekSupplementRecommender,
+    recommender: LLMSupplementRecommender,
 ) -> KnowledgeTreeConfirmation:
     """一键补证据：为所有覆盖不足考点自动应用 AI 推荐的直接证据改判。
 
@@ -633,7 +633,7 @@ def _apply_auto_supplement(
         ]
         try:
             recommended = recommender.recommend(exam_point=point, candidates=candidates)
-        except DeepSeekModelError as exc:
+        except LLMModelError as exc:
             _logger.warning(
                 "auto supplement recommendation failed for %s: %s", code, exc
             )

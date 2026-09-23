@@ -6,7 +6,7 @@
 #     celery -A app.infrastructure.tasks.celery_app worker --loglevel=INFO
 # never loads the repository-root .env in any visible way. app/config.py now looks
 # for .env by walking up from __file__, but a worker started from a shell that also
-# happens to define DEEPSEEK_* would still silently override it, and a hand-started
+# happens to define LLM_* would still silently override it, and a hand-started
 # worker prints nothing about which endpoint it ended up using.
 #
 # This mirrors start_dev.ps1: export the repo-root .env into the Process
@@ -78,5 +78,5 @@ Write-Output "stdout_log=$outLog"
 Write-Output "stderr_log=$errLog"
 Write-Output "tail -f:  Get-Content -Wait $errLog"
 Write-Output "--- effective LLM config (from $envPath) ---"
-Select-String -Path $envPath -Pattern '^(DEEPSEEK_BASE_URL|DEEPSEEK_MODEL)=' | ForEach-Object { "  $($_.Line)" }
-Write-Output "During generation the log must show: DeepSeekGateway ... base_url=<the value above>"
+Select-String -Path $envPath -Pattern '^(LLM_BASE_URL|LLM_MODEL)=' | ForEach-Object { "  $($_.Line)" }
+Write-Output "During generation the log must show: LLMGateway ... base_url=<the value above>"

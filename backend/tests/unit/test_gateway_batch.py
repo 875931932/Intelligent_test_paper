@@ -1,6 +1,6 @@
 import pytest
 
-from app.adapters.model.deepseek_gateway import DeepSeekGateway, DeepSeekJsonClient, DeepSeekModelError
+from app.adapters.model.llm_gateway import LLMGateway, LLMJsonClient, LLMModelError
 from app.schemas.generation import BatchGenerationPayload, BatchQuestionSpec
 
 
@@ -39,7 +39,7 @@ def test_generate_batch_returns_validated_list():
             {"item_index": 2, "stem": "题二", "options": ["A", "B", "C", "D"], "answer": "B"},
         ]
     })
-    gateway = DeepSeekGateway(api_key="k", json_client=client)
+    gateway = LLMGateway(api_key="k", json_client=client)
     questions = gateway.generate_batch(_payload())
     assert [q["item_index"] for q in questions] == [1, 2]
     assert len(client.calls) == 1
@@ -48,22 +48,22 @@ def test_generate_batch_returns_validated_list():
 
 def test_generate_batch_rejects_non_list_response():
     client = FakeJsonClient({"item_index": 1})
-    gateway = DeepSeekGateway(api_key="k", json_client=client)
-    with pytest.raises(DeepSeekModelError):
+    gateway = LLMGateway(api_key="k", json_client=client)
+    with pytest.raises(LLMModelError):
         gateway.generate_batch(_payload(question_count=1))
 
 
 def test_generate_batch_rejects_questions_not_list():
     client = FakeJsonClient({"questions": "不是数组"})
-    gateway = DeepSeekGateway(api_key="k", json_client=client)
-    with pytest.raises(DeepSeekModelError):
+    gateway = LLMGateway(api_key="k", json_client=client)
+    with pytest.raises(LLMModelError):
         gateway.generate_batch(_payload(question_count=1))
 
 
 def test_generate_batch_rejects_missing_item_index():
     client = FakeJsonClient({"questions": [{"stem": "缺编号", "answer": "A"}]})
-    gateway = DeepSeekGateway(api_key="k", json_client=client)
-    with pytest.raises(DeepSeekModelError):
+    gateway = LLMGateway(api_key="k", json_client=client)
+    with pytest.raises(LLMModelError):
         gateway.generate_batch(_payload(question_count=1))
 
 
@@ -74,8 +74,8 @@ def test_generate_batch_rejects_index_set_mismatch():
             {"item_index": 99, "stem": "多余题", "answer": "B"},
         ]
     })
-    gateway = DeepSeekGateway(api_key="k", json_client=client)
-    with pytest.raises(DeepSeekModelError):
+    gateway = LLMGateway(api_key="k", json_client=client)
+    with pytest.raises(LLMModelError):
         gateway.generate_batch(_payload(question_count=1))
 
 
@@ -86,11 +86,16 @@ def test_generate_batch_rejects_duplicate_indexes():
             {"item_index": 1, "stem": "重复", "answer": "B"},
         ]
     })
-    gateway = DeepSeekGateway(api_key="k", json_client=client)
-    with pytest.raises(DeepSeekModelError):
+    gateway = LLMGateway(api_key="k", json_client=client)
+    with pytest.raises(LLMModelError):
         gateway.generate_batch(_payload(question_count=2))
 
 
 def test_default_json_client_still_constructible():
-    gateway = DeepSeekGateway(api_key="k")
-    assert isinstance(gateway.json_client, DeepSeekJsonClient)
+    # 无硬编码默认端点/模型：必须显式给 base_url/model，否则构造期即失败。
+    gateway = LLMGateway(
+        api_key="k",
+        base_url="https://llm.invalid/v1",
+        model="generic-model",
+    )
+    assert isinstance(gateway.json_client, LLMJsonClient)

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.adapters.model.deepseek_gateway import DeepSeekModelError
+from app.adapters.model.llm_gateway import LLMModelError
 from app.api.v1.knowledge import _apply_auto_supplement
 from app.domain.knowledge.models import KnowledgeTreeConfirmation, TreeOperation
 
@@ -83,7 +83,7 @@ class _Recommender:
     def recommend(self, *, exam_point, candidates, call_context=None):
         self.called.append(exam_point.code)
         if exam_point.code in self.failing:
-            raise DeepSeekModelError("model_error", "boom")
+            raise LLMModelError("model_error", "boom")
         chunks = self.accepted.get(exam_point.code, [])
         return [
             {

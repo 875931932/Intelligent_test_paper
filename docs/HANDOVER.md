@@ -54,9 +54,9 @@ npm ci --registry=https://registry.npmmirror.com
 npm run dev
 ```
 
-健康检查：`curl http://127.0.0.1:8000/api/v1/health`（deepseek/mineru 应为 configured）。
+健康检查：`curl http://127.0.0.1:8000/api/v1/health`（llm/mineru 应为 configured）。
 
-依赖：PostgreSQL（必须）、Redis（Celery broker，真实生成必须）、DeepSeek API Key、
+依赖：PostgreSQL（必须）、Redis（Celery broker，真实生成必须）、LLM API Key、
 MinerU（文档解析，结果缓存在 `backend\.runtime\mineru`）。
 对象存储用 MinIO；不可用时回退本地存储（`PUT /api/v1/_local-storage/{key}`）。
 
@@ -110,7 +110,7 @@ MinerU 解析 → 双大纲框架确认 → 知识目录发布 → 蓝图/合同
 |---|---|---|
 | 1 解析 | MinerU 适配器 | 块级解析，缓存命中零成本 |
 | 2 框架 | `workflows/framework_graph.py` | 教学大纲→主题树；考核大纲→考点表 + **考试规则**（题型比例/章节权重） |
-| 3 分类 | `deepseek_semantic_extractors.py`（分类器） | **批式**：每资料 1 次调用判全部考点（42 次→6 次的降本关键） |
+| 3 分类 | `llm_semantic_extractors.py`（分类器） | **批式**：每资料 1 次调用判全部考点（42 次→6 次的降本关键） |
 | 4 抽取 | demo fact_prompt + `validate_extracted_facts` | 目标数 = ceil(权重×1.2)；不足则**补抽**（带已有事实清单对全部证据二轮抽取，语义 key 去重） |
 | 5 画像 | 语义画像批 | 产出 concept_cluster / answer_proposition / relation_edges / instance_carriers，随卡片持久化 |
 | 6 蓝图+合同 | `blueprint_service.py` + `contract_service.py` | 见 §5 机制清单 |
@@ -227,7 +227,7 @@ backend\app\
 │   ├─ relevance.py         ★证据准入/事实落地判定/情境绑定/语义归一化
 │   └─ models.py            KnowledgeCardDraft 等领域对象
 ├─ adapters\model\
-│   └─ deepseek_semantic_extractors.py  分类/归并/大纲提取（含考试规则）
+│   └─ llm_semantic_extractors.py  分类/归并/大纲提取（含考试规则）
 ├─ schemas\generation.py    批载荷编译（compile_batch_generation_payload）
 └─ db\schema.py             全部表结构（knowledge_cards 含画像三列）
 
@@ -267,7 +267,7 @@ frontend\src\
 3. EP3（继续预训练）等池稀缺考点，同簇判断题可能到 3-4 题（互不相邻，属供给数学极限；
    根治靠补资料而非改算法）
 4. 直接 `python -m uvicorn` 启动不加载 .env，必须用 `start_dev.ps1`
-5. 偶发 `Fact top-up failed: DeepSeekGatewayError`：补抽网络失败，非致命（首轮结果继续用）
+5. 偶发 `Fact top-up failed: LLMGatewayError`：补抽网络失败，非致命（首轮结果继续用）
 6. **旧框架没有考试规则**：本次改动前构建的框架 payload 里 `final_exam_rules` 是空 dict，
    框架页会显示"没有解析出考试规则"并提供「补充规则」；重新构建一次框架即可自动带上考纲比例
 7. 前端无单元测试文件，门禁是 `npm run build` + `npm run lint`；端到端行为由后端 pytest 锁定
@@ -306,6 +306,6 @@ frontend\src\
 
 ## 10. 联系上下文
 
-- 模型：DeepSeek（.env `DEEPSEEK_MODEL`）；文档解析 MinerU；向量 DashScope qwen embedding
+- 模型：LLM（.env `LLM_MODEL`）；文档解析 MinerU；向量 DashScope qwen embedding
 - demo 每次运行会打印 `Contract allocation seed: <n>`——复现某张卷子时在代码里固定该种子即可
 - 试卷导出的版式范本在 `docs/素材/`（A卷试卷 / 答卷A卷 / 评分标准A 三件套）

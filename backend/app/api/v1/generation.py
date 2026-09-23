@@ -5,7 +5,7 @@ from threading import Lock
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.adapters.model.deepseek_gateway import DeepSeekGateway
+from app.adapters.model.llm_gateway import LLMGateway
 from app.config import settings
 from app.domain.generation.contract import ContractSlot
 from app.workflows.generation_graph import build_generation_graph
@@ -32,17 +32,17 @@ def get_gateway(request: Request):
         if not all(
             value.strip()
             for value in (
-                settings.deepseek_api_key,
-                settings.deepseek_base_url,
-                settings.deepseek_model,
+                settings.llm_api_key,
+                settings.llm_base_url,
+                settings.llm_model,
             )
         ):
             raise HTTPException(status_code=503, detail="LLM model is not configured")
-        gateway = DeepSeekGateway(
-            api_key=settings.deepseek_api_key,
-            base_url=settings.deepseek_base_url,
-            model=settings.deepseek_model,
-            disable_thinking=settings.deepseek_generation_disable_thinking,
+        gateway = LLMGateway(
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+            model=settings.llm_model,
+            disable_thinking=settings.llm_generation_disable_thinking,
         )
         request.app.state.generation_gateway = gateway
         return gateway
@@ -70,7 +70,7 @@ def generate_paper(
             "questions": questions,
             "final_check": result.get("final_check", {}),
             "model_call_count": result.get("model_call_count", 0),
-            "model": settings.deepseek_model,
+            "model": settings.llm_model,
         }
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"question generation failed: {exc}")

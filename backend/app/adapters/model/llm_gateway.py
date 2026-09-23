@@ -18,15 +18,15 @@ logger = logging.getLogger("model.gateway")
 # 并发洪泛是分类/归并阶段 HTTP 429 限流的根源：organization_max_workers=16
 # 的并行线程同时轰击模型 API，网关虽带退避重试但退避窗口太短，无法等限流恢复。
 # 用进程级信号量把所有模型调用（分类/归并/抽取/框架抽取共用同一网关）的并发数
-# 收敛到很小的常数，让 DeepSeek 端始终处于可控负载；再用 429 长退避兜底
+# 收敛到很小的常数，让 LLM 端始终处于可控负载；再用 429 长退避兜底
 # RPM 触顶。metagain 单租户工具，进程内所有 client 共享同一信号量协调并发。
 _LLM_MAX_CONCURRENCY = 2
 _LLM_SEMAPHORE = threading.BoundedSemaphore(_LLM_MAX_CONCURRENCY)
 
 
 _PERSISTED_ERROR_MESSAGES = {
-    "deepseek_http_error": "DeepSeek request failed with an HTTP error",
-    "deepseek_transport_error": "DeepSeek request failed",
+    "llm_http_error": "LLM request failed with an HTTP error",
+    "llm_transport_error": "LLM request failed",
     "model_empty_response": "model returned empty content",
     "model_invalid_envelope": "model response envelope is invalid",
     "model_non_json_response": "model returned content that is not valid JSON",
@@ -124,7 +124,7 @@ class ModelCallRecorder(Protocol):
     def record(self, **values: Any) -> None: ...
 
 
-class DeepSeekModelError(RuntimeError):
+class LLMModelError(RuntimeError):
     """A safe model failure that can be persisted or returned to a workflow."""
 
     def __init__(self, error_code: str, message: str, *, details: dict[str, Any] | None = None):
@@ -133,22 +133,23 @@ class DeepSeekModelError(RuntimeError):
         self.details = details or {}
 
 
-class DeepSeekGatewayError(DeepSeekModelError):
+class LLMGatewayError(LLMModelError):
     """Backward-compatible gateway error name."""
 
 
-class DeepSeekJsonClient:
+class LLMJsonClient:
     """OpenAI-compatible strict JSON client with final-outcome observability."""
 
     def __init__(
         self,
         *,
         api_key: str,
-        # 默认值与 DeepSeekGateway / settings 保持一致（StepFun step-3.7-flash）。
-        # 历史上这里误留 MiMo 默认值，任何未显式传 model/base_url 的构造路径
-        # 都会静默回落到 MiMo 端点，造成"配置改了却还在用旧模型"的排查盲区。
-        base_url: str = "https://api.stepfun.com/v1",
-        model: str = "step-3.7-flash",
+        # 不设默认端点/模型：唯一配置来源是 settings（.env），由调用方显式传入。
+        # 留空会在下方立即 ValueError——历史上这里硬编码过期端点，任何未显式传
+        # model/base_url 的构造路径都会静默打到错服务，造成"配置改了却还在用
+        # 旧模型"的排查盲区。
+        base_url: str = "",
+        model: str = "",
         timeout: float = 90.0,
         max_attempts: int = 4,
         # 大 prompt（如知识目录分类批）失败重试非常昂贵：单次输入即数万 token，
@@ -167,7 +168,7 @@ class DeepSeekJsonClient:
         if not model.strip():
             raise ValueError("LLM model is required")
         if max_attempts < 1:
-            raise ValueError("DeepSeek max_attempts must be positive")
+            raise ValueError("LLM max_attempts must be positive")
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
@@ -236,7 +237,7 @@ class DeepSeekJsonClient:
                     return cached
         started = time.perf_counter()
         attempts: list[dict[str, Any]] = []
-        last_error: DeepSeekModelError | None = None
+        last_error: LLMModelError | None = None
         request_id: str | None = None
         input_tokens: int | None = None
         output_tokens: int | None = None
@@ -270,7 +271,7 @@ class DeepSeekJsonClient:
                 raw_snapshot = response.content.decode("utf-8", errors="replace")[:2000]
                 body = response.json()
                 if not isinstance(body, dict):
-                    raise DeepSeekModelError("model_invalid_envelope", "model response envelope is invalid")
+                    raise LLMModelError("model_invalid_envelope", "model response envelope is invalid")
                 request_id = request_id or _optional_text(body.get("id"))
                 usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
                 input_tokens = _optional_int(usage.get("prompt_tokens"))
@@ -278,12 +279,12 @@ class DeepSeekJsonClient:
                 try:
                     message = body["choices"][0]["message"]
                 except (KeyError, IndexError, TypeError):
-                    raise DeepSeekModelError(
+                    raise LLMModelError(
                         "model_invalid_envelope",
                         "model response is missing message content",
                     ) from None
                 if not isinstance(message, dict):
-                    raise DeepSeekModelError(
+                    raise LLMModelError(
                         "model_invalid_envelope", "model message is invalid"
                     )
                 if tool is not None:
@@ -291,17 +292,17 @@ class DeepSeekJsonClient:
                 else:
                     content = message.get("content")
                     if not isinstance(content, str) or not content.strip():
-                        raise DeepSeekModelError(
+                        raise LLMModelError(
                             "model_empty_response", "model returned empty content"
                         )
                     result = _extract_json_object(content)
                     if result is None:
-                        raise DeepSeekModelError(
+                        raise LLMModelError(
                             "model_non_json_response",
                             "model returned content that is not valid JSON",
                         )
                 if not isinstance(result, dict):
-                    raise DeepSeekModelError(
+                    raise LLMModelError(
                         "model_non_object_response",
                         "model returned a non-object JSON value",
                     )
@@ -310,7 +311,7 @@ class DeepSeekJsonClient:
             except httpx.HTTPStatusError as exc:
                 status_code = exc.response.status_code
                 hint = _HTTP_STATUS_HINTS.get(status_code)
-                message = f"DeepSeek request failed with HTTP status {status_code}"
+                message = f"LLM request failed with HTTP status {status_code}"
                 if hint:
                     message = f"{message}（{hint}）"
                 # 响应体里往往是真正原因（insufficient balance / invalid api key），
@@ -320,8 +321,8 @@ class DeepSeekJsonClient:
                     body_tag = _http_body_error_tag(exc.response.text or "")
                 except Exception:
                     body_tag = None
-                last_error = DeepSeekModelError(
-                    "deepseek_http_error",
+                last_error = LLMModelError(
+                    "llm_http_error",
                     message,
                     details={"http_status": status_code, "error_tag": body_tag},
                 )
@@ -335,20 +336,20 @@ class DeepSeekJsonClient:
                     }
                 )
             except httpx.HTTPError:
-                last_error = DeepSeekModelError(
-                    "deepseek_transport_error",
-                    "DeepSeek request failed",
+                last_error = LLMModelError(
+                    "llm_transport_error",
+                    "LLM request failed",
                 )
                 last_retry_error_code = last_error.error_code
                 attempts.append({"attempt": attempt, "error_code": last_error.error_code})
             except (ValueError, KeyError, IndexError, TypeError) as exc:
-                last_error = DeepSeekModelError(
+                last_error = LLMModelError(
                     "model_invalid_envelope",
                     "model response envelope is invalid",
                 )
                 last_retry_error_code = last_error.error_code
                 attempts.append({"attempt": attempt, "error_type": type(exc).__name__})
-            except DeepSeekModelError as exc:
+            except LLMModelError as exc:
                 last_error = exc
                 persisted_error_code, _ = _persistence_error(exc)
                 should_retry = True
@@ -459,7 +460,7 @@ class DeepSeekJsonClient:
             final_http_status,
             request_id,
         )
-        raise DeepSeekGatewayError(last_error.error_code, str(last_error), details=details) from last_error
+        raise LLMGatewayError(last_error.error_code, str(last_error), details=details) from last_error
 
     def _post(
         self,
@@ -471,7 +472,7 @@ class DeepSeekJsonClient:
         reasoning_effort: str | None = None,
     ) -> httpx.Response:
         # StepFun（api.stepfun.com/.ai）未文档化 thinking/tool_choice 参数，
-        # MiMo（api.xiaomimimo.com）两者均支持：按 base_url 分流避免未知参数
+        # 其余 OpenAI 兼容端点两者均支持：按 base_url 分流避免未知参数
         # 触发 400。tool_choice 缺省时模型若不触发 tool_calls，由
         # _extract_tool_arguments 兜底解析 content JSON。
         #
@@ -479,7 +480,7 @@ class DeepSeekJsonClient:
         # 思考强度（low/medium/high）。信息抽取用 low 最省预算、避免思考占满
         # 输出额度导致 content 为空/截断非 JSON。调用方可显式传入档位；越过
         # reasoning_effort 时沿用 disable_thinking=True 的旧行为（stepfun=low，
-        # mimo=关闭思考）。
+        # 非 stepfun=关闭思考）。
         is_stepfun = "stepfun" in self.base_url
         json_body: dict[str, Any] = {
             "model": self.model,
@@ -527,7 +528,7 @@ class DeepSeekJsonClient:
         input_tokens: int | None,
         output_tokens: int | None,
         duration_ms: int,
-        error: DeepSeekModelError | None,
+        error: LLMModelError | None,
         request_id: str | None,
         details: dict[str, Any],
     ) -> None:
@@ -537,7 +538,7 @@ class DeepSeekJsonClient:
         try:
             self.recorder.record(
                 context=context,
-                provider="deepseek",
+                provider="llm",
                 model=self.model,
                 status=status,
                 prompt_hash=prompt_hash,
@@ -554,23 +555,24 @@ class DeepSeekJsonClient:
             return
 
 
-class DeepSeekGateway:
+class LLMGateway:
     def __init__(
         self,
         *,
         api_key: str,
-        base_url: str = "https://api.stepfun.com/v1",
-        model: str = "step-3.7-flash",
+        # 与 LLMJsonClient 一致：无默认端点/模型，缺省即在 JsonClient 构造期失败。
+        base_url: str = "",
+        model: str = "",
         timeout: float = 90.0,
         max_attempts: int = 4,
         disable_thinking: bool = True,
         client: httpx.Client | None = None,
-        json_client: DeepSeekJsonClient | None = None,
+        json_client: LLMJsonClient | None = None,
         recorder: ModelCallRecorder | None = None,
         call_context: ModelCallContext | None = None,
     ) -> None:
         self.call_context = call_context
-        self.json_client = json_client or DeepSeekJsonClient(
+        self.json_client = json_client or LLMJsonClient(
             api_key=api_key,
             base_url=base_url,
             model=model,
@@ -583,7 +585,7 @@ class DeepSeekGateway:
         # 打印生效配置：排查"配置改了却还在用旧模型"时，第一眼即可确认
         # 进程实际使用的 base_url/model；api_key 绝不进日志。
         logger.info(
-            "DeepSeekGateway 生效配置 base_url=%s model=%s timeout=%.1fs "
+            "LLMGateway 生效配置 base_url=%s model=%s timeout=%.1fs "
             "max_attempts=%d disable_thinking=%s",
             base_url, model, timeout, max_attempts, disable_thinking,
         )
@@ -611,17 +613,17 @@ class DeepSeekGateway:
         def validate_batch(result) -> None:
             questions = result.get("questions") if isinstance(result, dict) else None
             if not isinstance(questions, list):
-                raise DeepSeekModelError(
+                raise LLMModelError(
                     "model_output_schema_violation", "批式生成必须返回包含 questions 数组的 JSON 对象"
                 )
             indexes = [item.get("item_index") for item in questions if isinstance(item, dict)]
             if any(i is None for i in indexes) or len(indexes) != len(questions):
-                raise DeepSeekModelError(
+                raise LLMModelError(
                     "model_output_schema_violation",
                     "批式生成每个元素必须包含 item_index",
                 )
             if sorted(indexes) != sorted(expected):
-                raise DeepSeekModelError(
+                raise LLMModelError(
                     "model_output_scope_violation",
                     f"批式生成 item_index 集合不符：期望 {sorted(expected)}，实际 {sorted(indexes)}",
                 )
@@ -666,7 +668,7 @@ def _optional_int(value: Any) -> int | None:
 def _extract_tool_arguments(message: dict[str, Any]) -> dict:
     """Parse the first function-tool call's JSON arguments out of a chat message.
 
-    MiMo 在 tool_choice=required 下偶发不触发 tool_calls 而直接回 content JSON，
+    OpenAI 兼容端点在 tool_choice=required 下偶发不触发 tool_calls 而直接回 content JSON，
     此时兜底解析 content，避免一次抖动导致整批重试烧 token。
     """
 
@@ -677,14 +679,14 @@ def _extract_tool_arguments(message: dict[str, Any]) -> dict:
             function = first.get("function")
             if isinstance(function, dict):
                 arguments = function.get("arguments")
-                # MiMo 偶尔返回已解析的 JSON 对象，而非字符串：两者都接受。
+                # 端点偶尔返回已解析的 JSON 对象，而非字符串：两者都接受。
                 if isinstance(arguments, dict):
                     return arguments
                 if isinstance(arguments, str) and arguments.strip():
                     try:
                         return json.loads(arguments)
                     except json.JSONDecodeError:
-                        raise DeepSeekModelError(
+                        raise LLMModelError(
                             "model_non_json_response",
                             "tool arguments are not valid JSON",
                         ) from None
@@ -693,7 +695,7 @@ def _extract_tool_arguments(message: dict[str, Any]) -> dict:
         parsed = _extract_json_object(content)
         if parsed is not None:
             return parsed
-    # 采样真实的 message 结构，帮助定位 MiMo 到底回了什么（只取键名，不取长内容）。
+    # 采样真实的 message 结构，帮助定位模型到底回了什么（只取键名，不取长内容）。
     shape: dict[str, object] = {}
     for key in ("role", "content", "tool_calls", "refusal"):
         if key in message:
@@ -711,7 +713,7 @@ def _extract_tool_arguments(message: dict[str, Any]) -> dict:
                 shape[key] = (
                     (value[:80] + "...") if isinstance(value, str) and len(value) > 80 else value
                 )
-    raise DeepSeekModelError(
+    raise LLMModelError(
         "model_invalid_envelope",
         "model returned no tool call or JSON content",
         details={"message_shape": shape},
@@ -749,7 +751,7 @@ def _is_retryable_http_status(status_code: int) -> bool:
     return status_code in {408, 429} or status_code >= 500
 
 
-def _persistence_error(error: DeepSeekModelError) -> tuple[str, str]:
+def _persistence_error(error: LLMModelError) -> tuple[str, str]:
     message = _PERSISTED_ERROR_MESSAGES.get(error.error_code)
     if message is None:
         return "model_validation_failed", "model response validation failed"
@@ -765,7 +767,7 @@ def _sanitize_validation_path(parts: list[object]) -> str:
     return ".".join(safe_parts)
 
 
-def _sanitized_validation_details(error: DeepSeekModelError) -> dict[str, object] | None:
+def _sanitized_validation_details(error: LLMModelError) -> dict[str, object] | None:
     if error.error_code != "model_schema_validation_failed":
         return None
     invalid_fields = error.details.get("invalid_fields")

@@ -1,7 +1,7 @@
 """构建完整 7 段式 pipeline.json 快照（完全通过 FastAPI TestClient + HTTP API）。
 
 与 build_real_material_demo.py 同级，但：
-- 不依赖任何外部模型网关（MinerU / DeepSeek），使用合成种子数据；
+- 不依赖任何外部模型网关（MinerU / LLM），使用合成种子数据；
 - 通过 TestClient 调用 Task 6 全链路 API（create-project → blueprints → plan-items
   → confirm blueprint → allocate contract → confirm contract → generate → poll
   → paper-version → confirm）；

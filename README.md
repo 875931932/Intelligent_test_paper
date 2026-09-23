@@ -19,7 +19,7 @@ AI 驱动的组卷与阅卷平台，支持课程资料解析、考纲框架构�
 
 ### 外部服务
 - MinerU（文档解析）
-- DeepSeek（大模型生成）
+- LLM（大模型生成）
 - Embedding（向量检索）
 - MinIO / S3（对象存储）
 
@@ -59,9 +59,9 @@ nano .env
 DATABASE_URL=postgresql+psycopg://exam:exam@localhost:5432/exam
 REDIS_URL=redis://localhost:6379/0
 
-DEEPSEEK_API_KEY=你的DeepSeek API Key
-DEEPSEEK_BASE_URL=https://api.xiaomimimo.com/v1
-DEEPSEEK_MODEL=mimo-v2.5-pro
+LLM_API_KEY=你的LLM API Key
+LLM_BASE_URL=https://api.stepfun.com/step_plan/v1
+LLM_MODEL=step-3.7-flash
 
 EMBEDDING_API_KEY=你的Embedding API Key
 EMBEDDING_BASE_URL=https://ws-jn5396bzqr92vf9r.cn-beijing.maas.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding
@@ -185,7 +185,7 @@ curl http://127.0.0.1:8000/api/v1/health
   "postgresql": "ok",
   "redis": "ok",
   "mineru": "configured",
-  "deepseek": "configured"
+  "llm": "configured"
 }
 ```
 

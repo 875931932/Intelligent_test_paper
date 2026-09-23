@@ -57,9 +57,9 @@ ${EDITOR:-vi} .env
 ```dotenv
 DATABASE_URL=postgresql+psycopg://<db_user>:<db_password>@<db_host>:5432/<db_name>
 REDIS_URL=redis://127.0.0.1:6379/0
-DEEPSEEK_API_KEY=<llm_key>
-DEEPSEEK_BASE_URL=<openai-compatible-llm-base-url>
-DEEPSEEK_MODEL=<paper-generation-model>
+LLM_API_KEY=<llm_key>
+LLM_BASE_URL=<openai-compatible-llm-base-url>
+LLM_MODEL=<paper-generation-model>
 MINERU_API_TOKEN=<mineru_token>
 MINERU_BASE_URL=https://mineru.net
 EMBEDDING_API_KEY=<dashscope_key>
@@ -76,7 +76,7 @@ S3_SECRET_KEY=<secret_key>
 S3_BUCKET=exam-materials
 ```
 
-`DEEPSEEK_BASE_URL` 需要填写实际模型网关地址；不要照抄示例中的模型名称或把 API Key 写入 shell 历史。
+`LLM_BASE_URL` 需要填写实际模型网关地址；不要照抄示例中的模型名称或把 API Key 写入 shell 历史。
 
 ## 4. 初始化 PostgreSQL/pgvector
 
@@ -113,7 +113,7 @@ PYTHONPATH=. uvicorn app.main:app --host 127.0.0.1 --port 8000
 curl http://127.0.0.1:8000/api/v1/health
 ```
 
-真实出卷前，返回中的 `postgresql`、`redis`、`mineru`、`deepseek` 都必须为可用/已配置状态。
+真实出卷前，返回中的 `postgresql`、`redis`、`mineru`、`llm` 都必须为可用/已配置状态。
 
 ## 6. 启动真实出卷 Worker
 

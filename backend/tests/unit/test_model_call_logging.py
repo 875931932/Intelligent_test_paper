@@ -7,7 +7,7 @@
 1. recorder 每次落库同时输出一行 INFO（stage/model/status/耗时/token）；
 2. 失败调用升级为 WARNING 且带 error_code；
 3. 生成任务 开始/图返回/完成/失败 四个节点均有日志，含 run 与题数；
-4. DeepSeekGateway 构造时打印生效的 base_url/model（api_key 脱敏）。
+4. LLMGateway 构造时打印生效的 base_url/model（api_key 脱敏）。
 5. request_json 每次真实调用输出一行 INFO（stage/model/耗时/attempts）；
    失败升级 WARNING 且带 error_code——这是"日志看不到模型调用"的直接埋点。
 """
@@ -23,10 +23,10 @@ import pytest
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.adapters.model.deepseek_gateway import (
-    DeepSeekGateway,
-    DeepSeekGatewayError,
-    DeepSeekJsonClient,
+from app.adapters.model.llm_gateway import (
+    LLMGateway,
+    LLMGatewayError,
+    LLMJsonClient,
 )
 from app.db.schema import (
     Base,
@@ -81,7 +81,7 @@ def test_record_emits_info_log_with_model_and_tokens(recorder_env, caplog):
     caplog.set_level(logging.INFO, logger="model.call")
     DatabaseModelCallRecorder(sessionmaker(bind=recorder_env)).record(
         context=_ctx(),
-        provider="deepseek",
+        provider="llm",
         model="step-3.7-flash",
         status="succeeded",
         prompt_hash="a" * 64,
@@ -109,7 +109,7 @@ def test_record_emits_warning_log_on_failure(recorder_env, caplog):
     caplog.set_level(logging.INFO, logger="model.call")
     DatabaseModelCallRecorder(sessionmaker(bind=recorder_env)).record(
         context=_ctx(),
-        provider="deepseek",
+        provider="llm",
         model="step-3.7-flash",
         status="failed",
         prompt_hash="b" * 64,
@@ -259,7 +259,7 @@ def test_generation_task_logs_failure_with_run_id(gen_env, caplog):
 
 def test_gateway_logs_effective_configuration(caplog):
     caplog.set_level(logging.INFO, logger="model.gateway")
-    DeepSeekGateway(
+    LLMGateway(
         api_key="sk-secret-value",
         base_url="https://api.stepfun.com/v1",
         model="step-3.7-flash",
@@ -327,7 +327,7 @@ class _FakeClient:
 
 def test_request_json_logs_success_line(caplog):
     caplog.set_level(logging.INFO, logger="model.gateway")
-    client = DeepSeekJsonClient(
+    client = LLMJsonClient(
         api_key="sk-secret-value",
         base_url="https://api.stepfun.com/v1",
         model="step-3.7-flash",
@@ -357,7 +357,7 @@ def test_request_json_logs_success_line(caplog):
 
 def test_request_json_logs_failure_line_with_error_code(caplog):
     caplog.set_level(logging.INFO, logger="model.gateway")
-    client = DeepSeekJsonClient(
+    client = LLMJsonClient(
         api_key="sk-secret-value",
         base_url="https://api.stepfun.com/v1",
         model="step-3.7-flash",
@@ -365,7 +365,7 @@ def test_request_json_logs_failure_line_with_error_code(caplog):
         max_attempts=1,
         client=_FakeClient(_FakeErrorResponse()),
     )
-    with pytest.raises(DeepSeekGatewayError):
+    with pytest.raises(LLMGatewayError):
         client.request_json(
             system_prompt="你是出题助手",
             payload={"q": "hi"},
@@ -380,6 +380,6 @@ def test_request_json_logs_failure_line_with_error_code(caplog):
     assert "paper_generation" in message
     assert "step-3.7-flash" in message
     assert "failed" in message
-    assert "deepseek_http_error" in message
+    assert "llm_http_error" in message
     assert "duration_ms=" in message
     assert "sk-secret-value" not in message

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from app.adapters.model.deepseek_gateway import DeepSeekModelError
-from app.adapters.model.deepseek_semantic_extractors import (
+from app.adapters.model.llm_gateway import LLMModelError
+from app.adapters.model.llm_semantic_extractors import (
     validate_consolidated_units,
 )
 from app.domain.framework.exam_points import ExamPoint
@@ -123,7 +123,7 @@ def build_knowledge_catalog_candidate(
         ]
         try:
             validate_consolidated_units(point, admitted, units, chunks_by_id=chunks_by_id)
-        except DeepSeekModelError as exc:
+        except LLMModelError as exc:
             # 归并适配层失败（引用缺口、编造事实等）按树校验失败处理，
             # 保持构建器「确定性输入 → KnowledgeTreeValidationError」的契约。
             raise KnowledgeTreeValidationError(str(exc)) from exc

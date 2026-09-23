@@ -220,7 +220,7 @@ def _default_graph_invoke(
     ``progress`` 注入时改用流式消费：每完成一批考点题目回调一次
     ``(done, total)``，让调用方在十余分钟的生成过程中持续上报进度。
     """
-    from app.adapters.model.deepseek_gateway import DeepSeekGateway
+    from app.adapters.model.llm_gateway import LLMGateway
     from app.config import settings
     from app.db.session import get_session_factory
     from app.domain.generation.contract import ContractSlot
@@ -229,9 +229,9 @@ def _default_graph_invoke(
     from app.workflows.generation_graph import build_generation_graph
 
     if not all(value.strip() for value in (
-        settings.deepseek_api_key,
-        settings.deepseek_base_url,
-        settings.deepseek_model,
+        settings.llm_api_key,
+        settings.llm_base_url,
+        settings.llm_model,
     )):
         raise GenerationRunnerError("LLM model is not configured")
 
@@ -260,11 +260,11 @@ def _default_graph_invoke(
     if not expected_indexes.issubset(plan_item_ids):
         raise GenerationRunnerError("generation contract does not match blueprint plan items")
 
-    gateway = DeepSeekGateway(
-        api_key=settings.deepseek_api_key,
-        base_url=settings.deepseek_base_url,
-        model=settings.deepseek_model,
-        disable_thinking=settings.deepseek_generation_disable_thinking,
+    gateway = LLMGateway(
+        api_key=settings.llm_api_key,
+        base_url=settings.llm_base_url,
+        model=settings.llm_model,
+        disable_thinking=settings.llm_generation_disable_thinking,
         recorder=DatabaseModelCallRecorder(get_session_factory()),
         call_context=ModelCallContext(course_id=course_id, stage="paper_generation"),
     )

@@ -411,7 +411,7 @@ def test_graph_invoke_raise_causes_run_failed_and_no_paper_version(session):
 
 
 def _capturing_gateway_factory(captured: list):
-    """返回可 monkeypatch 的 DeepSeekGateway 替身：按合同规格产出合规题干，
+    """返回可 monkeypatch 的 LLMGateway 替身：按合同规格产出合规题干，
     并把收到的 payload 记入 captured（断言"不向模型暴露来源元数据"）。"""
 
     class CapturingGateway:
@@ -456,7 +456,7 @@ def _capturing_gateway_factory(captured: list):
 
 def test_default_graph_invocation_uses_contract_and_pure_knowledge_cards(session, monkeypatch):
     """正式装配链路：真实 LangGraph + 假模型网关，不向模型暴露来源元数据。"""
-    from app.adapters.model import deepseek_gateway
+    from app.adapters.model import llm_gateway
     from app.config import settings
 
     generation_run_id, _ = _setup_pipeline(session)
@@ -465,11 +465,11 @@ def test_default_graph_invocation_uses_contract_and_pure_knowledge_cards(session
     ).one()._mapping
     captured_payloads = []
 
-    monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
-    monkeypatch.setattr(settings, "deepseek_base_url", "https://model.invalid/v1")
-    monkeypatch.setattr(settings, "deepseek_model", "test-model")
+    monkeypatch.setattr(settings, "llm_api_key", "test-key")
+    monkeypatch.setattr(settings, "llm_base_url", "https://model.invalid/v1")
+    monkeypatch.setattr(settings, "llm_model", "test-model")
     monkeypatch.setattr(
-        deepseek_gateway, "DeepSeekGateway", _capturing_gateway_factory(captured_payloads),
+        llm_gateway, "LLMGateway", _capturing_gateway_factory(captured_payloads),
     )
 
     questions = _default_graph_invoke(session, dict(run), run["contract_snapshot"])
@@ -538,7 +538,7 @@ def test_execution_reports_intermediate_progress(session):
 
 def test_default_graph_invoke_stream_progress_matches_batches(session, monkeypatch):
     """真实图的 stream 路径：按批回调 (done, total)，最终题目与 invoke 一致。"""
-    from app.adapters.model import deepseek_gateway
+    from app.adapters.model import llm_gateway
     from app.config import settings
 
     generation_run_id, _ = _setup_pipeline(session)
@@ -547,11 +547,11 @@ def test_default_graph_invoke_stream_progress_matches_batches(session, monkeypat
     ).one()._mapping
     captured: list[dict] = []
 
-    monkeypatch.setattr(settings, "deepseek_api_key", "test-key")
-    monkeypatch.setattr(settings, "deepseek_base_url", "https://model.invalid/v1")
-    monkeypatch.setattr(settings, "deepseek_model", "test-model")
+    monkeypatch.setattr(settings, "llm_api_key", "test-key")
+    monkeypatch.setattr(settings, "llm_base_url", "https://model.invalid/v1")
+    monkeypatch.setattr(settings, "llm_model", "test-model")
     monkeypatch.setattr(
-        deepseek_gateway, "DeepSeekGateway", _capturing_gateway_factory(captured),
+        llm_gateway, "LLMGateway", _capturing_gateway_factory(captured),
     )
 
     baseline = _default_graph_invoke(session, dict(run), run["contract_snapshot"])

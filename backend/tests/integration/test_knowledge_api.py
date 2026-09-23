@@ -7,14 +7,14 @@ from app.config import settings
 from app.main import app
 
 
-@pytest.mark.parametrize("missing_setting", ["deepseek_api_key", "deepseek_base_url", "deepseek_model"])
-def test_knowledge_requires_complete_deepseek_configuration(monkeypatch, missing_setting):
+@pytest.mark.parametrize("missing_setting", ["llm_api_key", "llm_base_url", "llm_model"])
+def test_knowledge_requires_complete_llm_configuration(monkeypatch, missing_setting):
     monkeypatch.setattr(settings, "embedding_api_key", "embedding-key")
     monkeypatch.setattr(settings, "embedding_base_url", "https://embedding.invalid/v1")
     monkeypatch.setattr(settings, "embedding_model", "embedding-model")
-    monkeypatch.setattr(settings, "deepseek_api_key", "configured-test-key")
-    monkeypatch.setattr(settings, "deepseek_base_url", "https://deepseek.invalid/v1")
-    monkeypatch.setattr(settings, "deepseek_model", "deepseek-v4-flash")
+    monkeypatch.setattr(settings, "llm_api_key", "configured-test-key")
+    monkeypatch.setattr(settings, "llm_base_url", "https://llm.invalid/v1")
+    monkeypatch.setattr(settings, "llm_model", "generic-model")
     monkeypatch.setattr(settings, missing_setting, "")
     for state_name in (
         "organization_embedder",

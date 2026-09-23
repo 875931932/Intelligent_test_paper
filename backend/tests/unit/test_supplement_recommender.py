@@ -1,12 +1,12 @@
-"""DeepSeekSupplementRecommender 单元测试。"""
+"""LLMSupplementRecommender 单元测试。"""
 
 import pytest
 
-from app.adapters.model.deepseek_gateway import DeepSeekModelError
-from app.adapters.model.deepseek_semantic_extractors import (
-    DeepSeekSupplementRecommender,
+from app.adapters.model.llm_gateway import LLMModelError
+from app.adapters.model.llm_semantic_extractors import (
+    LLMSupplementRecommender,
 )
-from tests.unit.test_deepseek_semantic_extractors import _point
+from tests.unit.test_llm_semantic_extractors import _point
 
 
 def _candidate(chunk_id: str, claim: str = "KV Cache 缓存注意力键值以复用计算") -> dict:
@@ -46,7 +46,7 @@ def test_recommend_returns_model_accepted_items_with_reason():
             )
             return {}
 
-    items = DeepSeekSupplementRecommender(Client()).recommend(
+    items = LLMSupplementRecommender(Client()).recommend(
         exam_point=point, candidates=[_candidate("c1"), _candidate("c2")]
     )
     assert [item["evidence_chunk_id"] for item in items] == ["c1"]
@@ -74,8 +74,8 @@ def test_recommend_rejects_unknown_chunk_id():
             )
             return {}
 
-    with pytest.raises(DeepSeekModelError, match="unknown chunk"):
-        DeepSeekSupplementRecommender(Client()).recommend(
+    with pytest.raises(LLMModelError, match="unknown chunk"):
+        LLMSupplementRecommender(Client()).recommend(
             exam_point=point, candidates=[_candidate("c1")]
         )
 
@@ -96,8 +96,8 @@ def test_recommend_rejects_duplicate_chunk_id():
             )
             return {}
 
-    with pytest.raises(DeepSeekModelError, match="duplicate"):
-        DeepSeekSupplementRecommender(Client()).recommend(
+    with pytest.raises(LLMModelError, match="duplicate"):
+        LLMSupplementRecommender(Client()).recommend(
             exam_point=point, candidates=[_candidate("c1")]
         )
 
@@ -115,8 +115,8 @@ def test_recommend_rejects_other_exam_point_response():
             )
             return {}
 
-    with pytest.raises(DeepSeekModelError, match="another exam point"):
-        DeepSeekSupplementRecommender(Client()).recommend(
+    with pytest.raises(LLMModelError, match="another exam point"):
+        LLMSupplementRecommender(Client()).recommend(
             exam_point=point, candidates=[_candidate("c1")]
         )
 
@@ -128,7 +128,7 @@ def test_recommend_empty_candidates_short_circuits_without_model_call():
         def request_json(self, **kwargs):  # pragma: no cover
             raise AssertionError("must not call the model for empty candidates")
 
-    items = DeepSeekSupplementRecommender(Client()).recommend(
+    items = LLMSupplementRecommender(Client()).recommend(
         exam_point=point, candidates=[]
     )
     assert items == []
@@ -153,7 +153,7 @@ def test_recommend_truncates_long_content():
             )
             return {}
 
-    DeepSeekSupplementRecommender(Client()).recommend(
+    LLMSupplementRecommender(Client()).recommend(
         exam_point=point,
         candidates=[{**_candidate("c1"), "content": long_content}],
     )

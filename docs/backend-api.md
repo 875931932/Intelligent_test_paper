@@ -30,9 +30,9 @@
 ### 1.1 `GET /api/v1/health`
 健康检查（不依赖 DB 即可返回）。
 ```json
-{ "api": "ok", "postgresql": "ok", "redis": "ok", "mineru": "configured", "deepseek": "configured" }
+{ "api": "ok", "postgresql": "ok", "redis": "ok", "mineru": "configured", "llm": "configured" }
 ```
-字段取值：`api`=`ok`；`postgresql`/`redis`=`ok|unavailable|not_configured`；`mineru`/`deepseek`=`configured|not_configured`。
+字段取值：`api`=`ok`；`postgresql`/`redis`=`ok|unavailable|not_configured`；`mineru`/`llm`=`configured|not_configured`。
 
 ### 1.2 `PUT /api/v1/_local-storage/{object_key:path}`
 当对象存储（MinIO）不可用、回退到本地存储时，前端直接用 PUT 上传二进制文件。
@@ -127,7 +127,7 @@
 { "teaching_material_version_id": "uuid", "assessment_material_version_id": "uuid" }
 ```
 响应：`{ "run_id": "uuid", "candidate_id": "uuid", "status": "awaiting_teacher_confirmation" }`
-需要 DeepSeek 已配置，否则 503。
+需要 LLM 已配置，否则 503。
 
 ### 4.2 最近一次运行
 `GET /api/v1/courses/{course_id}/framework-runs/latest` → `FrameworkBuildRun`
@@ -284,7 +284,7 @@ body 同 `exam_rules` 结构（`question_type_ratios` / `chapter_weights` 等）
 响应：
 ```json
 { "status": "candidate", "questions": [ { "item_index":1,"question_type":"","stem":"","options":{},"answer":"","explanation":"","score":5.0,"difficulty":"","cognitive_level":"","assessment_mode":"","exam_point_id":"","card_id":"","coverage_atom":"" } ],
-  "final_check": {}, "model_call_count": 0, "model": "mimo-v2.5-pro" }
+  "final_check": {}, "model_call_count": 0, "model": "step-3.7-flash" }
 ```
 非法 contract 422；生成失败 502。
 

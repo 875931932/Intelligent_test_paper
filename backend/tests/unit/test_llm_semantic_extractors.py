@@ -7,14 +7,14 @@ import pytest
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.adapters.model.deepseek_semantic_extractors import (
-    DeepSeekExamPointEvidenceClassifier,
-    DeepSeekExamPointKnowledgeConsolidator,
-    DeepSeekJsonClient,
-    DeepSeekModelError,
-    DeepSeekSyllabusExtractor,
+from app.adapters.model.llm_semantic_extractors import (
+    LLMExamPointEvidenceClassifier,
+    LLMExamPointKnowledgeConsolidator,
+    LLMJsonClient,
+    LLMModelError,
+    LLMSyllabusExtractor,
 )
-from app.adapters.model.deepseek_gateway import _sanitized_validation_details
+from app.adapters.model.llm_gateway import _sanitized_validation_details
 from app.domain.framework.exam_points import ExamPoint, OperationalDetailPolicy, WeightSource
 from app.domain.knowledge.relevance import EvidenceDecision, StagingChunk
 from app.domain.model_calls import ModelCallContext
@@ -116,10 +116,10 @@ def test_json_client_uses_injected_http_client_and_records_one_success():
 
     recorder = RecordingModelCalls()
     http_client = httpx.Client(transport=httpx.MockTransport(handler))
-    client = DeepSeekJsonClient(
+    client = LLMJsonClient(
         api_key="test-key",
-        base_url="https://deepseek.invalid/v1",
-        model="deepseek-v4-flash",
+        base_url="https://llm.invalid/v1",
+        model="generic-model",
         max_attempts=1,
         client=http_client,
         recorder=recorder,
@@ -154,9 +154,9 @@ def test_json_client_disables_thinking_by_default():
             json={"choices": [{"message": {"content": json.dumps({"ok": True})}}]},
         )
 
-    client = DeepSeekJsonClient(
+    client = LLMJsonClient(
         api_key="test-key",
-        base_url="https://deepseek.invalid/v1",
+        base_url="https://llm.invalid/v1",
         model="test-model",
         max_attempts=1,
         client=httpx.Client(transport=httpx.MockTransport(handler)),
@@ -181,9 +181,9 @@ def test_json_client_can_enable_thinking():
             json={"choices": [{"message": {"content": json.dumps({"ok": True})}}]},
         )
 
-    client = DeepSeekJsonClient(
+    client = LLMJsonClient(
         api_key="test-key",
-        base_url="https://deepseek.invalid/v1",
+        base_url="https://llm.invalid/v1",
         model="test-model",
         max_attempts=1,
         disable_thinking=False,
@@ -210,9 +210,11 @@ def test_json_client_does_not_retry_success_when_recorder_fails(monkeypatch):
             json={"choices": [{"message": {"content": '{"ok": true}'}}]},
         )
 
-    monkeypatch.setattr("app.adapters.model.deepseek_gateway.time.sleep", lambda _: None)
-    client = DeepSeekJsonClient(
+    monkeypatch.setattr("app.adapters.model.llm_gateway.time.sleep", lambda _: None)
+    client = LLMJsonClient(
         api_key="test-key",
+        base_url="https://llm.invalid/v1",
+        model="generic-model",
         max_attempts=2,
         client=httpx.Client(transport=httpx.MockTransport(handler)),
         recorder=FailingModelCallRecorder(),
@@ -234,8 +236,10 @@ def test_json_client_does_not_retry_success_when_recorder_fails(monkeypatch):
 
 
 def test_json_client_preserves_model_failure_when_recorder_fails():
-    client = DeepSeekJsonClient(
+    client = LLMJsonClient(
         api_key="test-key",
+        base_url="https://llm.invalid/v1",
+        model="generic-model",
         max_attempts=1,
         client=httpx.Client(
             transport=httpx.MockTransport(lambda _: httpx.Response(401))
@@ -243,7 +247,7 @@ def test_json_client_preserves_model_failure_when_recorder_fails():
         recorder=FailingModelCallRecorder(),
     )
 
-    with pytest.raises(DeepSeekModelError) as caught:
+    with pytest.raises(LLMModelError) as caught:
         client.request_json(
             system_prompt="system",
             payload={"blocks": ["material"]},
@@ -255,7 +259,7 @@ def test_json_client_preserves_model_failure_when_recorder_fails():
             ),
         )
 
-    assert caught.value.error_code == "deepseek_http_error"
+    assert caught.value.error_code == "llm_http_error"
 
 
 @pytest.mark.parametrize("status_code", [400, 401, 403])
@@ -267,14 +271,16 @@ def test_json_client_does_not_retry_permanent_http_errors(status_code, monkeypat
         request_count += 1
         return httpx.Response(status_code)
 
-    monkeypatch.setattr("app.adapters.model.deepseek_gateway.time.sleep", lambda _: None)
-    client = DeepSeekJsonClient(
+    monkeypatch.setattr("app.adapters.model.llm_gateway.time.sleep", lambda _: None)
+    client = LLMJsonClient(
         api_key="test-key",
+        base_url="https://llm.invalid/v1",
+        model="generic-model",
         max_attempts=4,
         client=httpx.Client(transport=httpx.MockTransport(handler)),
     )
 
-    with pytest.raises(DeepSeekModelError):
+    with pytest.raises(LLMModelError):
         client.request_json(
             system_prompt="system",
             payload={"blocks": ["material"]},
@@ -294,16 +300,16 @@ def test_json_client_does_not_retry_permanent_http_errors(status_code, monkeypat
 )
 def test_json_client_preserves_safe_failure_code(payload, error_code):
     recorder = RecordingModelCalls()
-    client = DeepSeekJsonClient(
+    client = LLMJsonClient(
         api_key="test-key",
-        base_url="https://deepseek.invalid/v1",
-        model="deepseek-v4-flash",
+        base_url="https://llm.invalid/v1",
+        model="generic-model",
         max_attempts=1,
         client=httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=payload))),
         recorder=recorder,
     )
 
-    with pytest.raises(DeepSeekModelError) as caught:
+    with pytest.raises(LLMModelError) as caught:
         client.request_json(
             system_prompt="system",
             payload={"secret": "material body must not be logged"},
@@ -331,9 +337,11 @@ def test_json_client_retries_transient_non_json_model_output(monkeypatch):
             ),
         ]
     )
-    monkeypatch.setattr("app.adapters.model.deepseek_gateway.time.sleep", lambda _: None)
-    client = DeepSeekJsonClient(
+    monkeypatch.setattr("app.adapters.model.llm_gateway.time.sleep", lambda _: None)
+    client = LLMJsonClient(
         api_key="test-key",
+        base_url="https://llm.invalid/v1",
+        model="generic-model",
         max_attempts=2,
         client=httpx.Client(transport=httpx.MockTransport(lambda _: next(responses))),
     )
@@ -349,10 +357,10 @@ def test_json_client_retries_transient_non_json_model_output(monkeypatch):
 
 def test_json_client_records_terminal_http_status_in_safe_details():
     recorder = RecordingModelCalls()
-    client = DeepSeekJsonClient(
+    client = LLMJsonClient(
         api_key="test-key",
-        base_url="https://deepseek.invalid/v1",
-        model="deepseek-v4-flash",
+        base_url="https://llm.invalid/v1",
+        model="generic-model",
         max_attempts=1,
         client=httpx.Client(
             transport=httpx.MockTransport(lambda _: httpx.Response(503, text="secret upstream body"))
@@ -360,7 +368,7 @@ def test_json_client_records_terminal_http_status_in_safe_details():
         recorder=recorder,
     )
 
-    with pytest.raises(DeepSeekModelError):
+    with pytest.raises(LLMModelError):
         client.request_json(
             system_prompt="system",
             payload={"blocks": ["material"]},
@@ -370,9 +378,9 @@ def test_json_client_records_terminal_http_status_in_safe_details():
 
     details = recorder.calls[0]["details"]
     assert details["final_http_status"] == 503
-    assert details["last_error_code"] == "deepseek_http_error"
+    assert details["last_error_code"] == "llm_http_error"
     assert details["attempts"] == [
-        {"attempt": 1, "http_status": 503, "error_code": "deepseek_http_error"}
+        {"attempt": 1, "http_status": 503, "error_code": "llm_http_error"}
     ]
     assert "secret upstream body" not in repr(details)
 
@@ -388,11 +396,11 @@ def test_json_client_success_retains_last_retry_error_code(monkeypatch):
         ]
     )
     recorder = RecordingModelCalls()
-    monkeypatch.setattr("app.adapters.model.deepseek_gateway.time.sleep", lambda _: None)
-    client = DeepSeekJsonClient(
+    monkeypatch.setattr("app.adapters.model.llm_gateway.time.sleep", lambda _: None)
+    client = LLMJsonClient(
         api_key="test-key",
-        base_url="https://deepseek.invalid/v1",
-        model="deepseek-v4-flash",
+        base_url="https://llm.invalid/v1",
+        model="generic-model",
         max_attempts=2,
         client=httpx.Client(transport=httpx.MockTransport(lambda _: next(responses))),
         recorder=recorder,
@@ -408,9 +416,9 @@ def test_json_client_success_retains_last_retry_error_code(monkeypatch):
     details = recorder.calls[0]["details"]
     assert details["retry_count"] == 1
     assert details["final_http_status"] == 200
-    assert details["last_error_code"] == "deepseek_http_error"
+    assert details["last_error_code"] == "llm_http_error"
     assert details["attempts"] == [
-        {"attempt": 1, "http_status": 503, "error_code": "deepseek_http_error"}
+        {"attempt": 1, "http_status": 503, "error_code": "llm_http_error"}
     ]
 
 
@@ -433,15 +441,17 @@ def test_json_client_terminal_transport_error_does_not_retain_prior_response_met
         return outcome
 
     recorder = RecordingModelCalls()
-    monkeypatch.setattr("app.adapters.model.deepseek_gateway.time.sleep", lambda _: None)
-    client = DeepSeekJsonClient(
+    monkeypatch.setattr("app.adapters.model.llm_gateway.time.sleep", lambda _: None)
+    client = LLMJsonClient(
         api_key="test-key",
+        base_url="https://llm.invalid/v1",
+        model="generic-model",
         max_attempts=2,
         client=httpx.Client(transport=httpx.MockTransport(handler)),
         recorder=recorder,
     )
 
-    with pytest.raises(DeepSeekModelError):
+    with pytest.raises(LLMModelError):
         client.request_json(
             system_prompt="system",
             payload={"blocks": ["material"]},
@@ -463,10 +473,10 @@ def test_json_client_terminal_transport_error_does_not_retain_prior_response_met
 
 def test_semantic_schema_failure_records_one_final_failed_model_call():
     recorder = RecordingModelCalls()
-    client = DeepSeekJsonClient(
+    client = LLMJsonClient(
         api_key="test-key",
-        base_url="https://deepseek.invalid/v1",
-        model="deepseek-v4-flash",
+        base_url="https://llm.invalid/v1",
+        model="generic-model",
         max_attempts=1,
         client=httpx.Client(
             transport=httpx.MockTransport(
@@ -480,8 +490,8 @@ def test_semantic_schema_failure_records_one_final_failed_model_call():
         recorder=recorder,
     )
 
-    with pytest.raises(DeepSeekModelError) as caught:
-        DeepSeekSyllabusExtractor(client).extract_assessment(
+    with pytest.raises(LLMModelError) as caught:
+        LLMSyllabusExtractor(client).extract_assessment(
             ["期末考试"],
             call_context=ModelCallContext(
                 course_id="course",
@@ -500,8 +510,10 @@ def test_semantic_schema_failure_records_one_final_failed_model_call():
 
 def test_json_client_redacts_arbitrary_validator_failure_from_persisted_metadata():
     recorder = RecordingModelCalls()
-    client = DeepSeekJsonClient(
+    client = LLMJsonClient(
         api_key="test-key",
+        base_url="https://llm.invalid/v1",
+        model="generic-model",
         max_attempts=1,
         client=httpx.Client(
             transport=httpx.MockTransport(
@@ -515,7 +527,7 @@ def test_json_client_redacts_arbitrary_validator_failure_from_persisted_metadata
     )
 
     def reject_response(_: dict) -> None:
-        raise DeepSeekModelError(
+        raise LLMModelError(
             "validator_custom_failure",
             "SECRET validator message",
             details={
@@ -525,7 +537,7 @@ def test_json_client_redacts_arbitrary_validator_failure_from_persisted_metadata
             },
         )
 
-    with pytest.raises(DeepSeekModelError):
+    with pytest.raises(LLMModelError):
         client.request_json(
             system_prompt="system",
             payload={"blocks": ["material"]},
@@ -548,7 +560,7 @@ def test_json_client_redacts_arbitrary_validator_failure_from_persisted_metadata
 
 def test_schema_validation_details_sanitize_every_field_path():
     details = _sanitized_validation_details(
-        DeepSeekModelError(
+        LLMModelError(
             "model_schema_validation_failed",
             "schema failed",
             details={
@@ -604,7 +616,7 @@ def test_syllabus_extractor_requires_final_exam_points_and_sends_only_supplied_o
             }
         ]
     )
-    extractor = DeepSeekSyllabusExtractor(client)
+    extractor = LLMSyllabusExtractor(client)
 
     result = extractor.extract_assessment(
         ["课程封面", "平时成绩30%", "期末考试：RAG占100%"],
@@ -638,7 +650,7 @@ def test_syllabus_extractor_validates_teaching_topic_schema():
         ]
     )
 
-    topics = DeepSeekSyllabusExtractor(client).extract_teaching(["教学内容与要求"])
+    topics = LLMSyllabusExtractor(client).extract_teaching(["教学内容与要求"])
 
     assert topics[0].key == "rag-teaching"
     assert "行政内容" in client.recorded_payloads[0]["system"]
@@ -681,7 +693,7 @@ def test_syllabus_extractor_normalizes_single_requirement_and_compact_anchor():
             },
         ]
     )
-    extractor = DeepSeekSyllabusExtractor(client)
+    extractor = LLMSyllabusExtractor(client)
 
     assessment = extractor.extract_assessment(["期末考试"])
     teaching = extractor.extract_teaching(["教学内容与要求"])
@@ -726,7 +738,7 @@ def test_syllabus_extractor_normalizes_percent_weight_and_drops_extra_anchor_fie
         ]
     )
 
-    result = DeepSeekSyllabusExtractor(client).extract_assessment(["期末考试"])
+    result = LLMSyllabusExtractor(client).extract_assessment(["期末考试"])
 
     assert result.anchors[0].exam_weight == 5
     assert "source_heading" not in result.anchors[0].model_dump()
@@ -743,8 +755,8 @@ def test_syllabus_extractor_still_rejects_anchor_missing_required_key():
         ]
     )
 
-    with pytest.raises(DeepSeekModelError) as caught:
-        DeepSeekSyllabusExtractor(client).extract_assessment(["期末考试"])
+    with pytest.raises(LLMModelError) as caught:
+        LLMSyllabusExtractor(client).extract_assessment(["期末考试"])
 
     assert caught.value.error_code == "model_schema_validation_failed"
 
@@ -766,8 +778,8 @@ def test_syllabus_extractor_rejects_unknown_teaching_topic_fields():
         ]
     )
 
-    with pytest.raises(DeepSeekModelError) as caught:
-        DeepSeekSyllabusExtractor(client).extract_teaching(["教学内容与要求"])
+    with pytest.raises(LLMModelError) as caught:
+        LLMSyllabusExtractor(client).extract_teaching(["教学内容与要求"])
 
     assert caught.value.error_code == "model_schema_validation_failed"
 
@@ -802,7 +814,7 @@ def test_assessment_response_requires_strict_exam_point_fields(point_override):
         point.pop(key)
     else:
         point[key] = value
-    extractor = DeepSeekSyllabusExtractor(
+    extractor = LLMSyllabusExtractor(
         RecordingJsonClient(
             [
                 {
@@ -821,7 +833,7 @@ def test_assessment_response_requires_strict_exam_point_fields(point_override):
         )
     )
 
-    with pytest.raises(DeepSeekModelError) as caught:
+    with pytest.raises(LLMModelError) as caught:
         extractor.extract_assessment(["期末考试"])
 
     assert caught.value.error_code == "model_schema_validation_failed"
@@ -851,8 +863,8 @@ def test_database_model_call_recorder_persists_only_redacted_metadata(tmp_path):
                 framework_build_run_id="run",
                 stage="assessment_syllabus_extraction",
             ),
-            provider="deepseek",
-            model="deepseek-v4-flash",
+            provider="llm",
+            model="generic-model",
             status="failed",
             prompt_hash="a" * 64,
             input_tokens=10,
@@ -904,8 +916,8 @@ def test_database_model_call_recorder_does_not_commit_callers_pending_transactio
         owner.display_name = "Pending change"
         DatabaseModelCallRecorder(factory).record(
             context=ModelCallContext(course_id="course", framework_build_run_id="run", stage="assessment"),
-            provider="deepseek",
-            model="deepseek-v4-flash",
+            provider="llm",
+            model="generic-model",
             status="succeeded",
             prompt_hash="a" * 64,
             input_tokens=1,
@@ -936,7 +948,7 @@ def test_material_classifier_sends_exam_points_and_one_file_with_locators():
             }
         ]
     )
-    classifier = DeepSeekExamPointEvidenceClassifier(client)
+    classifier = LLMExamPointEvidenceClassifier(client)
     chunk = StagingChunk(
         id="e1",
         material_version_id="material-v1",
@@ -986,7 +998,7 @@ def test_material_classifier_normalizes_provider_aliases_for_non_direct_evidence
         ]
     )
 
-    result = DeepSeekExamPointEvidenceClassifier(client).classify_file(
+    result = LLMExamPointEvidenceClassifier(client).classify_file(
         exam_points=[_point()],
         material_version_id="material-v1",
         chunks=[StagingChunk(id="e1", material_version_id="material-v1", content="封面")],
@@ -1000,7 +1012,7 @@ def test_material_classifier_normalizes_provider_aliases_for_non_direct_evidence
 def test_classifier_rejects_evidence_from_another_pair():
     bad = _decision()
     bad["evidence_chunk_id"] = "outside"
-    classifier = DeepSeekExamPointEvidenceClassifier(
+    classifier = LLMExamPointEvidenceClassifier(
         RecordingJsonClient(
             [
                 {
@@ -1016,7 +1028,7 @@ def test_classifier_rejects_evidence_from_another_pair():
         )
     )
 
-    with pytest.raises(DeepSeekModelError) as caught:
+    with pytest.raises(LLMModelError) as caught:
         classifier.classify_file(
             exam_points=[_point()],
             material_version_id="material-v1",
@@ -1057,7 +1069,7 @@ def test_consolidator_receives_only_one_point_admitted_decisions_and_keeps_sourc
             }
         ]
     )
-    consolidator = DeepSeekExamPointKnowledgeConsolidator(client)
+    consolidator = LLMExamPointKnowledgeConsolidator(client)
     decision = EvidenceDecision.model_validate(_decision())
     chunks_by_id = {
         "e1": StagingChunk(
@@ -1104,9 +1116,9 @@ def test_consolidator_rejects_fact_without_direct_evidence_coverage():
             }
         ]
     )
-    consolidator = DeepSeekExamPointKnowledgeConsolidator(client)
+    consolidator = LLMExamPointKnowledgeConsolidator(client)
 
-    with pytest.raises(DeepSeekModelError) as caught:
+    with pytest.raises(LLMModelError) as caught:
         consolidator.consolidate(
             exam_point=_point(),
             admitted_decisions=[EvidenceDecision.model_validate(_decision())],
@@ -1146,7 +1158,7 @@ def test_consolidator_prunes_direct_id_not_supporting_card_facts():
     e2_decision = EvidenceDecision.model_validate(
         _decision(support_claim="图库可视化用于呈现推理链")
     )
-    consolidator = DeepSeekExamPointKnowledgeConsolidator(client)
+    consolidator = LLMExamPointKnowledgeConsolidator(client)
 
     units = consolidator.consolidate(
         exam_point=_point(),
@@ -1195,7 +1207,7 @@ def test_consolidator_accepts_owner_qualified_fact_wrapping_direct_evidence():
         _decision(support_claim="eval_batch_size参数用于控制评测批大小")
     )
 
-    units = DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+    units = LLMExamPointKnowledgeConsolidator(client).consolidate(
         exam_point=_point(),
         admitted_decisions=[decision],
         chunks_by_id={
@@ -1239,8 +1251,8 @@ def test_consolidator_still_rejects_fabricated_owner_fact():
         _decision(support_claim="eval_batch_size参数用于控制评测批大小")
     )
 
-    with pytest.raises(DeepSeekModelError) as caught:
-        DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+    with pytest.raises(LLMModelError) as caught:
+        LLMExamPointKnowledgeConsolidator(client).consolidate(
             exam_point=_point(),
             admitted_decisions=[decision],
             chunks_by_id={
@@ -1279,8 +1291,8 @@ def test_consolidator_rejects_case_narrative_fact_bound_to_experiment_run():
         _decision(support_claim="上一轮训练中出现思考与非思考模式数据分布不均衡")
     )
 
-    with pytest.raises(DeepSeekModelError) as caught:
-        DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+    with pytest.raises(LLMModelError) as caught:
+        LLMExamPointKnowledgeConsolidator(client).consolidate(
             exam_point=_point(),
             admitted_decisions=[decision],
             chunks_by_id={
@@ -1308,8 +1320,8 @@ def test_consolidator_rejects_active_unit_without_knowledge_cards():
         ]
     )
 
-    with pytest.raises(DeepSeekModelError) as caught:
-        DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+    with pytest.raises(LLMModelError) as caught:
+        LLMExamPointKnowledgeConsolidator(client).consolidate(
             exam_point=_point(),
             admitted_decisions=[EvidenceDecision.model_validate(_decision())],
             chunks_by_id={
@@ -1341,8 +1353,8 @@ def test_consolidator_rejects_active_card_with_empty_assessable_content():
         ]
     )
 
-    with pytest.raises(DeepSeekModelError) as caught:
-        DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+    with pytest.raises(LLMModelError) as caught:
+        LLMExamPointKnowledgeConsolidator(client).consolidate(
             exam_point=_point(),
             admitted_decisions=[EvidenceDecision.model_validate(_decision())],
             chunks_by_id={
@@ -1382,7 +1394,7 @@ def test_consolidator_flattens_nested_assessment_units_and_evidence_aliases():
         ]
     )
 
-    units = DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+    units = LLMExamPointKnowledgeConsolidator(client).consolidate(
         exam_point=_point(),
         admitted_decisions=[EvidenceDecision.model_validate(_decision())],
         chunks_by_id={
@@ -1418,7 +1430,7 @@ def test_consolidator_normalizes_content_and_evidence_aliases_on_flat_cards():
         ]
     )
 
-    units = DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+    units = LLMExamPointKnowledgeConsolidator(client).consolidate(
         exam_point=_point(),
         admitted_decisions=[EvidenceDecision.model_validate(_decision())],
         chunks_by_id={
@@ -1453,7 +1465,7 @@ def test_consolidator_drops_empty_card_but_keeps_valid_cards():
         ]
     )
 
-    units = DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+    units = LLMExamPointKnowledgeConsolidator(client).consolidate(
         exam_point=_point(),
         admitted_decisions=[EvidenceDecision.model_validate(_decision())],
         chunks_by_id={
@@ -1489,9 +1501,10 @@ def test_json_client_parses_json_object_embedded_in_code_fence():
         )
 
     http_client = httpx.Client(transport=httpx.MockTransport(handler))
-    client = DeepSeekJsonClient(
+    client = LLMJsonClient(
         api_key="test-key",
-        base_url="https://deepseek.invalid/v1",
+        base_url="https://llm.invalid/v1",
+        model="generic-model",
         client=http_client,
     )
 
@@ -1552,7 +1565,7 @@ def test_consolidator_filters_operational_detail_supporting_before_model_and_val
         ),
     }
 
-    units = DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+    units = LLMExamPointKnowledgeConsolidator(client).consolidate(
         exam_point=_point(),
         admitted_decisions=[direct, op_supporting],
         chunks_by_id=chunks_by_id,
@@ -1591,7 +1604,7 @@ def test_consolidator_keeps_operational_detail_direct_as_assessable():
             }
         ]
     )
-    units = DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+    units = LLMExamPointKnowledgeConsolidator(client).consolidate(
         exam_point=_point(),
         admitted_decisions=[op_direct],
         chunks_by_id={
@@ -1631,7 +1644,7 @@ def test_consolidator_drops_hallucinated_id_but_keeps_card_with_valid_refs():
             }
         ]
     )
-    units = DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+    units = LLMExamPointKnowledgeConsolidator(client).consolidate(
         exam_point=_point(),
         admitted_decisions=[direct],
         chunks_by_id={
@@ -1669,8 +1682,8 @@ def test_consolidator_rejects_card_with_only_hallucinated_ids():
             }
         ]
     )
-    with pytest.raises(DeepSeekModelError) as excinfo:
-        DeepSeekExamPointKnowledgeConsolidator(client).consolidate(
+    with pytest.raises(LLMModelError) as excinfo:
+        LLMExamPointKnowledgeConsolidator(client).consolidate(
             exam_point=_point(),
             admitted_decisions=[direct],
             chunks_by_id={

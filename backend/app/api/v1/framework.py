@@ -9,8 +9,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
-from app.adapters.model.deepseek_gateway import DeepSeekJsonClient
-from app.adapters.model.deepseek_semantic_extractors import DeepSeekSyllabusExtractor
+from app.adapters.model.llm_gateway import LLMJsonClient
+from app.adapters.model.llm_semantic_extractors import LLMSyllabusExtractor
 from app.config import settings
 from app.db.session import get_session
 from app.db.session import get_session_factory
@@ -38,28 +38,28 @@ def get_syllabus_extractor(request: Request) -> SyllabusExtractor:
         extractor = getattr(request.app.state, "syllabus_extractor", None)
         if extractor is not None:
             return extractor
-        if not _deepseek_configured():
+        if not _llm_configured():
             raise HTTPException(status_code=503, detail="syllabus semantic extractor is not configured")
-        client = DeepSeekJsonClient(
-            api_key=settings.deepseek_api_key,
-            base_url=settings.deepseek_base_url,
-            model=settings.deepseek_model,
-            disable_thinking=settings.deepseek_disable_thinking,
+        client = LLMJsonClient(
+            api_key=settings.llm_api_key,
+            base_url=settings.llm_base_url,
+            model=settings.llm_model,
+            disable_thinking=settings.llm_disable_thinking,
             timeout=settings.framework_model_timeout,
             recorder=DatabaseModelCallRecorder(get_session_factory()),
         )
-        extractor = DeepSeekSyllabusExtractor(client)
+        extractor = LLMSyllabusExtractor(client)
         request.app.state.syllabus_extractor = extractor
         return extractor
 
 
-def _deepseek_configured() -> bool:
+def _llm_configured() -> bool:
     return all(
         value.strip()
         for value in (
-            settings.deepseek_api_key,
-            settings.deepseek_base_url,
-            settings.deepseek_model,
+            settings.llm_api_key,
+            settings.llm_base_url,
+            settings.llm_model,
         )
     )
 

@@ -8,7 +8,7 @@ export interface HealthResponse {
   postgresql: string;
   redis: string;
   mineru: string;
-  deepseek: string;
+  llm: string;
 }
 
 // ── Auth ──

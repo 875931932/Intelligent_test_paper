@@ -68,7 +68,14 @@ def health_payload() -> dict:
         "postgresql": _database_status(),
         "redis": _redis_status(),
         "mineru": "configured" if _configured(settings.mineru_api_token) else "not_configured",
-        "deepseek": "configured" if _configured(settings.deepseek_api_key) else "not_configured",
+        # LLM 需要 api_key + base_url + model 三项齐全才算 configured：网关构造期
+        # 对三者都做非空校验，只报 key 会把"缺端点/缺模型名"藏成 configured。
+        "llm": "configured"
+        if all(
+            _configured(value)
+            for value in (settings.llm_api_key, settings.llm_base_url, settings.llm_model)
+        )
+        else "not_configured",
     }
 
 

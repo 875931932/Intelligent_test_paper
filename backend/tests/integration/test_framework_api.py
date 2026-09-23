@@ -20,7 +20,7 @@ from app.db.schema import (
     parser_profiles,
 )
 from app.db.session import get_session
-from app.adapters.model.deepseek_semantic_extractors import DeepSeekSyllabusExtractor
+from app.adapters.model.llm_semantic_extractors import LLMSyllabusExtractor
 from app.config import settings
 from app.domain.framework.exam_points import ExamPoint, OperationalDetailPolicy, WeightSource
 from app.domain.framework.models import AssessmentAnchor, AssessmentOutline, TeachingTopic
@@ -333,7 +333,7 @@ def test_teaching_depth_conflicts_are_advisory_and_do_not_block_publish(tmp_path
         engine.dispose()
 
 
-@pytest.mark.parametrize("missing_setting", ["deepseek_api_key", "deepseek_base_url", "deepseek_model"])
+@pytest.mark.parametrize("missing_setting", ["llm_api_key", "llm_base_url", "llm_model"])
 def test_framework_build_requires_configured_semantic_extractor(tmp_path, monkeypatch, missing_setting):
     engine = create_engine(f"sqlite:///{tmp_path / 'framework-no-model.db'}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
@@ -343,9 +343,9 @@ def test_framework_build_requires_configured_semantic_extractor(tmp_path, monkey
             yield session
 
     app.dependency_overrides[get_session] = session_override
-    monkeypatch.setattr(settings, "deepseek_api_key", "configured-test-key")
-    monkeypatch.setattr(settings, "deepseek_base_url", "https://deepseek.invalid/v1")
-    monkeypatch.setattr(settings, "deepseek_model", "deepseek-v4-flash")
+    monkeypatch.setattr(settings, "llm_api_key", "configured-test-key")
+    monkeypatch.setattr(settings, "llm_base_url", "https://llm.invalid/v1")
+    monkeypatch.setattr(settings, "llm_model", "generic-model")
     monkeypatch.setattr(settings, missing_setting, "")
     if hasattr(app.state, "syllabus_extractor"):
         del app.state.syllabus_extractor
@@ -365,7 +365,7 @@ def test_framework_build_requires_configured_semantic_extractor(tmp_path, monkey
         engine.dispose()
 
 
-def test_framework_dependency_lazily_builds_deepseek_extractor(tmp_path, monkeypatch):
+def test_framework_dependency_lazily_builds_llm_extractor(tmp_path, monkeypatch):
     engine = create_engine(
         f"sqlite:///{tmp_path / 'framework-lazy-model.db'}",
         connect_args={"check_same_thread": False},
@@ -377,9 +377,9 @@ def test_framework_dependency_lazily_builds_deepseek_extractor(tmp_path, monkeyp
             yield session
 
     app.dependency_overrides[get_session] = session_override
-    monkeypatch.setattr(settings, "deepseek_api_key", "configured-test-key")
-    monkeypatch.setattr(settings, "deepseek_base_url", "https://deepseek.invalid/v1")
-    monkeypatch.setattr(settings, "deepseek_model", "deepseek-v4-flash")
+    monkeypatch.setattr(settings, "llm_api_key", "configured-test-key")
+    monkeypatch.setattr(settings, "llm_base_url", "https://llm.invalid/v1")
+    monkeypatch.setattr(settings, "llm_model", "generic-model")
     if hasattr(app.state, "syllabus_extractor"):
         del app.state.syllabus_extractor
     try:
@@ -392,7 +392,7 @@ def test_framework_dependency_lazily_builds_deepseek_extractor(tmp_path, monkeyp
                 },
             )
         assert response.status_code == 404
-        assert isinstance(app.state.syllabus_extractor, DeepSeekSyllabusExtractor)
+        assert isinstance(app.state.syllabus_extractor, LLMSyllabusExtractor)
     finally:
         app.dependency_overrides.clear()
         if hasattr(app.state, "syllabus_extractor"):

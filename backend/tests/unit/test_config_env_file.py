@@ -2,7 +2,7 @@
 
 背景（2026-09 402 事故）：`Settings` 原来写死相对路径 `env_file=".env"`，而
 pydantic-settings 按进程 CWD 解析它。按文档在 `backend/` 里手工启动 Celery worker
-时，仓库根的 `.env` 一次都没被读到，`deepseek_base_url` 回落到代码默认值
+时，仓库根的 `.env` 一次都没被读到，`llm_base_url` 回落到代码默认值
 `https://api.stepfun.com/v1`——一个能连通但账号无额度的端点，于是"框架/知识目录
 都正常，唯独生成试卷永远 402 quota_exceeded"。改成从 `__file__` 向上查找后，
 本文件锁定新行为，防止有人再把相对路径写回来。
@@ -63,17 +63,17 @@ def test_settings_honours_an_explicit_env_file_path(tmp_path, monkeypatch):
 
     env = tmp_path / ".env"
     env.write_text(
-        "DEEPSEEK_BASE_URL=https://env-file.example/v1\nDEEPSEEK_MODEL=env-file-model\n",
+        "LLM_BASE_URL=https://env-file.example/v1\nLLM_MODEL=env-file-model\n",
         encoding="utf-8",
     )
-    # 环境变量优先级高于 .env；不清掉的话本机导出的 DEEPSEEK_* 会盖住文件内容，
+    # 环境变量优先级高于 .env；不清掉的话本机导出的 LLM_* 会盖住文件内容，
     # 这条用例就退化成了"什么也没验"。
-    for name in ("DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL"):
+    for name in ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setitem(Settings.model_config, "env_file", str(env))
     configured = Settings()
-    assert configured.deepseek_base_url == "https://env-file.example/v1"
-    assert configured.deepseek_model == "env-file-model"
+    assert configured.llm_base_url == "https://env-file.example/v1"
+    assert configured.llm_model == "env-file-model"
 
 
 def test_import_time_env_file_matches_resolver(tmp_path, monkeypatch):
@@ -92,7 +92,7 @@ def test_repo_root_env_is_used_when_present(monkeypatch):
     """
 
     # 模拟"在 backend/ 目录里启动 worker"：清掉环境变量，只留 .env 兜底
-    for name in list(("DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "DEEPSEEK_MODEL")):
+    for name in list(("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL")):
         monkeypatch.delenv(name, raising=False)
 
     resolved = _resolve_env_file()
@@ -101,4 +101,4 @@ def test_repo_root_env_is_used_when_present(monkeypatch):
 
     # 并且这是一份"有内容"的 .env：缺了 key 时后续会在使用处明确失败，而不是
     # 静默用一个能连通却无额度的默认端点（402 的根因）。
-    assert "DEEPSEEK_BASE_URL" in ROOT_ENV.read_text(encoding="utf-8")
+    assert "LLM_BASE_URL" in ROOT_ENV.read_text(encoding="utf-8")

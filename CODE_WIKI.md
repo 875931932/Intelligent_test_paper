@@ -43,7 +43,7 @@ f:\比赛项目\阅卷出题功能/
 | **Boto3** | >=1.35 | S3 /MinIO 对象存储 |
 | **Httpx** | >=0.27 | HTTP 客户端（调用外部服务） |
 | **MinerU** | - | 文档解析服务（教学大纲解析） |
-| **DeepSeek** | mimo-v2.5-pro | 大模型 API（语义提取、命题生成） |
+| **LLM** | step-3.7-flash | 大模型 API（语义提取、命题生成） |
 | **Embedding** | qwen3.7-text-embedding | 文本向量化（知识图谱构建） |
 
 **依赖文件**：[backend/pyproject.toml](backend/pyproject.toml)
@@ -102,7 +102,7 @@ f:\比赛项目\阅卷出题功能/
          ▼                     ▼                     ▼
 ┌───────────────┐     ┌───────────────┐     ┌───────────────┐
 │  LangGraph    │     │  数据库层      │     │  外部服务      │
-│  工作流引擎    │     │ (PostgreSQL)  │     │ (MinerU/DeepSeek)│
+│  工作流引擎    │     │ (PostgreSQL)  │     │ (MinerU/LLM)│
 │               │     │               │     │               │
 │ • Framework   │     │ • 课程隔离     │     │ • 文档解析     │
 │   Graph       │     │ • 多租户      │     │ • LLM 推理    │
@@ -467,7 +467,7 @@ app.include_router(paper_versions_router)    # /api/v1/courses/{course_id}/paper
 | POST | `/api/v1/courses/{course_id}/blueprints/allocate` | 分配试卷蓝图 |
 | POST | `/api/v1/courses/{course_id}/blueprints/confirm` | 确认蓝图 |
 | POST | `/api/v1/courses/{course_id}/generation-runs` | 创建试卷生成任务 |
-| GET | `/api/v1/health` | 健康检查（PostgreSQL、Redis、MinerU、DeepSeek） |
+| GET | `/api/v1/health` | 健康检查（PostgreSQL、Redis、MinerU、LLM） |
 
 ---
 
@@ -555,16 +555,16 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract
 
 ### 8.1 模型适配器
 
-**DeepSeek Gateway**：[backend/app/adapters/model/deepseek_gateway.py](backend/app/adapters/model/deepseek_gateway.py)
+**LLM Gateway**：[backend/app/adapters/model/llm_gateway.py](backend/app/adapters/model/llm_gateway.py)
 
 ```python
-class DeepSeekJsonClient:
+class LLMJsonClient:
     """OpenAI 兼容的严格 JSON 客户端"""
     def __init__(self, api_key, base_url, model, recorder=None)
     def generate(self, messages, *, response_format=None, temperature=0) -> dict
     def generate_batch(self, prompts, **kwargs) -> list[dict]
 
-class DeepSeekGateway:
+class LLMGateway:
     """高层 LLM 包装器，提供批量生成能力"""
     def generate_batch(self, prompts, **kwargs) -> list[dict]
 ```
@@ -575,10 +575,10 @@ class DeepSeekGateway:
 - 模型调用记录（DatabaseModelCallRecorder）
 - 可观测性（trace_id 追踪）
 
-**语义提取器**：[backend/app/adapters/model/deepseek_semantic_extractors.py](backend/app/adapters/model/deepseek_semantic_extractors.py)
+**语义提取器**：[backend/app/adapters/model/llm_semantic_extractors.py](backend/app/adapters/model/llm_semantic_extractors.py)
 
 ```python
-class DeepSeekSyllabusExtractor:
+class LLMSyllabusExtractor:
     """教学大纲/考核大纲语义提取器"""
     def extract_teaching(self, blocks, call_context) -> list[TeachingTopic]
     def extract_assessment(self, blocks, call_context) -> AssessmentOutline   # 含考试规则
@@ -852,15 +852,15 @@ class Settings(BaseSettings):
     mineru_poll_interval_seconds: int = 10
     mineru_max_poll_seconds: int = 1800
 
-    # DeepSeek 配置
-    deepseek_api_key: str = ""
-    deepseek_base_url: str = "https://api.xiaomimimo.com/v1"
-    deepseek_model: str = "mimo-v2.5-pro"
+    # LLM 配置（唯一来源 .env，无代码默认端点/模型名）
+    llm_api_key: str = ""
+    llm_base_url: str = ""
+    llm_model: str = ""
 
     # Embedding 配置
-    embedding_base_url: str = "https://api.openai.com/v1"
+    embedding_base_url: str = ""
     embedding_api_key: str = ""
-    embedding_model: str = "qwen3.7-text-embedding"
+    embedding_model: str = ""
     embedding_api_format: str = "openai"
 
     # 组织/检索配置
@@ -890,10 +890,10 @@ DATABASE_URL=postgresql+psycopg://exam:exam@localhost:5432/exam
 # Redis
 REDIS_URL=redis://localhost:6379/0
 
-# 大模型
-DEEPSEEK_API_KEY=your-api-key
-DEEPSEEK_BASE_URL=https://api.xiaomimimo.com/v1
-DEEPSEEK_MODEL=mimo-v2.5-pro
+# 大模型（必填：缺任一项网关构造即失败，health 报 not_configured）
+LLM_API_KEY=your-api-key
+LLM_BASE_URL=https://api.stepfun.com/step_plan/v1
+LLM_MODEL=step-3.7-flash
 
 # Embedding
 EMBEDDING_API_KEY=your-embedding-key
@@ -957,7 +957,7 @@ app/
 │   └── model_calls.py
 │
 ├── adapters/
-│   ├── model/     → deepseek_gateway, deepseek_semantic_extractors, embedding_gateway
+│   ├── model/     → llm_gateway, llm_semantic_extractors, embedding_gateway
 │   ├── document/  → mineru_client, local_text_parser, protocol
 │   └── storage/   → minio_storage, local_storage
 │
@@ -1059,7 +1059,7 @@ curl http://localhost:8000/api/v1/health
   "postgresql": "ok",
   "redis": "ok",
   "mineru": "configured",
-  "deepseek": "configured"
+  "llm": "configured"
 }
 ```
 
@@ -1122,7 +1122,7 @@ Nginx 配置模板见 `deploy/nginx.conf.example`，详细步骤见
 | `answer_option_keys` | generation_service.py | 答案解析成选项字母 |
 | `validate_generated_question` | generation_service.py | 单题质量门禁 |
 | `BlueprintRequest` | blueprint/models.py | 蓝图请求 |
-| `DeepSeekJsonClient` | adapters/model/deepseek_gateway.py | LLM 客户端 |
+| `LLMJsonClient` | adapters/model/llm_gateway.py | LLM 客户端 |
 | `DatabaseFrameworkRepository` | services/framework_service.py | 框架仓库 |
 
 ### 14.2 前端核心组件

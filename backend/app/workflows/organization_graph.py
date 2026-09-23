@@ -13,8 +13,8 @@ from langgraph.errors import GraphInterrupt
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 
-from app.adapters.model.deepseek_gateway import DeepSeekModelError
-from app.adapters.model.deepseek_semantic_extractors import (
+from app.adapters.model.llm_gateway import LLMModelError
+from app.adapters.model.llm_semantic_extractors import (
     validate_consolidated_units,
 )
 from app.config import settings
@@ -50,7 +50,7 @@ log = logging.getLogger("organization")
 # 分类单次调用可稳定覆盖的 (考点, chunk) 对数上限；超过则拆批，避免模型
 # 输出规模违规，同时杜绝“每考点一次调用”带来的重复 chunk 传递与 token 爆炸。
 _CLASSIFY_MAX_PAIRS_PER_CALL = 40
-# 分类单次调用允许的最大去重 chunk 数。按 MiMo 输入额度与 chunk 平均长度
+# 分类单次调用允许的最大去重 chunk 数。按输入 token 额度与 chunk 平均长度
 # 综合估算：每 chunk 300-800 token，60 个 chunk 对应的 prompt 通常可控在
 # 25k token 以内，避免单次分类调用输入超过 20 万 token。
 _CLASSIFY_MAX_CHUNKS_PER_CALL = 60
@@ -296,7 +296,7 @@ def build_organization_graph(
                     ),
                     max_tokens=max_tokens,
                 )
-            except DeepSeekModelError as exc:
+            except LLMModelError as exc:
                 if exc.error_code in _EXTRACTION_SPLITTABLE_ERRORS and len(chunks) > 1:
                     mid = len(chunks) // 2
                     log.info(

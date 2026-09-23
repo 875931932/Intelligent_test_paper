@@ -119,7 +119,7 @@ def test_worker_failure_surfaces_real_exception_instead_of_generic_text(session,
     monkeypatch.setattr("app.infrastructure.tasks.worker.get_session_factory", lambda: lambda: session)
 
     def boom_handler(_context):
-        raise AttributeError("'Settings' object has no attribute 'deepseek_generation_disable_thinking'")
+        raise AttributeError("'Settings' object has no attribute 'llm_generation_disable_thinking'")
 
     register_task_handler("unit.boom", boom_handler)
 
@@ -128,7 +128,7 @@ def test_worker_failure_surfaces_real_exception_instead_of_generic_text(session,
     assert row["status"] == "failed"
     assert row["error_code"] == "handler_error"
     assert row["error_message"].startswith("task handler failed:")
-    assert "deepseek_generation_disable_thinking" in row["error_message"]
+    assert "llm_generation_disable_thinking" in row["error_message"]
 
 
 def test_worker_failure_prefers_persisted_run_error(session, monkeypatch):

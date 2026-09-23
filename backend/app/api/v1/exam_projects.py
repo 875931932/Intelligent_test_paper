@@ -449,9 +449,9 @@ def generate(
     _get_project_or_404(session, course_id=course_id, project_id=project_id)
     mock_graph = bool(body.mock_graph) if body is not None else False
     if not mock_graph and not all(value.strip() for value in (
-        settings.deepseek_api_key,
-        settings.deepseek_base_url,
-        settings.deepseek_model,
+        settings.llm_api_key,
+        settings.llm_base_url,
+        settings.llm_model,
     )):
         raise HTTPException(status_code=503, detail="LLM model is not configured")
 
