@@ -235,6 +235,7 @@ def compile_batch_generation_payload(
         ))
     instruction = (
         f"为本批 {len(specs)} 道题目一次性命题，返回 JSON 对象（顶层字段 questions 为数组），数组每个元素必须含 item_index 字段及对应 output_schema 要求的全部字段。"
+        "这些字段必须平铺在元素顶层（与 item_index 同级），不得嵌套进 output_schema 键内。"
         "同批各题考查视角必须互补：题型与认知层级已指定，不得从同一角度重复考查同一内容。"
         "每题的 card_name 是该知识卡的概念语境：题干涉及参数、命令或工具特性时，"
         "必须写清其归属（哪个框架/工具/流程的参数），使题干脱离语境仍可独立理解，不得出现无主语的参数或命令。"

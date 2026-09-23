@@ -1,4 +1,6 @@
 """create_paper_version_from_generation：缺题干/缺答案的题不得写入试卷。"""
+import json
+
 from sqlalchemy.dialects import postgresql as postgresql_dialect
 
 from app.services.paper_version_service import (
@@ -43,9 +45,14 @@ class _FakeSession:
         sql = str(statement)
         upper = sql.upper()
         if upper.startswith("INSERT INTO PAPER_VERSIONS"):
-            # Insert.values(metadata=...) 的值在 compile 后的 params 里（需指定 dialect）
+            # Insert.values(metadata=...) 的值在 compile 后的 params 里（需指定 dialect）。
+            # 必须深拷贝模拟真实 JSON 序列化：JSON 列在 execute 那一刻就把值定格，
+            # 之后再 append 不会回写。按引用捕获会让"先插行后收集"的实现也测试通过，
+            # 恰好把 metadata 永远为空的 bug 测没了。
             compiled = statement.compile(dialect=postgresql_dialect.dialect())
-            self.paper_version_metadata = compiled.params.get("metadata")
+            self.paper_version_metadata = json.loads(
+                json.dumps(compiled.params.get("metadata"), ensure_ascii=False, default=str)
+            )
             return _FakeResult([])
         if upper.startswith("INSERT INTO PAPER_ITEMS"):
             self.inserted_paper_items = list(args[0]) if args else []
@@ -127,3 +134,23 @@ def test_all_usable_questions_have_empty_dropped_slots():
     )
     assert [r["display_order"] for r in session.inserted_paper_items] == [1, 2]
     assert session.paper_version_metadata["dropped_slots"] == []
+
+
+def test_question_without_generated_question_row_is_recorded_as_gap():
+    # gq 行缺失曾经静默 continue：题位既不落卷也不留痕，是最难查的一种少题。
+    session = _FakeSession([])
+
+    create_paper_version_from_generation(
+        session,
+        course_id="c1",
+        project_id="p1",
+        generation_run_id="run1",
+        questions_list=[
+            {"plan_item_id": "pi1", "item_index": 1, "quality": {"status": "pass"}},
+        ],
+    )
+
+    assert session.inserted_paper_items == []
+    dropped = session.paper_version_metadata["dropped_slots"]
+    assert [d["reason"] for d in dropped] == ["missing_generated_question"]
+    assert dropped[0]["item_index"] == 1

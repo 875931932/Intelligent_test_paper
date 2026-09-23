@@ -245,24 +245,11 @@ def create_paper_version_from_generation(
         # 因缺题干/缺答案被剔除的题位（写 paper_items 时填充，随版本元数据落库）
         dropped_slots: list[dict] = []
 
-        # 插入 paper_version
+        # 版本行与题目行在同一事务里成对写入。pv_id 先生成，但 paper_version
+        # 的 INSERT 必须排在下面的循环之后——metadata 是 JSON 列，SQLAlchemy
+        # 在 execute 那一刻就把它序列化；先插行再往 dropped_slots 里 append，
+        # 落库的永远是空数组，缺口信息因此一直不可见。
         pv_id = _nid()
-        session.execute(
-            paper_versions.insert().values(
-                id=pv_id,
-                course_id=course_id,
-                exam_project_id=project_id,
-                generation_run_id=generation_run_id,
-                version_no=version_no,
-                status="candidate",
-                metadata={
-                    "generation_run_id": generation_run_id,
-                    "created_from": "generation_service",
-                    # 因缺题干/缺答案被剔除的题位：合同配额与实际题数的差额来源
-                    "dropped_slots": dropped_slots,
-                },
-            )
-        )
 
         # 按 plan_item.item_index 对 questions_list 排序
         plan_item_ids = [q.get("plan_item_id") for q in questions_list]
@@ -330,7 +317,14 @@ def create_paper_version_from_generation(
 
             gq_list = gq_by_plan_item.get(pi_id, [])
             if not gq_list:
-                # 找不到对应 gq：跳过（应至少有匹配）
+                # 找不到对应 gq：记进缺口。此处若静默 continue，这个题位就凭空
+                # 消失，既不落卷也不留痕，正是"卷面无端少一题"里最难查的一种。
+                dropped_slots.append({
+                    "item_index": q.get("item_index"),
+                    "question_type": q.get("question_type"),
+                    "exam_point_id": q.get("exam_point_id"),
+                    "reason": "missing_generated_question",
+                })
                 continue
             gq = gq_list.pop(0)
             gq_id = gq["id"]
@@ -365,6 +359,26 @@ def create_paper_version_from_generation(
                 },
             })
             display_order += 1
+
+        # 缺口收集完毕（dropped_slots 已完整），此刻才插 paper_version，
+        # metadata 才是真值。
+        session.execute(
+            paper_versions.insert().values(
+                id=pv_id,
+                course_id=course_id,
+                exam_project_id=project_id,
+                generation_run_id=generation_run_id,
+                version_no=version_no,
+                status="candidate",
+                metadata={
+                    "generation_run_id": generation_run_id,
+                    "created_from": "generation_service",
+                    # 合同配额与实际题数的差额来源：缺题干/缺答案被剔除的题位，
+                    # 以及没有对应 generated_questions 行的题位
+                    "dropped_slots": dropped_slots,
+                },
+            )
+        )
 
         if pi_items_rows:
             session.execute(paper_items.insert(), pi_items_rows)

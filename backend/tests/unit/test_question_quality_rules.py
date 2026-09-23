@@ -73,3 +73,14 @@ def test_low_difficulty_keyword_in_examined_term_is_exempted():
     assert validate_generated_question(question, atom_text=atom)["status"] == "pass"
     # 原子不含该关键词时（真认知要求）仍拦截
     assert validate_generated_question(question, atom_text="模型评估的基本流程")["status"] == "blocker"
+
+
+def test_missing_stem_reports_missing_not_source_language():
+    # 空题干曾与来源话术共用一个 code/message：quality_checks 与日志一律显示
+    # "题目包含来源话术"，把"模型压根没给题干"完全盖住，排查时会被带偏。
+    result = validate_generated_question(
+        {"question_type": "single_choice", "stem": "", "options": [], "answer": ""}
+    )
+    assert result["status"] == "blocker"
+    assert result["code"] == "stem_missing"
+    assert result["message"] == "题目缺少题干"

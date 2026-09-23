@@ -609,6 +609,7 @@ class LLMGateway:
 
     def generate_batch(self, payload) -> list[dict]:
         expected = [spec.item_index for spec in payload.questions]
+        spec_schemas = {spec.item_index: spec.output_schema for spec in payload.questions}
 
         def validate_batch(result) -> None:
             questions = result.get("questions") if isinstance(result, dict) else None
@@ -649,7 +650,41 @@ class LLMGateway:
             response_validator=validate_batch,
         )
         questions = response["questions"]
-        return [item for item in questions if isinstance(item, dict)]
+        return [
+            _lift_nested_output_schema(item, spec_schemas.get(item.get("item_index")))
+            for item in questions
+            if isinstance(item, dict)
+        ]
+
+
+def _lift_nested_output_schema(item: dict, spec_schema: dict | None) -> dict:
+    """把模型误嵌进 output_schema 的题目内容提升到顶层。
+
+    任务卡要求的是"元素包含 output_schema 要求的全部字段"，模型偶发理解成
+    "把答案填进 output_schema 键"——于是顶层没有 stem/options/answer，下游
+    单题校验必判废题，三道防线又只在 question 为 None 时才回补，该题位最终
+    被整题丢掉，卷面少一道题。内容本身是对的，只是放错了位置，故在此按确定
+    性规则提升一次，而不是改提示词指望模型自觉。
+
+    必须与下发的 spec_schema 比对：非综合题的任务卡描述符没有 type=object，
+    其 stem 是 "string — 自包含的题干…" 这类非空占位，直接提升会把任务卡
+    文本冒充成题干。只有"不是原样回显、且确有非空题干"才提升。
+    """
+    nested = item.get("output_schema")
+    if not isinstance(nested, dict):
+        return item
+    if nested == spec_schema or nested.get("stem") == (spec_schema or {}).get("stem"):
+        return item
+    stem = nested.get("stem")
+    if not isinstance(stem, str) or not stem.strip():
+        return item
+    lifted = dict(item)
+    for key, value in nested.items():
+        current = lifted.get(key)
+        # 顶层已有实值则以顶层为准，只补齐缺失/空白字段
+        if current is None or current == "" or current == [] or current == {}:
+            lifted[key] = value
+    return lifted
 
 
 def _optional_text(value: Any) -> str | None:

@@ -52,7 +52,9 @@ def validate_generated_question(question: dict, atom_text: str = "") -> dict:
     qtype = question.get("question_type")
     stem = str(question.get("stem", "")).strip()
     difficulty = question.get("difficulty", "medium")
-    if not stem or re.search(r"根据(课件|资料)|第\s*\d+\s*(页|章|讲)|实验\s*\d+", stem, re.IGNORECASE):
+    if not stem:
+        return {"status": "blocker", "code": "stem_missing", "message": "题目缺少题干"}
+    if re.search(r"根据(课件|资料)|第\s*\d+\s*(页|章|讲)|实验\s*\d+", stem, re.IGNORECASE):
         return {"status": "blocker", "code": "source_language", "message": "题目包含来源话术"}
     # 难度合理性检查：低难度题不应出现"分析、评价、设计"等高级认知关键词。
     # 豁免：关键词同时出现在合同原子原文中时，它是被考查的术语本身
