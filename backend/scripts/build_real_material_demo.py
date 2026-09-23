@@ -39,6 +39,12 @@ from app.adapters.model.deepseek_semantic_extractors import (
     DeepSeekExamPointEvidenceClassifier,
     DeepSeekSyllabusExtractor,
 )
+# demo 与后端共用同一份配置来源（app.config.settings）。历史上这里直接读
+# os.environ 并自带默认端点 https://api.deepseek.com/v1——一旦没有从 shell
+# 导出环境变量，demo 就会静默打到另一个服务上，而后端用的是 .env 里的
+# StepFun 端点，两条链路"各自配各自的"，正是画像字段丢失那类双链路漂移的
+# 同款隐患。HANDOVER 约定：机制改动必须同时落 demo 与后端。
+from app.config import settings
 from app.domain.blueprint.models import BlueprintRequest, UnitCoverage
 from app.domain.framework.exam_points import ExamPoint, OperationalDetailPolicy
 from app.domain.framework.models import AssessmentOutline, TeachingTopic
@@ -653,9 +659,9 @@ class CachedJsonRequester:
 
 def semantic_client() -> DeepSeekJsonClient:
     return DeepSeekJsonClient(
-        api_key=os.environ["DEEPSEEK_API_KEY"],
-        base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
-        model=os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        api_key=settings.deepseek_api_key,
+        base_url=settings.deepseek_base_url,
+        model=settings.deepseek_model,
         timeout=DEMO_DEEPSEEK_TIMEOUT,
         max_attempts=2,
     )
@@ -1409,9 +1415,9 @@ async def generate_paper_from_blueprint(
     write_snapshot(snapshot)
 
     gateway = DeepSeekGateway(
-        api_key=os.environ["DEEPSEEK_API_KEY"],
-        base_url=os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
-        model=os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        api_key=settings.deepseek_api_key,
+        base_url=settings.deepseek_base_url,
+        model=settings.deepseek_model,
         timeout=90,
         max_attempts=2,
     )
@@ -1513,7 +1519,7 @@ async def main() -> None:
         "started_at": datetime.now().isoformat(),
         "source_directory": str(SOURCE_DIR.resolve()),
         "files_total": len(files),
-        "model": os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        "model": settings.deepseek_model,
         "curation_schema_version": CURATION_SCHEMA_VERSION,
     }
     write_snapshot(snapshot)

@@ -2,14 +2,43 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _resolve_env_file(start: Path | str | None = None) -> str:
+    """定位 `.env`：从 `start`（默认本文件）起逐级向上找，找不到才退回 `".env"`。
+
+    历史上这里写死相对路径 `".env"`，而 pydantic-settings 按**进程 CWD** 解析它。
+    后端按文档是在 `backend/` 里启动的（Celery worker 更是只能手工 `cd backend`），
+    仓库根的 `.env` 因此一次都没被读到，`settings` 静默回落到代码默认值——其中
+    `deepseek_base_url` 的默认值是 `https://api.stepfun.com/v1`，一个**能连通但
+    账号无额度**的 StepFun 端点。后果就是"框架/知识目录都正常，唯独生成试卷永远
+    402 quota_exceeded"：那几个阶段跑在注入了环境变量的 uvicorn 里，出题跑在
+    没注入的 worker 里。改配置后不重启进程也一样看不出来（settings 是 import
+    期快照）。
+
+    改为从 `__file__` 向上查找后，worker / 脚本 / `python -c` / pytest 在任何
+    CWD 下都必然读到同一份 `.env`，不再有"取决于你怎么启动"的隐式分支。
+    """
+    origin = Path(start).resolve() if start is not None else Path(__file__).resolve()
+    for directory in origin.parents:
+        candidate = directory / ".env"
+        if candidate.is_file():
+            return str(candidate)
+    return ".env"
 
 
 class Settings(BaseSettings):
     """Settings read directly from the environment on every instantiation."""
 
-    model_config = SettingsConfigDict(extra="ignore", env_file=".env", env_file_encoding="utf-8")
+    model_config = SettingsConfigDict(
+        extra="ignore",
+        env_file=_resolve_env_file(),
+        env_file_encoding="utf-8",
+    )
 
     database_url: str = "postgresql+psycopg://exam:exam@localhost:5432/exam"
     redis_url: str = "redis://localhost:6379/0"
