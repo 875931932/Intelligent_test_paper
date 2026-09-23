@@ -13,10 +13,45 @@ def test_quality_blocks_source_language_and_accepts_complete_short_answer():
     assert accepted["status"] == "pass"
 
 
+def _comprehensive(subquestions, score=10):
+    return {
+        "question_type": "comprehensive",
+        "stem": "分析一个部署方案",
+        "answer": "答案",
+        "explanation": "解析",
+        "rubric": [{"point": "方案", "score": 10}],
+        "subquestions": subquestions,
+        "score": score,
+    }
+
+
+def _sub(action="分析", answer="分问答案"):
+    """schema 要求的完整分问对象（见 schemas/generation.py comprehensive output_schema）。"""
+    return {
+        "action": action,
+        "prompt": "请分析该方案",
+        "answer_boundary": "边界",
+        "answer": answer,
+        "rubric": [{"point": "要点", "score": 5}],
+        "score": 5,
+    }
+
+
 def test_comprehensive_question_requires_subquestions_answer_and_rubric():
-    incomplete = validate_generated_question({"question_type": "comprehensive", "stem": "分析一个部署方案", "answer": "答案", "explanation": "解析", "rubric": [{"point": "方案", "score": 10}]})
-    assert incomplete["status"] == "blocker"
-    complete = validate_generated_question({"question_type": "comprehensive", "stem": "分析一个部署方案", "subquestions": ["比较方案", "提出改进"], "answer": "答案", "explanation": "解析", "rubric": [{"point": "方案", "score": 10}]})
+    # 缺分问 → blocker
+    result = validate_generated_question(_comprehensive([]))
+    assert result["status"] == "blocker" and result["code"] == "subquestions_missing"
+
+    # 分问字段不全 → blocker
+    partial = validate_generated_question(_comprehensive([{"action": "分析"}]))
+    assert partial["status"] == "blocker" and partial["code"] == "subquestion_schema"
+
+    # 分问分值之和 != 本题总分 → blocker（两个 5 分分问 = 10，本题声明 12）
+    mismatched = validate_generated_question(_comprehensive([_sub(), _sub()], score=12))
+    assert mismatched["status"] == "blocker" and mismatched["code"] == "subquestion_score_sum"
+
+    # 完整且分值闭合 → pass
+    complete = validate_generated_question(_comprehensive([_sub(), _sub()], score=10))
     assert complete["status"] == "pass"
 
 

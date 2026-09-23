@@ -688,25 +688,24 @@ class DeepSeekSyllabusExtractor:
                 "title、assessment_requirement、weight_value、weight_source、weight_group_id、"
                 "cognitive_targets、assessment_orientations、operational_detail_policy、retrieval_intent、"
                 "teaching_anchor_keys。每个 anchor 必须包含 key（章节key，如『第1章 开源大模型运行原理与量化部署』）、"
-                "title（章节名称）、exam_weight（该章考试权重，0~100，等于该章全部考点 weight_value 之和）"
-                "。不要用 anchor_key/anchor_scope 等别名代替 key/title。"
-                "operational_detail_policy 依据考核要求判：凡是考核对象本身就是命令、代码、配置、参数写法、"
-                "部署/调用/评测的执行方式与作用（考核要求含『阅读或补全XX代码/命令』『使用X完成调用/评测/推理』"
-                "『配置XX流程/参数』『能启动/执行/部署/运行X』『分析OOM等报错原因并排障』等执行语义），"
-                "标 directly_assessable——这些操作细节本身就是可考的知识点，可直接当 DIRECT 证据考；"
-                "只有纯概念、原理、比较、设计、方案的考核（考核要求是说明/比较/设计/选择/判断类型，"
-                "不要求写出命令或代码）才标 supporting_only。安装环境依赖等纯操作外壳禁止标记 forbidden。"
+                "title（章节名称）、exam_weight（该章考试权重，照考纲原值填 0~100 的数字，"
+                "不要求与考点权重和精确相等——系统会统一归一到 100）。"
+                "不要用 anchor_key/anchor_scope 等别名代替 key/title。"
+                "weight_group_id：考纲写明权重分组时填组名；未写明分组信息时填该考点的 code。"
+                "题型比例与章节权重照考纲原值填写即可，系统会归一化，不必手工凑 100。"
                 "final_exam_rules 必须原样抽取考核大纲里的考试规则，一个字段都别省："
                 "exam_form（考试形式原文，如『闭卷笔试』）、duration_minutes（考试时长分钟数的整数）、"
                 "total_score（试卷满分，数字）、"
                 "question_type_ratios（题型比例数组，每项 {\"question_type\": ..., \"ratio\": ...}；"
                 "question_type 只能取 single_choice/multiple_choice/true_false/fill_blank/"
-                "short_answer/comprehensive/essay/calculation，ratio 为该题型分值占比，各项合计 100）、"
+                "short_answer/comprehensive/essay/calculation，ratio 为该题型分值占比）、"
                 "chapter_weights（命题权重数组，每项 {\"anchor_key\": ..., \"weight\": ...}；"
-                "anchor_key 必须与你输出的某个 anchor 的 key 完全一致，weight 为该章占比，各项合计 100）。"
+                "anchor_key 必须与你输出的某个 anchor 的 key 完全一致，weight 为该章占比）。"
+                "权重与比例请照考纲原值填写，不必强行凑到 100——系统随后会统一归一化。"
                 "考纲没写明的字段填 null 或空数组，不要编造。"
                 "weight_source 仅允许 "
                 "assessment_syllabus 或 inherited_group。"
+                "operational_detail_policy 由系统按确定性规则判定，你无需填写该字段的取值。"
             ),
             payload={"blocks": blocks},
             temperature=0.0,
@@ -717,12 +716,15 @@ class DeepSeekSyllabusExtractor:
         # 操作细节本身就是可考知识，标 directly_assessable 让操作知识陈述可成为 direct 证据，
         # 避免模型惯性一律标 supporting_only 而被准入阶段降级、过不了发布门。
         # 概念考点即使多标成 directly_assessable 也无害（其材料以概念陈述为主，本就可直证）。
+        # 注意：该字段以此处规则为唯一权威（提示词已声明"由系统判定"），模型的取值会被
+        # 整体重算；正则必须覆盖提示词里列举的全部动词，否则会出现"提示词说可直考、
+        # 系统判 supporting_only"的矛盾。
         _REQ_USE_OP = re.compile(
-            r"使用[^，。；;]{1,20}(?:调用|评测|推理|部署|运行)|"
-            r"用[^，。；;]{1,15}完成[^，。；;]{0,8}(?:评测|推理|调用)"
+            r"使用[^，。；;]{1,20}(?:调用|评测|推理|部署|运行|执行|启动|搭建|编写)|"
+            r"用[^，。；;]{1,15}完成[^，。；;]{0,8}(?:评测|推理|调用|部署)"
         )
         _REQ_OPERATIONAL = re.compile(
-            r"阅读或补全|代码|命令|启动|排障|修复|配置|参数|构建和检查"
+            r"阅读或补全|代码|命令|启动|排障|修复|配置|参数|构建和检查|执行|运行|部署|搭建|编写|排查|调优"
         )
         points = parsed[0].exam_points
         for point in points:
@@ -858,11 +860,16 @@ class DeepSeekExamPointEvidenceClassifier:
                 "禁止把其他 chunk 的内容归属到当前 chunk。"
                 "每个 direct/supporting 判定都必须逐项核对 support_claim 中的事实确实出现在该 "
                 "chunk 的原文中；若某条知识不在该 chunk 内，不得写入该 chunk 的 claim。"
-                "只有纯操作指令（执行/等待/截图/确认/检查某步骤完成，且不含知识陈述）"
-                "或与考点无关的内容才判 supporting/background/out_of_scope。"
+                "relevance_class 四级定义（全链路统一，勿自行发挥）："
+                "direct = 该 chunk 本身就是该考点可评分知识的直接事实或依据；"
+                "supporting = 与该考点**相关但不直接承载可评分知识**的语境证据"
+                "（背景与前提、适用条件、常见误用、案例细节、纯操作外壳）；"
+                "background = 与该考点无关、仅提供泛泛背景；out_of_scope = 落在考核范围之外。"
+                "supporting 是有价值的层级而不是垃圾桶：后续归并环节会从 supporting 里"
+                "挑选条目升级为直接证据，它也可作为 prompt_material 使用，因此相关但"
+                "不足以直接评分的 chunk 要敢判 supporting，不要为了省事全判 background。"
                 "support_claim 用一句话概括该 chunk 提供的具体事实即可，无需补全归属或写成自包含命题；"
                 "归属补全与命题化由后续归并环节完成。"
-                "承载考点知识本身的 chunk 一律判 direct，不要降级为 supporting。"
                 "background/out_of_scope 不产出知识事实。"
                 "遵守各考点 operational_detail_policy，不使用任何课程专属黑名单。"
                 "来源页码和标题仅用于教师追溯，不得写入 support_claim 的正文。返回严格 JSON。"
@@ -1504,6 +1511,14 @@ class DeepSeekSupplementRecommender:
                         "recommendation contains duplicate chunk",
                     )
                 seen.add(item.evidence_chunk_id)
+            # 提示词要求"对每个候选条目给出恰好一条，不得遗漏"——只查未知/重复的话，
+            # 漏报候选会被静默放过，该条指令就落了空。这里补齐覆盖性校验。
+            if seen != expected_ids:
+                missing = sorted(expected_ids - seen)
+                raise DeepSeekModelError(
+                    "model_output_incomplete",
+                    "recommendation missing chunks: " + ",".join(missing[:10]),
+                )
             accepted.extend(
                 {
                     "evidence_chunk_id": item.evidence_chunk_id,

@@ -142,8 +142,14 @@ def test_recommend_truncates_long_content():
     class Client:
         def request_json(self, **kwargs):
             captured["candidates"] = kwargs["payload"]["candidates"]
+            # 覆盖性校验要求对每个候选给出恰好一条 recommendation
             kwargs["response_validator"](
-                {"exam_point_code": "rag-diagnosis", "recommendations": []}
+                {
+                    "exam_point_code": "rag-diagnosis",
+                    "recommendations": [
+                        {"evidence_chunk_id": "c1", "recommend": True, "reason": "承载考点知识"}
+                    ],
+                }
             )
             return {}
 

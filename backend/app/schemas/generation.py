@@ -34,13 +34,27 @@ _QUESTION_TEMPLATES = {
         "答案应为2-5句话的核心要点，rubric 应列出关键的评分要素。"
         "explanation 应解释为什么正确答案是正确的，以及常见错误。"
     ),
+    "multiple_choice": (
+        "给出一个明确问题和四个互斥选项。"
+        "其中**有两个或以上**选项是正确的，其余为干扰项。"
+        "题干必须自包含——不依赖题外资料即可理解。"
+        "各选项应围绕同一维度展开，干扰项需 plausible 但不能有歧义地正确或错误。"
+        "选项长度应大致均衡，避免正确项因长度规律被猜出。"
+        "答案给出全部正确项的字母组合（如 AB）。"
+    ),
+    "essay": (
+        "给出一个需要系统论述的开放性问题。"
+        "题干应明确论述范围、立场或任务，使学生知道要论证什么。"
+        "答案给出核心论点与依据的要点化表述，rubric 列出评分要素。"
+        "explanation 说明评分要点与常见失分点。"
+    ),
 }
 
 _QUESTION_SCHEMAS = {
     "single_choice": {
         "stem": "string — 自包含的题干，不依赖外部资料",
         "options": "array[4] — 四个互斥选项，按同一维度排列，长度均衡",
-        "answer": "string — 唯一正确答案，必须与某一选项完全一致",
+        "answer": "string — 唯一正确答案（写选项字母如 B，或与某一选项完全一致的原文）",
     },
     "true_false": {
         "stem": "string — 可明确判定真伪的陈述句",
@@ -56,7 +70,22 @@ _QUESTION_SCHEMAS = {
         "explanation": "string — 解释答案正确性和常见错误",
         "rubric": "array — 评分要素列表",
     },
+    "multiple_choice": {
+        "stem": "string — 自包含的题干，不依赖外部资料",
+        "options": "array[4] — 四个互斥选项，按同一维度排列，长度均衡",
+        "answer": "string — 全部正确项的字母组合（如 AB），至少两个",
+    },
+    "essay": {
+        "stem": "string — 明确论述范围与任务的开放性问题",
+        "answer": "string — 核心论点与依据的要点化表述",
+        "explanation": "string — 评分要点与常见失分点",
+        "rubric": "array — 评分要素列表",
+    },
 }
+
+# 题型任务卡与生成校验的对应关系。这里显式列出而不是让调用方散着判断：
+# 多选题校验要求"两个及以上正确项"、单选题要求"唯一"，二者都依赖选项集合。
+MULTI_ANSWER_TYPES = {"multiple_choice"}
 
 
 def _comprehensive_template_and_schema(
@@ -127,6 +156,11 @@ class BatchQuestionSpec(BaseModel):
     subquestion_count_range: list[int] | None = None
     subquestion_actions: list[str] = Field(default_factory=list)
     answer_boundaries: list[str] = Field(default_factory=list)
+    # 本题位的禁用清单（合同口径：同考点全部兄弟题位已用的原子与答案核心）。
+    # 随题下发，让"模型看到的"与"校验时查的"是同一份清单——否则模型会因
+    # 从未被告知的内容被校验判为泄漏。
+    forbidden_atoms: list[str] = Field(default_factory=list)
+    forbidden_answer_cores: list[str] = Field(default_factory=list)
     question_template: str
     output_schema: dict
 
@@ -145,6 +179,23 @@ class BatchGenerationPayload(BaseModel):
     teacher_revision_instruction: str = ""
 
 
+def _template_and_schema_for(question_type: str):
+    """取题型的任务卡与输出 schema。
+
+    未定义题型的报清晰错误，而不是抛 KeyError——后者会在生成图的重试路径
+    （compile 在 try 之外）直接把整个 batch 节点打崩，连带同批其他题位。
+    """
+    if question_type == "comprehensive":
+        raise ValueError("comprehensive 需由调用方传入原型与分问范围")
+    try:
+        return _QUESTION_TEMPLATES[question_type], _QUESTION_SCHEMAS[question_type]
+    except KeyError:
+        raise ValueError(
+            f"题型 {question_type!r} 没有任务卡：蓝图/合同层应在上游过滤，"
+            f"当前支持 {sorted(_QUESTION_TEMPLATES)}"
+        ) from None
+
+
 def compile_batch_generation_payload(
     batch: QuestionBatch, knowledge_cards: dict[str, dict]
 ) -> BatchGenerationPayload:
@@ -156,8 +207,7 @@ def compile_batch_generation_payload(
                 slot.comprehensive_archetype, slot.subquestion_count_range,
             )
         else:
-            question_template = _QUESTION_TEMPLATES[slot.question_type]
-            output_schema = _QUESTION_SCHEMAS[slot.question_type]
+            question_template, output_schema = _template_and_schema_for(slot.question_type)
         specs.append(BatchQuestionSpec(
             item_index=slot.item_index,
             question_type=slot.question_type,
@@ -178,6 +228,8 @@ def compile_batch_generation_payload(
             subquestion_count_range=slot.subquestion_count_range,
             subquestion_actions=slot.subquestion_actions,
             answer_boundaries=slot.answer_boundaries,
+            forbidden_atoms=list(slot.forbidden_context.atoms),
+            forbidden_answer_cores=list(slot.forbidden_context.answer_cores),
             question_template=question_template,
             output_schema=output_schema,
         ))
@@ -186,8 +238,8 @@ def compile_batch_generation_payload(
         "同批各题考查视角必须互补：题型与认知层级已指定，不得从同一角度重复考查同一内容。"
         "每题的 card_name 是该知识卡的概念语境：题干涉及参数、命令或工具特性时，"
         "必须写清其归属（哪个框架/工具/流程的参数），使题干脱离语境仍可独立理解，不得出现无主语的参数或命令。"
-        "forbidden_atoms 与 forbidden_answer_cores 是同考点其他题目已使用的原子与答案核心，"
-        "它们不得出现在本批任何题干、选项或答案文本中。"
+        "每题的 forbidden_atoms 与 forbidden_answer_cores 是**该题**不得使用的原子与答案核心，"
+        "它们不得出现在这道题的题干、选项、答案或解析中。"
     )
     if batch.forbidden_context.atoms or batch.forbidden_context.answer_cores:
         instruction += "严格执行上述禁用清单，任何泄漏都视为废题。"

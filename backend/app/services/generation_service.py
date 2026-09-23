@@ -82,8 +82,9 @@ def validate_generated_question(question: dict, atom_text: str = "") -> dict:
         opts = question.get("options") or []
         answer_raw = question.get("answer")
         picked = answer_option_keys(answer_raw, opts)
-        if len(opts) < 4 or not answer_raw:
-            return {"status": "blocker", "code": "multiple_choice_schema", "message": "多选题必须有至少四个选项和答案"}
+        # 任务卡规定四个互斥选项；校验与任务卡同口径，避免"提示词说四、校验放过三"
+        if len(opts) != 4 or not answer_raw:
+            return {"status": "blocker", "code": "multiple_choice_schema", "message": "多选题必须有四个选项和答案"}
         if len(picked) < 2:
             return {"status": "blocker", "code": "multiple_choice_answer", "message": "多选题答案必须对应两个及以上选项（写选项字母或选项原文）"}
     if qtype == "true_false" and not isinstance(question.get("answer"), bool):
@@ -91,7 +92,9 @@ def validate_generated_question(question: dict, atom_text: str = "") -> dict:
     if qtype in {"fill_blank", "short_answer", "comprehensive", "essay"} and not str(question.get("answer", "")).strip():
         return {"status": "blocker", "code": "answer_missing", "message": "题目缺少答案"}
     if qtype == "fill_blank":
-        blank_runs = re.findall(r"_{2,}", stem)
+        # 与任务卡同口径：连续下划线不少于 4 个（任务卡原话）。2-3 个下划线
+        # 只是排版噪声，放过去会产出和任务卡不符的题。
+        blank_runs = re.findall(r"_{4,}", stem)
         if len(blank_runs) != 1:
             return {
                 "status": "blocker",
@@ -116,8 +119,34 @@ def validate_generated_question(question: dict, atom_text: str = "") -> dict:
     if qtype in {"short_answer", "comprehensive"} and (not question.get("explanation") or not question.get("rubric")):
         return {"status": "blocker", "code": "rubric_missing", "message": "主观题必须有解析和评分细则"}
     if qtype == "comprehensive":
-        if not question.get("subquestions"):
+        subquestions = question.get("subquestions") or []
+        if not subquestions:
             return {"status": "blocker", "code": "subquestions_missing", "message": "综合题必须包含相互关联的分问"}
+        # schema 要求每个分问都带全字段且分值和等于本题总分，校验器必须照此查，
+        # 否则"prompt 要求、校验放行"会产出残缺分问，教师端看到缺胳膊少腿的综合题。
+        required = ("action", "prompt", "answer_boundary", "answer", "rubric", "score")
+        sub_total = 0.0
+        for i, sub in enumerate(subquestions, start=1):
+            if not isinstance(sub, dict):
+                return {"status": "blocker", "code": "subquestion_schema", "message": f"第 {i} 个分问不是对象"}
+            missing = [k for k in required if not sub.get(k) and sub.get(k) != 0]
+            if missing:
+                return {
+                    "status": "blocker",
+                    "code": "subquestion_schema",
+                    "message": f"第 {i} 个分问缺少字段：{','.join(missing)}",
+                }
+            try:
+                sub_total += float(sub.get("score") or 0)
+            except (TypeError, ValueError):
+                return {"status": "blocker", "code": "subquestion_schema", "message": f"第 {i} 个分问分值不是数字"}
+        total = float(question.get("score") or 0)
+        if total > 0 and abs(sub_total - total) > 0.01:
+            return {
+                "status": "blocker",
+                "code": "subquestion_score_sum",
+                "message": f"各分问分值之和（{sub_total:g}）应等于本题总分（{total:g}）",
+            }
         if question.get("comprehensive_archetype") == "code_completion_scenario":
             numbered_blanks = re.findall(r"_+\(\d+\)_+", stem)
             if len(numbered_blanks) < 4:
@@ -126,7 +155,6 @@ def validate_generated_question(question: dict, atom_text: str = "") -> dict:
                     "code": "code_blanks_missing",
                     "message": f"代码填空综合题的题干须含至少 4 处编号挖空 ____________(1)__________（当前 {len(numbered_blanks)} 处）",
                 }
-            subquestions = question.get("subquestions") or []
             if len(subquestions) != 2:
                 return {
                     "status": "blocker",
@@ -137,7 +165,12 @@ def validate_generated_question(question: dict, atom_text: str = "") -> dict:
 
 
 def audit_paper_against_contract(slots, questions) -> dict:
-    """合同终检：配额一致、原子唯一、答案互斥、溯源完整、needs_review 清零。"""
+    """合同终检：配额一致、原子唯一、答案互斥、溯源完整、needs_review 清零。
+
+    配额按**合同分配的考点**统计：题位可能因自愈回补改考到同章其他考点
+    （question.backfilled_from 记录原考点），对合同而言该题位的产出已兑现，
+    因此计回原考点；回补明细单独放在 backfilled_slots 供教师与审计查看。
+    """
     from app.domain.generation.contract import boundaries_overlap
 
     checks: list[dict] = []
@@ -146,7 +179,8 @@ def audit_paper_against_contract(slots, questions) -> dict:
     for slot in slots:
         slot_counts[slot.exam_point_id] = slot_counts.get(slot.exam_point_id, 0) + 1
     for question in questions:
-        ep = question.get("exam_point_id", "")
+        backfill = question.get("backfilled_from") or {}
+        ep = backfill.get("from_exam_point_id") or question.get("exam_point_id", "")
         question_counts[ep] = question_counts.get(ep, 0) + 1
     checks.append({
         "code": "quota_match", "passed": slot_counts == question_counts,
@@ -176,4 +210,19 @@ def audit_paper_against_contract(slots, questions) -> dict:
 
     review_count = sum(1 for q in questions if q.get("needs_review"))
     checks.append({"code": "needs_review", "passed": review_count == 0, "detail": {"count": review_count}})
-    return {"passed": all(c["passed"] for c in checks), "checks": checks}
+    backfilled = [
+        {
+            "item_index": q.get("item_index"),
+            "from_exam_point_id": (q.get("backfilled_from") or {}).get("from_exam_point_id"),
+            "to_exam_point_id": (q.get("backfilled_from") or {}).get("to_exam_point_id"),
+            "anchor_key": (q.get("backfilled_from") or {}).get("anchor_key"),
+        }
+        for q in questions if q.get("backfilled_from")
+    ]
+    checks.append({
+        "code": "backfill_within_chapter",
+        "passed": all(b["anchor_key"] for b in backfilled),
+        "detail": {"backfilled_slots": backfilled, "count": len(backfilled)},
+    })
+    return {"passed": all(c["passed"] for c in checks), "checks": checks,
+            "backfilled_slots": backfilled}

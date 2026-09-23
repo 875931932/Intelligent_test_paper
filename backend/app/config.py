@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     # 不增加模型调用（仅多一次嵌入），零破坏地提升召回。
     organization_retrieval_expand_query: bool = True
     organization_max_workers: int = Field(default=16, gt=0)
+    # 生成自愈：题位在本考点内三道防线（单题重试 → 换同考点原子 → 批缺失恢复）
+    # 全部失守后，允许从**同章**其他考点回补，避免整题丢弃导致卷面缺题。
+    # 上限刻意收得很紧——回补会改变题目实际考查的考点，只做兜底不作常态：
+    #   max_per_batch  每批（≈一个考点的题位）最多回补几题
+    #   max_per_point  同一兄弟考点最多被回补几题（防止把一个富余考点抽干）
+    generation_backfill_max_per_batch: int = Field(default=1, ge=0)
+    generation_backfill_max_per_point: int = Field(default=1, ge=0)
     # 知识目录组织阶段的模型调用超时（秒）。分类/归并 prompt 较大（数万 token），
     # 默认 90s 超时在 MiMo 上不足以完成响应，超时失败会整材料放弃并烧掉 token；
     # 该阶段已异步化，放长超时不影响前端体验。

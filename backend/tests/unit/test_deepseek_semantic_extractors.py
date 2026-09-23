@@ -616,7 +616,10 @@ def test_syllabus_extractor_requires_final_exam_points_and_sends_only_supplied_o
     assert request["user"] == {"blocks": ["课程封面", "平时成绩30%", "期末考试：RAG占100%"]}
     assert "期末考试" in request["system"]
     assert "平时" in request["system"]
-    assert "supporting_only" in request["system"]
+    # operational_detail_policy 由系统按确定性规则判定（模型取值整体被重算），
+    # 提示词必须明说"无需填写"，否则模型白算、还可能被自己的取值误导
+    assert "operational_detail_policy" in request["system"]
+    assert "由系统" in request["system"]
 
 
 def test_syllabus_extractor_validates_teaching_topic_schema():
