@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -14,6 +14,8 @@ from app.db.schema import (
     generation_attempts,
     generated_questions,
     generation_runs,
+    model_calls,
+    outbox_events,
     paper_items,
     paper_versions,
     plan_items,
@@ -257,10 +259,10 @@ def update_status(session: Session, course_id: str, project_id: str, status: str
 def delete_project(session: Session, course_id: str, project_id: str) -> None:
     """删除项目及其全部派生数据（蓝图/题位/生成运行/题目/试卷版本/任务记录）。
 
-    没有配置级联删除，这里按外键依赖自底向上清理：quality_checks →
-    paper_items → generated_questions → generation_attempts/generation_runs →
-    paper_versions → plan_items/blueprint_sections → blueprint_versions →
-    task_runs（payload 里带 project_id，无外键但同属该项目痕迹）→ exam_projects。
+    没有配置级联删除，这里按外键依赖自底向上清理。子表先行：
+    model_calls → quality_checks → paper_items → generated_questions →
+    paper_versions → generation_attempts → generation_runs → outbox_events →
+    plan_items → blueprint_sections → blueprint_versions → task_runs → exam_projects。
     整个操作在一个事务里，任一步失败整体回滚，不会留下半删的项目。
     """
     get_project(session, course_id, project_id)
@@ -285,28 +287,72 @@ def delete_project(session: Session, course_id: str, project_id: str) -> None:
             blueprint_versions.c.exam_project_id == project_id,
         )
     ).scalars().all())
+    # task_runs 无指向项目的外键，按 payload.project_id 找（PostgreSQL JSON 操作符）
+    task_ids = list(session.execute(
+        text("SELECT id FROM task_runs WHERE course_id = :cid AND payload->>'project_id' = :pid"),
+        {"cid": course_id, "pid": project_id},
+    ).scalars().all())
 
     try:
+        # exam_projects 的 active_* 反向引用 blueprint_versions / generation_runs /
+        # paper_versions，与它们构成 FK 环且约束不可延迟：不先置空的话，删这三张表
+        # 时项目行仍在引用，直接触发外键约束失败。列均可空，置空即解除环。
+        session.execute(
+            update(exam_projects)
+            .where(exam_projects.c.id == project_id, exam_projects.c.course_id == course_id)
+            .values(
+                active_blueprint_version_id=None,
+                active_generation_run_id=None,
+                active_paper_version_id=None,
+            )
+        )
+        # generation_attempts 之前必须先清 model_calls（其 generation_attempt_id 外键）
+        gq_ids: list[str] = []
+        attempt_ids: list[str] = []
         if run_ids:
             gq_ids = list(session.execute(
                 select(generated_questions.c.id)
                 .where(generated_questions.c.generation_run_id.in_(run_ids))
             ).scalars().all())
+            attempt_ids = list(session.execute(
+                select(generation_attempts.c.id)
+                .where(generation_attempts.c.generation_run_id.in_(run_ids))
+            ).scalars().all())
+        if attempt_ids:
+            session.execute(delete(model_calls).where(model_calls.c.generation_attempt_id.in_(attempt_ids)))
+        # paper_items 同时被 generated_questions 与 paper_versions 引用，两种来源
+        # 必须在删这两个父表之前一次清掉
+        if gq_ids or pv_ids:
+            conditions = []
+            params: dict[str, Any] = {}
             if gq_ids:
-                session.execute(delete(quality_checks).where(quality_checks.c.generated_question_id.in_(gq_ids)))
-                session.execute(delete(paper_items).where(paper_items.c.generated_question_id.in_(gq_ids)))
-                session.execute(delete(generated_questions).where(generated_questions.c.id.in_(gq_ids)))
+                conditions.append("generated_question_id = ANY(:gq)")
+                params["gq"] = gq_ids
+            if pv_ids:
+                conditions.append("paper_version_id = ANY(:pv)")
+                params["pv"] = pv_ids
+            session.execute(
+                text("DELETE FROM paper_items WHERE " + " OR ".join(conditions)),
+                params,
+            )
+        if gq_ids:
+            session.execute(delete(quality_checks).where(quality_checks.c.generated_question_id.in_(gq_ids)))
+            session.execute(delete(generated_questions).where(generated_questions.c.id.in_(gq_ids)))
         if pv_ids:
-            session.execute(delete(paper_items).where(paper_items.c.paper_version_id.in_(pv_ids)))
             session.execute(delete(paper_versions).where(paper_versions.c.id.in_(pv_ids)))
+        if attempt_ids:
+            session.execute(delete(generation_attempts).where(generation_attempts.c.id.in_(attempt_ids)))
         if run_ids:
-            session.execute(delete(generation_attempts).where(generation_attempts.c.generation_run_id.in_(run_ids)))
             session.execute(delete(generation_runs).where(generation_runs.c.id.in_(run_ids)))
+        # task_runs 之前必须先清 outbox_events（其 task_run_id 外键）
+        if task_ids:
+            session.execute(delete(outbox_events).where(outbox_events.c.task_run_id.in_(task_ids)))
+            session.execute(delete(task_runs).where(task_runs.c.id.in_(task_ids)))
         if bv_ids:
             session.execute(delete(plan_items).where(plan_items.c.blueprint_version_id.in_(bv_ids)))
             session.execute(delete(blueprint_sections).where(blueprint_sections.c.blueprint_version_id.in_(bv_ids)))
             session.execute(delete(blueprint_versions).where(blueprint_versions.c.id.in_(bv_ids)))
-        # task_runs 无外键，按 payload.project_id 清理该项目留下的任务痕迹
+        # 兜底：payload 匹配但上面按 id 没覆盖到的 task_runs
         session.execute(
             text("DELETE FROM task_runs WHERE course_id = :cid AND payload->>'project_id' = :pid"),
             {"cid": course_id, "pid": project_id},
