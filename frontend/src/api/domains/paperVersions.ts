@@ -25,4 +25,6 @@ export const paperVersionsApi = {
     config.apiBase + '/courses/' + courseId + '/exam-projects/' + projectId + '/paper-versions/' + pvId + '/export/student',
   exportAnswerKey: (courseId: string, projectId: string, pvId: string) =>
     config.apiBase + '/courses/' + courseId + '/exam-projects/' + projectId + '/paper-versions/' + pvId + '/export/answer-key',
+  exportAnswerCard: (courseId: string, projectId: string, pvId: string) =>
+    config.apiBase + '/courses/' + courseId + '/exam-projects/' + projectId + '/paper-versions/' + pvId + '/export/answer-card',
 };

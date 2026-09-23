@@ -1,4 +1,4 @@
-"""导出渲染：题号去重、答案规范化、分节与缺答案标注。"""
+"""导出渲染：题号去重、答案规范化、分节与缺答案标注、综合题分问与答题卡。"""
 import app.services.paper_version_service as pvs
 from app.services.paper_version_service import (
     _answer_text,
@@ -9,6 +9,8 @@ from app.services.paper_version_service import (
     _section_groups,
     _sections_table_html,
     _strip_stem_noise,
+    _sub_prompt,
+    export_answer_card_html,
     export_answer_key_html,
     export_student_paper_html,
 )
@@ -115,6 +117,85 @@ def test_render_question_escapes_html_in_stem():
     assert "&lt;script&gt;" in html
 
 
+def _comprehensive(**over) -> dict:
+    q = {
+        "item_index": 7,
+        "question_type": "comprehensive",
+        "stem": (
+            "补全下面的加载代码。\n"
+            "```python\nloader = WebBaseLoader(url)\nraw = ______(1)______()\n```\n"
+            "最后检索 4 个片段。"
+        ),
+        "answer": "load()",
+        "score": 10,
+        "difficulty": "hard",
+        "options": [],
+        "subquestions": [
+            {"prompt": "1. 请在不改变整体结构的前提下补全代码", "score": 6, "answer": "raw = loader.load()"},
+            {"prompt": "（2）可以从哪些方向优化？", "score": 4, "answer": "换 chunk_size"},
+        ],
+    }
+    q.update(over)
+    return q
+
+
+def test_render_question_renders_subquestions_with_scores():
+    """综合题分问此前整段被丢掉：必须渲染成（1）题面（6分）。"""
+    html = _render_question_html(_comprehensive(), with_answer=False)
+    assert '<span class="sub-no">（1）</span> 请在不改变整体结构的前提下补全代码' in html
+    assert '<span class="sub-score">（6分）</span>' in html
+    assert '<span class="sub-no">（2）</span> 可以从哪些方向优化？' in html
+    assert '<span class="sub-score">（4分）</span>' in html
+    # 学生卷不出答案，也不出难度元信息
+    assert "【答案】" not in html
+    assert "难度：" not in html
+
+
+def test_render_question_answer_key_gives_each_sub_answer():
+    html = _render_question_html(_comprehensive(), with_answer=True)
+    assert "换 chunk_size" in html  # 逐问答案，只可能来自 subquestions
+    assert "难度：困难" in html  # 难度元信息仅答卷保留
+
+
+def test_stem_code_fence_becomes_monospace_block():
+    html = _render_question_html(_comprehensive(), with_answer=False)
+    assert '<pre class="code">' in html
+    assert "loader = WebBaseLoader(url)" in html
+    assert "```" not in html
+
+
+def test_student_paper_adds_answer_blank_and_section_hint():
+    groups = _section_groups([
+        {"item_index": 1, "question_type": "single_choice", "score": 2, "stem": "甲", "answer": "A",
+         "options": ["a", "b", "c", "d"]},
+        {"item_index": 2, "question_type": "true_false", "score": 2, "stem": "乙", "answer": True},
+        {"item_index": 3, "question_type": "short_answer", "score": 5, "stem": "丙", "answer": "x"},
+    ])
+    html = _render_sections(groups, with_answer=False)
+    assert '<span class="q-no">1.</span> 甲（  ）' in html
+    assert '<span class="q-no">2.</span> 乙（ ）' in html
+    assert '<span class="q-no">3.</span> 丙' in html and "丙（" not in html  # 主观题不补括号
+    assert "（将答案写在答题纸上）" in html
+    assert "对的打钩 √" in html
+    assert "难度：" not in html
+
+
+def test_student_paper_does_not_double_answer_blank():
+    groups = _section_groups([
+        {"item_index": 1, "question_type": "single_choice", "score": 2, "stem": "甲（  ）", "answer": "A",
+         "options": ["a", "b", "c", "d"]},
+    ])
+    assert _render_sections(groups, with_answer=False).count("（  ）") == 1
+
+
+def test_subquestion_prompt_drops_own_index_but_keeps_year():
+    """分问编号由导出自己编，prompt 自带的要剥；年份开头的题面不能误伤。"""
+    assert _sub_prompt({"prompt": "（2）可以从哪些方向优化？"}) == "可以从哪些方向优化？"
+    assert _sub_prompt({"prompt": "1. 请在不改变整体结构的前提下补全代码"}) == "请在不改变整体结构的前提下补全代码"
+    assert _sub_prompt({"prompt": "（2024）真题：请说明原因"}) == "（2024）真题：请说明原因"
+    assert _sub_prompt("纯字符串分问") == "纯字符串分问"
+
+
 _SAMPLE_PV = {
     "id": "pv1",
     "exam_project_id": "p1",
@@ -157,3 +238,37 @@ def test_export_answer_key_marks_answers_and_missing(monkeypatch):
     assert '<span class="ans-label">【答案】</span>错误' in html
     assert "【缺答案·需人工补充】" in html
     assert "1 题缺答案" in html
+
+
+def test_answer_card_renders_grid_and_write_lines(monkeypatch):
+    """答题卡：客观题只有空白表格，主观题给作答横线，全卷不出题面与答案。"""
+    pv = dict(_SAMPLE_PV)
+    pv["questions"] = _SAMPLE_PV["questions"] + [
+        {"item_index": 3, "question_type": "short_answer", "stem": "简述题", "answer": "要点", "score": 5,
+         "options": [], "difficulty": "medium"},
+    ]
+    monkeypatch.setattr(pvs, "get_paper_version", lambda *a, **k: pv)
+    html = export_answer_card_html(_FakeSession(), "pv1", course_id="c1")
+    assert "答题卡" in html
+    assert "<th>题号</th>" in html and "<th>1</th>" in html and "<th>2</th>" in html
+    assert '<td class="blank-cell"></td>' in html
+    # 5 分主观题 → 5 行作答横线；客观题不产生横线
+    assert html.count('<div class="blank-line"></div>') == 5
+    # 考生信息栏在底部学号栏不重复
+    assert '<div class="id-row">' in html
+    assert '<div class="sign-row">' not in html
+    # 不含题面与答案
+    assert "题干一" not in html and "简述题" not in html and "【答案】" not in html
+
+
+def test_answer_card_gives_each_subquestion_its_own_area(monkeypatch):
+    pv = dict(_SAMPLE_PV)
+    pv["questions"] = [_comprehensive()]
+    monkeypatch.setattr(pvs, "get_paper_version", lambda *a, **k: pv)
+    html = export_answer_card_html(_FakeSession(), "pv1", course_id="c1")
+    assert '<span class="sub-no">（1）</span> 请在不改变整体结构的前提下补全代码' in html
+    assert '<span class="sub-no">（2）</span> 可以从哪些方向优化？' in html
+    assert "（6分）" in html and "（4分）" in html
+    # 6 分问 6 行 + 4 分问 4 行
+    assert html.count('<div class="blank-line"></div>') == 10
+    assert "补全下面的加载代码" not in html  # 答题卡不出题面

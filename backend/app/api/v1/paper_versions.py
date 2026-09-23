@@ -15,6 +15,7 @@ from app.services.paper_version_service import (
     confirm_paper_version,
     create_paper_item as create_paper_item_svc,
     delete_paper_item as delete_paper_item_svc,
+    export_answer_card_html,
     export_answer_detail_json,
     export_answer_key_html,
     export_student_paper_html,
@@ -285,6 +286,21 @@ def export_answer_key(
     """答卷 HTML（含答案，可浏览器打印为 PDF）。"""
     try:
         html = export_answer_key_html(session, pv_id, course_id=course_id)
+    except PaperVersionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return HTMLResponse(content=html)
+
+
+@router.get("/exam-projects/{project_id}/paper-versions/{pv_id}/export/answer-card")
+def export_answer_card(
+    course_id: str,
+    project_id: str,
+    pv_id: str,
+    session: Session = Depends(get_session),
+):
+    """答题卡 HTML（学生作答用空卷，可浏览器打印为 PDF）。"""
+    try:
+        html = export_answer_card_html(session, pv_id, course_id=course_id)
     except PaperVersionError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
     return HTMLResponse(content=html)

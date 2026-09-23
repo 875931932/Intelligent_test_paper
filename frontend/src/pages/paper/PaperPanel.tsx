@@ -1,6 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import {
-  Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FileJson, FileText, KeySquare,
+  Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ClipboardList, ExternalLink, Eye,
+  FileJson, FileText, KeySquare,
   Pencil, Plus, RefreshCw, RotateCcw, Save, Trash2,
 } from 'lucide-react';
 import { api } from '@/api/client';
@@ -298,13 +299,24 @@ function FieldLabel({ label, children }: { label: string; children: React.ReactN
 
 // ─── 试卷档案卡 ───
 
+/** 可导出的三份卷面 + 答案细则 JSON；前三种同时也是整体预览的页签 */
+type ExportKind = 'student' | 'card' | 'answer' | 'json';
+type PreviewKind = Exclude<ExportKind, 'json'>;
+
+const PREVIEW_TABS: Array<{ key: PreviewKind; label: string }> = [
+  { key: 'student', label: '学生卷' },
+  { key: 'card', label: '答题卡' },
+  { key: 'answer', label: '答卷（含答案）' },
+];
+
 function PaperProfile({
-  pv, project, examPointCount, onExport, onFinalize, onRevert, onRegenerate,
+  pv, project, examPointCount, onExport, onPreview, onFinalize, onRevert, onRegenerate,
 }: {
   pv: PaperVersion;
   project?: ExamProject;
   examPointCount: number;
-  onExport: (kind: 'student' | 'answer' | 'json') => void;
+  onExport: (kind: ExportKind) => void;
+  onPreview: () => void;
   onFinalize: () => void;
   onRevert: () => void;
   onRegenerate: () => void;
@@ -372,8 +384,10 @@ function PaperProfile({
             重新生成
           </Button>
           <Button variant="secondary" size="sm" onClick={() => onExport('student')} icon={<FileText size={14} />}>学生卷</Button>
+          <Button variant="secondary" size="sm" onClick={() => onExport('card')} icon={<ClipboardList size={14} />}>答题卡</Button>
           <Button variant="secondary" size="sm" onClick={() => onExport('answer')} icon={<KeySquare size={14} />}>答卷</Button>
           <Button variant="secondary" size="sm" onClick={() => onExport('json')} icon={<FileJson size={14} />}>答案细则</Button>
+          <Button variant="secondary" size="sm" onClick={onPreview} icon={<Eye size={14} />}>整体预览</Button>
           {pv.status === 'finalized' ? (
             <Button variant="secondary" size="sm" onClick={onRevert} icon={<RotateCcw size={14} />}>撤销定稿</Button>
           ) : (
@@ -629,6 +643,8 @@ export default function PaperPanel({
   const [adding, setAdding] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [finalizeOpen, setFinalizeOpen] = useState(false);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewKind, setPreviewKind] = useState<PreviewKind>('student');
   // 右栏编辑器草稿是否有未保存改动：切题/翻题/换序都会让编辑器随 key 重挂载、
   // 草稿蒸发，靠它在这些动作前拦一次确认。
   const [dirty, setDirty] = useState(false);
@@ -861,17 +877,71 @@ export default function PaperPanel({
     }
   };
 
-  // ── 导出 ──
+  // ── 导出与整体预览 ──
 
-  const handleExport = (kind: 'student' | 'answer' | 'json') => {
-    const url =
-      kind === 'student'
-        ? api.paperVersions.exportStudent(courseId, project?.id ?? '', pv.id)
-        : kind === 'answer'
-          ? api.paperVersions.exportAnswerKey(courseId, project?.id ?? '', pv.id)
-          : api.paperVersions.exportJson(courseId, project?.id ?? '', pv.id);
-    window.open(url, '_blank', 'noopener');
+  // 导出与预览共用同一 URL：预览 iframe 打开的就是导出产物，所见即所得，
+  // 不会另有一套前端渲染与真实导出漂移。
+  const exportUrl = (kind: ExportKind): string => {
+    const pid = project?.id ?? '';
+    if (kind === 'student') return api.paperVersions.exportStudent(courseId, pid, pv.id);
+    if (kind === 'card') return api.paperVersions.exportAnswerCard(courseId, pid, pv.id);
+    if (kind === 'answer') return api.paperVersions.exportAnswerKey(courseId, pid, pv.id);
+    return api.paperVersions.exportJson(courseId, pid, pv.id);
   };
+
+  const handleExport = (kind: ExportKind) => {
+    window.open(exportUrl(kind), '_blank', 'noopener');
+  };
+
+  const previewModal = (
+    <Modal
+      open={previewOpen}
+      onClose={() => setPreviewOpen(false)}
+      title="整体预览"
+      maxWidth="min(1120px, 96vw)"
+      footer={
+        <div style={{
+          display: 'flex', width: '100%', gap: '12px',
+          alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap',
+        }}>
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            {PREVIEW_TABS.map((t) => (
+              <button
+                key={t.key}
+                onClick={() => setPreviewKind(t.key)}
+                style={{
+                  padding: '6px 14px', borderRadius: 999, border: 'none', cursor: 'pointer',
+                  fontSize: '0.8rem', fontWeight: 600,
+                  background: previewKind === t.key ? 'var(--accent)' : 'var(--accent-subtle)',
+                  color: previewKind === t.key ? '#fff' : 'var(--accent)',
+                }}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={<ExternalLink size={14} />}
+            onClick={() => window.open(exportUrl(previewKind), '_blank', 'noopener')}
+          >
+            新标签打开
+          </Button>
+        </div>
+      }
+    >
+      <iframe
+        key={previewKind}
+        src={exportUrl(previewKind)}
+        title="试卷整体预览"
+        style={{
+          display: 'block', width: '100%', height: '64vh',
+          border: '1px solid rgba(0,0,0,0.08)', borderRadius: 8, background: '#fff',
+        }}
+      />
+    </Modal>
+  );
 
   const addModal = (
     <Modal
@@ -924,6 +994,7 @@ export default function PaperPanel({
         project={project}
         examPointCount={new Set(questions.map((q) => q.exam_point_id).filter(Boolean)).size}
         onExport={handleExport}
+        onPreview={() => setPreviewOpen(true)}
         onFinalize={handleFinalizeClick}
         onRevert={handleRevert}
         onRegenerate={onRegenerate}
@@ -1004,6 +1075,7 @@ export default function PaperPanel({
       </div>
 
       {addModal}
+      {previewModal}
 
       <Modal
         open={finalizeOpen}

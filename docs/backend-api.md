@@ -365,6 +365,7 @@ body 可选 `{ "mock_graph": false }`；生产必须配置 LLM，否则 503。�
   "questions":[
     { "item_index":1,"plan_item_id":"uuid","knowledge_card_id":"uuid","exam_point_id":"uuid",
       "question_type":"","stem":"","options":{},"answer":"","explanation":"string|null",
+      "subquestions":[],
       "score":2.0,"difficulty":"","cognitive_level":"",
       "needs_review":false,"needs_review_reason":"string|null",
       "teacher_override":{},"has_override":false,
@@ -381,6 +382,8 @@ body 可选 `{ "mock_graph": false }`；生产必须配置 LLM，否则 503。�
 - `explanation` 由模型产出，部分题型（如单选）可能为 `null`，前端需对空值降级。
 - `needs_review_reason` 为单数字符串（理由以 `；` 连接，截断至 200 字），不是数组。
 - `teacher_override` 覆盖字段优先于生成载荷：`stem`/`options`/`answer`/`explanation`/`score` 可为教师手改值。
+- `subquestions` 为综合题分问数组（`{prompt, score, answer, ...}`，各问分值之和等于本题总分），非综合题为 `[]`；
+  导出渲染的分问排版与答题卡的分问作答区都依赖它，历史遗留题若缺失则按空数组降级。
 
 ### 9.2 待审核项
 `GET /api/v1/courses/{course_id}/paper-versions/{pv_id}/needs-review` → 200
@@ -433,10 +436,29 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
 → `text/html`（无答案，可打印 PDF）。正式卷面：信息头（课程名称/总分/题量，考试时间/形式/
 试卷类型/学分留空待填）+ 题次表 + 按题型分节（一、单选题（共N题，每题X分，共Y分））+ 连续题号。
 
+卷面细节（对齐命题范本）：
+
+- 节标题带去向提示「（将答案写在答题纸上）」，判断题为「（将答案写在答题纸上，对的打钩 √ ，错的打叉 ×）」；
+  答案实际落在 §9.9 答题卡上。
+- 单选/多选题干末尾补作答括号 `（  ）`，判断题补 `（ ）`；题干已自带括号时不重复补。
+- 综合题按 `subquestions` 渲染分问：`（1）题面（6分）`；题干里的 ``` 围栏切成等宽 `<pre class="code">` 代码块。
+- 不打印难度/分值元信息行（难度属内部信息；分值由节标题与分问标注表达）。该行仅答卷保留。
+
 ### 9.8 导出：答卷（含答案）HTML
 `GET /api/v1/courses/{course_id}/exam-projects/{project_id}/paper-versions/{pv_id}/export/answer-key`
 → `text/html`（含答案）。在学生卷版式基础上加装订线、客观题答案速查表（题号|答案），
-答案选项打 ✓ 标绿；缺答案标注【缺答案·需人工补充】。
+答案选项打 ✓ 标绿；缺答案标注【缺答案·需人工补充】。综合题额外给出**逐问答案**
+（`subquestions[].answer`），并保留难度/分值元信息行供阅卷参考。
+
+### 9.9 导出：答题卡 HTML
+`GET /api/v1/courses/{course_id}/exam-projects/{project_id}/paper-versions/{pv_id}/export/answer-card`
+→ `text/html`（空白作答卷，可打印 PDF）。与学生卷配套：只承接作答，**不出题面、不含答案**。
+
+- 考生信息栏（学号/姓名/考场/座位号/专业名称）置于信息头与题次表之间，底部不再重复学号栏。
+- 客观题（单选/多选/判断）→ 题号表格 + 空白答案格，每 10 题换行防溢出。
+- 其余题型 → 逐题「题号 + 分值 + 作答横线」，行数按分值取 2~8 行。
+- 综合题 → 按 `subquestions` 逐问给出「（1）题面（4分）」+ 独立作答横线。
+- 带三道装订线。
 
 ---
 

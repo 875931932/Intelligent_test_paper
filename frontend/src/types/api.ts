@@ -471,6 +471,8 @@ export interface PaperVersionItem {
   answer: string | boolean;
   /** 模型产出，部分题型为 null，前端需降级 */
   explanation?: string | null;
+  /** 综合题分问（含每问 prompt/score/answer），非综合题为空数组；导出与答题卡依赖它 */
+  subquestions?: Array<Record<string, unknown>>;
   score: number;
   difficulty?: string;
   cognitive_level?: string;

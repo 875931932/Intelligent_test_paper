@@ -478,6 +478,9 @@ def get_paper_version(
             "options": options,
             "answer": answer,
             "explanation": override.get("explanation", payload.get("explanation")),
+            # 综合题分问（prompt/每问分值/逐问答案）此前只留在 payload 里没取出来，
+            # 导出渲染拿不到，整段分问被整题丢掉；答卷与答题卡都依赖它。
+            "subquestions": override.get("subquestions") or payload.get("subquestions") or [],
             "score": override.get("score", plan_score),
             "question_type": override.get("question_type") or payload.get("question_type"),
             "difficulty": override.get("difficulty") or payload.get("difficulty"),
@@ -1084,6 +1087,10 @@ _SECTION_ORDER = [
 
 _CN_NUMERALS = "一二三四五六七八九十"
 
+# 客观题答案可压缩成单个字母/对错 → 答题卡用题号表格作答；
+# 其余题型需要成段作答空间 → 答题卡给横线区。
+_OBJECTIVE_TYPES = {"single_choice", "multiple_choice", "true_false"}
+
 # 题干自带的层级编号（"1." / "1.1" / "1.1."）与分值前缀（"（10分）"）。
 # 剥离后再加导出题号，否则会叠成用户看到的「1.1.」「2.2.」。
 # 单独编号里的点不能紧跟数字（否则 "3.14是圆周率" 会被误剥成 "14是…"）；
@@ -1165,14 +1172,15 @@ def _section_groups(questions: list[dict]) -> list[dict]:
     return groups
 
 
-def _section_caption(group: dict) -> str:
-    """「一、选择题（共10题，每题2分，共20分）」；分值不统一时省略"每题X分"。"""
+def _section_caption(group: dict, *, hint: str = "") -> str:
+    """「一、选择题（共10题，每题2分，共20分）」；分值不统一时省略"每题X分"。
+    hint 用于学生卷节标题后缀（如「（将答案写在答题纸上）」）。"""
     count = len(group["items"])
     per = group["per_score"]
     total = _trim_number(group["total"])
     head = f"{group['ordinal']}、{_q_type_label(group['type'])}（共{count}题，"
     body = f"每题{_trim_number(per)}分，共{total}分）" if per is not None else f"共{total}分）"
-    return head + body
+    return head + body + hint
 
 
 def _trim_number(value: Any) -> str:
@@ -1213,8 +1221,12 @@ def _exam_shell(
     body: str,
     binding_lines: bool,
     footer_note: str,
+    lead: str = "",
+    sign_row: bool = True,
 ) -> str:
-    """三份导出共用的正式卷面外壳：信息头 + 题次表 +（可选）装订线 + 页脚。"""
+    """三份导出共用的正式卷面外壳：信息头 +（可选）首栏 + 题次表 +（可选）装订线 + 页脚。
+    lead 插在信息头与题次表之间（答题卡的考生信息栏）；sign_row 关掉底部学号/姓名栏，
+    避免与 lead 重复。"""
     info_line = (
         f"课程名称：{_esc(meta['course_name']) or '＿＿＿＿＿＿'}"
         f"&emsp;&emsp;总分：{_trim_number(meta['total_score'])}分"
@@ -1229,6 +1241,12 @@ def _exam_shell(
         '<div class="binding binding-center">装订线</div>'
         '<div class="binding binding-right">装订线</div>'
         if binding_lines
+        else ""
+    )
+    sign_row_html = (
+        '<div class="sign-row"><span>学号：＿＿＿＿＿＿＿＿＿＿</span>'
+        "<span>姓名：＿＿＿＿＿＿＿＿＿＿</span></div>"
+        if sign_row
         else ""
     )
     return f"""<!DOCTYPE html>
@@ -1264,6 +1282,25 @@ def _exam_shell(
   .write-area {{ margin: 8px 0 4px; }}
   .write-area .blank-line {{ height: 26px; }}
   .score-box {{ font-size: 13px; color: #6e6e73; margin-bottom: 2px; }}
+  .code {{ font-family: 'Consolas','Courier New',monospace; font-size: 13px; line-height: 1.6;
+           background: #f5f5f7; border: 1px solid #e5e5e7; border-radius: 4px;
+           padding: 10px 12px; margin: 8px 0; white-space: pre-wrap; overflow-x: auto; }}
+  .q-subs {{ padding-left: 26px; margin-top: 6px; }}
+  .q-sub {{ font-size: 14px; line-height: 1.9; }}
+  .q-sub .sub-no {{ font-weight: 700; }}
+  .q-sub .sub-score {{ color: #6e6e73; font-weight: 400; }}
+  .q-sub-answer {{ font-size: 13px; line-height: 1.8; color: #1a7e34; margin: 2px 0 8px; }}
+  .id-row {{ display: flex; flex-wrap: wrap; gap: 8px 26px; font-size: 13px;
+             padding: 9px 12px; margin-bottom: 14px; border: 1px solid #1d1d1f; }}
+  .card-question {{ margin-bottom: 18px; page-break-inside: avoid; }}
+  .card-q-head {{ display: flex; justify-content: space-between; align-items: baseline;
+                  font-size: 13.5px; margin-bottom: 2px; }}
+  .card-q-head .q-no {{ font-weight: 700; }}
+  .card-q-score {{ color: #6e6e73; }}
+  .card-sub {{ font-size: 13.5px; line-height: 1.8; margin-top: 6px; }}
+  .card-sub .sub-no {{ font-weight: 700; }}
+  .card-grid th {{ min-width: 34px; }}
+  .card-grid td.blank-cell {{ height: 32px; min-width: 34px; }}
   .sign-row {{ display: flex; gap: 28px; margin-top: 30px; font-size: 13px; }}
   .binding {{ position: fixed; top: 0; bottom: 0; writing-mode: vertical-rl; text-align: center;
               font-size: 12px; color: #8e8e93; letter-spacing: 6px; }}
@@ -1279,9 +1316,10 @@ def _exam_shell(
   <h1 class="doc-title">{_esc(title)}</h1>
   <div class="doc-subtitle">{_esc(meta['project_name'])}</div>
   <table class="info-table"><tr><td>{info_line}</td></tr><tr><td>{blank_line}</td></tr></table>
+  {lead}
   {sections_table}
   {body}
-  <div class="sign-row"><span>学号：＿＿＿＿＿＿＿＿＿＿</span><span>姓名：＿＿＿＿＿＿＿＿＿＿</span></div>
+  {sign_row_html}
   <div class="footer">{_esc(footer_note)}</div>
 </body></html>"""
 
@@ -1321,14 +1359,82 @@ def _answer_display(q: dict) -> str:
     return _answer_text(q.get("answer"))
 
 
+# 题干末尾已有的作答括号（模型有时会自己写），避免补成「（  ）（  ）」
+_ANSWER_BLANK_RE = re.compile(r"（\s*）\s*$")
+
+# 分问题面自带的编号：「（2）」「(2)」「2.」「2、」
+_SUB_INDEX_RE = re.compile(r"^\s*(?:[（(]\s*\d{1,2}\s*[）)]|\d{1,2}\s*[、．.)])\s*")
+
+
+def _answer_blank(qtype: str) -> str:
+    """客观题作答括号：单/多选宽、判断窄，与命题范本一致。"""
+    return "（  ）" if qtype in {"single_choice", "multiple_choice"} else "（ ）"
+
+
+def _stem_html(stem: str) -> str:
+    """题干转 HTML：``` 围栏切成等宽代码块（综合题的补全代码场景），其余整段转义。"""
+    if "```" not in (stem or ""):
+        return _esc(stem)
+    pieces: list[str] = []
+    for i, chunk in enumerate(stem.split("```")):
+        if i % 2 == 0:
+            if chunk.strip():
+                pieces.append(_esc(chunk.strip()))
+            continue
+        # 代码段首行是语言标记（```python），不是代码本体
+        lines = chunk.split("\n", 1)
+        code = lines[1] if len(lines) > 1 else lines[0]
+        pieces.append(f'<pre class="code">{_esc(code.rstrip())}</pre>')
+    return "".join(pieces)
+
+
+def _sub_prompt(sub: Any) -> str:
+    """分问题面。历史数据可能退化成纯字符串，按 dict/str 两种形态兜底；
+    模型常照「分问（1）/（2）」的指令把编号写进 prompt，而导出要自己编号，
+    先剥掉否则会叠成「（2）（2）」。"""
+    if isinstance(sub, dict):
+        text = str(sub.get("prompt") or "")
+    else:
+        text = str(sub)
+    # 只剥 1~2 位的编号：（2024）这种年份开头的题面不能误伤
+    return _SUB_INDEX_RE.sub("", _strip_stem_noise(text)).strip()
+
+
+def _sub_score(sub: Any) -> Any:
+    return sub.get("score") if isinstance(sub, dict) else None
+
+
+def _render_subquestions(subs: list[Any], *, with_answer: bool) -> str:
+    """综合题分问：（1）题面（6分）；答卷额外给出逐问答案。"""
+    rows: list[str] = []
+    for i, sub in enumerate(subs, start=1):
+        prompt = _sub_prompt(sub)
+        score = _sub_score(sub)
+        tail = f'<span class="sub-score">（{_trim_number(score)}分）</span>' if score is not None else ""
+        rows.append(f'<div class="q-sub"><span class="sub-no">（{i}）</span> {_esc(prompt)}{tail}</div>')
+        if with_answer:
+            sub_answer = _answer_text(sub.get("answer") if isinstance(sub, dict) else None)
+            if sub_answer:
+                rows.append(
+                    f'<div class="q-sub-answer"><span class="ans-label">【答案】</span>{_esc(sub_answer)}</div>'
+                )
+    return f'<div class="q-subs">{"".join(rows)}</div>'
+
+
 def _render_question_html(q: dict, *, with_answer: bool) -> str:
-    """渲染单题。with_answer=True 时给出答案（答卷）。"""
+    """渲染单题。with_answer=True 时给出答案与难度元信息（答卷）；
+    False 只出题面与作答位（学生卷）——难度属内部信息，不下发到卷面。"""
     stem = _strip_stem_noise(str(q.get("stem", "")))
+    qtype = q.get("question_type") or ""
     options = q.get("options") or []
     answer_text = _answer_text(q.get("answer"))
     keys = _answer_keys(q)
 
-    parts = [f'<div class="q-stem"><span class="q-no">{q.get("item_index", 0)}.</span> {_esc(stem)}</div>']
+    stem_html = _stem_html(stem)
+    if not with_answer and qtype in _OBJECTIVE_TYPES and not _ANSWER_BLANK_RE.search(stem_html):
+        stem_html += _answer_blank(qtype)
+
+    parts = [f'<div class="q-stem"><span class="q-no">{q.get("item_index", 0)}.</span> {stem_html}</div>']
 
     if options:
         option_html = []
@@ -1341,6 +1447,10 @@ def _render_question_html(q: dict, *, with_answer: bool) -> str:
             option_html.append(f"<div{css}>{label}. {_esc(text)}{mark}</div>")
         parts.append(f'<div class="q-options">{"".join(option_html)}</div>')
 
+    subs = q.get("subquestions") or []
+    if subs:
+        parts.append(_render_subquestions(subs, with_answer=with_answer))
+
     if with_answer:
         if answer_text:
             parts.append(
@@ -1352,12 +1462,20 @@ def _render_question_html(q: dict, *, with_answer: bool) -> str:
             )
         if q.get("explanation"):
             parts.append(f'<div class="q-explain">解析：{_esc(q["explanation"])}</div>')
-
-    parts.append(
-        f'<div class="q-meta">难度：{_esc(_difficulty_label(q.get("difficulty")))}'
-        f' ｜ 分值：{_trim_number(q.get("score") or 0)}分</div>'
-    )
+        parts.append(
+            f'<div class="q-meta">难度：{_esc(_difficulty_label(q.get("difficulty")))}'
+            f' ｜ 分值：{_trim_number(q.get("score") or 0)}分</div>'
+        )
     return f'<div class="question">{"".join(parts)}</div>'
+
+
+def _answer_hint(qtype: str, *, with_answer: bool) -> str:
+    """学生卷每节标注答案写到哪里（答案实际落在答题卡上）；答卷含答案，不再提示。"""
+    if with_answer:
+        return ""
+    if qtype == "true_false":
+        return "（将答案写在答题纸上，对的打钩 √ ，错的打叉 ×）"
+    return "（将答案写在答题纸上）"
 
 
 def _render_sections(groups: list[dict], *, with_answer: bool) -> str:
@@ -1367,10 +1485,11 @@ def _render_sections(groups: list[dict], *, with_answer: bool) -> str:
         for q in group["items"]:
             questions.append(_render_question_html(q, with_answer=with_answer))
         grid = ""
-        if with_answer and group["type"] in {"single_choice", "multiple_choice", "true_false"}:
+        if with_answer and group["type"] in _OBJECTIVE_TYPES:
             grid = _answer_grid_html(group["items"])
+        hint = _answer_hint(group["type"], with_answer=with_answer)
         blocks.append(
-            f'<div class="section"><h2 class="section-title">{_esc(_section_caption(group))}</h2>'
+            f'<div class="section"><h2 class="section-title">{_esc(_section_caption(group, hint=hint))}</h2>'
             f"{grid}{''.join(questions)}</div>"
         )
     return "".join(blocks)
@@ -1433,7 +1552,7 @@ def export_student_paper_html(
         sections_table=_sections_table_html(groups),
         body=body,
         binding_lines=False,
-        footer_note=f"学生卷 ｜ 试卷版本 v{meta['version_no']} ｜ 请将答案作答在答卷上",
+        footer_note=f"学生卷 ｜ 试卷版本 v{meta['version_no']} ｜ 请将答案作答在答题卡上",
     )
 
 
@@ -1461,4 +1580,103 @@ def export_answer_key_html(
         body=_render_sections(groups, with_answer=True),
         binding_lines=True,
         footer_note=hint,
+    )
+
+
+def _write_lines(count: int) -> str:
+    """成段作答横线（`.blank-line`），行数由分值推导。"""
+    return "".join('<div class="blank-line"></div>' for _ in range(count))
+
+
+def _line_count(score: Any, *, default: int) -> int:
+    """作答横线行数跟分值走，夹在 2~8 行：低分题不占半页，高分题也写得下。"""
+    try:
+        n = int(round(float(score)))
+    except (TypeError, ValueError):
+        n = default
+    return max(2, min(8, n))
+
+
+def _answer_card_grid(questions: list[dict], *, per_row: int = 10) -> str:
+    """答题卡客观题作答表格：题号一行、空白答案格一行，超 10 题继续换行不溢出。"""
+    rows: list[str] = []
+    for start in range(0, len(questions), per_row):
+        chunk = questions[start : start + per_row]
+        nums = "".join(f"<th>{q['item_index']}</th>" for q in chunk)
+        cells = "".join('<td class="blank-cell"></td>' for _ in chunk)
+        rows.append(f'<tr><th>{"题号" if start == 0 else ""}</th>{nums}</tr>')
+        rows.append(f'<tr><th>{"答案" if start == 0 else ""}</th>{cells}</tr>')
+    return f'<table class="answer-grid card-grid">{"".join(rows)}</table>'
+
+
+def _render_card_question(q: dict) -> str:
+    """答题卡主观题：题号 + 分值 +（综合题）分问 + 成段作答横线；不出题面，
+    题面在学生卷上，答题卡只负责承接作答。"""
+    subs = q.get("subquestions") or []
+    rows: list[str] = []
+    if subs:
+        for i, sub in enumerate(subs, start=1):
+            prompt = _sub_prompt(sub)
+            score = _sub_score(sub)
+            tail = f"（{_trim_number(score)}分）" if score is not None else ""
+            rows.append(
+                f'<div class="card-sub"><span class="sub-no">（{i}）</span> '
+                f"{_esc(prompt)}{_esc(tail)}</div>"
+            )
+            rows.append(_write_lines(_line_count(score, default=4)))
+    else:
+        rows.append(_write_lines(_line_count(q.get("score"), default=5)))
+    return (
+        f'<div class="card-question">'
+        f'<div class="card-q-head"><span class="q-no">{q.get("item_index", 0)}.</span>'
+        f'<span class="card-q-score">{_trim_number(q.get("score") or 0)}分</span></div>'
+        f'{"".join(rows)}</div>'
+    )
+
+
+def _render_answer_card_sections(groups: list[dict]) -> str:
+    """答题卡分节：客观题 → 题号表格；其余 → 逐题作答横线区。"""
+    blocks = []
+    for group in groups:
+        if group["type"] in _OBJECTIVE_TYPES:
+            inner = _answer_card_grid(group["items"])
+        else:
+            inner = "".join(_render_card_question(q) for q in group["items"])
+        blocks.append(
+            f'<div class="section"><h2 class="section-title">{_esc(_section_caption(group))}</h2>'
+            f"{inner}</div>"
+        )
+    return "".join(blocks)
+
+
+def export_answer_card_html(
+    session: Session,
+    paper_version_id: str,
+    *,
+    course_id: str,
+) -> str:
+    """答题卡：学生作答用空卷（考生信息栏 + 客观题题号表格 + 主观题成段作答区）。
+    不含题面与答案，与学生卷配套使用。"""
+    pv = get_paper_version(session, paper_version_id, course_id=course_id)
+    questions = pv.get("questions", [])
+    groups = _section_groups(questions)
+    meta = _paper_meta(session, course_id=course_id, pv=pv)
+    meta["question_count"] = len(questions)
+    return _exam_shell(
+        title="答题卡",
+        meta=meta,
+        sections_table=_sections_table_html(groups),
+        body=_render_answer_card_sections(groups),
+        binding_lines=True,
+        lead=(
+            '<div class="id-row">'
+            "<span>学号：＿＿＿＿＿＿＿＿</span>"
+            "<span>姓名：＿＿＿＿＿＿</span>"
+            "<span>考场：＿＿＿＿</span>"
+            "<span>座位号：＿＿＿＿</span>"
+            "<span>专业名称：＿＿＿＿＿＿</span>"
+            "</div>"
+        ),
+        sign_row=False,
+        footer_note=f"答题卡 ｜ 试卷版本 v{meta['version_no']} ｜ 请按题号作答，勿折叠污损",
     )
