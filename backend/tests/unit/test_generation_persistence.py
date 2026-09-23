@@ -269,6 +269,55 @@ def test_enqueue_idempotent(session):
         .where(task_runs.c.course_id == "c1", task_runs.c.task_type == "generation_run")
     ).scalar_one()
     assert cnt == 1
+    # 任务仍在途（queued）→ 幂等生效，run 不变
+    proj = session.execute(select(exam_projects).where(exam_projects.c.id == "ep1")).one()
+    assert proj._mapping["active_generation_run_id"] == gr_id
+
+
+def test_enqueue_after_terminal_mints_new_run(session):
+    """同 run 的任务已终态时再入队必须换 run。
+
+    否则「重新生成」只会拿回同一条已 succeeded 的任务：界面显示"生成完成"，
+    却没有新任务、没有新试卷版本，整个入口是个空操作。
+    """
+    gr_id, _ = _setup_pipeline(session)
+    t1 = enqueue_generation(session, course_id="c1", project_id="ep1")
+    # 把任务推到终态，模拟上一次生成已经结束
+    session.execute(
+        task_runs.update().where(task_runs.c.id == t1).values(status="succeeded")
+    )
+    session.commit()
+
+    t2 = enqueue_generation(session, course_id="c1", project_id="ep1")
+
+    assert t2 != t1
+    proj = session.execute(select(exam_projects).where(exam_projects.c.id == "ep1")).one()
+    new_run = proj._mapping["active_generation_run_id"]
+    assert new_run != gr_id, "终态后再入队必须铸造新的 generation_run"
+    # 新任务必须指向新 run：否则 runner 会往旧 run 补写 revision_no=1，
+    # 撞上 generated_questions 的唯一约束
+    tr = session.execute(select(task_runs).where(task_runs.c.id == t2)).one()
+    assert tr._mapping["payload"]["generation_run_id"] == new_run
+    cnt = session.execute(
+        select(func.count()).select_from(task_runs)
+        .where(task_runs.c.course_id == "c1", task_runs.c.task_type == "generation_run")
+    ).scalar_one()
+    assert cnt == 2
+
+
+def test_enqueue_after_failed_task_also_rerolls(session):
+    """failed 态同样不能返回旧任务——失败后点「重新生成」应真正重跑。"""
+    gr_id, _ = _setup_pipeline(session)
+    t1 = enqueue_generation(session, course_id="c1", project_id="ep1")
+    session.execute(
+        task_runs.update().where(task_runs.c.id == t1).values(status="failed")
+    )
+    session.commit()
+
+    t2 = enqueue_generation(session, course_id="c1", project_id="ep1")
+    assert t2 != t1
+    proj = session.execute(select(exam_projects).where(exam_projects.c.id == "ep1")).one()
+    assert proj._mapping["active_generation_run_id"] != gr_id
 
 
 # --- TR-4.2 ---

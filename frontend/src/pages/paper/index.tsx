@@ -102,12 +102,29 @@ export default function PaperPage() {
     const hasPaper =
       (source.total_score ?? 0) > 0 || (source.item_count ?? 0) > 0
       || !!source.paper_version_id || paper !== null;
-    const pv = hasPaper
-      ? await api.paperVersions.getCurrent(courseId, activeProject.id, token ?? undefined).catch(() => null)
-      : null;
-    setPaper(pv);
+    if (!hasPaper) {
+      setPaper(null);
+    } else {
+      // 生成刚完成时 paper 还是 null：不打 loading 就会先闪一屏
+      // 「该项目还没有生成试卷」，再跳回试卷内容，像数据丢了。
+      // paper 已有值时不亮 loading，继续展示旧内容，避免刷新闪烁。
+      setPaperLoading(true);
+      try {
+        const pv = await api.paperVersions.getCurrent(courseId, activeProject.id, token ?? undefined).catch(() => null);
+        setPaper(pv);
+      } finally {
+        setPaperLoading(false);
+      }
+    }
     const list = await api.examProjects.list(courseId, token ?? undefined).catch(() => null);
     if (list) setProjects(list);
+  };
+
+  /** 只刷项目摘要：确认合同会推进 status，页头徽章不能停在旧状态 */
+  const refreshProject = async () => {
+    if (!activeProject) return;
+    const fresh = await api.examProjects.get(courseId, activeProject.id, token ?? undefined).catch(() => null);
+    if (fresh) setActiveProject(fresh);
   };
 
   const handleCreateProject = async () => {
@@ -312,22 +329,26 @@ export default function PaperPage() {
         </div>
       </div>
 
-      {tab === 'pipeline' ? (
-        <div className="glass-card" style={{ padding: '24px' }}>
-          <PipelinePanel
-            sp={sp}
-            courseId={courseId}
-            stageRequest={stageRequest}
-            onOpenPaper={() => {
-              void refreshPaperAndProject();
-              setTab('paper');
-            }}
-            onBlueprintCreated={(blueprintVersionId) => {
-              setActiveProject({ ...sp, active_blueprint_version_id: blueprintVersionId, status: 'blueprint' });
-            }}
-          />
-        </div>
-      ) : paperLoading && !paper ? (
+      {/* 流水线常驻挂载，切到试卷页签只隐藏不卸载：生成任务的轮询在
+          PipelinePanel 内部，条件渲染会让教师一切页签就中断轮询、
+          永远等不到「生成完成」的提示。 */}
+      <div className="glass-card" style={{ padding: '24px', display: tab === 'pipeline' ? undefined : 'none' }}>
+        <PipelinePanel
+          sp={sp}
+          courseId={courseId}
+          stageRequest={stageRequest}
+          onOpenPaper={() => {
+            void refreshPaperAndProject();
+            setTab('paper');
+          }}
+          onBlueprintCreated={(blueprintVersionId) => {
+            setActiveProject({ ...sp, active_blueprint_version_id: blueprintVersionId, status: 'blueprint' });
+          }}
+          onProjectChanged={() => { void refreshProject(); }}
+        />
+      </div>
+
+      {tab === 'pipeline' ? null : paperLoading && !paper ? (
         <div className="glass-card" style={{ padding: '48px 20px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>
           正在加载试卷…
         </div>

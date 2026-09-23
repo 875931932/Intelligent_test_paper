@@ -161,8 +161,10 @@ const QuestionEditor = forwardRef<QuestionEditorHandle, {
   showActions: boolean;
   onSubmit: (v: EditorSubmit) => void;
   onCancel: () => void;
+  /** 草稿相对 initial 是否有改动；父级凭它在切题/翻题/换序前拦一次 */
+  onDirtyChange?: (dirty: boolean) => void;
 }>(function QuestionEditor(
-  { initial, needsReview, submitting, submitLabel, showActions, onSubmit, onCancel },
+  { initial, needsReview, submitting, submitLabel, showActions, onSubmit, onCancel, onDirtyChange },
   ref,
 ) {
   const [d, setD] = useState<Draft>(initial);
@@ -172,13 +174,23 @@ const QuestionEditor = forwardRef<QuestionEditorHandle, {
 
   const patch = (p: Partial<Draft>) => setD((prev) => ({ ...prev, ...p }));
 
+  // initial 每次渲染都是新对象，按内容比较而非引用；只在草稿变化时上报。
+  useEffect(() => {
+    onDirtyChange?.(JSON.stringify(d) !== JSON.stringify(initial));
+  }, [d, initial, onDirtyChange]);
+
   const changeType = (t: string) => {
     const nextChoice = hasOptions(t);
-    patch({
-      question_type: t,
-      options: nextChoice ? (d.options.length > 0 ? d.options : [{ key: 'A', text: '' }, { key: 'B', text: '' }]) : [],
-      answer: nextChoice ? d.answer : '',
-    });
+    const options = nextChoice
+      ? (d.options.length > 0 ? d.options : [{ key: 'A', text: '' }, { key: 'B', text: '' }])
+      : [];
+    // 切到选择题时旧答案多半是一段文字（如简答的评分要点），作为选项答案非法；
+    // 只有能解析成选项字母（或恰好等于某个选项原文）才保留，否则清空重填。
+    // 判断题答案是布尔值、本就无对应字母，沿用原逻辑直接清空。
+    const answer = nextChoice
+      ? (optionKeysOf(d.answer, options.map((o) => o.text)).size > 0 ? d.answer : '')
+      : '';
+    patch({ question_type: t, options, answer });
   };
 
   const submit = () => {
@@ -196,6 +208,11 @@ const QuestionEditor = forwardRef<QuestionEditorHandle, {
 
   // 供 Modal footer 之类的容器触发提交，避免把表单 state 提到父级
   useImperativeHandle(ref, () => ({ submit }));
+
+  // 选项字母随 d.answer / d.options 每次渲染都要用；原先在选项行里内联算 3 次
+  // （图标、配色、文案各一次），提到这里算一次即可。
+  const optionTexts = d.options.map((o) => o.text);
+  const ansKeys = choice ? optionKeysOf(d.answer, optionTexts) : new Set<string>();
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -232,11 +249,11 @@ const QuestionEditor = forwardRef<QuestionEditorHandle, {
                 <input className="input-field" style={{ flex: 1 }} value={o.text} onChange={(e) => patch({ options: d.options.map((x, i) => (i === oi ? { ...x, text: e.target.value } : x)) })} />
                 <Button
                   variant="ghost" size="sm"
-                  onClick={() => patch({ answer: toggleAnswerKey(optionKeysOf(d.answer, d.options.map((o) => o.text)), o.key, multi) })}
-                  style={optionKeysOf(d.answer, d.options.map((o) => o.text)).has(o.key) ? { color: 'var(--success)' } : undefined}
+                  onClick={() => patch({ answer: toggleAnswerKey(ansKeys, o.key, multi) })}
+                  style={ansKeys.has(o.key) ? { color: 'var(--success)' } : undefined}
                   title={multi ? '切换选中' : '设为答案'}
                 >
-                  <Check size={14} /> {optionKeysOf(d.answer, d.options.map((o) => o.text)).has(o.key) ? '是答案' : '设为答案'}
+                  <Check size={14} /> {ansKeys.has(o.key) ? '是答案' : '设为答案'}
                 </Button>
                 <Button variant="ghost" size="sm" onClick={() => patch({ options: d.options.filter((_, i) => i !== oi) })} icon={<Trash2 size={14} />} />
               </div>
@@ -305,6 +322,7 @@ function PaperProfile({
   });
   const pending = questions.filter((q) => q.needs_review || q.needs_review_reason).length;
   const overridden = questions.filter((q) => q.has_override).length;
+  const missing = questions.filter((q) => !normalizeAnswer(q.answer)).length;
   const psm = PAPER_STATUS_META[pv.status] ?? { label: pv.status, variant: 'default' as const };
   const orderedTypes = [...typeAcc.keys()].sort(
     (a, b) => QUESTION_TYPE_ORDER.indexOf(a) - QUESTION_TYPE_ORDER.indexOf(b),
@@ -339,6 +357,7 @@ function PaperProfile({
             <span>难度：{['easy', 'medium', 'hard'].map((d) => `${dlabel(d)} ${diffAcc.get(d) ?? 0}`).join(' · ')}</span>
             <span>覆盖 {examPointCount} 个考点</span>
             {overridden > 0 && <span>已修改 {overridden} 题</span>}
+            {missing > 0 && <span style={{ color: 'var(--error)', fontWeight: 600 }}>缺答案 {missing} 题</span>}
             {pending > 0 && <span style={{ color: 'var(--warning)', fontWeight: 600 }}>待审核 {pending} 题</span>}
           </div>
           {project && (
@@ -375,6 +394,12 @@ function QuestionIndex({
   selected: number;
   onSelect: (itemIndex: number) => void;
 }) {
+  // 键盘 ↑/↓ 翻到视野外的题时，左栏要跟着滚，否则教师看不到高亮跳到了哪。
+  const activeRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    activeRef.current?.scrollIntoView({ block: 'nearest' });
+  }, [selected]);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
       {groups.map((g) => (
@@ -393,6 +418,7 @@ function QuestionIndex({
             return (
               <button
                 key={item.item_index}
+                ref={active ? activeRef : undefined}
                 onClick={() => onSelect(item.item_index)}
                 style={{
                   width: '100%', display: 'flex', alignItems: 'center', gap: '8px',
@@ -435,7 +461,7 @@ function QuestionIndex({
 
 function QuestionDetail({
   item, examPointName, editing, readonly, submitting,
-  hasPrev, hasNext, onEdit, onCancelEdit, onSave, onDelete, onMove, onPrev, onNext,
+  hasPrev, hasNext, onEdit, onCancelEdit, onSave, onDelete, onMove, onPrev, onNext, onDirtyChange,
 }: {
   item: PaperVersionItem;
   examPointName?: string;
@@ -451,6 +477,7 @@ function QuestionDetail({
   onMove: (dir: -1 | 1) => void;
   onPrev: () => void;
   onNext: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
 }) {
   const flagged = item.needs_review || !!item.needs_review_reason;
   const opts = optionsToEntries(item.options);
@@ -494,6 +521,7 @@ function QuestionDetail({
             showActions
             onSubmit={onSave}
             onCancel={onCancelEdit}
+            onDirtyChange={onDirtyChange}
           />
           <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }}>
             <Button variant="danger" size="sm" onClick={onDelete} icon={<Trash2 size={14} />}>删除本题</Button>
@@ -601,17 +629,45 @@ export default function PaperPanel({
   const [adding, setAdding] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [finalizeOpen, setFinalizeOpen] = useState(false);
+  // 右栏编辑器草稿是否有未保存改动：切题/翻题/换序都会让编辑器随 key 重挂载、
+  // 草稿蒸发，靠它在这些动作前拦一次确认。
+  const [dirty, setDirty] = useState(false);
   const addEditorRef = useRef<QuestionEditorHandle | null>(null);
+
+  // QuestionEditor 未挂载时不主动清脏标记：保存成功后由 handleSave 归零，
+  // 否则「刚保存完就切题」仍会被自己拦住。
+  const reportDirty = (v: boolean) => setDirty(v);
+
+  /** 放行前确认丢弃未保存草稿；返回 false 表示教师选择留下 */
+  const guardDirty = (): boolean => {
+    if (!editing || !dirty) return true;
+    const ok = window.confirm('当前题目的修改尚未保存，切换将丢弃这些改动。仍要切换吗？');
+    if (ok) setDirty(false);
+    return ok;
+  };
+
+  /** 定稿提示里的题号 chip：关弹窗、退出筛选、落到该题 */
+  const jumpTo = (idx: number) => {
+    setOnlyNeedsReview(false);
+    setEditing(false);
+    setDirty(false);
+    setSelected(idx);
+    setFinalizeOpen(false);
+  };
 
   useEffect(() => {
     void reloadMaps();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [courseId]);
 
-  // 试卷刷新后保持选中项；原选中题被删则落到第一题
+  // 试卷刷新后保持选中项；原选中题被删则落到最近的位置——删的是最后一题就
+  // 落到新的最后一题（即原前一题），否则一律落到第一题。
   useEffect(() => {
     if (questions.length > 0 && !questions.some((q) => q.item_index === selected)) {
-      setSelected(questions[0].item_index);
+      const last = questions[questions.length - 1].item_index;
+      setSelected(selected > last ? last : questions[0].item_index);
+      setEditing(false);
+      setDirty(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pv.id, questions.length]);
@@ -645,25 +701,29 @@ export default function PaperPanel({
     () => questions.filter((q) => q.needs_review || q.needs_review_reason),
     [questions],
   );
+  // 缺答案的题导出答卷时会标「缺答案」：定稿前必须让教师知道，
+  // 否则定稿后才发现，只能撤销定稿再补。
+  const missingItems = useMemo(
+    () => questions.filter((q) => !normalizeAnswer(q.answer)),
+    [questions],
+  );
 
   const step = (dir: -1 | 1) => {
     const next = navList[navIdx + dir];
-    if (next) {
-      setSelected(next.item_index);
-      setEditing(false);
-    }
+    if (!next || !guardDirty()) return;
+    setSelected(next.item_index);
+    setEditing(false);
   };
 
   // 打开「仅看待审核」时，若当前题被滤掉就跳到第一道待审题，避免右栏空着
   const toggleFilter = () => {
+    if (!guardDirty()) return;
     const next = !onlyNeedsReview;
     setOnlyNeedsReview(next);
+    setEditing(false);
     if (next) {
       const first = questions.find((q) => q.needs_review || q.needs_review_reason);
-      if (first) {
-        setSelected(first.item_index);
-        setEditing(false);
-      }
+      if (first) setSelected(first.item_index);
     }
   };
 
@@ -679,7 +739,7 @@ export default function PaperPanel({
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [navList, navIdx, editing, addOpen, finalizeOpen]);
+  }, [navList, navIdx, editing, dirty, addOpen, finalizeOpen]);
 
   // ── 编辑操作 ──
 
@@ -693,6 +753,7 @@ export default function PaperPanel({
       });
       addToast(`第 ${idx} 题已保存`, 'success');
       setEditing(false);
+      setDirty(false);
       onChanged();
     } catch (e) {
       addToast('保存失败: ' + getErrorMessage(e), 'error');
@@ -708,6 +769,7 @@ export default function PaperPanel({
       await api.paperVersions.deleteItem(courseId, pv.id, idx, token ?? undefined);
       addToast('题目已删除', 'success');
       setEditing(false);
+      setDirty(false);
       onChanged();
     } catch (e) {
       addToast('删除失败: ' + getErrorMessage(e), 'error');
@@ -717,15 +779,26 @@ export default function PaperPanel({
   };
 
   const handleMove = async (pos: number, dir: -1 | 1) => {
+    // 换序同样会让编辑器重挂载（item_index 变了、key 变了），先过一遍脏检查
+    if (!guardDirty()) return;
     const ordered = questions.map((q) => q.item_index);
     const newPos = pos + dir;
     if (newPos < 0 || newPos >= ordered.length) return;
+    const movedIndex = ordered[pos];
     const tmp = ordered[pos];
     ordered[pos] = ordered[newPos];
     ordered[newPos] = tmp;
     setSaving(true);
     try {
       await api.paperVersions.reorderItems(courseId, pv.id, ordered, token ?? undefined);
+      // display_order 会被后端重排成 1..N：被移动的题从原题号变成 newPos+1。
+      // 不跟着改 selected 的话，右栏会停在同一个题号上、内容却换成了另一道题，
+      // 此时若仍处编辑态，保存会把 A 题的草稿写进 B 题的槽位。
+      if (movedIndex !== newPos + 1) {
+        setSelected(newPos + 1);
+        setEditing(false);
+        setDirty(false);
+      }
       onChanged();
     } catch (e) {
       addToast('调整顺序失败: ' + getErrorMessage(e), 'error');
@@ -740,6 +813,12 @@ export default function PaperPanel({
       await api.paperVersions.createItem(courseId, pv.id, { ...v }, token ?? undefined);
       addToast('新题已加入试卷末尾', 'success');
       setAddOpen(false);
+      // 新题排在末尾，题号 = 原题数 + 1；加完直接跳过去，省一次手动找题。
+      // 「仅看待审核」开着时新题不在左栏，顺手关掉，否则跳过去右栏是空的。
+      setOnlyNeedsReview(false);
+      setSelected(questions.length + 1);
+      setEditing(false);
+      setDirty(false);
       onChanged();
     } catch (e) {
       addToast('新增失败: ' + getErrorMessage(e), 'error');
@@ -762,7 +841,9 @@ export default function PaperPanel({
   };
 
   const handleFinalizeClick = () => {
-    if (pendingItems.length > 0) {
+    // 待审核与缺答案任一存在都先拦一道：前者后端会 409，后者不会——
+    // 不在前端提示就只能等导出答卷时看到「缺答案」标注。
+    if (pendingItems.length > 0 || missingItems.length > 0) {
       setFinalizeOpen(true);
       return;
     }
@@ -792,13 +873,46 @@ export default function PaperPanel({
     window.open(url, '_blank', 'noopener');
   };
 
+  const addModal = (
+    <Modal
+      open={addOpen}
+      onClose={() => setAddOpen(false)}
+      title="新增题目"
+      maxWidth="720px"
+      footer={
+        <>
+          <Button variant="secondary" onClick={() => setAddOpen(false)}>取消</Button>
+          <Button loading={adding} onClick={() => addEditorRef.current?.submit()} icon={<Plus size={14} />}>加入试卷</Button>
+        </>
+      }
+    >
+      <QuestionEditor
+        ref={addEditorRef}
+        initial={emptyDraft()}
+        needsReview={false}
+        submitting={adding}
+        submitLabel="加入试卷"
+        showActions={false}
+        onSubmit={handleAdd}
+        onCancel={() => setAddOpen(false)}
+      />
+    </Modal>
+  );
+
   if (questions.length === 0) {
     return (
-      <div className="glass-card" style={{ padding: '48px 20px', textAlign: 'center' }}>
-        <h3 style={{ fontWeight: 600, fontSize: '1rem', marginBottom: '8px' }}>这份试卷还没有题目</h3>
-        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-          生成完成后题目会出现在这里；也可以手动新增一道题目。
-        </p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+        <div className="glass-card" style={{ padding: '48px 20px', textAlign: 'center' }}>
+          <h3 style={{ fontWeight: 600, fontSize: '1rem', marginBottom: '8px' }}>这份试卷还没有题目</h3>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '18px' }}>
+            生成完成后题目会出现在这里；也可以手动新增一道题目。
+          </p>
+          {/* 文案承诺了「手动新增」就得给出入口，否则空卷无路可走 */}
+          {!readonly && (
+            <Button onClick={() => setAddOpen(true)} icon={<Plus size={16} />}>新增题目</Button>
+          )}
+        </div>
+        {addModal}
       </div>
     );
   }
@@ -837,7 +951,17 @@ export default function PaperPanel({
               没有待审核的题目
             </p>
           ) : (
-            <QuestionIndex groups={groups} selected={selected} onSelect={(idx) => { setSelected(idx); setEditing(false); }} />
+            <QuestionIndex
+              groups={groups}
+              selected={selected}
+              onSelect={(idx) => {
+                // 同题重复点击不弹确认；换题才过脏检查（换题会让编辑器重挂载）
+                if (idx === selected || !guardDirty()) return;
+                setSelected(idx);
+                setEditing(false);
+                setDirty(false);
+              }}
+            />
           )}
           {!readonly && (
             <div style={{ padding: '10px 6px 0', marginTop: '6px', borderTop: '1px solid rgba(0,0,0,0.06)' }}>
@@ -859,13 +983,14 @@ export default function PaperPanel({
               submitting={saving}
               hasPrev={navIdx > 0}
               hasNext={navIdx >= 0 && navIdx < navList.length - 1}
-              onEdit={() => setEditing(true)}
-              onCancelEdit={() => setEditing(false)}
+              onEdit={() => { setDirty(false); setEditing(true); }}
+              onCancelEdit={() => { setDirty(false); setEditing(false); }}
               onSave={(v) => handleSave(current.item_index, v)}
               onDelete={() => handleDelete(current.item_index)}
               onMove={(dir) => handleMove(questions.findIndex((q) => q.item_index === current.item_index), dir)}
               onPrev={() => step(-1)}
               onNext={() => step(1)}
+              onDirtyChange={reportDirty}
             />
           ) : (
             <div className="glass-card" style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>
@@ -878,34 +1003,12 @@ export default function PaperPanel({
         </div>
       </div>
 
-      <Modal
-        open={addOpen}
-        onClose={() => setAddOpen(false)}
-        title="新增题目"
-        maxWidth="720px"
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setAddOpen(false)}>取消</Button>
-            <Button loading={adding} onClick={() => addEditorRef.current?.submit()} icon={<Plus size={14} />}>加入试卷</Button>
-          </>
-        }
-      >
-        <QuestionEditor
-          ref={addEditorRef}
-          initial={emptyDraft()}
-          needsReview={false}
-          submitting={adding}
-          submitLabel="加入试卷"
-          showActions={false}
-          onSubmit={handleAdd}
-          onCancel={() => setAddOpen(false)}
-        />
-      </Modal>
+      {addModal}
 
       <Modal
         open={finalizeOpen}
         onClose={() => setFinalizeOpen(false)}
-        title="还有待审核的题目"
+        title={pendingItems.length > 0 ? '还有待审核的题目' : '有题目缺少答案'}
         maxWidth="520px"
         footer={
           <>
@@ -914,23 +1017,51 @@ export default function PaperPanel({
           </>
         }
       >
-        <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
-          以下 {pendingItems.length} 道题被质量检查标记为待审核，建议先逐题处理：
-        </p>
-        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '12px' }}>
-          {pendingItems.map((q) => (
-            <button
-              key={q.item_index}
-              onClick={() => { setSelected(q.item_index); setOnlyNeedsReview(false); setFinalizeOpen(false); }}
-              style={{
-                padding: '3px 10px', borderRadius: 999, fontSize: '0.78rem', fontWeight: 600,
-                background: 'var(--warning-subtle)', color: 'var(--warning)', border: 'none', cursor: 'pointer',
-              }}
-            >
-              第 {q.item_index} 题
-            </button>
-          ))}
-        </div>
+        {pendingItems.length > 0 && (
+          <>
+            <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+              以下 {pendingItems.length} 道题被质量检查标记为待审核，建议先逐题处理：
+            </p>
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '12px' }}>
+              {pendingItems.map((q) => (
+                <button
+                  key={q.item_index}
+                  onClick={() => jumpTo(q.item_index)}
+                  style={{
+                    padding: '3px 10px', borderRadius: 999, fontSize: '0.78rem', fontWeight: 600,
+                    background: 'var(--warning-subtle)', color: 'var(--warning)', border: 'none', cursor: 'pointer',
+                  }}
+                >
+                  第 {q.item_index} 题
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+        {missingItems.length > 0 && (
+          <>
+            <p style={{
+              fontSize: '0.875rem', color: 'var(--text-secondary)', lineHeight: 1.7,
+              marginTop: pendingItems.length > 0 ? '16px' : 0,
+            }}>
+              以下 {missingItems.length} 道题没有参考答案，导出答卷时会标注「缺答案」：
+            </p>
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginTop: '12px' }}>
+              {missingItems.map((q) => (
+                <button
+                  key={q.item_index}
+                  onClick={() => jumpTo(q.item_index)}
+                  style={{
+                    padding: '3px 10px', borderRadius: 999, fontSize: '0.78rem', fontWeight: 600,
+                    background: 'var(--error-subtle)', color: 'var(--error)', border: 'none', cursor: 'pointer',
+                  }}
+                >
+                  第 {q.item_index} 题
+                </button>
+              ))}
+            </div>
+          </>
+        )}
         <p style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', marginTop: '14px', lineHeight: 1.6 }}>
           也可以打开「仅看待审核」逐题核对。确已知悉时可选择「仍要定稿」。
         </p>

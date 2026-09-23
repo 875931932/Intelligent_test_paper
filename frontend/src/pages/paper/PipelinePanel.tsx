@@ -1,4 +1,4 @@
-import { useState, useEffect, Fragment, type ReactNode } from 'react';
+import { useState, useEffect, useRef, Fragment, type ReactNode } from 'react';
 import {
   ChevronRight, ArrowLeft, ArrowRight, RefreshCw, Check, PlayCircle,
   ClipboardList, FileText,
@@ -21,6 +21,13 @@ type ToastType = 'success' | 'error' | 'info';
 type ToastFn = (message: string, type?: ToastType) => void;
 
 const STAGE_ORDER: StageKey[] = ['blueprint', 'contract', 'generate'];
+
+// 任务状态口径与后端 ck_task_runs_status 对齐（schema.py）。轮询停不停、
+// 能否再次发起，都只认这两组，避免各自硬编码出不同的终态集合。
+const IN_FLIGHT_STATUSES = new Set(['queued', 'running', 'waiting_external']);
+const TERMINAL_TASK_STATUSES = new Set(['succeeded', 'failed', 'cancelled']);
+const isInFlight = (s: string) => IN_FLIGHT_STATUSES.has(s);
+const isTerminal = (s: string) => TERMINAL_TASK_STATUSES.has(s);
 
 const STAGE_META: Record<StageKey, { label: string; icon: ReactNode; color: string }> = {
   blueprint: { label: '蓝图', icon: <ClipboardList size={16} />, color: '#0071e3' },
@@ -286,7 +293,8 @@ function renderBlueprint({
         输入蓝图规划参数，系统将根据框架和知识目录生成命题计划。
       </p>
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-        <Button variant="secondary" onClick={() => setStep('contract')}>跳过</Button>
+        {/* 不提供「跳过」：合同分配必须读取蓝图题位，没有蓝图时进入合同阶段
+            只会撞一个 allocate 404，是条走不通的死路。 */}
         <Button onClick={handleCreateBlueprint} loading={bpCreating} icon={<PlayCircle size={16} />}>创建蓝图</Button>
       </div>
     </div>
@@ -296,17 +304,35 @@ function renderBlueprint({
 function renderContract({
   sp, courseId, setStep, contractVariant, setContractVariant,
   contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming,
-  contractAllocating, setContractAllocating, addToast, maps, planItems,
+  contractAllocating, setContractAllocating, setTaskRun, addToast, maps, planItems, onProjectChanged,
 }: {
   sp: ExamProject; courseId: string; setStep: (s: StageKey) => void;
   contractVariant: number; setContractVariant: (n: number) => void;
   contractSnapshot: ContractSnapshot | null; setContractSnapshot: (s: ContractSnapshot | null) => void;
   contractConfirming: boolean; setContractConfirming: (b: boolean) => void;
   contractAllocating: boolean; setContractAllocating: (b: boolean) => void;
+  /** 确认合同换 run，旧任务进度随之作废 */
+  setTaskRun: (tr: TaskRun | null) => void;
   addToast: ToastFn;
   maps: NameMaps;
   planItems: PlanItem[];
+  /** 确认合同会推进项目状态，父级据此刷新页头徽章 */
+  onProjectChanged: () => void;
 }) {
+  // 无蓝图时合同无从分配（后端要读蓝图题位），先拦一道，别让教师点出 404。
+  if (!sp.active_blueprint_version_id && !contractSnapshot) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <StageHeading title="分配合同" />
+        <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+          合同按蓝图题位分配，当前项目还没有蓝图。请先回到蓝图阶段创建蓝图。
+        </p>
+        <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+          <Button onClick={() => setStep('blueprint')}><ArrowLeft size={16} /> 返回蓝图</Button>
+        </div>
+      </div>
+    );
+  }
   // variantOverride：切换方案时 onChange 已把新版本号拿到手，直接用它发请求，
   // 不等 state 重渲染后再读闭包值，避免切换到第 N 版却按第 N-1 版分配。
   const allocate = async (variantOverride?: number) => {
@@ -323,6 +349,27 @@ function renderContract({
       addToast('分配失败: ' + (e as Error).message, 'error');
     } finally {
       setContractAllocating(false);
+    }
+  };
+  // 确认合同：后端会写回 status='generating'，父级项目摘要是打开项目时取的快照，
+  // 不刷新的话页头徽章会一直停在「合同阶段」。
+  const confirmContract = async (onDone: () => void) => {
+    setContractConfirming(true);
+    try {
+      await api.examProjects.confirmContract(courseId, sp.id, {
+        blueprint_version_id: sp.active_blueprint_version_id,
+        slot_revisions: [],
+        allocation_seed: contractVariant - 1,
+      });
+      addToast('合同已确认', 'success');
+      // 新 run 覆盖了旧 run：任务进度属于旧 run，留在面板上会显示上一版的完成态
+      setTaskRun(null);
+      onProjectChanged();
+      onDone();
+    } catch (e) {
+      addToast('确认失败: ' + (e as Error).message, 'error');
+    } finally {
+      setContractConfirming(false);
     }
   };
   // 「分配方案」下拉：同一个版本结果固定、便于与同事讨论同一份卷子；
@@ -433,22 +480,7 @@ function renderContract({
               再瞬间加载回来。原地刷新快照即可，加载中禁用操作避免重复请求。 */}
           <Button variant="secondary" loading={contractAllocating} onClick={() => { void allocate(); }} icon={<RefreshCw size={16} />}>重新分配</Button>
           <Button
-            onClick={async () => {
-              setContractConfirming(true);
-              try {
-                await api.examProjects.confirmContract(courseId, sp.id, {
-                  blueprint_version_id: sp.active_blueprint_version_id,
-                  slot_revisions: [],
-                  allocation_seed: contractVariant - 1,
-                });
-                addToast('合同已确认', 'success');
-                setStep('generate');
-              } catch (e) {
-                addToast('确认失败: ' + (e as Error).message, 'error');
-              } finally {
-                setContractConfirming(false);
-              }
-            }}
+            onClick={() => { void confirmContract(() => setStep('generate')); }}
             loading={contractConfirming}
             disabled={contractAllocating}
             icon={<Check size={16} />}
@@ -491,8 +523,7 @@ function GenerationProgressPanel({
   onOpenPaper: () => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
-  const inFlight =
-    taskRun.status === 'queued' || taskRun.status === 'running' || taskRun.status === 'waiting_external';
+  const inFlight = isInFlight(taskRun.status);
 
   useEffect(() => {
     if (!inFlight) return;
@@ -506,13 +537,15 @@ function GenerationProgressPanel({
     : 0;
 
   const status: ProgressStatus =
-    taskRun.status === 'failed'
-      ? 'failed'
-      : taskRun.status === 'succeeded'
-        ? 'succeeded'
-        : taskRun.status === 'queued'
-          ? 'queued'
-          : 'running';
+    taskRun.status === 'succeeded'
+      ? 'succeeded'
+      : taskRun.status === 'queued'
+        ? 'queued'
+        : taskRun.status === 'running'
+          ? 'running'
+          // failed 与 cancelled 都切到错误面板：ProgressStatus 没有「已取消」档，
+          // 走同一套红色面板 + 重试入口，别让已取消的卡显示成「正在生成」。
+          : 'failed';
 
   // succeeded 后 result 带题目数与 paper_version_id；缺省时退化为通用文案
   const result = (taskRun.result ?? {}) as Record<string, unknown>;
@@ -525,19 +558,22 @@ function GenerationProgressPanel({
         : '试题已生成完毕。'
       : undefined;
 
+  const title =
+    taskRun.status === 'succeeded'
+      ? '试题生成完成'
+      : taskRun.status === 'queued'
+        ? '任务排队中，等待执行…'
+        : taskRun.status === 'cancelled'
+          ? '任务已取消'
+          : taskRun.status === 'failed'
+            ? '试题生成失败'
+            : '正在生成试题，请稍候…';
+
   return (
     <ProgressPanel
-      title={
-        taskRun.status === 'failed'
-          ? '试题生成失败'
-          : taskRun.status === 'succeeded'
-            ? '试题生成完成'
-            : taskRun.status === 'queued'
-              ? '任务排队中，等待执行…'
-              : '正在生成试题，请稍候…'
-      }
+      title={title}
       messages={
-        taskRun.status === 'succeeded' || taskRun.status === 'failed'
+        isTerminal(taskRun.status)
           ? undefined
           : taskRun.status === 'queued'
             ? GENERATION_QUEUED_MESSAGES
@@ -548,10 +584,14 @@ function GenerationProgressPanel({
       status={status}
       elapsedSeconds={elapsedSeconds}
       queuedHintAfterSeconds={QUEUED_HINT_SECONDS}
-      errorMessage={taskRun.error_message || taskRun.error_code || '未知错误，请重试或联系管理员'}
+      errorMessage={
+        taskRun.status === 'cancelled'
+          ? '任务已取消，可重新发起生成。'
+          : taskRun.error_message || taskRun.error_code || '未知错误，请重试或联系管理员'
+      }
       resultMessage={resultMessage}
       footer={
-        taskRun.status === 'failed' ? (
+        taskRun.status === 'failed' || taskRun.status === 'cancelled' ? (
           <>
             <Button variant="secondary" onClick={onBack}><ArrowLeft size={16} /> 返回合同</Button>
             <Button onClick={onRetry} icon={<RefreshCw size={16} />}>重新生成</Button>
@@ -565,34 +605,30 @@ function GenerationProgressPanel({
 }
 
 function renderGenerate({
-  sp, courseId, token, setStep, taskRun, setTaskRun, generating, setGenerating, addToast, onOpenPaper,
+  sp, setStep, taskRun, generating, startGeneration, onOpenPaper,
 }: {
-  sp: ExamProject; courseId: string; token: string | null; setStep: (s: StageKey) => void;
-  taskRun: TaskRun | null; setTaskRun: (tr: TaskRun | null) => void;
-  generating: boolean; setGenerating: (b: boolean) => void;
-  addToast: ToastFn;
+  sp: ExamProject; setStep: (s: StageKey) => void;
+  taskRun: TaskRun | null;
+  generating: boolean;
+  /** 首次启动、失败重试与「重新生成」共用；已处理幂等键问题，见 PipelinePanel */
+  startGeneration: () => Promise<void>;
   onOpenPaper: () => void;
 }) {
-  // 首次启动与失败后重试共用同一条链路：拿新 task_run 后立即回填进度面板
-  const startGeneration = async () => {
-    try {
-      setGenerating(true);
-      const res = await api.examProjects.startGeneration(courseId, sp.id);
-      const tr = await api.examProjects.getTaskRun(courseId, res.task_run_id, token ?? undefined);
-      setTaskRun(tr);
-      addToast('任务已启动', 'success');
-    } catch (e) {
-      addToast('生成失败: ' + (e as Error).message, 'error');
-    } finally {
-      setGenerating(false);
-    }
-  };
+  // 任务在途时禁止再次发起：并发两次会各写一版试卷，且进度面板来回跳。
+  const inFlight = !!taskRun && isInFlight(taskRun.status);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       <StageHeading
         title="AI 生成试题"
         right={
-          <Button variant="secondary" size="sm" onClick={startGeneration} loading={generating} icon={<RefreshCw size={14} />}>
+          <Button
+            variant="secondary" size="sm"
+            onClick={() => { void startGeneration(); }}
+            loading={generating}
+            disabled={inFlight}
+            icon={<RefreshCw size={14} />}
+            title={inFlight ? '任务进行中，请等待完成' : '按当前合同重新生成，创建新版本试卷'}
+          >
             重新生成
           </Button>
         }
@@ -606,7 +642,7 @@ function renderGenerate({
           <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
             <Button variant="secondary" onClick={() => setStep('contract')}><ArrowLeft size={16} /> 返回合同</Button>
             <Button
-              onClick={startGeneration}
+              onClick={() => { void startGeneration(); }}
               loading={generating}
               icon={<PlayCircle size={16} />}
             >
@@ -617,7 +653,7 @@ function renderGenerate({
       ) : (
         <GenerationProgressPanel
           taskRun={taskRun}
-          onRetry={startGeneration}
+          onRetry={() => { void startGeneration(); }}
           onBack={() => setStep('contract')}
           onOpenPaper={onOpenPaper}
         />
@@ -630,7 +666,7 @@ function renderGenerate({
 //  出卷流水线面板
 // ═══════════════════════════════════════════════
 export default function PipelinePanel({
-  sp, courseId, onOpenPaper, onBlueprintCreated, stageRequest,
+  sp, courseId, onOpenPaper, onBlueprintCreated, onProjectChanged, stageRequest,
 }: {
   sp: ExamProject;
   courseId: string;
@@ -638,6 +674,8 @@ export default function PipelinePanel({
   onOpenPaper: () => void;
   /** 蓝图创建成功：父级用返回的版本号刷新项目，保证后续阶段立即可用 */
   onBlueprintCreated: (blueprintVersionId: string) => void;
+  /** 阶段推进改变了项目状态（如确认合同→generating），父级刷新页头徽章 */
+  onProjectChanged: () => void;
   /** 外部请求切换到某个阶段（如试卷页签点「重新生成」切到生成阶段） */
   stageRequest?: { stage: StageKey; nonce: number } | null;
 }) {
@@ -682,10 +720,15 @@ export default function PipelinePanel({
   // task_runs 并由项目摘要归并出 active_task_run_id。二者都与"任务是否仍在
   // 进行中"无关，因此退出项目再进入（或刷新页面）后都不会消失 —— 前端不再
   // 把组件内存态当作事实源。
+  //
+  // 注意：create_blueprint 只写 status 与 active_blueprint_version_id，
+  // **不会**清空 active_generation_run_id。所以重建蓝图后这个指针仍指向旧蓝图
+  // 生成的 run，hydrate 会把旧蓝图的合同快照当成现状展示。因此
+  // handleCreateBlueprint 成功后主动清掉 contractSnapshot/taskRun，让合同阶段
+  // 回到「待分配」而不是展示过期快照（刷新页面则仍会看到旧快照，属后端缺口）。
   const hydrateProjectState = async (proj: ExamProject) => {
     // 1) 合同快照：只有确认过合同（active_generation_run_id 有值）才可能读得到。
-    // 没确认过去探 contracts/current 只会拿到 404——既刷一屏控制台错误，又多一次往返；
-    // 蓝图重建后该指针被清空，顺带也避免了把旧蓝图留下的过期合同当现状展示。
+    // 没确认过去探 contracts/current 只会拿到 404——既刷一屏控制台错误，又多一次往返。
     if (!proj.active_generation_run_id) {
       setContractSnapshot(null);
     } else {
@@ -720,7 +763,7 @@ export default function PipelinePanel({
         setCurrentStage('generate');
       } else {
         // 失败/取消态恢复错误面板与「重新生成」入口；进行中则继续轮询
-        setGenerating(tr.status === 'queued' || tr.status === 'running' || tr.status === 'waiting_external');
+        setGenerating(isInFlight(tr.status));
         setTaskRun(tr);
       }
     } catch {
@@ -734,6 +777,10 @@ export default function PipelinePanel({
     setCurrentStage(stageFromStatus(sp.status));
     setContractSnapshot(null);
     setTaskRun(null);
+    setPlanItems([]);
+    // 上一项目的方案号不能带到新项目：hydrate 没有历史种子时会保留随机值，
+    // 落在别的项目上就是"看着第 4 版、实际按第 1 版分配"。
+    setContractVariant(1 + Math.floor(Math.random() * 6));
     void reloadNameMaps();
     if (sp.active_blueprint_version_id) {
       void loadPlanItems(sp);
@@ -742,19 +789,28 @@ export default function PipelinePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sp.id]);
 
+  // stageRequest 按 nonce 消费：合同阶段/生成阶段的推进都靠 setCurrentStage，
+  // 残留的旧请求会在下次挂载（如退出项目再进入）时把用户拽到错误的阶段，
+  // 记账后只消费一次。
+  const handledNonceRef = useRef(0);
   useEffect(() => {
-    if (stageRequest) setCurrentStage(stageRequest.stage);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (stageRequest && stageRequest.nonce !== handledNonceRef.current) {
+      handledNonceRef.current = stageRequest.nonce;
+      setCurrentStage(stageRequest.stage);
+    }
   }, [stageRequest]);
 
-  // 轮询生成任务
+  // 轮询生成任务。依赖只取 id + 终态判定：若把整个 taskRun 放进依赖，
+  // 每次响应都会 clear/re-create interval，2.5s 周期被反复重置成 2.5s+RTT。
+  const taskRunId = taskRun?.id;
+  const taskRunDone = !taskRun || isTerminal(taskRun.status);
   useEffect(() => {
-    if (!taskRun || taskRun.status === 'succeeded' || taskRun.status === 'failed') return;
+    if (!taskRunId || taskRunDone) return;
     const id = setInterval(async () => {
       try {
-        const tr = await api.examProjects.getTaskRun(courseId, taskRun.id, token ?? undefined);
+        const tr = await api.examProjects.getTaskRun(courseId, taskRunId, token ?? undefined);
         setTaskRun(tr);
-        if (tr.status === 'succeeded' || tr.status === 'failed') {
+        if (isTerminal(tr.status)) {
           clearInterval(id);
           setGenerating(false);
           if (tr.status === 'succeeded') {
@@ -762,8 +818,10 @@ export default function PipelinePanel({
             // 项目摘要是打开项目时取的快照，此刻 paper_version_id 仍为 null，
             // 父级刷新项目后再切到「试卷」页签，否则那边读不到新试卷。
             onOpenPaper();
-          } else {
+          } else if (tr.status === 'failed') {
             addToast('生成失败: ' + (tr.error_message || '未知错误'), 'error');
+          } else {
+            addToast('任务已取消', 'info');
           }
         }
       } catch {
@@ -771,9 +829,58 @@ export default function PipelinePanel({
       }
     }, 2500);
     return () => clearInterval(id);
-    // 轮询闭包有意捕获 taskRun 快照
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskRun, courseId, token, addToast]);
+  }, [taskRunId, taskRunDone, courseId, token, addToast]);
+
+  // 重新生成的幂等键 = sha256(project_id:active_generation_run_id:gen)，
+  // 而 active_generation_run_id 只在确认合同时更新。已生成过的项目再点
+  // 「重新生成」会命中同一把 key，后端返回**同一条已 succeeded 的旧任务**：
+  // 界面显示"生成完成"，却没有新任务、没有新试卷版本。因此凡当前 run 已有
+  // 任务（taskRun 非空，含 hydrate 恢复的终态任务），先重新确认合同铸造新的
+  // generation_run，换一把 key 才是真重跑。
+  //
+  // 副作用（已确认）：后端分配带 _HISTORY_RUN_LIMIT=10 的考点避重，
+  // 重新确认后的合同可能与当前这份微调不同；allocation_seed 沿用当前方案号，
+  // 保证同一方案号语义不变。
+  const startGeneration = async () => {
+    if (generating) return;
+    if (taskRun && isInFlight(taskRun.status)) {
+      addToast('任务正在进行中，请等待完成', 'info');
+      return;
+    }
+    if (!sp.active_blueprint_version_id) {
+      addToast('尚未创建蓝图，无法生成', 'error');
+      return;
+    }
+    try {
+      setGenerating(true);
+      if (taskRun) {
+        await api.examProjects.confirmContract(courseId, sp.id, {
+          blueprint_version_id: sp.active_blueprint_version_id,
+          slot_revisions: [],
+          allocation_seed: contractVariant - 1,
+        });
+        // 新 run 的快照可能因考点避重而变化，回填合同页避免展示旧快照
+        try {
+          const cur = await api.examProjects.getCurrentContract(courseId, sp.id, token ?? undefined);
+          const snap = cur?.contract_snapshot;
+          setContractSnapshot(snap && Array.isArray(snap.slots) && snap.slots.length > 0 ? snap : null);
+        } catch {
+          /* 快照读取失败不阻断生成 */
+        }
+        setTaskRun(null);
+        onProjectChanged();
+      }
+      const res = await api.examProjects.startGeneration(courseId, sp.id);
+      const tr = await api.examProjects.getTaskRun(courseId, res.task_run_id, token ?? undefined);
+      setTaskRun(tr);
+      addToast('任务已启动', 'success');
+    } catch (e) {
+      addToast('生成失败: ' + (e as Error).message, 'error');
+    } finally {
+      setGenerating(false);
+    }
+  };
 
   const handleCreateBlueprint = async () => {
     try {
@@ -832,6 +939,10 @@ export default function PipelinePanel({
       addToast('蓝图已生成', 'success');
       // 刚取过知识目录，直接复用刷新名称映射，保证考点/知识卡列显示中文名
       void reloadNameMaps(data);
+      // 旧合同是按旧蓝图题位分配的，蓝图一重建即失效；后端不清
+      // active_generation_run_id，这里不丢掉的话合同阶段会展示过期快照。
+      setContractSnapshot(null);
+      setTaskRun(null);
       // 通知父级刷新项目（拿回 active_blueprint_version_id），界面立即展示蓝图
       // 并开放「进入合同阶段」，不依赖 list 接口的返回（可能因时序未包含新版本）。
       onBlueprintCreated(bp.blueprint_version_id);
@@ -855,10 +966,10 @@ export default function PipelinePanel({
       {currentStage === 'contract' && renderContract({
         sp, courseId, setStep: setCurrentStage, contractVariant, setContractVariant,
         contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming,
-        contractAllocating, setContractAllocating, addToast, maps, planItems,
+        contractAllocating, setContractAllocating, setTaskRun, addToast, maps, planItems, onProjectChanged,
       })}
       {currentStage === 'generate' && renderGenerate({
-        sp, courseId, token, setStep: setCurrentStage, taskRun, setTaskRun, generating, setGenerating, addToast,
+        sp, setStep: setCurrentStage, taskRun, generating, startGeneration,
         onOpenPaper,
       })}
     </div>

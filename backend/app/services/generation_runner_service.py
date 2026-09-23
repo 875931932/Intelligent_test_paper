@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import uuid
 from datetime import UTC, datetime
@@ -55,13 +56,85 @@ def _row_to_dict(row) -> dict[str, Any]:
     return dict(row._asdict()) if hasattr(row, "_asdict") else dict(row)
 
 
+# 任务终态：到达这些状态说明该 generation_run 已经跑过一次。
+TERMINAL_TASK_STATUSES = ("succeeded", "failed", "cancelled")
+
+
+def _run_task_key(project_id: str, generation_run_id: str) -> str:
+    """task_runs 幂等键：同一 project:run 只入队一条任务。"""
+    return hashlib.sha256(f"{project_id}:{generation_run_id}:gen".encode()).hexdigest()[:24]
+
+
+def _prev_allocation_seed(session: Session, generation_run_id: str) -> int | None:
+    """上一份合同用的分配方案号，重跑时沿用，教师选的第 N 版不被静默重置。"""
+    snap = session.execute(
+        select(generation_runs.c.contract_snapshot).where(
+            generation_runs.c.id == generation_run_id
+        )
+    ).scalar_one_or_none()
+    if isinstance(snap, str):  # JSON 列被存成文本时的兜底解析
+        try:
+            snap = json.loads(snap)
+        except ValueError:
+            return None
+    if not isinstance(snap, dict):
+        return None
+    seed = snap.get("allocation_seed")
+    # 0 是合法种子（前端「第 1 版」映射为 0），不能用真假判断
+    if isinstance(seed, bool) or not isinstance(seed, (int, float)):
+        return None
+    return int(seed)
+
+
+def _mint_generation_run(
+    session: Session,
+    *,
+    course_id: str,
+    project_id: str,
+    blueprint_version_id: str,
+    prev_run_id: str,
+) -> str:
+    """重新确认合同以铸造新的 generation_run（随之换来新的幂等键），返回其 id。
+
+    同一个 generation_run 不能重跑：generated_questions 上有
+    (generation_run_id, plan_item_id, revision_no) 唯一约束，而 runner 固定写
+    revision_no=1。所以「重新生成」必须换 run，而不是给旧 run 再建一条任务。
+
+    副作用（已知且可接受）：合同分配带最近 10 份 run 的考点避重，
+    新合同的 coverage_atom 可能与上一份不同；避重是软约束，池耗尽时照常分配。
+
+    局部导入：只为这一个分支引入 contract_execution_service，避免
+    模块级循环导入。
+    """
+    from app.services.contract_execution_service import revise_and_confirm
+
+    result = revise_and_confirm(
+        session,
+        course_id=course_id,
+        project_id=project_id,
+        blueprint_version_id=blueprint_version_id,
+        slot_revisions=[],
+        allocation_seed=_prev_allocation_seed(session, prev_run_id),
+    )
+    return str(result["generation_run_id"])
+
+
 def enqueue_generation(
     session: Session,
     *,
     course_id: str,
     project_id: str,
 ) -> str:
-    """为项目的 active_generation_run 入队任务；同 project:run 组合幂等。"""
+    """为项目的 active_generation_run 入队任务；同 project:run 组合幂等。
+
+    幂等在任务**仍在途**时是防重复：并发两次入队拿到同一条任务。
+    旧任务已到终态时返回它则是「空操作」——界面显示旧任务的完成态，
+    既没有新任务、也没有新试卷版本。因此终态时先重新确认合同换一把
+    幂等键（新的 generation_run），再入队，才是真正重跑。
+
+    前端若已自行重新确认过合同，active_generation_run_id 已指向新 run、
+    该 run 下无任务，本分支不会命中，两层不会重复铸新 run。
+    """
     proj = session.execute(
         select(exam_projects).where(
             exam_projects.c.id == project_id,
@@ -75,8 +148,36 @@ def enqueue_generation(
     if not active_run:
         raise GenerationRunnerError("项目尚未分配 active_generation_run_id")
 
-    key_raw = f"{project_id}:{active_run}:gen".encode()
-    idempotency_key = hashlib.sha256(key_raw).hexdigest()[:24]
+    idempotency_key = _run_task_key(project_id, active_run)
+    prev_status = session.execute(
+        select(task_runs.c.status).where(
+            task_runs.c.course_id == course_id,
+            task_runs.c.idempotency_key == idempotency_key,
+        )
+    ).scalar_one_or_none()
+
+    if prev_status in TERMINAL_TASK_STATUSES:
+        # 优先用项目当前蓝图；旧数据 active_blueprint_version_id 可能为空，
+        # 回退到上一次 run 自己记录的蓝图，别让老项目卡在「无法重新生成」。
+        blueprint_version_id = proj_data.get(
+            "active_blueprint_version_id"
+        ) or session.execute(
+            select(generation_runs.c.blueprint_version_id).where(
+                generation_runs.c.id == active_run
+            )
+        ).scalar_one_or_none()
+        if not blueprint_version_id:
+            raise GenerationRunnerError(
+                "上一次生成已结束，且找不到蓝图版本，无法重新生成"
+            )
+        active_run = _mint_generation_run(
+            session,
+            course_id=course_id,
+            project_id=project_id,
+            blueprint_version_id=blueprint_version_id,
+            prev_run_id=active_run,
+        )
+        idempotency_key = _run_task_key(project_id, active_run)
 
     try:
         return create_task_run(
