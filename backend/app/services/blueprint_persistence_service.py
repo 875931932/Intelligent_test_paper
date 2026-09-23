@@ -333,7 +333,9 @@ def create_draft_blueprint(
         raise BlueprintPersistenceError(f"数据库错误: {exc}") from exc
 
 
-def list_plan_items(session: Session, blueprint_version_id: str) -> list[dict]:
+def list_plan_items(
+    session: Session, blueprint_version_id: str, *, course_id: str
+) -> list[dict]:
     """列出某蓝图版本的全部计划项，附带单元/卡片/section元数据。"""
     stmt = (
         select(
@@ -346,13 +348,18 @@ def list_plan_items(session: Session, blueprint_version_id: str) -> list[dict]:
         .join(assessment_units, assessment_units.c.id == plan_items.c.assessment_unit_id, isouter=True)
         .join(knowledge_cards, knowledge_cards.c.id == plan_items.c.knowledge_card_id, isouter=True)
         .join(blueprint_sections, blueprint_sections.c.id == plan_items.c.blueprint_section_id, isouter=True)
-        .where(plan_items.c.blueprint_version_id == blueprint_version_id)
+        .where(
+            plan_items.c.blueprint_version_id == blueprint_version_id,
+            plan_items.c.course_id == course_id,
+        )
         .order_by(plan_items.c.item_index)
     )
     return [_row_to_dict(r) for r in session.execute(stmt).all()]
 
 
-def update_plan_item(session: Session, plan_item_id: str, changes: dict) -> dict:
+def update_plan_item(
+    session: Session, plan_item_id: str, changes: dict, *, course_id: str
+) -> dict:
     """更新单个计划项，修改后轻量校验总分合理性；失败则回滚。"""
     allowed_keys = {
         "score", "question_type", "difficulty", "cognitive_level",
@@ -378,18 +385,25 @@ def update_plan_item(session: Session, plan_item_id: str, changes: dict) -> dict
 
     try:
         # 找到所属 blueprint_version_id
+        # plan_item_id 来自路径参数：归属必须用调用方的 course_id 过滤校验，
+        # 不能从行里反推 course_id（否则跨课程传 id 即可改到别的课程的题位）。
         bv_row = session.execute(
-            select(plan_items.c.blueprint_version_id, plan_items.c.course_id)
-            .where(plan_items.c.id == plan_item_id)
+            select(plan_items.c.blueprint_version_id)
+            .where(
+                plan_items.c.id == plan_item_id,
+                plan_items.c.course_id == course_id,
+            )
         ).one_or_none()
         if bv_row is None:
             raise BlueprintPersistenceError(f"plan_item 不存在: {plan_item_id}")
         bv_id = bv_row._mapping["blueprint_version_id"]
-        course_id = bv_row._mapping["course_id"]
 
         session.execute(
             plan_items.update()
-            .where(plan_items.c.id == plan_item_id)
+            .where(
+                plan_items.c.id == plan_item_id,
+                plan_items.c.course_id == course_id,
+            )
             .values(**db_changes)
         )
 
@@ -412,7 +426,10 @@ def update_plan_item(session: Session, plan_item_id: str, changes: dict) -> dict
         session.commit()
 
         refreshed = session.execute(
-            select(plan_items).where(plan_items.c.id == plan_item_id)
+            select(plan_items).where(
+                plan_items.c.id == plan_item_id,
+                plan_items.c.course_id == course_id,
+            )
         ).one()
         return _row_to_dict(refreshed)
 
@@ -466,7 +483,10 @@ def confirm_blueprint(
             )
             .select_from(plan_items)
             .join(assessment_units, assessment_units.c.id == plan_items.c.assessment_unit_id)
-            .where(plan_items.c.blueprint_version_id == blueprint_version_id)
+            .where(
+                plan_items.c.blueprint_version_id == blueprint_version_id,
+                plan_items.c.course_id == course_id,
+            )
             .order_by(plan_items.c.item_index)
         ).all()
 

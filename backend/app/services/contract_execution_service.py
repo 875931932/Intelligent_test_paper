@@ -101,20 +101,25 @@ def _build_contract_request_from_db(
     session: Session,
     *,
     blueprint_version_id: str,
+    course_id: str,
     centrality_threshold: float,
     allocation_seed: int | None = None,
 ) -> ContractRequest:
-    """从 DB 重建 ContractRequest（蓝图计划项 + 目录卡片）。"""
-    # 加载 blueprint_version
+    """从 DB 重建 ContractRequest（蓝图计划项 + 目录卡片）。
+
+    blueprint_version_id 由调用方传入（多来自请求体），租户归属必须用调用方的
+    course_id 过滤校验；从行里反推 course_id 等于把校验交给了被攻击的那行。
+    """
+    # 加载 blueprint_version（带课程过滤）
     bv = session.execute(
         select(blueprint_versions).where(
             blueprint_versions.c.id == blueprint_version_id,
+            blueprint_versions.c.course_id == course_id,
         )
     ).one_or_none()
     if bv is None:
         raise ContractExecutionError(f"蓝图版本不存在: {blueprint_version_id}")
     bv_data = bv._mapping
-    course_id = bv_data["course_id"]
     catalog_version_id = bv_data["catalog_version_id"]
     framework_version_id = bv_data["framework_version_id"]
 
@@ -265,6 +270,7 @@ def _build_contract_request_from_db(
             for r in session.execute(
                 select(plan_items.c.score).where(
                     plan_items.c.blueprint_version_id == blueprint_version_id,
+                    plan_items.c.course_id == course_id,
                 )
             ).all()
         )
@@ -300,7 +306,10 @@ def _build_contract_request_from_db(
         .select_from(plan_items)
         .join(assessment_units, assessment_units.c.id == plan_items.c.assessment_unit_id, isouter=True)
         .join(content_domains, content_domains.c.id == assessment_units.c.content_domain_id, isouter=True)
-        .where(plan_items.c.blueprint_version_id == blueprint_version_id)
+        .where(
+            plan_items.c.blueprint_version_id == blueprint_version_id,
+            plan_items.c.course_id == course_id,
+        )
         .order_by(plan_items.c.item_index)
     ).all()
     plan_item_objs: list[PlanItem] = []
@@ -355,6 +364,7 @@ def allocate_with_fallback(
     session: Session,
     *,
     blueprint_version_id: str,
+    course_id: str,
     allocation_seed: int | None = None,
 ) -> tuple[PaperContract, float, list[tuple[float, int]]]:
     """阈值回退分配：0.6 → 0.5 → 0.45，首次无冲突（或最后一轮）即接受。
@@ -370,6 +380,7 @@ def allocate_with_fallback(
     base_request, _, _ = _build_contract_request_from_db(
         session,
         blueprint_version_id=blueprint_version_id,
+        course_id=course_id,
         centrality_threshold=thresholds[0],
         allocation_seed=allocation_seed,
     )
@@ -423,6 +434,7 @@ def revise_and_confirm(
         contract, used_threshold, history = allocate_with_fallback(
             session,
             blueprint_version_id=blueprint_version_id,
+            course_id=course_id,
             allocation_seed=allocation_seed,
         )
 
@@ -432,6 +444,7 @@ def revise_and_confirm(
             _, units_payload, cards_dict = _build_contract_request_from_db(
                 session,
                 blueprint_version_id=blueprint_version_id,
+                course_id=course_id,
                 centrality_threshold=used_threshold,
                 allocation_seed=allocation_seed,
             )
@@ -528,11 +541,16 @@ def revise_and_confirm(
         raise ContractExecutionError(f"数据库错误: {exc}") from exc
 
 
-def get_contract_conflicts(session: Session, generation_run_id: str) -> list[dict]:
+def get_contract_conflicts(
+    session: Session, generation_run_id: str, *, course_id: str
+) -> list[dict]:
     """从 generation_run.contract_snapshot 中提取冲突记录。"""
     row = session.execute(
         select(generation_runs.c.contract_snapshot, generation_runs.c.course_id)
-        .where(generation_runs.c.id == generation_run_id)
+        .where(
+            generation_runs.c.id == generation_run_id,
+            generation_runs.c.course_id == course_id,
+        )
     ).one_or_none()
     if row is None:
         return []

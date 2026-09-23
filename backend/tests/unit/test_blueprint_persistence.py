@@ -211,13 +211,13 @@ def test_confirm_creates_version_and_supersedes_old(session):
 
 def test_update_plan_item_score_causes_total_mismatch_raises_and_rolls_back(session):
     bv_id, plan = create_draft_blueprint(session, **_draft_params(count=10, per=10))
-    items = list_plan_items(session, bv_id)
+    items = list_plan_items(session, bv_id, course_id="c1")
     assert len(items) == 10
     # 找第一个 plan_item_id
     pi_id = items[0]["id"]
     # 把 score 改成 10.3（非 0.5 步进） → 立即 raise
     with pytest.raises(BlueprintValidationError, match=r"0\.5"):
-        update_plan_item(session, pi_id, {"score": 10.3})
+        update_plan_item(session, pi_id, {"score": 10.3}, course_id="c1")
 
     # 查 DB，原 score 仍应是 10（rollback 生效）
     refreshed = session.execute(
@@ -235,10 +235,35 @@ def test_update_plan_item_score_causes_total_mismatch_raises_and_rolls_back(sess
     )
     session.commit()
     with pytest.raises(BlueprintValidationError, match=r"总分校验失败"):
-        update_plan_item(session, pi_id2, {"score": 9.5})
+        update_plan_item(session, pi_id2, {"score": 9.5}, course_id="c1")
 
 
 # --- TR-2.3 ---
+
+def test_plan_item_reads_and_writes_are_scoped_to_course(session):
+    """计划项读写必须带 course_id 过滤（多租户底线）。
+
+    回归：PATCH 路由曾漏声明 course_id，服务层转而从被操作的行里反推租户，
+    跨课程传 plan_item_id 即可改到别的课程的题位。现在租户由调用方给定，
+    不匹配一律按不存在处理。
+    """
+    bv_id, _plan = create_draft_blueprint(session, **_draft_params(count=5, per=20))
+    items = list_plan_items(session, bv_id, course_id="c1")
+    assert len(items) == 5
+    pi_id = items[0]["id"]
+
+    # 跨课程读：查不到
+    assert list_plan_items(session, bv_id, course_id="c_other") == []
+
+    # 跨课程写：拒绝，且原行分毫未动
+    with pytest.raises(BlueprintPersistenceError, match="不存在"):
+        update_plan_item(session, pi_id, {"score": 8.0}, course_id="c_other")
+
+    unchanged = session.execute(
+        select(plan_items.c.score).where(plan_items.c.id == pi_id)
+    ).one()
+    assert abs(float(unchanged._mapping["score"]) - 20.0) < 0.001
+
 
 def test_module_only_imports_allocate_plan_items_from_blueprint_service():
     """静态检查：blueprint_persistence_service 只导入 allocate_plan_items
@@ -280,7 +305,7 @@ def test_module_only_imports_allocate_plan_items_from_blueprint_service():
 
 def test_create_draft_blueprint_persists_items_with_correct_fields(session):
     bv_id, plan = create_draft_blueprint(session, **_draft_params(count=5, per=20))
-    items = list_plan_items(session, bv_id)
+    items = list_plan_items(session, bv_id, course_id="c1")
     assert len(items) == 5
     scores = [float(it["score"]) for it in items]
     assert sum(scores) == 100

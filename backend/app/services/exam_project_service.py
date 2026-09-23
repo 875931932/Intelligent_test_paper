@@ -54,7 +54,10 @@ def get_current_contract_snapshot(
     if not run_id:
         return None
     row = session.execute(
-        select(generation_runs).where(generation_runs.c.id == run_id)
+        select(generation_runs).where(
+            generation_runs.c.id == run_id,
+            generation_runs.c.course_id == course_id,
+        )
     ).mappings().first()
     if row is None:
         return None
@@ -312,14 +315,25 @@ def delete_project(session: Session, course_id: str, project_id: str) -> None:
         if run_ids:
             gq_ids = list(session.execute(
                 select(generated_questions.c.id)
-                .where(generated_questions.c.generation_run_id.in_(run_ids))
+                .where(
+                    generated_questions.c.generation_run_id.in_(run_ids),
+                    generated_questions.c.course_id == course_id,
+                )
             ).scalars().all())
             attempt_ids = list(session.execute(
                 select(generation_attempts.c.id)
-                .where(generation_attempts.c.generation_run_id.in_(run_ids))
+                .where(
+                    generation_attempts.c.generation_run_id.in_(run_ids),
+                    generation_attempts.c.course_id == course_id,
+                )
             ).scalars().all())
         if attempt_ids:
-            session.execute(delete(model_calls).where(model_calls.c.generation_attempt_id.in_(attempt_ids)))
+            session.execute(
+                delete(model_calls).where(
+                    model_calls.c.generation_attempt_id.in_(attempt_ids),
+                    model_calls.c.course_id == course_id,
+                )
+            )
         # paper_items 同时被 generated_questions 与 paper_versions 引用，两种来源
         # 必须在删这两个父表之前一次清掉
         if gq_ids or pv_ids:
@@ -332,26 +346,80 @@ def delete_project(session: Session, course_id: str, project_id: str) -> None:
                 conditions.append("paper_version_id = ANY(:pv)")
                 params["pv"] = pv_ids
             session.execute(
-                text("DELETE FROM paper_items WHERE " + " OR ".join(conditions)),
-                params,
+                text(
+                    "DELETE FROM paper_items WHERE course_id = :cid AND ("
+                    + " OR ".join(conditions)
+                    + ")"
+                ),
+                {**params, "cid": course_id},
             )
         if gq_ids:
-            session.execute(delete(quality_checks).where(quality_checks.c.generated_question_id.in_(gq_ids)))
-            session.execute(delete(generated_questions).where(generated_questions.c.id.in_(gq_ids)))
+            session.execute(
+                delete(quality_checks).where(
+                    quality_checks.c.generated_question_id.in_(gq_ids),
+                    quality_checks.c.course_id == course_id,
+                )
+            )
+            session.execute(
+                delete(generated_questions).where(
+                    generated_questions.c.id.in_(gq_ids),
+                    generated_questions.c.course_id == course_id,
+                )
+            )
         if pv_ids:
-            session.execute(delete(paper_versions).where(paper_versions.c.id.in_(pv_ids)))
+            session.execute(
+                delete(paper_versions).where(
+                    paper_versions.c.id.in_(pv_ids),
+                    paper_versions.c.course_id == course_id,
+                )
+            )
         if attempt_ids:
-            session.execute(delete(generation_attempts).where(generation_attempts.c.id.in_(attempt_ids)))
+            session.execute(
+                delete(generation_attempts).where(
+                    generation_attempts.c.id.in_(attempt_ids),
+                    generation_attempts.c.course_id == course_id,
+                )
+            )
         if run_ids:
-            session.execute(delete(generation_runs).where(generation_runs.c.id.in_(run_ids)))
+            session.execute(
+                delete(generation_runs).where(
+                    generation_runs.c.id.in_(run_ids),
+                    generation_runs.c.course_id == course_id,
+                )
+            )
         # task_runs 之前必须先清 outbox_events（其 task_run_id 外键）
         if task_ids:
-            session.execute(delete(outbox_events).where(outbox_events.c.task_run_id.in_(task_ids)))
-            session.execute(delete(task_runs).where(task_runs.c.id.in_(task_ids)))
+            session.execute(
+                delete(outbox_events).where(
+                    outbox_events.c.task_run_id.in_(task_ids),
+                    outbox_events.c.course_id == course_id,
+                )
+            )
+            session.execute(
+                delete(task_runs).where(
+                    task_runs.c.id.in_(task_ids),
+                    task_runs.c.course_id == course_id,
+                )
+            )
         if bv_ids:
-            session.execute(delete(plan_items).where(plan_items.c.blueprint_version_id.in_(bv_ids)))
-            session.execute(delete(blueprint_sections).where(blueprint_sections.c.blueprint_version_id.in_(bv_ids)))
-            session.execute(delete(blueprint_versions).where(blueprint_versions.c.id.in_(bv_ids)))
+            session.execute(
+                delete(plan_items).where(
+                    plan_items.c.blueprint_version_id.in_(bv_ids),
+                    plan_items.c.course_id == course_id,
+                )
+            )
+            session.execute(
+                delete(blueprint_sections).where(
+                    blueprint_sections.c.blueprint_version_id.in_(bv_ids),
+                    blueprint_sections.c.course_id == course_id,
+                )
+            )
+            session.execute(
+                delete(blueprint_versions).where(
+                    blueprint_versions.c.id.in_(bv_ids),
+                    blueprint_versions.c.course_id == course_id,
+                )
+            )
         # 兜底：payload 匹配但上面按 id 没覆盖到的 task_runs
         session.execute(
             text("DELETE FROM task_runs WHERE course_id = :cid AND payload->>'project_id' = :pid"),

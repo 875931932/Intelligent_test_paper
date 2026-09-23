@@ -7,6 +7,12 @@
 ## 约定
 
 - 所有业务路由均以 **课程（course_id）** 为作用域前缀：`/api/v1/courses/{course_id}/...`
+- **多租户底线**：路径上的 `{course_id}` 是唯一租户判定依据。服务层每一条数据库查询、
+  缓存键、对象存储路径都必须携带 `course_id` 过滤，⚠️ 且**禁止从被查询的行里反推租户**
+  （`course_id = row["course_id"]` 等于把校验交给被传入的那行）。id 属于别的课程时一律按
+  "不存在"处理（404/空结果），不区分"存在但不属于你"与"根本不存在"。
+  例外仅限基础设施队列（`outbox_events`/`task_runs` 按 id + `claim_owner` 领取任务），
+  它们是全局抢占语义，取到任务后再按行内 `course_id` 继续。
 - 错误统一返回 `{"detail": string | object}`；常见状态码见各端点。
 - 分页：当前无分页端点，列表全量返回。
 
@@ -287,8 +293,9 @@ PlanItem：`{ "item_index":0,"question_type":"","score":0.0,"anchor_key":"","exa
 `GET /api/v1/courses/{course_id}/exam-projects/{project_id}/blueprints/current/plan-items` → `list[PlanItem]`
 
 ### 8.7 修改计划项
-`PATCH /api/v1/courses/{course_id}/plan-items/{plan_item_id}`
+`PATCH /api/v1/courses/{course_id}/exam-projects/plan-items/{plan_item_id}`
 允许 key ∈ `score|question_type|difficulty|cognitive_level|exam_point_id|card_id`；其它 key 422。
+题位必须属于路径上的 `{course_id}`，跨课程 id 按不存在处理（404），不会读写到别课程的题位。
 
 ### 8.8 确认蓝图
 `POST /api/v1/courses/{course_id}/exam-projects/{project_id}/blueprints/current/confirm`

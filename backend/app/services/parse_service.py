@@ -158,7 +158,10 @@ def start_parse(
     except DocumentParserError as exc:
         raise ParseError(f"mineru submit failed: {exc}", status_code=502) from exc
     row = session.execute(
-        select(document_parse_runs.c.status).where(document_parse_runs.c.id == run_id)
+        select(document_parse_runs.c.status).where(
+            document_parse_runs.c.id == run_id,
+            document_parse_runs.c.course_id == course_id,
+        )
     ).scalar_one()
     return {"run_id": run_id, "status": row, "reused": False}
 
@@ -208,7 +211,10 @@ def advance_parse(
             document_parse_runs.c.status,
             document_parse_runs.c.error_code,
             document_parse_runs.c.error_summary,
-        ).where(document_parse_runs.c.id == run["id"])
+        ).where(
+            document_parse_runs.c.id == run["id"],
+            document_parse_runs.c.course_id == course_id,
+        )
     ).mappings().one()
     return {
         "run_id": run["id"],

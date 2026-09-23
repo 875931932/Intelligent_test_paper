@@ -162,7 +162,10 @@ def summarize_paper_versions_for_projects(
         .select_from(paper_items)
         .join(generated_questions, generated_questions.c.id == paper_items.c.generated_question_id)
         .join(plan_items, plan_items.c.id == generated_questions.c.plan_item_id, isouter=True)
-        .where(paper_items.c.paper_version_id.in_(list(chosen.values())))
+        .where(
+            paper_items.c.paper_version_id.in_(list(chosen.values())),
+            paper_items.c.course_id == course_id,
+        )
         .group_by(paper_items.c.paper_version_id)
     ).all()
     stats = {
@@ -637,7 +640,10 @@ def update_paper_item(
         session.commit()
 
         refreshed = session.execute(
-            select(paper_items).where(paper_items.c.id == pi_data["id"])
+            select(paper_items).where(
+                paper_items.c.id == pi_data["id"],
+                paper_items.c.course_id == course_id,
+            )
         ).one()
         return _row_to_dict(refreshed)
 

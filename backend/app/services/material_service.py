@@ -291,7 +291,9 @@ def update_material_type(session: Session, *, course_id: str, material_id: str, 
     if row is None:
         raise MaterialNotFoundError
     session.execute(
-        materials.update().where(materials.c.id == material_id).values(material_type=material_type)
+        materials.update()
+        .where(materials.c.id == material_id, materials.c.course_id == course_id)
+        .values(material_type=material_type)
     )
     session.commit()
     return get_material(session, course_id=course_id, material_id=material_id)

@@ -1646,7 +1646,10 @@ def create_organization_state(
                 if existing["embedding"] is None:
                     session.execute(
                         evidence_chunks.update()
-                        .where(evidence_chunks.c.id == evidence_id)
+                        .where(
+                            evidence_chunks.c.id == evidence_id,
+                            evidence_chunks.c.course_id == course_id,
+                        )
                         .values(embedding=vector)
                     )
                 evidence_ids.append(evidence_id)
@@ -1798,7 +1801,8 @@ def persist_statement_evidence_chunks(
     run_chunk_index_offset = (
         session.scalar(
             select(func.max(evidence_chunks.c.chunk_index)).where(
-                evidence_chunks.c.organization_run_id == run_id
+                evidence_chunks.c.organization_run_id == run_id,
+                evidence_chunks.c.course_id == course_id,
             )
         )
         or -1
@@ -1819,7 +1823,10 @@ def persist_statement_evidence_chunks(
                 if existing["embedding"] is None and vector is not None:
                     session.execute(
                         evidence_chunks.update()
-                        .where(evidence_chunks.c.id == statement_id)
+                        .where(
+                            evidence_chunks.c.id == statement_id,
+                            evidence_chunks.c.course_id == course_id,
+                        )
                         .values(embedding=vector)
                     )
                 persisted_ids.append(statement_id)

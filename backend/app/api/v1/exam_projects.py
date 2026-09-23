@@ -214,7 +214,9 @@ def create_blueprint(
             detail=f"蓝图参数校验失败: {where}: {first.get('msg', '')}".strip(),
         )
 
-    plan_items = list_plan_items(session, blueprint_version_id=bv_id)
+    plan_items = list_plan_items(
+        session, blueprint_version_id=bv_id, course_id=course_id
+    )
     return {"blueprint_version_id": bv_id, "plan": plan_items}
 
 
@@ -226,11 +228,12 @@ def get_current_plan_items(
 ) -> list[dict]:
     _get_project_or_404(session, course_id=course_id, project_id=project_id)
     bv_id = _resolve_blueprint_version_id(session, course_id=course_id, project_id=project_id)
-    return list_plan_items(session, blueprint_version_id=bv_id)
+    return list_plan_items(session, blueprint_version_id=bv_id, course_id=course_id)
 
 
 @router.patch("/plan-items/{plan_item_id}", response_model=dict)
 def patch_plan_item(
+    course_id: str,
     plan_item_id: str,
     body: dict,
     session: Session = Depends(get_session),
@@ -241,7 +244,9 @@ def patch_plan_item(
         bad = sorted(set(body.keys()) - allowed)
         raise HTTPException(status_code=422, detail=f"unsupported keys: {bad}")
     try:
-        return update_plan_item(session, plan_item_id=plan_item_id, changes=body)
+        return update_plan_item(
+            session, plan_item_id=plan_item_id, changes=body, course_id=course_id
+        )
     except BlueprintValidationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     except BlueprintPersistenceError as exc:
@@ -301,7 +306,7 @@ def allocate_contract(
     seed: int | None = body.get("allocation_seed") if isinstance(body, dict) else None
     try:
         contract, used_threshold, history = allocate_with_fallback(
-            session, blueprint_version_id=bv_id, allocation_seed=seed
+            session, blueprint_version_id=bv_id, course_id=course_id, allocation_seed=seed
         )
     except ContractExecutionError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -333,11 +338,15 @@ def revise_contract_preview(
     seed = body.get("allocation_seed")
     try:
         contract, _used, _hist = allocate_with_fallback(
-            session, blueprint_version_id=bv_id, allocation_seed=seed
+            session, blueprint_version_id=bv_id, course_id=course_id, allocation_seed=seed
         )
         if slot_revisions:
             _req, units_payload, cards_dict = _build_contract_request_from_db(
-                session, blueprint_version_id=bv_id, centrality_threshold=_used, allocation_seed=seed
+                session,
+                blueprint_version_id=bv_id,
+                course_id=course_id,
+                centrality_threshold=_used,
+                allocation_seed=seed,
             )
             contract = apply_slot_revisions(
                 contract,

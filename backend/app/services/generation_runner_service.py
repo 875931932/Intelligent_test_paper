@@ -65,11 +65,14 @@ def _run_task_key(project_id: str, generation_run_id: str) -> str:
     return hashlib.sha256(f"{project_id}:{generation_run_id}:gen".encode()).hexdigest()[:24]
 
 
-def _prev_allocation_seed(session: Session, generation_run_id: str) -> int | None:
+def _prev_allocation_seed(
+    session: Session, generation_run_id: str, *, course_id: str
+) -> int | None:
     """上一份合同用的分配方案号，重跑时沿用，教师选的第 N 版不被静默重置。"""
     snap = session.execute(
         select(generation_runs.c.contract_snapshot).where(
-            generation_runs.c.id == generation_run_id
+            generation_runs.c.id == generation_run_id,
+            generation_runs.c.course_id == course_id,
         )
     ).scalar_one_or_none()
     if isinstance(snap, str):  # JSON 列被存成文本时的兜底解析
@@ -114,7 +117,7 @@ def _mint_generation_run(
         project_id=project_id,
         blueprint_version_id=blueprint_version_id,
         slot_revisions=[],
-        allocation_seed=_prev_allocation_seed(session, prev_run_id),
+        allocation_seed=_prev_allocation_seed(session, prev_run_id, course_id=course_id),
     )
     return str(result["generation_run_id"])
 
@@ -163,7 +166,8 @@ def enqueue_generation(
             "active_blueprint_version_id"
         ) or session.execute(
             select(generation_runs.c.blueprint_version_id).where(
-                generation_runs.c.id == active_run
+                generation_runs.c.id == active_run,
+                generation_runs.c.course_id == course_id,
             )
         ).scalar_one_or_none()
         if not blueprint_version_id:

@@ -26,6 +26,7 @@ from app.services.blueprint_persistence_service import (
     create_draft_blueprint,
 )
 from app.services.contract_execution_service import (
+    ContractExecutionError,
     allocate_with_fallback,
     get_contract_conflicts,
     revise_and_confirm,
@@ -246,7 +247,9 @@ def test_threshold_fallback_cycle(session):
 def test_allocate_with_fallback_returns_last_threshold_when_all_conflict(session):
     """直接调用 allocate_with_fallback，检查阈值回退链。"""
     bv_id = _setup_confirmed_blueprint(session, total_items=10, per_score=10.0)
-    contract, used, history = allocate_with_fallback(session, blueprint_version_id=bv_id)
+    contract, used, history = allocate_with_fallback(
+        session, blueprint_version_id=bv_id, course_id="c1"
+    )
     assert used in {0.6, 0.5, 0.45}
     assert len(history) >= 1
     # 每一项是 (threshold, conflict_count) 元组
@@ -383,6 +386,18 @@ def _run_atoms(session, run_id: str) -> set[str]:
     return {s["coverage_atom"] for s in snap.get("slots") or [] if s.get("coverage_atom")}
 
 
+def test_allocate_with_fallback_rejects_foreign_course(session):
+    """蓝图 id 属于 c1 时，用别的 course_id 分配必须失败。
+
+    回归：构建请求时曾从蓝图行反推 course_id，等于把租户校验交给被传入的那行。
+    """
+    bv_id = _setup_confirmed_blueprint(session, total_items=10, per_score=10.0)
+    with pytest.raises(ContractExecutionError, match="蓝图版本不存在"):
+        allocate_with_fallback(
+            session, blueprint_version_id=bv_id, course_id="c_other"
+        )
+
+
 def test_get_contract_conflicts_extracts_conflicts_from_snapshot(session):
     bv_id = _setup_confirmed_blueprint(session, total_items=10, per_score=10.0)
     result = revise_and_confirm(
@@ -392,7 +407,9 @@ def test_get_contract_conflicts_extracts_conflicts_from_snapshot(session):
         blueprint_version_id=bv_id,
         slot_revisions=[],
     )
-    conflicts = get_contract_conflicts(session, result["generation_run_id"])
+    conflicts = get_contract_conflicts(
+        session, result["generation_run_id"], course_id="c1"
+    )
     # 返回列表（可能为空 list 或非空），类型必须是 list[dict]
     assert isinstance(conflicts, list)
     for c in conflicts:

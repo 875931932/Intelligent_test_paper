@@ -773,6 +773,7 @@ def get_published_knowledge(course_id: str, session: Session = Depends(get_sessi
         link_rows = session.execute(
             select(knowledge_evidence_links.c.knowledge_card_id).where(
                 knowledge_evidence_links.c.knowledge_card_id.in_(card_id_list),
+                knowledge_evidence_links.c.course_id == course_id,
                 knowledge_evidence_links.c.evidence_role == "direct",
                 knowledge_evidence_links.c.lifecycle_status == "active",
             )
@@ -862,6 +863,7 @@ def get_card_evidence(
             evidence_chunks.c.id == knowledge_evidence_links.c.evidence_chunk_id,
         ).where(
             knowledge_evidence_links.c.knowledge_card_id == card_id,
+            knowledge_evidence_links.c.course_id == course_id,
             knowledge_evidence_links.c.lifecycle_status == "active",
         )
     ).mappings().all()
