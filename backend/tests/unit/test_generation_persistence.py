@@ -33,6 +33,7 @@ from app.services.blueprint_persistence_service import (
 )
 from app.services.contract_execution_service import revise_and_confirm
 from app.services.generation_runner_service import (
+    GenerationRunnerError,
     _default_graph_invoke,
     enqueue_generation,
     execute_generation_task_handler,
@@ -560,3 +561,129 @@ def test_worker_path_publishes_progress_for_polling(session, monkeypatch):
         probe.dispose()
     assert final["status"] == "succeeded"
     assert final["progress"] == 100
+
+# --- TR-4.4 模型不可用：不许"成功"地产出空卷 ---
+
+def _placeholder_graph(session, gr, snap, progress=None):
+    """模拟模型服务完全不可用（线上为账户欠费 402）：每个题位只返回占位题。"""
+    from app.db.schema import plan_items as pi_table
+
+    slots = (snap or {}).get("slots") or []
+    rows = session.execute(
+        select(pi_table.c.id, pi_table.c.item_index)
+        .where(pi_table.c.blueprint_version_id == gr.get("blueprint_version_id"))
+        .order_by(pi_table.c.item_index)
+    ).all()
+    pi_by_index = {r._mapping["item_index"]: r._mapping["id"] for r in rows}
+    return [
+        {
+            "item_index": slot.get("item_index"),
+            "plan_item_id": pi_by_index.get(slot.get("item_index")),
+            "knowledge_card_id": slot.get("card_id"),
+            "question_type": slot.get("question_type"),
+            "score": slot.get("score"),
+            "difficulty": slot.get("difficulty"),
+            "cognitive_level": slot.get("cognitive_level"),
+            "exam_point_id": slot.get("exam_point_id"),
+            "unit_id": slot.get("unit_id"),
+            "coverage_atom": slot.get("coverage_atom"),
+            "answer_boundary": slot.get("answer_boundary"),
+            "quality": {"status": "blocker", "message": "批返回缺失该题"},
+            "needs_review": True,
+        }
+        for slot in slots
+    ]
+
+
+def test_all_placeholder_questions_fail_the_run_without_paper_version(session):
+    gr_id, _pi_by_index = _setup_pipeline(session)
+
+    task_id = enqueue_generation(session, course_id="c1", project_id="ep1")
+    tr_row = session.execute(
+        select(task_runs).where(task_runs.c.id == task_id)
+    ).one()
+
+    with pytest.raises(GenerationRunnerError, match="模型未产出可用题目"):
+        execute_generation_task_handler(
+            session,
+            tr_row,
+            graph_invoke=_placeholder_graph,
+            write_paper_version=True,
+        )
+
+    gr = session.execute(
+        select(generation_runs).where(generation_runs.c.id == gr_id)
+    ).one()
+    assert gr._mapping["status"] == "failed"
+    assert gr._mapping["error_message"]
+    # 关键：不创建任何试卷版本，否则教师会看到一张全是空题的"成功"卷子
+    pv_cnt = session.execute(
+        select(func.count()).select_from(paper_versions)
+        .where(paper_versions.c.generation_run_id == gr_id)
+    ).scalar_one()
+    assert pv_cnt == 0
+    # generated_questions 仍落库（供排查），但不落 paper_items
+    pi_cnt = session.execute(
+        select(func.count()).select_from(paper_items).where(
+            paper_items.c.paper_version_id.in_(
+                select(paper_versions.c.id).where(paper_versions.c.generation_run_id == gr_id)
+            )
+        )
+    ).scalar_one()
+    assert pi_cnt == 0
+
+
+def test_partial_usable_paper_below_threshold_also_fails(session, monkeypatch):
+    from app.services import generation_runner_service as runner
+
+    monkeypatch.setattr(runner.settings, "generation_min_usable_ratio", 0.9)
+    gr_id, _pi_by_index = _setup_pipeline(session)
+
+    task_id = enqueue_generation(session, course_id="c1", project_id="ep1")
+    tr_row = session.execute(
+        select(task_runs).where(task_runs.c.id == task_id)
+    ).one()
+
+    def mostly_placeholder_graph(session, gr, snap, progress=None):
+        out = _placeholder_graph(session, gr, snap, progress)
+        out[0]["stem"] = "完整的题干"
+        out[0]["answer"] = "A"
+        return out
+
+    with pytest.raises(GenerationRunnerError, match="模型未产出可用题目"):
+        execute_generation_task_handler(
+            session,
+            tr_row,
+            graph_invoke=mostly_placeholder_graph,
+            write_paper_version=True,
+        )
+
+    pv_cnt = session.execute(
+        select(func.count()).select_from(paper_versions)
+        .where(paper_versions.c.generation_run_id == gr_id)
+    ).scalar_one()
+    assert pv_cnt == 0
+
+
+def test_healthy_generation_still_succeeds_with_ratio(session):
+    gr_id, _pi_by_index = _setup_pipeline(session)
+    task_id = enqueue_generation(session, course_id="c1", project_id="ep1")
+    tr_row = session.execute(
+        select(task_runs).where(task_runs.c.id == task_id)
+    ).one()
+
+    result = execute_generation_task_handler(
+        session,
+        tr_row,
+        graph_invoke=_make_mock_37_graph(37),
+        write_paper_version=True,
+    )
+    assert result["generated_questions"] == 37
+    assert result["dropped_questions"] == 0
+    assert result["usable_ratio"] == 1.0
+
+    pv_cnt = session.execute(
+        select(func.count()).select_from(paper_versions)
+        .where(paper_versions.c.generation_run_id == gr_id)
+    ).scalar_one()
+    assert pv_cnt == 1

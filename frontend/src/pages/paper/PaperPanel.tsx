@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import {
   Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, FileJson, FileText, KeySquare,
-  Pencil, Plus, RotateCcw, Save, Trash2,
+  Pencil, Plus, RefreshCw, RotateCcw, Save, Trash2,
 } from 'lucide-react';
 import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
@@ -282,7 +282,7 @@ function FieldLabel({ label, children }: { label: string; children: React.ReactN
 // ─── 试卷档案卡 ───
 
 function PaperProfile({
-  pv, project, examPointCount, onExport, onFinalize, onRevert,
+  pv, project, examPointCount, onExport, onFinalize, onRevert, onRegenerate,
 }: {
   pv: PaperVersion;
   project?: ExamProject;
@@ -290,6 +290,7 @@ function PaperProfile({
   onExport: (kind: 'student' | 'answer' | 'json') => void;
   onFinalize: () => void;
   onRevert: () => void;
+  onRegenerate: () => void;
 }) {
   const questions = pv.questions;
   const typeAcc = new Map<string, { score: number; count: number }>();
@@ -348,6 +349,9 @@ function PaperProfile({
         </div>
 
         <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <Button variant="secondary" size="sm" onClick={onRegenerate} icon={<RefreshCw size={14} />} title="按当前合同重新生成，会创建新版本的试卷">
+            重新生成
+          </Button>
           <Button variant="secondary" size="sm" onClick={() => onExport('student')} icon={<FileText size={14} />}>学生卷</Button>
           <Button variant="secondary" size="sm" onClick={() => onExport('answer')} icon={<KeySquare size={14} />}>答卷</Button>
           <Button variant="secondary" size="sm" onClick={() => onExport('json')} icon={<FileJson size={14} />}>答案细则</Button>
@@ -573,13 +577,15 @@ function QuestionDetail({
 //  试卷面板（双栏阅读器）
 // ═══════════════════════════════════════════════
 export default function PaperPanel({
-  pv, project, courseId, onChanged,
+  pv, project, courseId, onChanged, onRegenerate,
 }: {
   pv: PaperVersion;
   project?: ExamProject;
   courseId: string;
   /** 增删改后通知父级刷新试卷与项目摘要 */
   onChanged: () => void;
+  /** 请求重新生成：父级切到流水线生成阶段 */
+  onRegenerate: () => void;
 }) {
   const token = useAuthStore((s) => s.token);
   const addToast = useToastStore((s) => s.addToast);
@@ -806,6 +812,7 @@ export default function PaperPanel({
         onExport={handleExport}
         onFinalize={handleFinalizeClick}
         onRevert={handleRevert}
+        onRegenerate={onRegenerate}
       />
 
       {/* 双栏：左题号索引，右当前题目 */}

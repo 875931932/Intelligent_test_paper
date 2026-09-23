@@ -589,11 +589,19 @@ function renderGenerate({
   };
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      <StageHeading title="AI 生成试题" />
+      <StageHeading
+        title="AI 生成试题"
+        right={
+          <Button variant="secondary" size="sm" onClick={startGeneration} loading={generating} icon={<RefreshCw size={14} />}>
+            重新生成
+          </Button>
+        }
+      />
       {!taskRun ? (
         <div>
           <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '14px' }}>
             AI 将根据合同约定生成试题。生成过程大约需要 30-60 秒。
+            {sp.item_count ? ' 重新生成会创建新版本的试卷，不影响已有版本。' : ''}
           </p>
           <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
             <Button variant="secondary" onClick={() => setStep('contract')}><ArrowLeft size={16} /> 返回合同</Button>
@@ -602,7 +610,7 @@ function renderGenerate({
               loading={generating}
               icon={<PlayCircle size={16} />}
             >
-              开始生成
+              {sp.item_count ? '重新生成' : '开始生成'}
             </Button>
           </div>
         </div>
@@ -622,7 +630,7 @@ function renderGenerate({
 //  出卷流水线面板
 // ═══════════════════════════════════════════════
 export default function PipelinePanel({
-  sp, courseId, onOpenPaper, onBlueprintCreated,
+  sp, courseId, onOpenPaper, onBlueprintCreated, stageRequest,
 }: {
   sp: ExamProject;
   courseId: string;
@@ -630,6 +638,8 @@ export default function PipelinePanel({
   onOpenPaper: () => void;
   /** 蓝图创建成功：父级用返回的版本号刷新项目，保证后续阶段立即可用 */
   onBlueprintCreated: (blueprintVersionId: string) => void;
+  /** 外部请求切换到某个阶段（如试卷页签点「重新生成」切到生成阶段） */
+  stageRequest?: { stage: StageKey; nonce: number } | null;
 }) {
   const token = useAuthStore((s) => s.token);
   const addToast = useToastStore((s) => s.addToast);
@@ -731,6 +741,11 @@ export default function PipelinePanel({
     void hydrateProjectState(sp);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sp.id]);
+
+  useEffect(() => {
+    if (stageRequest) setCurrentStage(stageRequest.stage);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stageRequest]);
 
   // 轮询生成任务
   useEffect(() => {

@@ -1,13 +1,25 @@
-"""exam_projects 表的最小 service：list/create/get/update_status。"""
+"""exam_projects 表的最小 service：list/create/get/update_status/delete。"""
 from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.db.schema import blueprint_versions, exam_projects, generation_runs, task_runs
+from app.db.schema import (
+    blueprint_sections,
+    blueprint_versions,
+    exam_projects,
+    generation_attempts,
+    generated_questions,
+    generation_runs,
+    paper_items,
+    paper_versions,
+    plan_items,
+    quality_checks,
+    task_runs,
+)
 from app.services.paper_version_service import summarize_paper_versions_for_projects
 
 
@@ -240,3 +252,72 @@ def update_status(session: Session, course_id: str, project_id: str, status: str
     )
     session.commit()
     return {**existing, "status": status}
+
+
+def delete_project(session: Session, course_id: str, project_id: str) -> None:
+    """删除项目及其全部派生数据（蓝图/题位/生成运行/题目/试卷版本/任务记录）。
+
+    没有配置级联删除，这里按外键依赖自底向上清理：quality_checks →
+    paper_items → generated_questions → generation_attempts/generation_runs →
+    paper_versions → plan_items/blueprint_sections → blueprint_versions →
+    task_runs（payload 里带 project_id，无外键但同属该项目痕迹）→ exam_projects。
+    整个操作在一个事务里，任一步失败整体回滚，不会留下半删的项目。
+    """
+    get_project(session, course_id, project_id)
+
+    run_ids = list(session.execute(
+        select(generation_runs.c.id)
+        .join(blueprint_versions, blueprint_versions.c.id == generation_runs.c.blueprint_version_id)
+        .where(
+            generation_runs.c.course_id == course_id,
+            blueprint_versions.c.exam_project_id == project_id,
+        )
+    ).scalars().all())
+    pv_ids = list(session.execute(
+        select(paper_versions.c.id).where(
+            paper_versions.c.course_id == course_id,
+            paper_versions.c.exam_project_id == project_id,
+        )
+    ).scalars().all())
+    bv_ids = list(session.execute(
+        select(blueprint_versions.c.id).where(
+            blueprint_versions.c.course_id == course_id,
+            blueprint_versions.c.exam_project_id == project_id,
+        )
+    ).scalars().all())
+
+    try:
+        if run_ids:
+            gq_ids = list(session.execute(
+                select(generated_questions.c.id)
+                .where(generated_questions.c.generation_run_id.in_(run_ids))
+            ).scalars().all())
+            if gq_ids:
+                session.execute(delete(quality_checks).where(quality_checks.c.generated_question_id.in_(gq_ids)))
+                session.execute(delete(paper_items).where(paper_items.c.generated_question_id.in_(gq_ids)))
+                session.execute(delete(generated_questions).where(generated_questions.c.id.in_(gq_ids)))
+        if pv_ids:
+            session.execute(delete(paper_items).where(paper_items.c.paper_version_id.in_(pv_ids)))
+            session.execute(delete(paper_versions).where(paper_versions.c.id.in_(pv_ids)))
+        if run_ids:
+            session.execute(delete(generation_attempts).where(generation_attempts.c.generation_run_id.in_(run_ids)))
+            session.execute(delete(generation_runs).where(generation_runs.c.id.in_(run_ids)))
+        if bv_ids:
+            session.execute(delete(plan_items).where(plan_items.c.blueprint_version_id.in_(bv_ids)))
+            session.execute(delete(blueprint_sections).where(blueprint_sections.c.blueprint_version_id.in_(bv_ids)))
+            session.execute(delete(blueprint_versions).where(blueprint_versions.c.id.in_(bv_ids)))
+        # task_runs 无外键，按 payload.project_id 清理该项目留下的任务痕迹
+        session.execute(
+            text("DELETE FROM task_runs WHERE course_id = :cid AND payload->>'project_id' = :pid"),
+            {"cid": course_id, "pid": project_id},
+        )
+        session.execute(
+            delete(exam_projects).where(
+                exam_projects.c.id == project_id,
+                exam_projects.c.course_id == course_id,
+            )
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise

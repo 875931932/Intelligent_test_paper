@@ -34,6 +34,8 @@ export const examProjectsApi = {
     request('/courses/' + courseId + '/exam-projects', undefined, token),
   create: (courseId: string, data: { name: string }, token?: string): Promise<ExamProject> =>
     request('/courses/' + courseId + '/exam-projects', { method: 'POST', body: JSON.stringify(data) }, token),
+  remove: (courseId: string, projectId: string, token?: string): Promise<void> =>
+    request('/courses/' + courseId + '/exam-projects/' + projectId, { method: 'DELETE' }, token),
   get: (courseId: string, projectId: string, token?: string): Promise<ExamProject> =>
     request('/courses/' + courseId + '/exam-projects/' + projectId, undefined, token),
   updateStatus: (courseId: string, projectId: string, status: string, token?: string): Promise<ExamProject> =>

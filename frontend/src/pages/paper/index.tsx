@@ -1,8 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useSearchParams } from 'react-router-dom';
-import { Plus, ChevronRight, ArrowLeft, ClipboardList, FileText, PlayCircle } from 'lucide-react';
+import { Plus, ChevronRight, ArrowLeft, ClipboardList, FileText, PlayCircle, Trash2 } from 'lucide-react';
 import { api } from '@/api/client';
-import { isApiError } from '@/api/errors';
+import { getErrorMessage, isApiError } from '@/api/errors';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
@@ -125,6 +125,28 @@ export default function PaperPage() {
     }
   };
 
+  const handleDeleteProject = async (proj: ExamProject) => {
+    if (!courseId) return;
+    const summary = (proj.total_score ?? 0) > 0 || (proj.item_count ?? 0) > 0;
+    if (!window.confirm(
+      `确认删除项目「${proj.name}」？\n\n将同时删除该项目的蓝图、题位、生成记录与试卷版本${summary ? `（${proj.item_count ?? 0} 道题）` : ''}，此操作不可恢复。`,
+    )) return;
+    try {
+      await api.examProjects.remove(courseId, proj.id, token ?? undefined);
+      addToast('项目已删除', 'success');
+      setProjects((s) => s.filter((p) => p.id !== proj.id));
+    } catch (e) {
+      addToast('删除失败: ' + getErrorMessage(e), 'error');
+    }
+  };
+
+  // 从试卷页签请求流水线切到指定阶段（重新生成走这条路径）
+  const [stageRequest, setStageRequest] = useState<{ stage: 'blueprint' | 'contract' | 'generate'; nonce: number } | null>(null);
+  const requestPipelineStage = (stage: 'blueprint' | 'contract' | 'generate') => {
+    setStageRequest({ stage, nonce: Date.now() });
+    setTab('pipeline');
+  };
+
   useEffect(() => {
     loadProjects();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -190,6 +212,18 @@ export default function PaperPage() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                     {psm && <Badge variant={psm.variant}>试卷 {psm.label}</Badge>}
                     <Badge variant={sm.variant}>{sm.label}</Badge>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); void handleDeleteProject(p); }}
+                      title="删除项目"
+                      style={{
+                        background: 'none', border: 'none', cursor: 'pointer', padding: '6px',
+                        borderRadius: 8, color: 'var(--text-tertiary)', display: 'flex',
+                      }}
+                      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--error-subtle)'; e.currentTarget.style.color = 'var(--error)'; }}
+                      onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}
+                    >
+                      <Trash2 size={16} />
+                    </button>
                     <ChevronRight size={18} style={{ color: 'var(--text-tertiary)' }} />
                   </div>
                 </div>
@@ -283,6 +317,7 @@ export default function PaperPage() {
           <PipelinePanel
             sp={sp}
             courseId={courseId}
+            stageRequest={stageRequest}
             onOpenPaper={() => {
               void refreshPaperAndProject();
               setTab('paper');
@@ -310,6 +345,7 @@ export default function PaperPage() {
           project={sp}
           courseId={courseId}
           onChanged={refreshPaperAndProject}
+          onRegenerate={() => requestPipelineStage('generate')}
         />
       )}
     </div>

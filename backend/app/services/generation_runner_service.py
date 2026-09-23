@@ -15,6 +15,7 @@ from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.config import settings
 from app.db.schema import (
     exam_projects,
     generated_questions,
@@ -549,8 +550,34 @@ def execute_generation_task(
         if qc_rows:
             session.execute(quality_checks.insert(), qc_rows)
 
-        # f) 写入 paper_version（候选）+ paper_items
-        if write_paper_version:
+        # f) 可用题判定：缺题干/缺答案的占位题不会写入试卷（见
+        # create_paper_version_from_generation 的 _has_usable_content），
+        # 因此这里先用同一口径算出真实可用题数。
+        usable = [q for q in questions if _has_usable_content(q)]
+        dropped = len(questions) - len(usable)
+        if dropped:
+            logger.warning(
+                "生成结果有 %d 道题缺题干/缺答案，未写入试卷 run=%s project=%s",
+                dropped, generation_run_id, project_id,
+            )
+        expected = len(questions)
+        ratio = (len(usable) / expected) if expected else 0.0
+        # 可用比例过低＝模型服务基本不可用（如账户欠费 402、限流 429）或知识卡
+        # 大面积不合格。这种卷子没有交付价值，必须在写 paper_version 之前失败：
+        # 否则会得到一张"任务成功但全是空题"的卷子，教师点进去全是空白，
+        # 比生成失败更难排查。回滚后由下方 except 统一把任务标记为 failed。
+        if expected and ratio < settings.generation_min_usable_ratio:
+            session.rollback()
+            raise GenerationRunnerError(
+                f"模型未产出可用题目：{len(usable)}/{expected} 道有题干和答案"
+                f"（阈值 {settings.generation_min_usable_ratio:.0%}）。"
+                "通常是模型服务不可用（如 API 欠费 402、限流 429）或知识卡质量不足，"
+                "请查看 model_calls 中 paper_generation 的 HTTP 状态后重试。"
+            )
+
+        # g) 写入 paper_version（候选）+ paper_items
+        paper_version_id = None
+        if write_paper_version and usable:
             paper_version_id = create_paper_version_from_generation(
                 session,
                 course_id=course_id,
@@ -559,7 +586,7 @@ def execute_generation_task(
                 questions_list=questions,
             )
 
-        # g) 标记 generation_run + task_runs 成功
+        # h) 标记 generation_run + task_runs 成功
         now2 = _now()
         session.execute(
             generation_runs.update()
@@ -573,19 +600,10 @@ def execute_generation_task(
                 updated_at=now2,
             )
         )
-        # 计入卷面的只算"有题干且有答案"的题：缺内容的占位题在写 paper_items 时
-        # 就被剔除（见 create_paper_version_from_generation），这里必须同步，
-        # 否则前端提示"已生成 N 题"而卷面实际不足 N。
-        usable = [q for q in questions if _has_usable_content(q)]
-        dropped = len(questions) - len(usable)
-        if dropped:
-            logger.warning(
-                "生成结果有 %d 道题缺题干/缺答案，未写入试卷 run=%s project=%s",
-                dropped, generation_run_id, project_id,
-            )
         result = {
             "generated_questions": len(usable),
             "dropped_questions": dropped,
+            "usable_ratio": round(ratio, 4),
             "paper_version_id": paper_version_id,
         }
         if manage_task_run:

@@ -147,6 +147,16 @@ def patch(course_id: str, project_id: str, payload: ExamProjectStatusUpdate, ses
         raise _not_found()
 
 
+@router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_one(course_id: str, project_id: str, session: Session = Depends(get_session)) -> None:
+    """删除项目及其全部派生数据（蓝图/题位/生成运行/题目/试卷版本）。"""
+    _get_project_or_404(session, course_id=course_id, project_id=project_id)
+    try:
+        exam_project_service.delete_project(session, course_id=course_id, project_id=project_id)
+    except exam_project_service.ExamProjectNotFoundError:
+        raise _not_found()
+
+
 # ===========================================================================
 # Blueprint 子端点
 # ===========================================================================

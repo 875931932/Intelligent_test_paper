@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 from collections.abc import Callable
@@ -34,6 +35,40 @@ _PERSISTED_ERROR_MESSAGES = {
     "model_output_scope_violation": "model response failed scope validation",
     "model_schema_validation_failed": "model JSON does not match the required schema",
 }
+# HTTP 状态码的业务含义：模型服务不可用时，教师/运维需要一眼看出是欠费、鉴权
+# 失败还是限流，而不是只能看到一个 "an HTTP error"。
+_HTTP_STATUS_HINTS = {
+    400: "请求被拒绝（参数或模型名不受支持）",
+    401: "API Key 无效或已失效",
+    403: "API Key 无权限访问该模型",
+    402: "账户欠费或额度用尽（Payment Required）",
+    404: "模型或接口不存在（请检查 base_url 与 model 配置）",
+    408: "请求超时",
+    413: "请求体过大",
+    429: "触发限流（RPM/TPM 触顶）",
+    500: "模型服务内部错误",
+    502: "模型服务网关错误",
+    503: "模型服务不可用",
+    504: "模型服务网关超时",
+}
+# 上游错误响应体可能含敏感内容（既有测试锁定不得原样落库），但其中
+# "insufficient balance" 这类标识对排查至关重要。这里只做白名单匹配，
+# 命中原文里的标识后仅记录该标识本身，绝不透出响应体。
+_HTTP_BODY_ERROR_TAGS = [
+    (re.compile(r"insufficient[_\s-]?balance|余额不足|欠费|额度不足", re.I), "insufficient_balance"),
+    (re.compile(r"invalid[_\s-]?api[_\s-]?key|无效的?\s*api\s*key|鉴权失败|未授权", re.I), "invalid_api_key"),
+    (re.compile(r"rate[_\s-]?limit|too many requests|限流", re.I), "rate_limited"),
+    (re.compile(r"model[_\s-]?not[_\s-]?found|模型不存在|模型不支持", re.I), "model_not_found"),
+    (re.compile(r"quota[_\s-]?exceeded|配额用尽", re.I), "quota_exceeded"),
+    (re.compile(r"context[_\s-]?length|超长|token 超限", re.I), "context_length_exceeded"),
+]
+
+
+def _http_body_error_tag(body: str) -> str | None:
+    for pattern, tag in _HTTP_BODY_ERROR_TAGS:
+        if pattern.search(body or ""):
+            return tag
+    return None
 _PERSISTED_VALIDATION_FIELDS = {
     "ability_requirements",
     "alignment_keys",
@@ -273,9 +308,22 @@ class DeepSeekJsonClient:
                 if response_validator is not None:
                     response_validator(result)
             except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code
+                hint = _HTTP_STATUS_HINTS.get(status_code)
+                message = f"DeepSeek request failed with HTTP status {status_code}"
+                if hint:
+                    message = f"{message}（{hint}）"
+                # 响应体里往往是真正原因（insufficient balance / invalid api key），
+                # 但可能含敏感内容：只做白名单匹配，记录命中的错误标识而非原文。
+                body_tag = None
+                try:
+                    body_tag = _http_body_error_tag(exc.response.text or "")
+                except Exception:
+                    body_tag = None
                 last_error = DeepSeekModelError(
                     "deepseek_http_error",
-                    f"DeepSeek request failed with HTTP status {exc.response.status_code}",
+                    message,
+                    details={"http_status": status_code, "error_tag": body_tag},
                 )
                 should_retry = _is_retryable_http_status(exc.response.status_code)
                 last_retry_error_code = last_error.error_code
@@ -382,6 +430,9 @@ class DeepSeekJsonClient:
         message_shape = last_error.details.get("message_shape") if last_error.details else None
         if message_shape is not None:
             details["message_shape"] = message_shape
+        http_tag = last_error.details.get("error_tag") if last_error.details else None
+        if http_tag:
+            details["error_tag"] = http_tag
         if raw_snapshot:
             details["raw_response_snapshot"] = raw_snapshot
         self._record(

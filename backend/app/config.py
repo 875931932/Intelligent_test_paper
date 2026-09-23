@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     #   max_per_point  同一兄弟考点最多被回补几题（防止把一个富余考点抽干）
     generation_backfill_max_per_batch: int = Field(default=1, ge=0)
     generation_backfill_max_per_point: int = Field(default=1, ge=0)
+    # 可用题（有题干且有答案）占合同题位的最低比例。低于此值说明模型服务基本
+    # 不可用或知识卡大面积不合格，此时整卷没有交付价值——直接让任务失败并给出
+    # 明确原因，而不是"成功"地产出一张大面积空题的卷子让教师踩坑。
+    generation_min_usable_ratio: float = Field(default=0.5, ge=0, le=1)
     # 知识目录组织阶段的模型调用超时（秒）。分类/归并 prompt 较大（数万 token），
     # 默认 90s 超时在 MiMo 上不足以完成响应，超时失败会整材料放弃并烧掉 token；
     # 该阶段已异步化，放长超时不影响前端体验。
