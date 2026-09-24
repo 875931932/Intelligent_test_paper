@@ -1539,6 +1539,27 @@ def create_organization_state(
     if not material_version_ids or len(material_version_ids) != len(set(material_version_ids)):
         raise KnowledgePublishError("at least one unique material version is required")
 
+    # run 行先于读内容块/嵌入等耗时阶段落库并提交：POST 已把 run_id 返给前端，
+    # 若嵌入失败而 run 行未插入，_mark_organization_run_failed 的 UPDATE 会静默
+    # 落空（0 行），前端对已发放的 run_id 只能永远轮询 404（2026-09-24 事故根因）。
+    run_id = run_id or uuid4().hex
+    frozen_input = {
+        "organization_schema_version": ORGANIZATION_SCHEMA_VERSION,
+        "framework_version_id": framework["id"],
+        "exam_points": _exam_point_snapshot(point_rows),
+        "material_version_ids": list(material_version_ids),
+    }
+    session.execute(
+        organization_runs.insert().values(
+            id=run_id,
+            course_id=course_id,
+            framework_version_id=framework["id"],
+            status="running",
+            input_snapshot=frozen_input,
+        )
+    )
+    session.commit()
+
     selected_blocks: list[tuple[str, list[dict]]] = []
     for version_id in material_version_ids:
         version = session.execute(
@@ -1656,25 +1677,8 @@ def create_organization_state(
             for (merged_block, source_blocks), vector in zip(merged_blocks, vectors, strict=True)
         )
 
-    run_id = run_id or uuid4().hex
-
-    frozen_input = {
-        "organization_schema_version": ORGANIZATION_SCHEMA_VERSION,
-        "framework_version_id": framework["id"],
-        "exam_points": _exam_point_snapshot(point_rows),
-        "material_version_ids": list(material_version_ids),
-    }
     evidence_ids: list[str] = []
     try:
-        session.execute(
-            organization_runs.insert().values(
-                id=run_id,
-                course_id=course_id,
-                framework_version_id=framework["id"],
-                status="running",
-                input_snapshot=frozen_input,
-            )
-        )
         for chunk_index, (version_id, merged_block, vector, source_blocks) in enumerate(embedded_blocks):
             # chunk id 从内容哈希+资料版本确定性派生（而非随机 UUID）：同一资料
             # 快照在重复 run 中产出相同 id，分类/归并 prompt 随之稳定，模型响应

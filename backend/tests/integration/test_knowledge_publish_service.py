@@ -815,6 +815,37 @@ def test_create_organization_state_rejects_embedding_dimension_changes_across_fi
         engine.dispose()
 
 
+def test_create_organization_state_persists_run_row_before_embedding_failure(tmp_path):
+    """run 行先于嵌入落库：嵌入失败后行仍在，失败标记才有落点（404 事故回归）。"""
+    engine, session = _session(tmp_path)
+    try:
+        class ExplodingEmbedder:
+            def embed(self, texts):
+                raise RuntimeError("embedding endpoint down")
+
+        with pytest.raises(KnowledgePublishError, match="embedding service is unavailable"):
+            create_organization_state(
+                session,
+                course_id="course",
+                material_version_ids=["material-v1"],
+                embedder=ExplodingEmbedder(),
+                run_id="run-embed-fail",
+            )
+
+        row = session.execute(
+            select(organization_runs).where(
+                organization_runs.c.id == "run-embed-fail",
+                organization_runs.c.course_id == "course",
+            )
+        ).mappings().one_or_none()
+        assert row is not None
+        assert row["status"] == "running"
+        assert row["framework_version_id"] == "framework-v1"
+    finally:
+        session.close()
+        engine.dispose()
+
+
 def test_repository_loads_frozen_chunk_embedding_for_retrieval(tmp_path):
     engine, session = _session(tmp_path)
     try:

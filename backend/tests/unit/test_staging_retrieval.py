@@ -340,6 +340,83 @@ def test_embedding_gateway_supports_dashscope_text_embedding_contract():
     )
 
 
+def test_embedding_gateway_accepts_dashscope_index_field_contract():
+    """现网 MaaS 返回 `index`（OpenAI 同构）而非旧契约 `text_index`（404 事故根因回归）。"""
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "output": {
+                    "embeddings": [
+                        {"embedding": [0.3, 0.4], "index": 1, "type": "text"},
+                        {"embedding": [0.1, 0.2], "index": 0, "type": "text"},
+                    ]
+                }
+            },
+        )
+
+    endpoint = "https://embedding.invalid/api/v1/services/embeddings/text-embedding/text-embedding"
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        gateway = OpenAICompatibleEmbeddingGateway(
+            base_url=endpoint,
+            api_key="secret-token",
+            model="qwen3.7-text-embedding",
+            api_format="dashscope",
+            client=client,
+        )
+        result = gateway.embed(["查询", "证据"])
+
+    # 乱序返回须按 index 重排，且两键并存时 text_index 优先（上一用例已锁定 text_index）。
+    assert result == [[0.1, 0.2], [0.3, 0.4]]
+    assert requests[0].url == httpx.URL(endpoint)
+
+
+def test_embedding_gateway_prefers_text_index_when_both_index_keys_present():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "output": {
+                    "embeddings": [
+                        {"text_index": 0, "index": 7, "embedding": [0.1, 0.2]},
+                    ]
+                }
+            },
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        gateway = OpenAICompatibleEmbeddingGateway(
+            base_url="https://embedding.invalid/dashscope",
+            api_key="secret-token",
+            model="qwen3.7-text-embedding",
+            api_format="dashscope",
+            client=client,
+        )
+        assert gateway.embed(["查询"]) == [[0.1, 0.2]]
+
+
+def test_embedding_gateway_rejects_dashscope_item_without_any_index_key():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"output": {"embeddings": [{"embedding": [0.1, 0.2]}]}},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        gateway = OpenAICompatibleEmbeddingGateway(
+            base_url="https://embedding.invalid/dashscope",
+            api_key="secret-token",
+            model="qwen3.7-text-embedding",
+            api_format="dashscope",
+            client=client,
+        )
+        with pytest.raises(EmbeddingGatewayError, match="invalid index"):
+            gateway.embed(["查询"])
+
+
 def test_dashscope_embedding_gateway_splits_requests_at_provider_limit():
     requests: list[httpx.Request] = []
 

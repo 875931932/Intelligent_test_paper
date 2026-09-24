@@ -194,7 +194,7 @@ def _mark_organization_run_failed(
     try:
         session = session_factory()
         try:
-            session.execute(
+            updated = session.execute(
                 knowledge_publish_service.organization_runs.update()
                 .where(
                     knowledge_publish_service.organization_runs.c.id == run_id,
@@ -206,6 +206,20 @@ def _mark_organization_run_failed(
                     error_message=message,
                 )
             )
+            if updated.rowcount == 0:
+                # run 行尚未落库（失败发生在 create_organization_state 插入行
+                # 之前，如框架/材料校验的竞态）：UPDATE 静默落空会让前端对已
+                # 发放的 run_id 永远轮询 404，因此补插一条 failed 记录兜底。
+                session.execute(
+                    knowledge_publish_service.organization_runs.insert().values(
+                        id=run_id,
+                        course_id=course_id,
+                        status="failed",
+                        error_code="organization_invariant_error",
+                        error_message=message,
+                        input_snapshot={},
+                    )
+                )
             session.commit()
         finally:
             session.close()

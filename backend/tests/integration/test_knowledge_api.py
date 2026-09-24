@@ -2,9 +2,84 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import Session, sessionmaker
 
+from app.api.v1.knowledge import _mark_organization_run_failed
 from app.config import settings
+from app.db.schema import Base, Course, User, organization_runs
 from app.main import app
+
+
+def _mark_failed_env(tmp_path):
+    engine = create_engine(f"sqlite:///{tmp_path / 'knowledge-api.db'}")
+    Base.metadata.create_all(engine)
+    session = Session(engine)
+    session.add(User(id="owner-dev", display_name="Owner", role="teacher"))
+    session.flush()
+    session.add(Course(id="course", owner_id="owner-dev", slug="course", name="Course"))
+    session.commit()
+    session.close()
+    return engine, sessionmaker(bind=engine)
+
+
+def test_mark_organization_run_failed_updates_existing_running_row(tmp_path):
+    engine, factory = _mark_failed_env(tmp_path)
+    try:
+        session = factory()
+        session.execute(
+            organization_runs.insert().values(
+                id="run-1",
+                course_id="course",
+                status="running",
+                input_snapshot={"material_version_ids": ["material-v1"]},
+            )
+        )
+        session.commit()
+        session.close()
+
+        _mark_organization_run_failed(
+            factory, course_id="course", run_id="run-1", message="boom"
+        )
+
+        session = factory()
+        row = session.execute(
+            select(organization_runs).where(organization_runs.c.id == "run-1")
+        ).mappings().one()
+        session.close()
+        assert row["status"] == "failed"
+        assert row["error_message"] == "boom"
+        assert row["input_snapshot"] == {"material_version_ids": ["material-v1"]}
+    finally:
+        engine.dispose()
+
+
+def test_mark_organization_run_failed_inserts_row_when_run_missing(tmp_path):
+    """UPDATE 落 0 行时必须补插 failed 行：否则前端对已发放 run_id 永远 404（事故回归）。"""
+    engine, factory = _mark_failed_env(tmp_path)
+    try:
+        _mark_organization_run_failed(
+            factory,
+            course_id="course",
+            run_id="run-ghost",
+            message="embedding service is unavailable",
+        )
+
+        session = factory()
+        row = session.execute(
+            select(organization_runs).where(
+                organization_runs.c.id == "run-ghost",
+                organization_runs.c.course_id == "course",
+            )
+        ).mappings().one_or_none()
+        session.close()
+        assert row is not None
+        assert row["status"] == "failed"
+        assert row["error_code"] == "organization_invariant_error"
+        assert row["error_message"] == "embedding service is unavailable"
+        assert row["input_snapshot"] == {}
+    finally:
+        engine.dispose()
 
 
 @pytest.mark.parametrize("missing_setting", ["llm_api_key", "llm_base_url", "llm_model"])

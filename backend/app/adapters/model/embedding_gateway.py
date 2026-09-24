@@ -113,10 +113,12 @@ class OpenAICompatibleEmbeddingGateway:
     ) -> list[list[float]]:
         if api_format == "dashscope":
             data = payload.get("output", {}).get("embeddings") if isinstance(payload, dict) else None
-            index_key = "text_index"
+            # MaaS 现网返回与 OpenAI 同构的 `index` 字段，旧 DashScope 契约用
+            # `text_index`；两键并存时 text_index 优先，缺键才回退 index。
+            index_keys = ("text_index", "index")
         else:
             data = payload.get("data") if isinstance(payload, dict) else None
-            index_key = "index"
+            index_keys = ("index",)
         if not isinstance(data, list):
             raise EmbeddingGatewayError("embedding response is missing the data array")
         if len(data) != expected_count:
@@ -131,7 +133,10 @@ class OpenAICompatibleEmbeddingGateway:
                 raise EmbeddingGatewayError(
                     "embedding response contains an invalid item"
                 )
-            index = item.get(index_key)
+            index = next(
+                (item.get(key) for key in index_keys if item.get(key) is not None),
+                None,
+            )
             if isinstance(index, bool) or not isinstance(index, int):
                 raise EmbeddingGatewayError(
                     "embedding response contains an invalid index"

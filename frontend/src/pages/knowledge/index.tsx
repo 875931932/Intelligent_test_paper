@@ -100,6 +100,9 @@ export default function KnowledgePage() {
   const [expandedUnits, setExpandedUnits] = useState<Set<string>>(new Set());
 
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // 最近一次「已落定」的状态（published/candidate/idle）：构建失败时回退到它，
+  // 立即恢复失败前的界面，免得非得手动刷新才能看到旧目录。
+  const preBuildStateRef = useRef<BuildState>('idle');
 
   // Derived（用 useMemo 固定引用，保证下游 memo/记忆化真正生效）
   const examPoints: FrameworkExamPoint[] = useMemo(
@@ -170,7 +173,7 @@ export default function KnowledgePage() {
       setBuildOpen(false);
     } catch {
       addToast('获取候选知识目录失败', 'error');
-      setBuildState('idle');
+      setBuildState(preBuildStateRef.current);
     }
   }, [courseId, addToast]);
 
@@ -183,9 +186,13 @@ export default function KnowledgePage() {
 
   const startPolling = useCallback((rid: string) => {
     if (pollingRef.current) clearInterval(pollingRef.current);
+    // 连续查询失败计数：run 行刚发放的瞬间可能尚未落库（短暂 404 属正常），
+    // 但持续失败说明查询链路坏了——必须止损回退，否则界面永远卡在「构建中」。
+    let consecutiveErrors = 0;
     pollingRef.current = setInterval(async () => {
       try {
         const runData = await api.knowledge.getRun(courseId, rid);
+        consecutiveErrors = 0;
         if (runData?.status === 'awaiting_teacher_confirmation') {
           stopPolling();
           setRunId(rid);
@@ -193,11 +200,16 @@ export default function KnowledgePage() {
           addToast('知识目录构建完成，请确认', 'success');
         } else if (runData?.status === 'failed') {
           stopPolling();
-          setBuildState('idle');
-          setBuildOpen(false);
+          setBuildState(preBuildStateRef.current);
           addToast((runData.error_message as string) || '构建失败', 'error');
         }
-      } catch { /* ignore */ }
+      } catch (err) {
+        consecutiveErrors += 1;
+        if (consecutiveErrors < 10) return; // 30 秒容忍窗口（10 次 × 3 秒）
+        stopPolling();
+        setBuildState(preBuildStateRef.current);
+        addToast(`构建状态查询失败：${getErrorMessage(err)}；请稍后刷新查看结果。`, 'error');
+      }
     }, 3000);
   }, [courseId, addToast, loadCandidate, stopPolling]);
 
@@ -216,13 +228,16 @@ export default function KnowledgePage() {
         );
         setKnowledge({ ...data, knowledge_cards: kcWithId } as PublishedKnowledgeResponse);
         setBuildState('published');
+        preBuildStateRef.current = 'published';
       } else {
         setKnowledge(null);
         setBuildState('idle');
+        preBuildStateRef.current = 'idle';
       }
     } catch {
       setKnowledge(null);
       setBuildState('idle');
+      preBuildStateRef.current = 'idle';
     } finally {
       setLoading(false);
     }
@@ -308,9 +323,12 @@ export default function KnowledgePage() {
         startPolling(run.run_id);
         addToast('知识目录构建中，请稍候...', 'info');
       }
-    } catch {
-      addToast('启动构建失败', 'error');
-      setBuildState('idle');
+    } catch (err) {
+      // 启动失败回到基线（已发布目录/空），而不是一刀切回 idle——
+      // 已有目录时回 idle 会造成「有统计条、正文却空白」的假死界面。
+      setBuildState(preBuildStateRef.current);
+      setBuildOpen(false);
+      addToast(`启动构建失败：${getErrorMessage(err)}`, 'error');
     } finally {
       setBuilding(false);
     }
@@ -357,7 +375,8 @@ export default function KnowledgePage() {
     try {
       await api.knowledge.reject(courseId, runId);
       addToast('已放弃该知识目录，候选已标记为驳回', 'success');
-      setBuildState('idle');
+      // 放弃本次候选后回到构建前的基线：旧的已发布目录若在，应立即重新展示。
+      setBuildState(preBuildStateRef.current);
       setRunId(null);
       setCandidatePayload(null);
       setReviewedTopicCodes([]);
@@ -417,6 +436,8 @@ export default function KnowledgePage() {
   }), [allCards, units, examPoints]);
 
   const selectedCard = selectedCardId ? (cardsDict[selectedCardId] as KnowledgeCard | undefined) : undefined;
+  // 已有目录（已发布或待确认候选）时，构建入口语义变为「重新构建」。
+  const hasExistingCatalog = knowledge !== null || buildState === 'candidate';
   const selectedUnit = selectedCardId ? units.find((u) => u.card_ids.includes(selectedCardId)) : undefined;
   const selectedPoint = selectedUnit?.exam_point_id
     ? examPoints.find((p) => p.id === selectedUnit.exam_point_id)
@@ -475,8 +496,13 @@ export default function KnowledgePage() {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Button variant="secondary" icon={<RefreshCw size={16} />} onClick={loadPublished} />
-          <Button variant="primary" icon={<Plus size={16} />} onClick={handleOpenBuild}>
-            构建知识目录
+          <Button
+            variant="primary"
+            icon={<Plus size={16} />}
+            disabled={buildState === 'building' || building}
+            onClick={handleOpenBuild}
+          >
+            {hasExistingCatalog ? '重新构建知识目录' : '构建知识目录'}
           </Button>
         </div>
       </div>
@@ -600,7 +626,7 @@ export default function KnowledgePage() {
       <Modal
         open={buildOpen}
         onClose={() => setBuildOpen(false)}
-        title="构建知识目录"
+        title={hasExistingCatalog ? '重新构建知识目录' : '构建知识目录'}
         footer={
           <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
             <Button variant="secondary" onClick={() => setBuildOpen(false)}>取消</Button>
