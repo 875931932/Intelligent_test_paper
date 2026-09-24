@@ -5,7 +5,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.api.v1.knowledge import _mark_organization_run_failed
+from app.api.v1.knowledge import (
+    _ACTIVE_ORG_RUN_IDS,
+    _heal_interrupted_run,
+    _mark_organization_run_failed,
+)
 from app.config import settings
 from app.db.schema import Base, Course, User, organization_runs
 from app.main import app
@@ -120,3 +124,101 @@ def test_knowledge_requires_complete_llm_configuration(monkeypatch, missing_sett
         ):
             if hasattr(app.state, state_name):
                 delattr(app.state, state_name)
+
+
+@pytest.mark.parametrize("stale_status", ["queued", "running"])
+def test_heal_interrupted_run_flips_stale_row_to_failed(tmp_path, stale_status):
+    """进程重启后残留的 running/queued 行在读取时判死（前端轮询解卡的根治回归）。"""
+    engine, factory = _mark_failed_env(tmp_path)
+    try:
+        session = factory()
+        session.execute(
+            organization_runs.insert().values(
+                id="run-stale",
+                course_id="course",
+                status=stale_status,
+                input_snapshot={},
+            )
+        )
+        session.commit()
+        row = dict(
+            session.execute(
+                select(organization_runs).where(organization_runs.c.id == "run-stale")
+            ).mappings().one()
+        )
+
+        healed = _heal_interrupted_run(session, row)
+
+        assert healed["status"] == "failed"
+        assert healed["error_code"] == "interrupted_by_restart"
+        assert healed["completed_at"] is not None
+        stored = session.execute(
+            select(organization_runs).where(organization_runs.c.id == "run-stale")
+        ).mappings().one()
+        assert stored["status"] == "failed"
+        session.close()
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "settled_status",
+    ["awaiting_teacher_confirmation", "published", "rejected", "failed"],
+)
+def test_heal_interrupted_run_keeps_settled_status(tmp_path, settled_status):
+    engine, factory = _mark_failed_env(tmp_path)
+    try:
+        session = factory()
+        session.execute(
+            organization_runs.insert().values(
+                id="run-settled",
+                course_id="course",
+                status=settled_status,
+                input_snapshot={},
+            )
+        )
+        session.commit()
+        row = dict(
+            session.execute(
+                select(organization_runs).where(organization_runs.c.id == "run-settled")
+            ).mappings().one()
+        )
+
+        healed = _heal_interrupted_run(session, row)
+
+        assert healed["status"] == settled_status
+        session.close()
+    finally:
+        engine.dispose()
+
+
+def test_heal_interrupted_run_keeps_run_executing_in_this_process(tmp_path):
+    engine, factory = _mark_failed_env(tmp_path)
+    try:
+        session = factory()
+        session.execute(
+            organization_runs.insert().values(
+                id="run-active",
+                course_id="course",
+                status="running",
+                input_snapshot={},
+            )
+        )
+        session.commit()
+        row = dict(
+            session.execute(
+                select(organization_runs).where(organization_runs.c.id == "run-active")
+            ).mappings().one()
+        )
+
+        _ACTIVE_ORG_RUN_IDS.add("run-active")
+        try:
+            healed = _heal_interrupted_run(session, row)
+        finally:
+            _ACTIVE_ORG_RUN_IDS.discard("run-active")
+
+        assert healed["status"] == "running"
+        assert healed["completed_at"] is None
+        session.close()
+    finally:
+        engine.dispose()

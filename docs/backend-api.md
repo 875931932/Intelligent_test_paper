@@ -210,6 +210,8 @@ body 同 `exam_rules` 结构（`question_type_ratios` / `chapter_weights` 等）
 ### 5.2 运行详情
 `GET /api/v1/courses/{course_id}/organization-runs/{run_id}` → 运行记录对象
 
+> 进程重启/崩溃中断的 run（线程已消亡但行停在 `queued`/`running`）在读取时就地判为 `failed`（`error_code=interrupted_by_restart`），前端轮询下一拍即解卡；`latest` 同理。
+
 ### 5.3 候选项
 `GET /api/v1/courses/{course_id}/organization-runs/{run_id}/candidate` → 候选对象
 

@@ -10,6 +10,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.adapters.model.llm_gateway import LLMJsonClient, LLMModelError
@@ -227,6 +228,50 @@ def _mark_organization_run_failed(
         _logger.exception("failed to mark organization run %s failed", run_id)
 
 
+# 本进程正在执行的组织化 run（进程内存态，进程死亡即清空）。流水线跑在 daemon
+# 线程里，进程重启/崩溃即线程消亡，而 run 行会永远留在 running（图检查点是
+# InMemorySaver，本就不可恢复续跑）。部署为单进程 uvicorn（docs/DEPLOY_UBUNTU.md
+# systemd 单进程），因此读路径上 status 仍是 running 却不在本集合的行，即可断定
+# 是上次进程死亡留下的孤儿，就地标记 failed——前端下一拍轮询拿到终态即解卡，
+# 无需人工改库（2026-09-24 误重启后卡「构建中」的根治）。注册与 run 行插入
+# 同在流水线线程内、且 add 先于插入，不存在「行已存在但尚未注册」的误判窗口。
+# ⚠️ 若改为多 worker 部署，此判定会跨进程误杀活跃 run，须换成租约心跳
+# （task_runs.lease_expires_at 同款机制）。
+_ACTIVE_ORG_RUN_IDS: set[str] = set()
+
+
+def _heal_interrupted_run(session: Session, row: dict) -> dict:
+    """读 organization_runs 行时调用：本进程无执行线程的 running/queued 孤儿就地判死。
+
+    仅限读路径（get_run / get_latest_run）调用；状态守卫同时落在 UPDATE 的 WHERE
+    里，与流水线自身的状态推进并发时不会把已推进的终态改回 failed。
+    """
+    if row.get("status") not in ("queued", "running") or row.get("id") in _ACTIVE_ORG_RUN_IDS:
+        return row
+    session.execute(
+        knowledge_publish_service.organization_runs.update()
+        .where(
+            knowledge_publish_service.organization_runs.c.id == row["id"],
+            knowledge_publish_service.organization_runs.c.course_id == row["course_id"],
+            knowledge_publish_service.organization_runs.c.status.in_(("queued", "running")),
+        )
+        .values(
+            status="failed",
+            error_code="interrupted_by_restart",
+            error_message="build was interrupted because the service restarted; please rebuild",
+            updated_at=func.now(),
+            completed_at=func.now(),
+        )
+    )
+    session.commit()
+    _logger.warning(
+        "organization run %s healed as interrupted (stale %s row)", row["id"], row["status"]
+    )
+    return knowledge_publish_service.get_organization_run(
+        session, course_id=row["course_id"], run_id=row["id"]
+    )
+
+
 def _run_organization_pipeline(
     *,
     course_id: str,
@@ -239,6 +284,7 @@ def _run_organization_pipeline(
     session_factory,
 ) -> None:
     """后台执行知识目录构建；失败时把 run 标记为 failed，不影响 HTTP 响应。"""
+    _ACTIVE_ORG_RUN_IDS.add(run_id)
     _logger.info("run %s started: course=%s materials=%d", run_id, course_id, len(material_version_ids))
     started = time.monotonic()
     session = session_factory()
@@ -282,6 +328,7 @@ def _run_organization_pipeline(
         _logger.exception("run %s failed", run_id)
         _mark_organization_run_failed(session_factory, course_id=course_id, run_id=run_id, message=message)
     finally:
+        _ACTIVE_ORG_RUN_IDS.discard(run_id)
         session.close()
 
 
@@ -341,7 +388,7 @@ def get_latest_run(course_id: str, session: Session = Depends(get_session)) -> d
     ).mappings().one_or_none()
     if row is None:
         raise _not_found()
-    result = dict(row)
+    result = dict(_heal_interrupted_run(session, dict(row)))
     result["run_id"] = result.get("id")
     return result
 
@@ -349,9 +396,10 @@ def get_latest_run(course_id: str, session: Session = Depends(get_session)) -> d
 @router.get("/organization-runs/{run_id}")
 def get_run(course_id: str, run_id: str, session: Session = Depends(get_session)) -> dict:
     try:
-        return knowledge_publish_service.get_organization_run(session, course_id=course_id, run_id=run_id)
+        row = knowledge_publish_service.get_organization_run(session, course_id=course_id, run_id=run_id)
     except knowledge_publish_service.KnowledgePublishError:
         raise _not_found()
+    return _heal_interrupted_run(session, row)
 
 
 @router.get("/organization-runs/{run_id}/candidate")
