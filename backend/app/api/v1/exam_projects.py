@@ -17,7 +17,7 @@ from app.db.schema import (
 from app.api.v1.auth import get_current_user
 from app.db.session import get_session, get_session_factory
 from app.config import settings
-from app.services import exam_project_service
+from app.services import contract_explain_service, exam_project_service
 from app.services.blueprint_persistence_service import (
     BlueprintPersistenceError,
     BlueprintValidationError,
@@ -62,6 +62,16 @@ class GenerationStartRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mock_graph: bool = False
+
+
+class ContractExplainRequest(BaseModel):
+    """合同槽位 AI 解释请求：全部可选、只读，不携带任何写字段。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    allocation_seed: int | None = None
+    blueprint_version_id: str | None = None
+    instruction: str = ""
 
 
 def _not_found(detail: str = "exam project not found") -> HTTPException:
@@ -367,6 +377,86 @@ def revise_contract_preview(
         raise HTTPException(status_code=422, detail=f"revision error: {exc}")
     snap = contract.model_dump(mode="json")
     return {"revised_contract_snapshot": snap}
+
+
+@router.post(
+    "/{project_id}/contract-slots/{item_index}/explain",
+    response_model=dict,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def explain_contract_slot(
+    course_id: str,
+    project_id: str,
+    item_index: int,
+    body: ContractExplainRequest | None = None,
+    session: Session = Depends(get_session),
+) -> dict:
+    """合同槽位 AI 解释：只读重算分配 + 模型解读，零写路径。
+
+    只产出 task_runs 提案（解释 + 建议，存 task_runs.result）；任何调整由
+    教师走既有 contracts/revise（slot_revisions）与 contracts/confirm 落地，
+    本端点不改合同/蓝图/试卷数据。
+    """
+    req = body or ContractExplainRequest()
+    instruction = str(req.instruction or "").strip()
+
+    # 项目 → 蓝图（与 revise 预览同参解析；无蓝图按冲突拦一道，对齐
+    # PipelinePanel「无蓝图先拦一道」的语义，不让教师点出一个 404 死路）
+    _get_project_or_404(session, course_id=course_id, project_id=project_id)
+    try:
+        bv_id = _resolve_blueprint_version_id(
+            session,
+            course_id=course_id,
+            project_id=project_id,
+            override=req.blueprint_version_id,
+        )
+    except HTTPException as exc:
+        if exc.status_code == 404 and exc.detail == "no blueprint version exists":
+            raise HTTPException(
+                status_code=409,
+                detail="该项目尚未创建蓝图，无法解释合同槽位；请先创建蓝图",
+            )
+        raise
+
+    if not contract_explain_service.llm_configured():
+        raise HTTPException(status_code=503, detail="LLM model is not configured")
+
+    try:
+        task_id = contract_explain_service.enqueue_explain(
+            session,
+            course_id=course_id,
+            project_id=project_id,
+            item_index=item_index,
+            allocation_seed=req.allocation_seed,
+            blueprint_version_id=bv_id,
+            instruction=instruction,
+        )
+        # 显式 commit：outbox 派发会用另一个事务/连接读取事件，任务行必须先落地
+        session.commit()
+    except contract_explain_service.ContractExplainError as exc:
+        session.rollback()
+        msg = str(exc)
+        if "不存在" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=422, detail=msg)
+
+    # 与 ai-revise/ai-generate 同款：真实任务经 transactional outbox 投递给
+    # Celery；投递暂时失败时事件保持 pending，任务不会丢失，后续可重试。
+    from app.infrastructure.tasks.celery_app import CeleryPublisher
+    from app.infrastructure.tasks.outbox import dispatch_pending_events
+
+    try:
+        dispatch_pending_events(
+            session,
+            CeleryPublisher(),
+            course_id=course_id,
+            limit=5,
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+
+    return {"task_run_id": task_id}
 
 
 @router.post(

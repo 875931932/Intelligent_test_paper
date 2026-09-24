@@ -1,7 +1,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import {
   Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ClipboardList, ExternalLink, Eye,
-  FileJson, FileText, KeySquare,
+  FileJson, FileSearch, FileText, KeySquare,
   Pencil, Plus, RefreshCw, RotateCcw, Save, Sparkles, Trash2,
 } from 'lucide-react';
 import { api } from '@/api/client';
@@ -17,8 +17,10 @@ import {
   DIFFICULTY_OPTIONS, EXAM_PROJECT_STATUS_META, PAPER_STATUS_META,
   QUESTION_TYPE_OPTIONS, QUESTION_TYPE_ORDER, dlabel, qlabel, sectionLabel,
 } from '@/lib/examDisplay';
-import type { ExamProject, PaperVersion, PaperVersionItem } from '@/types/api';
+import type { AiCreateProposal, ExamProject, PaperVersion, PaperVersionItem } from '@/types/api';
+import { AiCreatePanel } from './AiCreatePanel';
 import { AiRevisePanel } from './AiRevisePanel';
+import { PaperReviewPanel } from './PaperReviewPanel';
 
 // ─── 题型与选项工具 ───
 
@@ -97,6 +99,11 @@ function toggleAnswerKey(keys: Set<string>, key: string, multi: boolean): string
 
 // ─── 编辑草稿 ───
 
+/** rubric 两态统一成换行文本：生成侧是要点数组，表单按文本编辑 */
+function rubricText(v: string | string[] | null | undefined): string {
+  return Array.isArray(v) ? v.join('\n') : (v ?? '');
+}
+
 interface Draft {
   stem: string;
   question_type: string;
@@ -104,6 +111,8 @@ interface Draft {
   score: string;
   answer: string;
   explanation: string;
+  /** 评分细则（主观题）：每行一个要点 */
+  rubric: string;
   options: OptEntry[];
 }
 
@@ -115,6 +124,8 @@ interface EditorSubmit {
   /** 判断题提交布尔值（后端该题型强校验 bool），其余题型为字符串 */
   answer: string | boolean;
   explanation: string;
+  /** 评分细则（主观题）；原文进 teacher_override / POST items，客观题为空串 */
+  rubric: string;
   options: Record<string, string>;
   clear_needs_review?: boolean;
 }
@@ -136,6 +147,7 @@ function draftFromItem(item: PaperVersionItem): Draft {
     score: String(item.score ?? 0),
     answer: normalizeAnswer(item.answer),
     explanation: item.explanation ?? '',
+    rubric: rubricText(item.rubric),
     options: optionsToEntries(item.options),
   };
 }
@@ -147,13 +159,44 @@ const emptyDraft = (): Draft => ({
   score: '5',
   answer: '',
   explanation: '',
+  rubric: '',
   options: [{ key: 'A', text: '' }, { key: 'B', text: '' }],
 });
+
+/**
+ * AI 整题提案 → 新增表单草稿：题面字段全量回填，教师微调后走既有「加入试卷」。
+ * 分值不进提案（是教师的总分决策），保留表单默认值由教师自己定。
+ */
+function draftFromProposal(p: AiCreateProposal): Draft {
+  const choice = hasOptions(p.question_type);
+  let options = choice ? optionsToEntries(p.options ?? undefined) : [];
+  // 选择题提案缺选项时兜底给 A-D 空行，教师可直接补（正常不会发生：校验已拦）
+  if (choice && options.length === 0) {
+    options = [
+      { key: 'A', text: '' }, { key: 'B', text: '' }, { key: 'C', text: '' }, { key: 'D', text: '' },
+    ];
+  }
+  const difficulty = DIFFICULTY_OPTIONS.some((o) => o.value === p.difficulty)
+    ? (p.difficulty as string)
+    : 'medium';
+  return {
+    stem: p.stem ?? '',
+    question_type: p.question_type || 'short_answer',
+    difficulty,
+    score: '5',
+    answer: normalizeAnswer(p.answer),
+    explanation: p.explanation ?? '',
+    rubric: rubricText(p.rubric),
+    options,
+  };
+}
 
 // ─── 题目编辑器（右栏原地编辑与「新增题目」弹窗共用） ───
 
 export interface QuestionEditorHandle {
   submit: () => void;
+  /** 用外部来源（AI 生成提案）整体替换表单草稿 */
+  setDraft: (d: Draft) => void;
 }
 
 const QuestionEditor = forwardRef<QuestionEditorHandle, {
@@ -174,6 +217,8 @@ const QuestionEditor = forwardRef<QuestionEditorHandle, {
   const [clearReview, setClearReview] = useState(true);
   const choice = hasOptions(d.question_type);
   const multi = d.question_type === 'multiple_choice';
+  // 与生成链路 validate_generated_question 同口径：简答/综合必须给评分细则
+  const subjective = d.question_type === 'short_answer' || d.question_type === 'comprehensive';
 
   const patch = (p: Partial<Draft>) => setD((prev) => ({ ...prev, ...p }));
 
@@ -204,13 +249,15 @@ const QuestionEditor = forwardRef<QuestionEditorHandle, {
       score: Number(d.score) || 0,
       answer: answerForSubmit(d.question_type, d.answer),
       explanation: d.explanation,
+      rubric: d.rubric,
       options: choice ? entriesToOptions(d.options) : {},
       clear_needs_review: needsReview ? clearReview : undefined,
     });
   };
 
   // 供 Modal footer 之类的容器触发提交，避免把表单 state 提到父级
-  useImperativeHandle(ref, () => ({ submit }));
+  // setDraft：AI 生成提案整体覆盖草稿（props 只在挂载时生效，外部覆盖须走 handle）
+  useImperativeHandle(ref, () => ({ submit, setDraft: setD }));
 
   // 选项字母随 d.answer / d.options 每次渲染都要用；原先在选项行里内联算 3 次
   // （图标、配色、文案各一次），提到这里算一次即可。
@@ -273,6 +320,18 @@ const QuestionEditor = forwardRef<QuestionEditorHandle, {
         <textarea className="input-field" rows={2} value={d.explanation} onChange={(e) => patch({ explanation: e.target.value })} />
       </FieldLabel>
 
+      {subjective && (
+        <FieldLabel label="评分细则">
+          <textarea
+            className="input-field"
+            rows={2}
+            value={d.rubric}
+            onChange={(e) => patch({ rubric: e.target.value })}
+            placeholder="每行一个评分要点（阅卷细则；AI 提案会带入）"
+          />
+        </FieldLabel>
+      )}
+
       {needsReview && (
         <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '0.8125rem', color: 'var(--text-secondary)', cursor: 'pointer' }}>
           <input type="checkbox" checked={clearReview} onChange={(e) => setClearReview(e.target.checked)} />
@@ -312,7 +371,7 @@ const PREVIEW_TABS: Array<{ key: PreviewKind; label: string }> = [
 ];
 
 function PaperProfile({
-  pv, project, examPointCount, onExport, onPreview, onFinalize, onRevert, onRegenerate,
+  pv, project, examPointCount, onExport, onPreview, onFinalize, onRevert, onRegenerate, onReview,
 }: {
   pv: PaperVersion;
   project?: ExamProject;
@@ -322,6 +381,7 @@ function PaperProfile({
   onFinalize: () => void;
   onRevert: () => void;
   onRegenerate: () => void;
+  onReview: () => void;
 }) {
   const questions = pv.questions;
   const typeAcc = new Map<string, { score: number; count: number }>();
@@ -343,7 +403,7 @@ function PaperProfile({
   );
 
   return (
-    <div className="glass-card" style={{ padding: '18px 22px' }}>
+    <div className="glass-card" style={{ padding: '24px' }}>
       <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
         <div style={{ minWidth: 104 }}>
           <div style={{ fontSize: '2rem', fontWeight: 700, lineHeight: 1, letterSpacing: '-0.03em' }}>{pv.total_score}</div>
@@ -390,6 +450,10 @@ function PaperProfile({
           <Button variant="secondary" size="sm" onClick={() => onExport('answer')} icon={<KeySquare size={14} />}>答卷</Button>
           <Button variant="secondary" size="sm" onClick={() => onExport('json')} icon={<FileJson size={14} />}>答案细则</Button>
           <Button variant="secondary" size="sm" onClick={onPreview} icon={<Eye size={14} />}>整体预览</Button>
+          {/* 只读评审对定稿卷同样可用：不按 readonly/finalized 收起 */}
+          <Button variant="secondary" size="sm" onClick={onReview} icon={<FileSearch size={14} />} title="AI 对整份试卷稿出一份只读质量评审报告（不含学生答卷评分）">
+            AI 质量评审
+          </Button>
           {pv.status === 'finalized' ? (
             <Button variant="secondary" size="sm" onClick={onRevert} icon={<RotateCcw size={14} />}>撤销定稿</Button>
           ) : (
@@ -506,7 +570,7 @@ function QuestionDetail({
     <div
       className="glass-card"
       style={{
-        padding: '22px 26px',
+        padding: '24px 24px 24px 22px',
         borderLeft: '3px solid ' + (flagged ? 'var(--warning)' : 'rgba(0,113,227,0.35)'),
       }}
     >
@@ -589,6 +653,13 @@ function QuestionDetail({
             </details>
           )}
 
+          {item.rubric && (
+            <details style={{ marginTop: '14px', fontSize: '0.875rem' }}>
+              <summary style={{ cursor: 'pointer', color: 'var(--text-tertiary)', userSelect: 'none' }}>评分细则</summary>
+              <div style={{ marginTop: '6px', color: 'var(--text-secondary)', lineHeight: 1.75, whiteSpace: 'pre-wrap' }}>{rubricText(item.rubric)}</div>
+            </details>
+          )}
+
           {flagged && item.needs_review_reason && (
             <div style={{
               marginTop: '14px', padding: '10px 14px', borderRadius: 8, fontSize: '0.825rem', lineHeight: 1.65,
@@ -652,6 +723,7 @@ export default function PaperPanel({
   const [finalizeOpen, setFinalizeOpen] = useState(false);
   // 单题 AI 改题面板的展开状态：一次会话属于一道题，切题即收起
   const [aiOpen, setAiOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewKind, setPreviewKind] = useState<PreviewKind>('student');
   // 整体预览的带鉴权 blob object URL（作 iframe src）；加载中/失败时为 null
@@ -1029,6 +1101,16 @@ export default function PaperPanel({
         </>
       }
     >
+      {/* AI 生成整题：提案 → 填入表单 → 教师微调后走既有「加入试卷」落库 */}
+      {!readonly && addOpen && (
+        <div style={{ marginBottom: '14px' }}>
+          <AiCreatePanel
+            courseId={courseId}
+            pvId={pv.id}
+            onFill={(proposal) => addEditorRef.current?.setDraft(draftFromProposal(proposal))}
+          />
+        </div>
+      )}
       <QuestionEditor
         ref={addEditorRef}
         initial={emptyDraft()}
@@ -1041,11 +1123,10 @@ export default function PaperPanel({
       />
     </Modal>
   );
-
   if (questions.length === 0) {
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-        <div className="glass-card" style={{ padding: '48px 20px', textAlign: 'center' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+        <div className="glass-card" style={{ padding: '48px 24px', textAlign: 'center' }}>
           <h3 style={{ fontWeight: 600, fontSize: '1rem', marginBottom: '8px' }}>这份试卷还没有题目</h3>
           <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '18px' }}>
             生成完成后题目会出现在这里；也可以手动新增一道题目。
@@ -1061,7 +1142,7 @@ export default function PaperPanel({
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       <PaperProfile
         pv={pv}
         project={project}
@@ -1071,10 +1152,20 @@ export default function PaperPanel({
         onFinalize={handleFinalizeClick}
         onRevert={handleRevert}
         onRegenerate={onRegenerate}
+        onReview={() => setReviewOpen((v) => !v)}
       />
 
+      {/* AI 质量评审面板：只读报告，工具栏按钮开关；试卷加载即可用（含 readonly/定稿态） */}
+      {reviewOpen && (
+        <PaperReviewPanel
+          courseId={courseId}
+          pvId={pv.id}
+          onClose={() => setReviewOpen(false)}
+        />
+      )}
+
       {/* 双栏：左题号索引，右当前题目 */}
-      <div style={{ display: 'flex', gap: '14px', alignItems: 'flex-start' }}>
+      <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>
         <div
           className="glass-card"
           style={{
@@ -1138,13 +1229,13 @@ export default function PaperPanel({
               onDirtyChange={reportDirty}
             />
           ) : (
-            <div className="glass-card" style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>
+            <div className="glass-card" style={{ padding: '40px 24px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>
               请在左侧选择题号
             </div>
           )}
           {/* AI 改题面板：提案 → diff 预览 → 确认后走既有 PATCH 落库 */}
           {current && !editing && aiOpen && (
-            <div style={{ marginTop: '14px' }}>
+            <div style={{ marginTop: '16px' }}>
               <AiRevisePanel
                 key={current.item_index}
                 courseId={courseId}

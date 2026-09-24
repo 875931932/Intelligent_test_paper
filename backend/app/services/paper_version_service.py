@@ -478,6 +478,9 @@ def get_paper_version(
             "options": options,
             "answer": answer,
             "explanation": override.get("explanation", payload.get("explanation")),
+            # 评分细则（主观题阅卷要点）：与 explanation 同口径 override 优先；
+            # 此前只留在 payload/提案里，读取与导出都拿不到。
+            "rubric": override.get("rubric", payload.get("rubric")),
             # 综合题分问（prompt/每问分值/逐问答案）此前只留在 payload 里没取出来，
             # 导出渲染拿不到，整段分问被整题丢掉；答卷与答题卡都依赖它。
             "subquestions": override.get("subquestions") or payload.get("subquestions") or [],
@@ -768,6 +771,7 @@ def create_paper_item(
     explanation: str = "",
     score: float = 0.0,
     difficulty: str = "medium",
+    rubric: Any = None,
 ) -> dict:
     """在试卷末尾新增一道教师自拟题目。
 
@@ -850,6 +854,7 @@ def create_paper_item(
                     "options": options or [],
                     "answer": answer,
                     "explanation": explanation,
+                    "rubric": rubric,
                     "score": score or 0.0,
                     "question_type": question_type,
                     "difficulty": difficulty,
@@ -1515,11 +1520,11 @@ def export_answer_detail_json(
     *,
     course_id: str,
 ) -> dict:
-    """答案细则 JSON：每题含题干/选项/答案/难度/认知层级/质量审计。"""
+    """答案细则 JSON：每题含题干/选项/答案/评分细则/难度/认知层级/质量审计。"""
     pv = get_paper_version(session, paper_version_id, course_id=course_id)
     questions = pv.get("questions", [])
     return {
-        "answer_detail_schema_version": "1.0.0",
+        "answer_detail_schema_version": "1.1.0",
         "paper_version_id": paper_version_id,
         "version_no": pv.get("version_no"),
         "exam_project_id": pv.get("exam_project_id"),
@@ -1534,6 +1539,8 @@ def export_answer_detail_json(
                 "options": q.get("options", []),
                 "answer": q.get("answer", ""),
                 "answer_missing": _answer_missing(q),
+                # 评分细则随卷下发（阅卷端直接输入）：要点数组/文本，缺省归 null
+                "rubric": q.get("rubric") or None,
                 "difficulty": q.get("difficulty"),
                 "difficulty_label": _difficulty_label(q.get("difficulty")),
                 "cognitive_level": q.get("cognitive_level"),

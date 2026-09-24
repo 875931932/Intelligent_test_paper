@@ -3,14 +3,17 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.v1.auth import get_current_user
 from app.db.schema import paper_versions
 from app.db.session import get_session
-from app.services import ai_revise_service
+from app.services import ai_create_service, ai_revise_service, paper_review_service
+from app.services.ai_create_service import AiCreateConflict, AiCreateError
 from app.services.ai_revise_service import AiReviseConflict, AiReviseError
+from app.services.paper_review_service import PaperReviewError
 from app.services.paper_version_service import (
     Conflict,
     PendingNeedsReview,
@@ -37,6 +40,14 @@ router = APIRouter(
     tags=["paper-versions"],
     dependencies=[Depends(get_current_user)],
 )
+
+
+class PaperReviewRequest(BaseModel):
+    """整卷 AI 质量评审请求：可选关注点，纯只读、不携带任何写字段。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    instruction: str = ""
 
 
 def _resolve_pv_for_project(
@@ -180,6 +191,122 @@ def create_ai_revise(
     return {"task_run_id": task_id}
 
 
+@router.post(
+    "/paper-versions/{pv_id}/items/ai-generate",
+    response_model=dict,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_ai_generate(
+    course_id: str,
+    pv_id: str,
+    body: dict,
+    session: Session = Depends(get_session),
+) -> dict:
+    """发起整题 AI 生成任务；提案经校验后由前端回填新增表单，教师确认才落库。"""
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="body must be a dict")
+    instruction = str(body.get("instruction") or "").strip()
+    if not instruction:
+        raise HTTPException(status_code=422, detail="instruction 不能为空")
+    if not ai_create_service.llm_configured():
+        raise HTTPException(status_code=503, detail="LLM model is not configured")
+
+    try:
+        task_id = ai_create_service.enqueue_ai_create(
+            session,
+            course_id=course_id,
+            paper_version_id=pv_id,
+            instruction=instruction,
+        )
+        # 显式 commit：outbox 派发会用另一个事务/连接读取事件，任务行必须先落地
+        session.commit()
+    except AiCreateConflict as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc))
+    except AiCreateError as exc:
+        session.rollback()
+        msg = str(exc)
+        if "不存在" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=422, detail=msg)
+
+    # 与 ai-revise 同款：真实任务经 transactional outbox 投递给 Celery；
+    # 投递暂时失败时事件保持 pending，任务不会丢失，后续 dispatcher 可重试。
+    from app.infrastructure.tasks.celery_app import CeleryPublisher
+    from app.infrastructure.tasks.outbox import dispatch_pending_events
+
+    try:
+        dispatch_pending_events(
+            session,
+            CeleryPublisher(),
+            course_id=course_id,
+            limit=5,
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+
+    return {"task_run_id": task_id}
+
+
+@router.post(
+    "/paper-versions/{pv_id}/ai-review",
+    response_model=dict,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_ai_review(
+    course_id: str,
+    pv_id: str,
+    body: PaperReviewRequest | None = None,
+    session: Session = Depends(get_session),
+) -> dict:
+    """发起整卷 AI 质量评审任务：只读报告（难度分布/题面表述/答案与解析一致性/
+    覆盖配额/风险题的解读），端点只写 task_runs，不碰试卷/合同/蓝图任何数据。
+
+    不做状态禁令：报告是只读的，定稿（finalized）试卷照样可评审——这正是它的
+    价值。措辞定位是试卷稿质量评审，不是学生答卷评分（在线阅卷是范围外需求）。
+    """
+    req = body or PaperReviewRequest()
+    instruction = str(req.instruction or "").strip()
+
+    if not paper_review_service.llm_configured():
+        raise HTTPException(status_code=503, detail="LLM model is not configured")
+
+    try:
+        task_id = paper_review_service.enqueue_review(
+            session,
+            course_id=course_id,
+            paper_version_id=pv_id,
+            instruction=instruction,
+        )
+        # 显式 commit：outbox 派发会用另一个事务/连接读取事件，任务行必须先落地
+        session.commit()
+    except PaperReviewError as exc:
+        session.rollback()
+        msg = str(exc)
+        if "不存在" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=422, detail=msg)
+
+    # 与 ai-revise 同款：真实任务经 transactional outbox 投递给 Celery；
+    # 投递暂时失败时事件保持 pending，任务不会丢失，后续 dispatcher 可重试。
+    from app.infrastructure.tasks.celery_app import CeleryPublisher
+    from app.infrastructure.tasks.outbox import dispatch_pending_events
+
+    try:
+        dispatch_pending_events(
+            session,
+            CeleryPublisher(),
+            course_id=course_id,
+            limit=5,
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+
+    return {"task_run_id": task_id}
+
+
 @router.put("/paper-versions/{pv_id}/items/reorder", response_model=dict)
 def reorder_paper_items(
     course_id: str,
@@ -228,6 +355,7 @@ def create_paper_item(
             explanation=str(body.get("explanation") or ""),
             score=float(body.get("score") or 0),
             difficulty=str(body.get("difficulty") or "medium"),
+            rubric=body.get("rubric"),
         )
     except Conflict as exc:
         raise HTTPException(status_code=409, detail=str(exc))

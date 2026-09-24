@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
+import { toText } from '@/lib/examDisplay';
 import type { AiReviseResult, PaperVersionItem, TaskRun } from '@/types/api';
 
 /** 任务终态（与后端 task_runs 状态机一致） */
@@ -32,21 +33,6 @@ const FIELD_KEYS: FieldKey[] = ['stem', 'options', 'answer', 'explanation'];
 /** 结构化比较：提案与原题一致的字段不进 diff（也就不进 PATCH） */
 function sameValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
-}
-
-/** 任意题面字段转可读文本（选项对象/数组、布尔答案都要能展示） */
-function toText(value: unknown): string {
-  if (value == null || value === '') return '（空）';
-  if (typeof value === 'boolean') return value ? '正确' : '错误';
-  if (Array.isArray(value)) {
-    return value.map((v, i) => `${i + 1}. ${typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v)}`).join('\n');
-  }
-  if (typeof value === 'object') {
-    return Object.entries(value as Record<string, unknown>)
-      .map(([k, v]) => `${k}. ${typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v)}`)
-      .join('\n');
-  }
-  return String(value);
 }
 
 /**
@@ -163,7 +149,7 @@ export function AiRevisePanel({
     <div
       className="glass-card"
       style={{
-        padding: '16px 18px',
+        padding: '16px 24px 16px 22px',
         borderLeft: '3px solid var(--purple, #7c5cff)',
         display: 'flex',
         flexDirection: 'column',
@@ -183,46 +169,7 @@ export function AiRevisePanel({
         </button>
       </div>
 
-      {/* 指令输入：始终可见，便于提案后追加要求再来一轮 */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-        <textarea
-          value={instruction}
-          onChange={(e) => setInstruction(e.target.value)}
-          placeholder="告诉 AI 怎么改这道题（只改表述与选项，题型/分值/难度由合同锁定）"
-          rows={2}
-          disabled={running}
-          style={{
-            resize: 'vertical', padding: '8px 10px', borderRadius: 8, fontSize: '0.875rem',
-            border: '1px solid rgba(0,0,0,0.12)', background: 'rgba(255,255,255,0.75)',
-            fontFamily: 'inherit', lineHeight: 1.6,
-          }}
-        />
-        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-          {PRESETS.map((p) => (
-            <button
-              key={p}
-              disabled={running}
-              onClick={() => void submit(p)}
-              style={{
-                padding: '3px 10px', borderRadius: 999, fontSize: '0.75rem', fontWeight: 600,
-                background: 'rgba(124,92,255,0.08)', color: 'var(--purple, #7c5cff)',
-                border: '1px solid rgba(124,92,255,0.25)', cursor: running ? 'default' : 'pointer',
-                opacity: running ? 0.5 : 1,
-              }}
-            >
-              {p}
-            </button>
-          ))}
-        </div>
-        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-          <Button size="sm" loading={running} onClick={() => void submit()} icon={<Sparkles size={14} />}>
-            {running ? 'AI 改题中…（约几秒）' : result ? '按新要求再改一版' : '生成修改提案'}
-          </Button>
-          {result && !running && (
-            <Button size="sm" variant="ghost" onClick={() => setResult(null)}>清空提案</Button>
-          )}
-        </div>
-      </div>
+      {/* 指令输入在面板底部（见下），结果区可任意加长而不挤压输入区 */}
 
       {result && (
         <>
@@ -306,6 +253,60 @@ export function AiRevisePanel({
           </div>
         </>
       )}
+
+      {/* 指令输入（悬浮）：置于面板末尾并 sticky 钉住滚动容器底边，
+          diff/提案再长也不会把输入条推出视野；不透明背景 + 阴影保证
+          浮在结果内容之上时文字不透出，z-index 低于弹窗与 toast */}
+      <div
+        style={{
+          display: 'flex', flexDirection: 'column', gap: '8px',
+          position: 'sticky', bottom: 12, zIndex: 5,
+          padding: '12px 14px', borderRadius: 12,
+          background: 'var(--surface-elevated)',
+          backdropFilter: 'var(--glass-blur)',
+          WebkitBackdropFilter: 'var(--glass-blur)',
+          border: '1px solid rgba(0,0,0,0.06)',
+          boxShadow: '0 8px 32px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.05)',
+        }}
+      >
+        <textarea
+          value={instruction}
+          onChange={(e) => setInstruction(e.target.value)}
+          placeholder="告诉 AI 怎么改这道题（只改表述与选项，题型/分值/难度由合同锁定）"
+          rows={2}
+          disabled={running}
+          style={{
+            resize: 'vertical', padding: '8px 10px', borderRadius: 8, fontSize: '0.875rem',
+            border: '1px solid rgba(0,0,0,0.12)', background: 'rgba(255,255,255,0.75)',
+            fontFamily: 'inherit', lineHeight: 1.6,
+          }}
+        />
+        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+          {PRESETS.map((p) => (
+            <button
+              key={p}
+              disabled={running}
+              onClick={() => void submit(p)}
+              style={{
+                padding: '3px 10px', borderRadius: 999, fontSize: '0.75rem', fontWeight: 600,
+                background: 'rgba(124,92,255,0.08)', color: 'var(--purple, #7c5cff)',
+                border: '1px solid rgba(124,92,255,0.25)', cursor: running ? 'default' : 'pointer',
+                opacity: running ? 0.5 : 1,
+              }}
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <Button size="sm" loading={running} onClick={() => void submit()} icon={<Sparkles size={14} />}>
+            {running ? 'AI 改题中…（约几秒）' : result ? '按新要求再改一版' : '生成修改提案'}
+          </Button>
+          {result && !running && (
+            <Button size="sm" variant="ghost" onClick={() => setResult(null)}>清空提案</Button>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

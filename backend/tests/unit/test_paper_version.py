@@ -42,6 +42,8 @@ from app.services.paper_version_service import (
     PaperVersionError,
     PendingNeedsReview,
     confirm_paper_version,
+    create_paper_item,
+    export_answer_detail_json,
     get_paper_version,
     list_needs_review,
     resolve_current_paper_version_id,
@@ -596,3 +598,52 @@ def test_get_paper_version_exposes_display_fields(session):
     flagged = [q for q in questions if q["needs_review"]]
     assert {q["item_index"] for q in flagged} == {13, 27, 31}
     assert all(q["needs_review_reason"] for q in flagged)
+
+
+def test_create_paper_item_persists_rubric_end_to_end(session):
+    """主观题评分细则全链贯通：新增落库 → 读取带出 → 答案细则 JSON 导出。
+
+    根因：create_paper_item 曾没有 rubric 字段，AI 提案的 rubric 表单一过就丢，
+    阅卷端（答案细则 JSON 是其直接输入）永远拿不到评分细则。
+    """
+    pv_id, _ = _full_pipeline_to_candidate_paper(session)
+    before = get_paper_version(session, pv_id, course_id="c1")["questions"]
+
+    pv = create_paper_item(
+        session, course_id="c1", paper_version_id=pv_id,
+        stem="简述进程与线程的区别",
+        question_type="short_answer",
+        answer="进程是资源分配单位，线程是 CPU 调度单位",
+        explanation="从资源归属与调度粒度两个角度作答。",
+        rubric="答出进程是资源分配单位得 1 分\n答出线程是调度单位得 1 分",
+    )
+    assert len(pv["questions"]) == len(before) + 1
+    added = pv["questions"][-1]
+    assert added["item_index"] == len(before) + 1
+    assert added["rubric"].startswith("答出进程是资源分配单位")
+
+    detail = export_answer_detail_json(session, pv_id, course_id="c1")
+    exported = detail["questions"][-1]
+    assert exported["item_index"] == added["item_index"]
+    assert exported["rubric"] == added["rubric"]
+
+
+def test_rubric_via_override_wins_and_legacy_item_without_rubric_stays_editable(session):
+    """教师改 rubric 走 teacher_override（与 stem/explanation 同一条 PATCH 写路径，
+    override 优先于 payload）；历史题 payload 无 rubric（读出 None）不拦编辑——
+    内容补丁校验口径仍是「只看题干/答案」。
+    """
+    pv_id, _ = _full_pipeline_to_candidate_paper(session)
+    q1 = get_paper_version(session, pv_id, course_id="c1")["questions"][0]
+    assert q1["rubric"] is None  # mock 生成载荷没有 rubric 键 = 存量数据形态
+
+    update_paper_item(
+        session, course_id="c1", paper_version_id=pv_id, item_index=q1["item_index"],
+        teacher_override_patch={"stem": q1["stem"], "rubric": "要点一\n要点二"},
+    )
+    q1b = get_paper_version(session, pv_id, course_id="c1")["questions"][0]
+    assert q1b["stem"] == q1["stem"]
+    assert q1b["rubric"] == "要点一\n要点二"
+
+    detail = export_answer_detail_json(session, pv_id, course_id="c1")
+    assert detail["questions"][0]["rubric"] == "要点一\n要点二"

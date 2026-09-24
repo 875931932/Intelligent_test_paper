@@ -471,6 +471,8 @@ export interface PaperVersionItem {
   answer: string | boolean;
   /** 模型产出，部分题型为 null，前端需降级 */
   explanation?: string | null;
+  /** 评分细则（主观题阅卷要点）：生成侧为要点数组、表单侧为文本，无则 null */
+  rubric?: string | string[] | null;
   /** 综合题分问（含每问 prompt/score/answer），非综合题为空数组；导出与答题卡依赖它 */
   subquestions?: Array<Record<string, unknown>>;
   score: number;
@@ -531,6 +533,81 @@ export interface AiReviseResult {
   /** validate_generated_question 收口结果；passed=false 时禁止应用 */
   validation: { passed: boolean; code: string; message: string };
   attempts: number;
+}
+
+/** AI 整题提案中的题面字段（回填「新增题目」表单；分值不进提案，由教师自定） */
+export interface AiCreateProposal {
+  question_type: string;
+  stem: string;
+  options?: Record<string, string> | string[] | null;
+  answer: string | boolean;
+  explanation?: string | null;
+  difficulty?: string | null;
+  /** 评分细则（主观题必需）：回填表单 rubric 字段并随 POST items 落库 */
+  rubric?: string | string[] | null;
+}
+
+/** 新增题目 AI 生成提案（task_runs.result 载荷；教师确认后经既有 POST items 落库） */
+export interface AiCreateResult {
+  instruction: string;
+  proposal: AiCreateProposal;
+  change_summary: string;
+  /** validate_generated_question 收口结果；passed=false 时禁止填入表单 */
+  validation: { passed: boolean; code: string; message: string };
+  attempts: number;
+}
+
+/** 合同槽位单条调整建议：只引导教师走既有合同修订/换方案重跑两条落地路径 */
+export interface ContractExplainSuggestion {
+  concern: string;
+  suggestion: string;
+  /** 指向的槽位题位号（与 plan_items.item_index 同源，1 起）；不指向具体题位时为 null */
+  target_item_index: number | null;
+}
+
+/** 合同槽位 AI 解释（task_runs.result 载荷；纯只读，不产生任何写路径） */
+export interface ContractExplainResult {
+  project_id: string;
+  item_index: number;
+  instruction: string;
+  explanation: string;
+  suggestions: ContractExplainSuggestion[];
+  /** 对教师追问的直接回答；无追问为空串 */
+  instruction_response: string;
+  /** 收口校验是否通过；false 时内容仅作参考 */
+  validated: boolean;
+}
+
+/** 整卷 AI 质量评审单个维度结论（dimension 固定 5 类枚举，模型可只给其中若干类） */
+export interface PaperReviewSection {
+  dimension: '难度分布' | '题面表述' | '答案与解析一致性' | '覆盖与配额' | '风险题';
+  /** warn = 需要教师处理的问题；info = 仅提示 */
+  severity: 'info' | 'warn';
+  /** 结论（引用真实 item_index 或确定性数据） */
+  finding: string;
+  /** 教师下一步怎么做（只引导试卷页既有功能） */
+  suggestion: string;
+  /** 引用的真实题号（与 item_index 同源）；不指向具体题为空数组 */
+  item_indexes: number[];
+}
+
+/**
+ * 整卷 AI 质量评审报告（task_runs.result 载荷）。
+ * 纯只读、不含学生答卷评分——只针对试卷稿本身（在线阅卷是范围外需求）。
+ */
+export interface PaperReviewResult {
+  paper_version_id: string;
+  instruction: string;
+  verdict: 'pass' | 'attention';
+  summary: string;
+  sections: PaperReviewSection[];
+  /** 确定性数据快照：待审核题数 + 合同终检是否可用 */
+  deterministic: {
+    needs_review_count: number;
+    final_check_available: boolean;
+  };
+  /** 收口校验是否通过；false 时内容仅作参考 */
+  validated: boolean;
 }
 
 export interface TaskRun {

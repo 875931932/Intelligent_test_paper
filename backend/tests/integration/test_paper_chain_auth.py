@@ -55,13 +55,15 @@ def env():
         engine.dispose()
 
 
-# (method, path, json body)：覆盖 paper_versions 全部 13 个端点 + exam_projects 全部 15 个
+# (method, path, json body)：覆盖 paper_versions 全部 15 个端点 + exam_projects 全部 16 个
 C = "/api/v1/courses/c1"
 PAPER_ENDPOINTS = [
     ("GET", f"{C}/exam-projects/p1/paper-versions/current", None),
     ("GET", f"{C}/paper-versions/pv1/needs-review", None),
     ("PATCH", f"{C}/paper-versions/pv1/items/1", {"clear_needs_review": True}),
     ("POST", f"{C}/paper-versions/pv1/items/1/ai-revise", {"instruction": "改"}),
+    ("POST", f"{C}/paper-versions/pv1/items/ai-generate", {"instruction": "出题"}),
+    ("POST", f"{C}/paper-versions/pv1/ai-review", {"instruction": "评审"}),
     ("PUT", f"{C}/paper-versions/pv1/items/reorder", {"ordered_indices": [1]}),
     ("POST", f"{C}/paper-versions/pv1/items", {"stem": "x"}),
     ("DELETE", f"{C}/paper-versions/pv1/items/1", None),
@@ -85,6 +87,7 @@ EXAM_PROJECT_ENDPOINTS = [
     ("POST", f"{C}/exam-projects/p1/contracts/allocate", {}),
     ("PATCH", f"{C}/exam-projects/p1/contracts/revise", {}),
     ("POST", f"{C}/exam-projects/p1/contracts/confirm", {}),
+    ("POST", f"{C}/exam-projects/p1/contract-slots/1/explain", {}),
     ("GET", f"{C}/exam-projects/p1/contracts/current", None),
     ("POST", f"{C}/exam-projects/p1/generate", {}),
     ("GET", f"{C}/exam-projects/task-runs/tr1", None),

@@ -192,7 +192,7 @@ export default function PaperPage() {
         </div>
 
         {projects.length === 0 ? (
-          <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '72px 20px', gap: '16px' }}>
+          <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '72px 24px', gap: '16px' }}>
             <div style={{ width: 60, height: 60, borderRadius: '18px', background: 'var(--accent-subtle)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <ClipboardList size={30} />
             </div>
@@ -208,7 +208,7 @@ export default function PaperPage() {
                 <div
                   key={p.id}
                   className="glass-card"
-                  style={{ padding: '16px 20px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+                  style={{ padding: '16px 24px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
                   onClick={() => openProject(p)}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
@@ -288,7 +288,7 @@ export default function PaperPage() {
         <ArrowLeft size={16} /> 返回项目列表
       </button>
 
-      <div className="glass-card" style={{ padding: '22px 24px' }}>
+      <div className="glass-card" style={{ padding: '24px' }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
           <div>
             <h1 style={{ fontWeight: 700, fontSize: '1.3rem', letterSpacing: '-0.02em' }}>{sp.name}</h1>
@@ -349,11 +349,11 @@ export default function PaperPage() {
       </div>
 
       {tab === 'pipeline' ? null : paperLoading && !paper ? (
-        <div className="glass-card" style={{ padding: '48px 20px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>
+        <div className="glass-card" style={{ padding: '48px 24px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>
           正在加载试卷…
         </div>
       ) : !paper ? (
-        <div className="glass-card" style={{ padding: '48px 20px', textAlign: 'center' }}>
+        <div className="glass-card" style={{ padding: '48px 24px', textAlign: 'center' }}>
           <h3 style={{ fontWeight: 600, fontSize: '1rem', marginBottom: '8px' }}>该项目还没有生成试卷</h3>
           <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '18px' }}>
             在出卷流水线中完成蓝图、合同并生成后，试卷会出现在这里。

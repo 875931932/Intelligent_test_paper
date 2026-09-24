@@ -40,6 +40,15 @@ export const paperVersionsApi = {
   /** 发起单题 AI 改题任务（202）；提案经校验后用 examProjects.getTaskRun 轮询取回 */
   aiRevise: (courseId: string, pvId: string, itemIndex: number, instruction: string, token?: string): Promise<{ task_run_id: string }> =>
     request('/courses/' + courseId + '/paper-versions/' + pvId + '/items/' + itemIndex + '/ai-revise', { method: 'POST', body: JSON.stringify({ instruction }) }, token),
+  /** 发起整题 AI 生成任务（202）；提案回填新增表单，教师确认后走既有 createItem 落库 */
+  aiGenerate: (courseId: string, pvId: string, instruction: string, token?: string): Promise<{ task_run_id: string }> =>
+    request('/courses/' + courseId + '/paper-versions/' + pvId + '/items/ai-generate', { method: 'POST', body: JSON.stringify({ instruction }) }, token),
+  /**
+   * 发起整卷 AI 质量评审任务（202，纯只读报告，定稿卷也可评审）；
+   * 报告用 examProjects.getTaskRun 轮询取回。instruction 可空 = 标准评审。
+   */
+  aiReview: (courseId: string, pvId: string, instruction: string, token?: string): Promise<{ task_run_id: string }> =>
+    request('/courses/' + courseId + '/paper-versions/' + pvId + '/ai-review', { method: 'POST', body: JSON.stringify({ instruction }) }, token),
   confirm: (courseId: string, pvId: string, body?: { force_ignore_needs_review?: boolean }, token?: string) =>
     request('/courses/' + courseId + '/paper-versions/' + pvId + '/confirm', { method: 'POST', body: body ? JSON.stringify(body) : undefined }, token),
   revert: (courseId: string, pvId: string, token?: string) =>

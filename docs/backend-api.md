@@ -419,11 +419,14 @@ body：`{ "ordered_indices":[3,1,2] }`（新顺序，须恰好包含当前全部
 
 ### 9.3c 新增教师自拟题目
 `POST /api/v1/courses/{course_id}/paper-versions/{pv_id}/items`
-body：`{ "stem":"","question_type":"short_answer","options":[],"answer":"","explanation":"","score":5,"difficulty":"medium" }`
+body：`{ "stem":"","question_type":"short_answer","options":[],"answer":"","explanation":"","score":5,"difficulty":"medium","rubric":"" }`
 → 201，返回刷新后的完整试卷。
 
 **题干与答案必填**（422）：卷面里不允许出现无答案的题——否则答卷与答案细则导出就是空白。
 判断题答案传布尔值；多选题答案须对应两个及以上选项（字母如 `AB` 或选项原文）。
+主观题（简答/综合）可带 `rubric`（评分细则，每行一个要点）：AI 生成提案回填的
+`rubric` 即由此字段落库，GET questions（§9.2）与答案细则 JSON（§9.6）均带出；
+编辑时也可经 §9.3 的 `teacher_override_patch.rubric` 覆写。
 
 ### 9.3d 删除题目
 `DELETE /api/v1/courses/{course_id}/paper-versions/{pv_id}/items/{item_index}`
@@ -446,6 +449,79 @@ body：`{ "instruction":"让四个选项表述更平行" }`（`instruction` 必�
   只传变更字段）落库——与手动改题同一条写路径，教师可继续手动改回（原题分层保留在 `payload`）。
 - 幂等：同题同要求的**在途**任务复用同一 `task_run_id`；已到终态则换新键真正重新生成。
 
+### 9.3f AI 生成整道新题（提案，需教师确认）
+`POST /api/v1/courses/{course_id}/paper-versions/{pv_id}/items/ai-generate`
+body：`{ "instruction":"出一道单选题，考查进程与线程的区别" }`（`instruction` 必填非空）
+→ **202** `{ "task_run_id":"uuid" }`。LLM 未配置 503；试卷不存在/不在课程 404；已定稿 409；空要求 422。
+
+- **只产提案，不写试卷数据**：worker（`task_type=ai_create_item`，租约 300s）以该试卷
+  现有题目清单（题号/题型/题干前 40 字，防重复的素材约束）+ 知识卡（generation_run
+  关联过才带，拿不到则纯指令生成）为 grounding 调模型；提案必须过
+  `validate_generated_question` 收口——未过则带反馈纠错 1 次，仍不过如实上报
+  （比例/难度/合同去重等全局约束由确定性算法兜底，不进 prompt）。
+- **一期题型白名单**：`single_choice / multiple_choice / true_false / fill_blank /
+  short_answer`；综合题与论述题不支持整题生成（`validation.code=question_type_unsupported`）。
+- 提案存 `task_runs.result`：`{ instruction, proposal:{ question_type, stem, options,
+  answer, explanation, difficulty, rubric }, change_summary, validation:{passed,code,message},
+  attempts }`；用 §8 的 `GET /exam-projects/task-runs/{id}` 轮询，`succeeded` 后取 `result`。
+- **回填而非直写**：前端把 proposal 填进「新增题目」表单（QuestionEditor，含 `rubric`
+  评分细则字段），教师微调（含分值——`score` 不进提案，由教师自己定）后走 §9.3c 既有
+  POST items 落库，内部 `_validate_teacher_item` 再把一次关；`rubric` 随题落库，
+  读取（§9.2）与导出（§9.6）全链带出。
+- 幂等：同卷同指令的**在途**任务复用同一 `task_run_id`；已到终态则换新键真正重新生成。
+- 键 = `sha256(f"ai-create:{paper_version_id}:{instruction}")[:24]`。
+
+### 9.3g 合同槽位 AI 解释与调整建议（只读，异步）
+`POST /api/v1/courses/{course_id}/exam-projects/{project_id}/contract-slots/{item_index}/explain`
+body 可选 `{ "allocation_seed":0, "blueprint_version_id":"uuid", "instruction":"为什么不是另一个原子？" }`
+（均缺省可用；`instruction` 可为空串 = 标准解释）→ **202** `{ "task_run_id":"uuid" }`。
+LLM 未配置 503；项目不存在/不在课程 404；项目尚无蓝图 409；`item_index` 不在槽位内或 body
+含未知键/`instruction` 非字符串 422。
+
+- **纯只读、零写路径**：端点只建 `task_runs`（`task_type=explain_contract_slot`，租约 300s），
+  不碰合同/蓝图任何表；上下文用 `allocate_with_fallback` 同路只读重算（与 §9.2 revise 预览同源），
+  把槽位字段、知识卡、蓝图题位计划、章节权重、其余槽位概览喂给模型——prompt 不让模型重做分配，
+  解释必须落在确定性算法的真实输出上（红线：比例/难度/去重不进 prompt）。
+- 建议只引导两条既有落地路径：①合同修订（先 §9.2 `PATCH contracts/revise` 预览、再
+  `POST contracts/confirm` 落库）；②换分配方案（`allocation_seed`）或调整蓝图后重新分配——
+  不建议教师手改分值/难度去凑比例。`target_item_index` 不在已知槽位号的一律归 `null`。
+- 结果存 `task_runs.result`：`{ project_id, item_index, instruction, explanation, suggestions:
+  [{concern, suggestion, target_item_index}], instruction_response, validated }`；用 §8 的
+  `GET /exam-projects/task-runs/{id}` 轮询，`succeeded` 后取 `result`。
+- 幂等：同槽位同方案同追问的**在途**任务复用同一 `task_run_id`；已到终态则换新键重新生成。
+- 键 = `sha256(f"explain:{project_id}:{item_index}:{seed}:{instruction}")[:24]`。
+
+### 9.3h 整卷 AI 质量评审（只读报告，异步）
+`POST /api/v1/courses/{course_id}/paper-versions/{pv_id}/ai-review`
+body 可选 `{ "instruction":"重点关注难度分布" }`（教师指定关注点；可空 = 标准评审）
+→ **202** `{ "task_run_id":"uuid" }`。LLM 未配置 503；试卷不存在/不在课程 404；试卷无题目
+422（detail「试卷没有题目…」）；body 含未知键或 `instruction` 非字符串 422。
+
+- **纯只读、零写路径**：端点只建 `task_runs`（`task_type=review_paper_version`，租约 300s），
+  不碰试卷/合同/蓝图任何表（不改 `paper_items`，不动既有 PATCH/confirm/导出端点）。
+- **无状态禁令**：不做 409——报告是只读的，`finalized` 定稿卷照样可评审（这正是它的价值），
+  readonly 不限制它。
+- **定位 = 试卷稿质量评审，不是学生答卷评分**（范围红线 3：在线阅卷明确不做）：system prompt
+  硬规则禁止输出学生分数、评分建议、给答卷打分的任何内容；报告只针对试卷稿本身。
+- **确定性 grounding，模型只解读不重算**：prompt 只喂真实数据——题目全量
+  （item_index/题型/难度/分值/题干/选项/答案/解析/needs_review，按 `get_paper_version`
+  生效题面口径）、`list_needs_review` 待审核清单、合同终检 `audit_paper_against_contract`
+  的真实 checks（**调用既有函数**，不把终检逻辑抄进 prompt；无合同快照则 `final_check=null`，
+  模型须如实标注「合同终检不可用」，不伪造结果）、蓝图/卷面难度与题型配额计数
+  （generation_run 可读就读，读不到 `plan=null` 跳过）。引用题目必须带真实 `item_index`
+  （规整时越界的剔除）。所有查询带 `course_id` 过滤。
+- 报告维度枚举固定 5 类：`难度分布 / 题面表述 / 答案与解析一致性 / 覆盖与配额 / 风险题`
+  （模型可只给其中若干类，越界维度丢弃）；建议只引导试卷页既有功能（手动编辑、单题 AI 改题、
+  AI 生成新题、重新生成、确认定稿），不得输出绕过确定性约束（比例/难度/去重/答案互斥）的改法。
+- 结果存 `task_runs.result`：`{ paper_version_id, instruction, verdict:"pass|attention",
+  summary, sections:[{dimension, severity:"info|warn", finding, suggestion, item_indexes}],
+  deterministic:{needs_review_count, final_check_available}, validated }`；用 §8 的
+  `GET /exam-projects/task-runs/{id}` 轮询，`succeeded` 后取 `result`。
+- 校验收口：`summary` ≥10 字、`sections` 非空且每节 `finding` 非空、`verdict` 合法——未过则带
+  `previous_validation_error` 纠错 1 次，仍不过如实上报 `validated=false`。
+- 幂等：同卷同关注点的**在途**任务复用同一 `task_run_id`；已到终态则换新键重新评审。
+- 键 = `sha256(f"review:{paper_version_id}:{instruction}")[:24]`。
+
 ### 9.4 确认试卷版本
 `POST /api/v1/courses/{course_id}/paper-versions/{pv_id}/confirm`
 body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409（detail 含 `item_indices`）。
@@ -458,6 +534,7 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
 → 附件下载（`Content-Disposition: attachment; filename="answer_detail_v{n}.json"`）。
 需 `Authorization: Bearer <token>`；401 时不会下发文件。
 含 `missing_answer_count` 与逐题 `answer_missing` 标记；`stem` 已剥离题干自带的编号/分值前缀。
+逐题带 `rubric`（主观题评分细则：要点数组或文本，无则 `null`），schema 自 `1.1.0` 起新增该字段。
 
 ### 9.7 导出：学生卷 HTML
 `GET /api/v1/courses/{course_id}/exam-projects/{project_id}/paper-versions/{pv_id}/export/student`

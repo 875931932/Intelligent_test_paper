@@ -50,6 +50,9 @@ export const examProjectsApi = {
     request('/courses/' + courseId + '/exam-projects/' + projectId + '/contracts/allocate', { method: 'POST', body: body ? JSON.stringify(body) : undefined }, token),
   reviseContract: (courseId: string, projectId: string, body: { blueprint_version_id?: string; slot_revisions?: unknown[]; allocation_seed?: number }, token?: string): Promise<Record<string, unknown>> =>
     request('/courses/' + courseId + '/exam-projects/' + projectId + '/contracts/revise', { method: 'PATCH', body: JSON.stringify(body) }, token),
+  /** 合同槽位 AI 解释（只读建议，异步任务；实际调整仍走 reviseContract/confirmContract） */
+  explainContractSlot: (courseId: string, projectId: string, itemIndex: number, body: { allocation_seed?: number; blueprint_version_id?: string; instruction?: string }, token?: string): Promise<{ task_run_id: string }> =>
+    request('/courses/' + courseId + '/exam-projects/' + projectId + '/contract-slots/' + itemIndex + '/explain', { method: 'POST', body: JSON.stringify(body) }, token),
   confirmContract: (courseId: string, projectId: string, body: { blueprint_version_id?: string; slot_revisions?: unknown[]; allocation_seed?: number }, token?: string): Promise<Record<string, unknown>> =>
     request('/courses/' + courseId + '/exam-projects/' + projectId + '/contracts/confirm', { method: 'POST', body: JSON.stringify(body) }, token),
   getCurrentContract: (courseId: string, projectId: string, token?: string): Promise<CurrentContractResponse> =>

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, Fragment, type ReactNode } from 'react';
 import {
   ChevronRight, ArrowLeft, ArrowRight, RefreshCw, Check, PlayCircle,
-  ClipboardList, FileText,
+  ClipboardList, FileText, Sparkles,
 } from 'lucide-react';
 import { api } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/Button';
 import { Badge, ProgressPanel, type ProgressStatus } from '@/components/ui';
 import { useNameMaps, type NameMaps } from '@/hooks/useNameMaps';
 import { clabel, dlabel, qlabel } from '@/lib/examDisplay';
+import { ContractExplainPanel } from './ContractExplainPanel';
 import type { ContractSnapshot } from '@/api/domains/examProjects';
 import type { ExamProject, ExamRules, PlanItem, TaskRun } from '@/types/api';
 
@@ -305,6 +306,7 @@ function renderContract({
   sp, courseId, setStep, contractVariant, setContractVariant,
   contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming,
   contractAllocating, setContractAllocating, setTaskRun, addToast, maps, planItems, onProjectChanged,
+  explainItem, setExplainItem,
 }: {
   sp: ExamProject; courseId: string; setStep: (s: StageKey) => void;
   contractVariant: number; setContractVariant: (n: number) => void;
@@ -318,6 +320,8 @@ function renderContract({
   planItems: PlanItem[];
   /** 确认合同会推进项目状态，父级据此刷新页头徽章 */
   onProjectChanged: () => void;
+  /** AI 解释面板：当前打开的槽位题位号（null = 关闭） */
+  explainItem: number | null; setExplainItem: (i: number | null) => void;
 }) {
   // 无蓝图时合同无从分配（后端要读蓝图题位），先拦一道，别让教师点出 404。
   if (!sp.active_blueprint_version_id && !contractSnapshot) {
@@ -344,6 +348,8 @@ function renderContract({
         allocation_seed: variant - 1,
       });
       setContractSnapshot(res.contract_snapshot);
+      // 换了方案，旧解释对应旧分配：一并收起，避免"解释与表格对不上"
+      setExplainItem(null);
       addToast(`合同已分配（方案第 ${variant} 版）`, 'success');
     } catch (e) {
       addToast('分配失败: ' + (e as Error).message, 'error');
@@ -453,23 +459,45 @@ function renderContract({
             <div style={{ fontWeight: 600, marginBottom: '6px', color: '#0071e3' }}>同章回补（{backfilled.length}）</div>
             <ul style={{ margin: 0, paddingLeft: '18px', color: 'var(--text-secondary)' }}>
               {backfilled.map((b) => (
-                <li key={b.item_index}>第 {b.item_index + 1} 题：{examPointLabel(maps, b.from_exam_point_id)} → {examPointLabel(maps, b.to_exam_point_id)}（原考点答案域容量不足，改派同章富余考点）</li>
+                <li key={b.item_index}>第 {b.item_index} 题：{examPointLabel(maps, b.from_exam_point_id)} → {examPointLabel(maps, b.to_exam_point_id)}（原考点答案域容量不足，改派同章富余考点）</li>
               ))}
             </ul>
           </div>
         )}
+        {explainItem !== null && (
+          <ContractExplainPanel
+            key={explainItem}
+            courseId={courseId}
+            projectId={sp.id}
+            itemIndex={explainItem}
+            allocationSeed={contractVariant - 1}
+            blueprintVersionId={sp.active_blueprint_version_id}
+            onClose={() => setExplainItem(null)}
+          />
+        )}
         <div className="table-wrapper">
           <table className="data-table">
-            <thead><tr><th>#</th><th>题型</th><th>分值</th><th>难度</th><th>考点</th><th>知识卡</th></tr></thead>
+            <thead><tr><th>#</th><th>题型</th><th>分值</th><th>难度</th><th>考点</th><th>知识卡</th><th>操作</th></tr></thead>
             <tbody>
               {contractSnapshot.slots.map((s) => (
                 <tr key={s.item_index}>
-                  <td>{s.item_index + 1}</td>
+                  {/* item_index 与 plan_items 同源 1 起、与蓝图表同号，勿 +1 */}
+                  <td>{s.item_index}</td>
                   <td>{qlabel(s.question_type)}</td>
                   <td><strong>{s.score}</strong></td>
                   <td>{dlabel(s.difficulty)}</td>
                   <td>{examPointLabel(maps, s.exam_point_id)}</td>
                   <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={cardLabel(maps, s.card_id)}>{cardLabel(maps, s.card_id)}</td>
+                  <td>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setExplainItem(s.item_index)}
+                      icon={<Sparkles size={14} />}
+                    >
+                      AI 解释
+                    </Button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -690,6 +718,9 @@ export default function PipelinePanel({
   const [bpCreating, setBpCreating] = useState(false);
   const [contractConfirming, setContractConfirming] = useState(false);
   const [contractAllocating, setContractAllocating] = useState(false);
+  // 正在看 AI 解释的槽位题位号（null = 关闭）。renderContract 是普通函数调用
+  // 不能自带 hook，状态统一放在面板组件这一层。
+  const [explainItem, setExplainItem] = useState<number | null>(null);
   // 「分配方案」默认随机一版：每次新建/刷新项目时不再固定回到第 1 版，
   // 否则每套卷子都从同一套搭配起步。历史种子由 hydrate 覆盖回填。
   const [contractVariant, setContractVariant] = useState(
@@ -967,6 +998,7 @@ export default function PipelinePanel({
         sp, courseId, setStep: setCurrentStage, contractVariant, setContractVariant,
         contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming,
         contractAllocating, setContractAllocating, setTaskRun, addToast, maps, planItems, onProjectChanged,
+        explainItem, setExplainItem,
       })}
       {currentStage === 'generate' && renderGenerate({
         sp, setStep: setCurrentStage, taskRun, generating, startGeneration,

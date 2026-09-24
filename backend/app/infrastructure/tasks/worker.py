@@ -68,11 +68,17 @@ class TaskContext:
 TaskHandler = Callable[[TaskContext], dict]
 _HANDLERS: dict[str, TaskHandler] = {}
 
-# 各任务类型的最长合法执行时长差异极大：生成要跑十几分钟；AI 改题是
+# 各任务类型的最长合法执行时长差异极大：生成要跑十几分钟；AI 改题/生成整题是
 # 1~2 轮模型调用（45s 超时 × 2 尝试 × 2 轮，最坏 ~180s）；其余按短任务算。
 # 租约必须覆盖最坏执行时长，否则任务没跑完租约先过期，complete_task 条件
 # 失败，任务被 recovery 重新领取、模型白白重烧一遍。
-_LEASE_SECONDS_BY_TYPE = {"generation_run": 1800, "ai_revise_item": 300}
+_LEASE_SECONDS_BY_TYPE = {
+    "generation_run": 1800,
+    "ai_revise_item": 300,
+    "ai_create_item": 300,
+    "explain_contract_slot": 300,
+    "review_paper_version": 300,
+}
 
 
 def register_task_handler(task_type: str, handler: TaskHandler) -> None:
@@ -215,3 +221,47 @@ def _handle_ai_revise_item(context: TaskContext) -> dict:
 
 
 register_task_handler("ai_revise_item", _handle_ai_revise_item)
+
+
+def _handle_ai_create_item(context: TaskContext) -> dict:
+    """执行整题 AI 生成提案：只调模型产出提案与校验结果，不写试卷数据。
+
+    落库由教师在前端确认后走既有 POST .../items（create_paper_item）端点完成。
+    """
+    from app.services.ai_create_service import execute_ai_create_task
+
+    context.report_progress(stage="creating", progress=10)
+    return execute_ai_create_task(context.session, payload=dict(context.payload))
+
+
+register_task_handler("ai_create_item", _handle_ai_create_item)
+
+
+def _handle_explain_contract_slot(context: TaskContext) -> dict:
+    """执行合同槽位 AI 解释：只读重算分配 + 模型解读，不写任何业务表。
+
+    落地调整由教师在前端走既有 contracts/revise（slot_revisions）与
+    contracts/confirm 端点完成。
+    """
+    from app.services.contract_explain_service import execute_explain_task
+
+    context.report_progress(stage="explaining", progress=10)
+    return execute_explain_task(context.session, payload=dict(context.payload))
+
+
+register_task_handler("explain_contract_slot", _handle_explain_contract_slot)
+
+
+def _handle_review_paper_version(context: TaskContext) -> dict:
+    """执行整卷 AI 质量评审：只读报告，不写任何业务表。
+
+    报告只针对试卷稿本身（禁学生答卷评分）；发现问题由教师在前端走既有
+    编辑/AI 改题/AI 生成/重新生成端点处理。
+    """
+    from app.services.paper_review_service import execute_review_task
+
+    context.report_progress(stage="reviewing", progress=10)
+    return execute_review_task(context.session, payload=dict(context.payload))
+
+
+register_task_handler("review_paper_version", _handle_review_paper_version)

@@ -87,3 +87,21 @@ export function dlabel(d: string): string {
 export function clabel(c: string): string {
   return COGNITIVE_LABELS[c] ?? c;
 }
+
+/**
+ * 任意题面字段转可读文本（选项对象/数组、布尔答案都要能展示）。
+ * AI 改题面板与 AI 生成面板共用，避免复制第二份展示口径。
+ */
+export function toText(value: unknown): string {
+  if (value == null || value === '') return '（空）';
+  if (typeof value === 'boolean') return value ? '正确' : '错误';
+  if (Array.isArray(value)) {
+    return value.map((v, i) => `${i + 1}. ${typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v)}`).join('\n');
+  }
+  if (typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>)
+      .map(([k, v]) => `${k}. ${typeof v === 'object' && v !== null ? JSON.stringify(v) : String(v)}`)
+      .join('\n');
+  }
+  return String(value);
+}
