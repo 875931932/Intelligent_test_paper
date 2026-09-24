@@ -570,6 +570,10 @@ function QuestionDetail({
     <div
       className="glass-card"
       style={{
+        // 等高平齐：flex:1 撑满右栏（右栏又拉伸到双栏行高），minHeight:0 允许内容
+        // 超高时收缩并由 overflowY 卡内滚动，卡片边框底部始终与左卡底部平齐。
+        flex: 1, minHeight: 0, overflowY: 'auto',
+        display: 'flex', flexDirection: 'column',
         padding: '24px 24px 24px 22px',
         borderLeft: '3px solid ' + (flagged ? 'var(--warning)' : 'rgba(0,113,227,0.35)'),
       }}
@@ -675,7 +679,8 @@ function QuestionDetail({
             </div>
           )}
 
-          <div style={{ display: 'flex', gap: '8px', marginTop: '18px', paddingTop: '16px', borderTop: '1px solid rgba(0,0,0,0.06)', flexWrap: 'wrap', alignItems: 'center' }}>
+          {/* marginTop:auto 把按钮行推到卡片底部（拉伸后的卡片内部留白落在内容与按钮之间） */}
+          <div style={{ display: 'flex', gap: '8px', marginTop: 'auto', paddingTop: '16px', borderTop: '1px solid rgba(0,0,0,0.06)', flexWrap: 'wrap', alignItems: 'center' }}>
             {!readonly && (
               <Button size="sm" onClick={onEdit} icon={<Pencil size={14} />}>编辑本题</Button>
             )}
@@ -689,6 +694,10 @@ function QuestionDetail({
           </div>
         </>
       )}
+      {/* 键盘翻题提示放在卡片内底部：挪到卡外会让右卡比左卡矮一截，底部不再平齐 */}
+      <p style={{ marginTop: '10px', fontSize: '0.75rem', color: 'var(--text-tertiary)', textAlign: 'center' }}>
+        提示：可用键盘 ↑ / ↓ 快速翻题
+      </p>
     </div>
   );
 }
@@ -1164,13 +1173,15 @@ export default function PaperPanel({
         />
       )}
 
-      {/* 双栏：左题号索引，右当前题目 */}
-      <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-start' }}>
+      {/* 双栏：左题号索引，右当前题目。两卡等高平齐：高度的唯一来源是这一行
+          （max-height 从左卡上移到行本身），默认 stretch 让两张卡都由行高撑开，
+          两卡底部即行底，天然平齐；左卡超长时仍靠自身 overflowY 内部滚动。 */}
+      <div style={{ display: 'flex', gap: '16px', maxHeight: 'calc(100vh - 140px)' }}>
         <div
           className="glass-card"
           style={{
             width: 240, flexShrink: 0, padding: '10px 8px 14px',
-            position: 'sticky', top: 16, maxHeight: 'calc(100vh - 140px)', overflowY: 'auto',
+            position: 'sticky', top: 16, overflowY: 'auto',
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '0 6px 8px' }}>
@@ -1207,7 +1218,9 @@ export default function PaperPanel({
           )}
         </div>
 
-        <div style={{ flex: 1, minWidth: 0 }}>
+        {/* 右栏纵向 flex：本身被行 stretch 到与左卡同高，题目卡 flex:1 撑满，
+            两卡底部平齐；AI 改题面板是卡片下方的兄弟节点，开启时贴行底对齐。 */}
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {current ? (
             <QuestionDetail
               key={current.item_index}
@@ -1229,26 +1242,27 @@ export default function PaperPanel({
               onDirtyChange={reportDirty}
             />
           ) : (
-            <div className="glass-card" style={{ padding: '40px 24px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>
+            <div
+              className="glass-card"
+              style={{
+                flex: 1, padding: '40px 24px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.875rem',
+                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+              }}
+            >
               请在左侧选择题号
             </div>
           )}
           {/* AI 改题面板：提案 → diff 预览 → 确认后走既有 PATCH 落库 */}
           {current && !editing && aiOpen && (
-            <div style={{ marginTop: '16px' }}>
-              <AiRevisePanel
-                key={current.item_index}
-                courseId={courseId}
-                pvId={pv.id}
-                item={current}
-                onApplied={onChanged}
-                onClose={() => setAiOpen(false)}
-              />
-            </div>
+            <AiRevisePanel
+              key={current.item_index}
+              courseId={courseId}
+              pvId={pv.id}
+              item={current}
+              onApplied={onChanged}
+              onClose={() => setAiOpen(false)}
+            />
           )}
-          <p style={{ marginTop: '10px', fontSize: '0.75rem', color: 'var(--text-tertiary)', textAlign: 'center' }}>
-            提示：可用键盘 ↑ / ↓ 快速翻题
-          </p>
         </div>
       </div>
 
