@@ -76,7 +76,16 @@ class Settings(BaseSettings):
     # 预算耗在 reasoning 字段，content 为空导致整批失败；批 3 重型块实测 14s 稳定
     # 返回，思考在预算内结束且留有 content 输出。
     organization_extraction_batch_size: int = Field(default=3, gt=0)
-    organization_extraction_max_tokens: int = Field(default=3072, gt=0)
+    # max_tokens 是「思考+正文」共享的输出预算（StepFun 把 reasoning 计入其中），
+    # 预算顶格即 finish_reason=length：content 为空（model_empty_response）或截断
+    # 非 JSON（model_non_json_response/schema_validation_failed），HTTP 仍 200。
+    # 2026-09-24 重校准 3072→6144：当时真实成功调用的 output_tokens 已达
+    # 2853~3006（贴顶运行），复杂材料（RAG/LLM 实验类）思考未结束即撞 3072，
+    # extract 阶段 24h 内 32 次连环失败。预算是上限不是消耗：健康调用思考自然
+    # 结束，不会因上限抬高多计费；6144 满预算思考约 130s，仍远低于
+    # organization_model_timeout=240s。若重校准后仍偶发顶格，下一杠杆是用
+    # LLM_EXTRACT_MODEL 给抽取阶段换更强的模型（分层选模钩子已内建）。
+    organization_extraction_max_tokens: int = Field(default=6144, gt=0)
     # 知识点抽取的推理强度（StepFun step-3.7-flash 的 reasoning_effort 三档：
     # low/medium/high）。信息抽取用 low 最省预算，避免思考占满输出额度导致
     # content 为空/截断非 JSON。显式下发优先于全局 llm_disable_thinking。
