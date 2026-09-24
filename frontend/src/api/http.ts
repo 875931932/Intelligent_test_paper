@@ -24,12 +24,11 @@ async function parseBody(res: Response): Promise<unknown> {
   }
 }
 
-/** 统一 JSON 请求：自动鉴权/超时；204→undefined；非 2xx 抛 ApiError。 */
-export async function request<T>(
+async function fetchWithAuth(
   path: string,
   options: RequestInit = {},
   token?: string,
-): Promise<T> {
+): Promise<Response> {
   const controller =
     config.requestTimeoutMs > 0 ? new AbortController() : undefined;
   const timer = controller
@@ -58,15 +57,39 @@ export async function request<T>(
   } finally {
     if (timer) clearTimeout(timer);
   }
-  if (res.status === 204) return undefined as T;
-  const isJson = (res.headers.get('content-type') ?? '').includes('application/json');
   if (!res.ok) {
     const body = await parseBody(res);
     const msg =
       detail(body) || res.statusText || '请求失败(' + res.status + ')';
     throw new ApiError(res.status, msg, body);
   }
+  return res;
+}
+
+/** 统一 JSON 请求：自动鉴权/超时；204→undefined；非 2xx 抛 ApiError。 */
+export async function request<T>(
+  path: string,
+  options: RequestInit = {},
+  token?: string,
+): Promise<T> {
+  const res = await fetchWithAuth(path, options, token);
+  if (res.status === 204) return undefined as T;
+  const isJson = (res.headers.get('content-type') ?? '').includes('application/json');
   return (isJson ? await res.json() : await res.blob()) as T;
+}
+
+/**
+ * 统一附件/文档请求：自动鉴权/超时，非 2xx 抛 ApiError，成功返回 Blob。
+ * 导出与整体预览专用——iframe/window.open 带不了 Authorization 头，
+ * 必须先带鉴权拉成 Blob 再用 object URL 打开（token 不进 URL）。
+ */
+export async function requestBlob(
+  path: string,
+  options: RequestInit = {},
+  token?: string,
+): Promise<Blob> {
+  const res = await fetchWithAuth(path, options, token);
+  return res.blob();
 }
 
 /** 本地存储兜底的上传（PUT 二进制），详见 docs/backend-api.md §1.2。 */

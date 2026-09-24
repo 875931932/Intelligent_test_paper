@@ -18,6 +18,10 @@ from app.db.schema import outbox_events, task_runs
 
 DISPATCH_EVENT_TYPE = "task.dispatch"
 
+# 任务终态：到达终态后，同幂等键的新入队请求应当换一把新键（重新发起），
+# 而不是复用旧任务的完成态。任务状态机的唯一判定点。
+TERMINAL_TASK_STATUSES = ("succeeded", "failed", "cancelled")
+
 
 def _now(now: datetime | None = None) -> datetime:
     return now or datetime.now(UTC)

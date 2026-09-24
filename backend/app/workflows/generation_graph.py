@@ -3,7 +3,8 @@
 build_batches → Send(batch_generate) 按考点批并行 → merge_and_check → END。
 批内一次模型调用同批互见；跨批互斥由合同禁用上下文构造性保证；
 单题失败带原因重试 ≤ max_retries；仍失败时从同考点未用原子中换原子重出
-一次（仅当替换也失败才标记 needs_review），不阻塞整卷。
+一次，再失守才走同章富余考点回补；三道防线全部失守才标记 needs_review，
+不阻塞整卷。
 """
 from __future__ import annotations
 
@@ -236,6 +237,8 @@ def _pick_backfill_target(
 
     自愈的最后一道防线。只在**同一章（anchor）**内挑兄弟考点，且：
     - 该考点本批没有自己的题位在跑（不去抢同章其他题位的考点）；
+    - 章标识可判定（anchor 缺失时 fail-closed 不回补——空 anchor 曾被当作
+      "不限章"放行，导致同章红线在生产中静默失效）；
     - 未被回补超过 max_per_point 次（不把富余考点抽干）；
     - 卡片声明的允许题型覆盖该题位题型；
     - 原子未被占用、答案域与在跑题位互斥。
@@ -246,7 +249,8 @@ def _pick_backfill_target(
         point for point in sorted(point_cards)
         if point != slot.exam_point_id
         and point not in batch_points
-        and (anchor == "" or point_anchor.get(point, "") == anchor)
+        and anchor != ""
+        and point_anchor.get(point, "") == anchor
         and used_points.get(point, 0) < max_per_point
         and point_cards.get(point)
     ]
@@ -270,10 +274,14 @@ def build_generation_graph(gateway: BatchGateway, *, max_retries: int = 2):
         return {"batches": [batch.model_dump(mode="json") for batch in batches]}
 
     def route_batches(state: GenerationState) -> list[Send]:
+        # contract 随批下发：换原子/回补的"已占用原子与答案域"必须是全卷口径，
+        # 同章回补的 anchor 也必须取自合同——并行批次之间没有共享可变状态，
+        # 只看本批会漏掉其他批次已签约的原子（重复出题）与真实章归属。
         sends = [Send("batch_generate", {
             "batch": batch,
             "knowledge_cards": state.get("knowledge_cards", {}),
             "units": state.get("units", []),
+            "contract": state.get("contract", []),
         }) for batch in state.get("batches", [])]
         return sends or [Send("batch_generate", {"batch": None, "knowledge_cards": {}})]
 
@@ -282,6 +290,12 @@ def build_generation_graph(gateway: BatchGateway, *, max_retries: int = 2):
             return {"questions": [], "model_call_count": 0}
         batch = QuestionBatch.model_validate(payload["batch"])
         cards = payload.get("knowledge_cards", {})
+        # 合同是全卷口径的权威输入：anchor（同章回补约束）与已占用原子/答案域
+        # （全卷唯一性）都从这里取。生产链路的 units 只描述卡片归属、并不携带
+        # anchor_key，仅靠 units 会让"同章回补"在真实运行中静默退化为跨章回补。
+        contract_slots = [
+            ContractSlot.model_validate(raw) for raw in payload.get("contract") or []
+        ]
         point_cards: dict[str, list[str]] = {}
         point_anchor: dict[str, str] = {}
         for unit in payload.get("units") or []:
@@ -290,14 +304,20 @@ def build_generation_graph(gateway: BatchGateway, *, max_retries: int = 2):
                     unit.get("card_ids") or []
                 )
                 point_anchor.setdefault(unit["exam_point_id"], str(unit.get("anchor_key") or ""))
+        for contract_slot in contract_slots:
+            if contract_slot.anchor_key:
+                point_anchor[contract_slot.exam_point_id] = contract_slot.anchor_key
         # 本批在跑的考点：回补时不抢这些考点（它们有自己的题位要出）
         batch_points = {s.exam_point_id for s in batch.slots}
         backfill_into: dict[str, int] = {}
         backfill_count = 0
         calls = 0
         produced: dict[int, dict] = {}
-        slot_keys = {s.item_index: _normalized(s.coverage_atom) for s in batch.slots}
-        slot_bounds = {s.item_index: s.answer_boundary for s in batch.slots}
+        # 占用面取全卷合同（含并行批次的题位）：换原子/回补不得占用其他批次
+        # 已签约的原子与答案域，否则终检 atom_uniqueness/answer_mutex 必挂
+        occupied_source = contract_slots or batch.slots
+        slot_keys = {s.item_index: _normalized(s.coverage_atom) for s in occupied_source}
+        slot_bounds = {s.item_index: s.answer_boundary for s in occupied_source}
 
         try:
             raw_questions = list(gateway.generate_batch(compile_batch_generation_payload(batch, cards)))
@@ -399,11 +419,12 @@ def build_generation_graph(gateway: BatchGateway, *, max_retries: int = 2):
                             )
                             slot_keys[slot.item_index] = _normalized(rep_atom)
                             slot_bounds[slot.item_index] = rep_boundary
-            # 同考点也救不回来 → 最后一道自愈：同章其他富余考点回补一题。
-            # 上限从配置读取（默认每批 1 题、每考点 1 题），只兜底不作常态。
+            # 同考点也救不回来（题目缺失，或重试/换原子后仍不合格）→ 最后一道
+            # 自愈：同章其他富余考点回补一题。
+            # 上限从配置读取（默认每批 1 题、每考点 1 题），只兜底不作常态；
+            # 回补失败保留原产出（缺失仍落 _missing_question），再标 needs_review。
             if (
                 quality["status"] != "pass"
-                and question is None
                 and backfill_count < settings.generation_backfill_max_per_batch
             ):
                 target = _pick_backfill_target(

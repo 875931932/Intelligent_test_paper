@@ -6,8 +6,11 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.api.v1.auth import get_current_user
 from app.db.schema import paper_versions
 from app.db.session import get_session
+from app.services import ai_revise_service
+from app.services.ai_revise_service import AiReviseConflict, AiReviseError
 from app.services.paper_version_service import (
     Conflict,
     PendingNeedsReview,
@@ -27,7 +30,13 @@ from app.services.paper_version_service import (
     update_paper_item,
 )
 
-router = APIRouter(prefix="/api/v1/courses/{course_id}", tags=["paper-versions"])
+# 试卷链路（读/改/定稿/导出）全部要求登录：router 级依赖一次覆盖全部端点，
+# 新增端点默认带鉴权，避免再出现裸奔端点。
+router = APIRouter(
+    prefix="/api/v1/courses/{course_id}",
+    tags=["paper-versions"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 def _resolve_pv_for_project(
@@ -109,6 +118,66 @@ def patch_paper_item(
         if "不在该试卷版本中" in msg or "不存在" in msg:
             raise HTTPException(status_code=404, detail=msg)
         raise HTTPException(status_code=422, detail=msg)
+
+
+@router.post(
+    "/paper-versions/{pv_id}/items/{item_index}/ai-revise",
+    response_model=dict,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_ai_revise(
+    course_id: str,
+    pv_id: str,
+    item_index: int,
+    body: dict,
+    session: Session = Depends(get_session),
+) -> dict:
+    """发起单题 AI 改题任务；提案经校验后由前端 diff 预览，教师确认才落库。"""
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="body must be a dict")
+    instruction = str(body.get("instruction") or "").strip()
+    if not instruction:
+        raise HTTPException(status_code=422, detail="instruction 不能为空")
+    if not ai_revise_service.llm_configured():
+        raise HTTPException(status_code=503, detail="LLM model is not configured")
+
+    try:
+        task_id = ai_revise_service.enqueue_ai_revise(
+            session,
+            course_id=course_id,
+            paper_version_id=pv_id,
+            item_index=item_index,
+            instruction=instruction,
+        )
+        # 显式 commit：outbox 派发会用另一个事务/连接读取事件，任务行必须先落地
+        session.commit()
+    except AiReviseConflict as exc:
+        session.rollback()
+        raise HTTPException(status_code=409, detail=str(exc))
+    except AiReviseError as exc:
+        session.rollback()
+        msg = str(exc)
+        if "不存在" in msg or "不在该试卷版本中" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=422, detail=msg)
+
+    # 与 generate 同款：真实任务经 transactional outbox 投递给 Celery；
+    # 投递暂时失败时事件保持 pending，任务不会丢失，后续 dispatcher 可重试。
+    from app.infrastructure.tasks.celery_app import CeleryPublisher
+    from app.infrastructure.tasks.outbox import dispatch_pending_events
+
+    try:
+        dispatch_pending_events(
+            session,
+            CeleryPublisher(),
+            course_id=course_id,
+            limit=5,
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+
+    return {"task_run_id": task_id}
 
 
 @router.put("/paper-versions/{pv_id}/items/reorder", response_model=dict)

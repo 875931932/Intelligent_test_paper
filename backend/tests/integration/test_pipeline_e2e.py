@@ -241,7 +241,27 @@ def client(engine_and_factory):
 
     app.state.mock_graph_invoke = _mock_graph_invoke
 
-    with TestClient(app) as c:
+    # 试卷链路（exam_projects / paper_versions）已加鉴权：真实登录拿 token，
+    # 模式照抄 tests/integration/test_material_upload.py
+    from app.services.auth_service import hash_password
+
+    with factory() as s:
+        s.add(
+            User(
+                id="e2e_admin",
+                username="e2e_admin",
+                password_hash=hash_password("123456"),
+                display_name="E2E Admin",
+                role="admin",
+            )
+        )
+        s.commit()
+    runner = TestClient(app)
+    login = runner.post("/api/v1/auth/login", json={"username": "e2e_admin", "password": "123456"})
+    assert login.status_code == 200, login.text
+    auth_client = TestClient(app, headers={"Authorization": "Bearer " + login.json()["token"]})
+
+    with auth_client as c:
         yield c
 
     # 清理 overrides / state

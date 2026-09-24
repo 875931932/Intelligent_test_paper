@@ -6,14 +6,13 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import uuid
 from datetime import UTC, datetime
 from typing import Any, Callable
 
 from sqlalchemy import select, func
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
@@ -27,7 +26,7 @@ from app.db.schema import (
     quality_checks,
     task_runs,
 )
-from app.infrastructure.tasks.models import create_task_run
+from app.infrastructure.tasks.models import TERMINAL_TASK_STATUSES, create_task_run
 
 logger = logging.getLogger("generation.runner")
 
@@ -56,8 +55,8 @@ def _row_to_dict(row) -> dict[str, Any]:
     return dict(row._asdict()) if hasattr(row, "_asdict") else dict(row)
 
 
-# 任务终态：到达这些状态说明该 generation_run 已经跑过一次。
-TERMINAL_TASK_STATUSES = ("succeeded", "failed", "cancelled")
+# 任务终态（单一来源在 infrastructure/tasks/models.py；此处 re-export 供既有调用方引用）：
+# 到达这些状态说明该 generation_run 已经跑过一次。
 
 
 def _run_task_key(project_id: str, generation_run_id: str) -> str:
@@ -69,18 +68,18 @@ def _prev_allocation_seed(
     session: Session, generation_run_id: str, *, course_id: str
 ) -> int | None:
     """上一份合同用的分配方案号，重跑时沿用，教师选的第 N 版不被静默重置。"""
-    snap = session.execute(
-        select(generation_runs.c.contract_snapshot).where(
-            generation_runs.c.id == generation_run_id,
-            generation_runs.c.course_id == course_id,
-        )
-    ).scalar_one_or_none()
-    if isinstance(snap, str):  # JSON 列被存成文本时的兜底解析
-        try:
-            snap = json.loads(snap)
-        except ValueError:
-            return None
-    if not isinstance(snap, dict):
+    # 局部导入：与 _mint_generation_run 同款，避免模块级循环导入
+    from app.services.contract_execution_service import coerce_contract_snapshot
+
+    snap = coerce_contract_snapshot(
+        session.execute(
+            select(generation_runs.c.contract_snapshot).where(
+                generation_runs.c.id == generation_run_id,
+                generation_runs.c.course_id == course_id,
+            )
+        ).scalar_one_or_none()
+    )
+    if snap is None:
         return None
     seed = snap.get("allocation_seed")
     # 0 是合法种子（前端「第 1 版」映射为 0），不能用真假判断
@@ -183,26 +182,20 @@ def enqueue_generation(
         )
         idempotency_key = _run_task_key(project_id, active_run)
 
-    try:
-        return create_task_run(
-            session,
-            course_id=course_id,
-            task_type="generation_run",
-            idempotency_key=idempotency_key,
-            input_version="v1",
-            payload={
-                "project_id": project_id,
-                "generation_run_id": active_run,
-            },
-        )
-    except IntegrityError:
-        existing = session.execute(
-            select(task_runs.c.id).where(
-                task_runs.c.course_id == course_id,
-                task_runs.c.idempotency_key == idempotency_key,
-            )
-        ).scalar_one()
-        return existing
+    # create_task_run 自带幂等（先查 + ON CONFLICT DO NOTHING）：并发同键入队
+    # 拿到的是同一条任务的 id。旧版这里的 except IntegrityError 兜底不可达，
+    # 反而暗示 create_task_run 会抛冲突——实际它永远返回已存在行。
+    return create_task_run(
+        session,
+        course_id=course_id,
+        task_type="generation_run",
+        idempotency_key=idempotency_key,
+        input_version="v1",
+        payload={
+            "project_id": project_id,
+            "generation_run_id": active_run,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -232,11 +225,7 @@ def _default_graph_invoke(
     from app.services.model_call_service import DatabaseModelCallRecorder
     from app.workflows.generation_graph import build_generation_graph
 
-    if not all(value.strip() for value in (
-        settings.llm_api_key,
-        settings.llm_base_url,
-        settings.llm_model,
-    )):
+    if not settings.llm_configured():
         raise GenerationRunnerError("LLM model is not configured")
 
     raw_slots = contract_snapshot.get("slots") if isinstance(contract_snapshot, dict) else None

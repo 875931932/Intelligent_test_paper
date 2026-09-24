@@ -509,6 +509,30 @@ export interface NeedsReviewItem {
   card_id?: string | null;
 }
 
+/** 单题 AI 改题提案中的一侧题面（current 为提案生成时的原题） */
+export interface AiReviseQuestionView {
+  stem: string;
+  options?: Record<string, string> | string[] | null;
+  answer: string | boolean;
+  explanation?: string | null;
+}
+
+/** 单题 AI 改题提案（task_runs.result 载荷；确认后经 PATCH teacher_override 落库） */
+export interface AiReviseResult {
+  item_index: number;
+  instruction: string;
+  current: AiReviseQuestionView & {
+    question_type?: string | null;
+    difficulty?: string | null;
+    score?: number | null;
+  };
+  proposal: AiReviseQuestionView;
+  change_summary: string;
+  /** validate_generated_question 收口结果；passed=false 时禁止应用 */
+  validation: { passed: boolean; code: string; message: string };
+  attempts: number;
+}
+
 export interface TaskRun {
   id: string;
   course_id: string;

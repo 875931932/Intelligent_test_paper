@@ -4,8 +4,10 @@
 """
 from __future__ import annotations
 
+import json
+
 import pytest
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event, select, update
 from sqlalchemy.orm import Session
 
 from app.db.schema import (
@@ -415,3 +417,102 @@ def test_get_contract_conflicts_extracts_conflicts_from_snapshot(session):
     for c in conflicts:
         assert isinstance(c, dict)
         assert "stage" in c
+
+
+def test_contract_snapshot_readers_tolerate_json_text(session):
+    """回归：contract_snapshot 被存成 JSON 文本时，读取入口要么解析、要么按
+    无快照降级，不允许在 ``.get`` / ``dict(str)`` 上崩。
+
+    历史上四个读取点只有两个带文本兜底，冲突提取与当前合同（前端 hydrate
+    数据源）遇到文本快照直接抛错——收口到 ``coerce_contract_snapshot`` 后
+    必须全部兼容。
+    """
+    bv_id = _setup_confirmed_blueprint(session, total_items=10, per_score=10.0)
+    result = revise_and_confirm(
+        session,
+        course_id="c1",
+        project_id="ep1",
+        blueprint_version_id=bv_id,
+        slot_revisions=[],
+    )
+    run_id = result["generation_run_id"]
+    snap = _run_snapshot(session, run_id)
+    assert snap, "前置：应先拿到真实快照"
+
+    # 文本形态快照（JSON 列被历史链路/手工迁移写成字符串）：应能解析
+    session.execute(
+        update(generation_runs)
+        .where(generation_runs.c.id == run_id, generation_runs.c.course_id == "c1")
+        .values(contract_snapshot=json.dumps(snap, ensure_ascii=False))
+    )
+    session.commit()
+
+    conflicts = get_contract_conflicts(session, run_id, course_id="c1")
+    assert isinstance(conflicts, list)
+    current = get_current_contract_snapshot(
+        session, course_id="c1", project_id="ep1",
+    )
+    assert current is not None
+
+    # 非法文本：按「无快照」降级，而不是抛错
+    session.execute(
+        update(generation_runs)
+        .where(generation_runs.c.id == run_id, generation_runs.c.course_id == "c1")
+        .values(contract_snapshot="not-a-json")
+    )
+    session.commit()
+    assert get_contract_conflicts(session, run_id, course_id="c1") == []
+    assert (
+        get_current_contract_snapshot(session, course_id="c1", project_id="ep1")
+        is None
+    )
+
+
+def test_contract_snapshot_readers_tolerate_json_text(session):
+    """回归：contract_snapshot 被存成 JSON 文本时，读取入口要么解析、要么按
+    无快照降级，不允许在 ``.get`` / ``dict(str)`` 上崩。
+
+    历史上四个读取点只有两个带文本兜底，冲突提取与当前合同（前端 hydrate
+    数据源）遇到文本快照直接抛错——收口到 ``coerce_contract_snapshot`` 后
+    必须全部兼容。
+    """
+    bv_id = _setup_confirmed_blueprint(session, total_items=10, per_score=10.0)
+    result = revise_and_confirm(
+        session,
+        course_id="c1",
+        project_id="ep1",
+        blueprint_version_id=bv_id,
+        slot_revisions=[],
+    )
+    run_id = result["generation_run_id"]
+    snap = _run_snapshot(session, run_id)
+    assert snap, "前置：应先拿到真实快照"
+
+    # 文本形态快照（JSON 列被历史链路/手工迁移写成字符串）：应能解析
+    session.execute(
+        update(generation_runs)
+        .where(generation_runs.c.id == run_id, generation_runs.c.course_id == "c1")
+        .values(contract_snapshot=json.dumps(snap, ensure_ascii=False))
+    )
+    session.commit()
+
+    conflicts = get_contract_conflicts(session, run_id, course_id="c1")
+    assert isinstance(conflicts, list)
+    current = get_current_contract_snapshot(
+        session, course_id="c1", project_id="ep1",
+    )
+    assert current is not None
+    assert current.get("slots") is not None or current.get("generation_run_id")
+
+    # 非法文本：按「无快照」降级，而不是抛错
+    session.execute(
+        update(generation_runs)
+        .where(generation_runs.c.id == run_id, generation_runs.c.course_id == "c1")
+        .values(contract_snapshot="not-a-json")
+    )
+    session.commit()
+    assert get_contract_conflicts(session, run_id, course_id="c1") == []
+    assert (
+        get_current_contract_snapshot(session, course_id="c1", project_id="ep1")
+        is None
+    )

@@ -259,6 +259,8 @@ body 同 `exam_rules` 结构（`question_type_ratios` / `chapter_weights` 等）
 ## 8. 试卷项目 Exam Projects（主流程）
 
 > 来源 `app/api/v1/exam_projects.py`。前缀 `/api/v1/courses/{course_id}/exam-projects`
+> ⚠️ **鉴权**：本节全部端点需请求头 `Authorization: Bearer <token>`（router 级
+> `dependencies=[Depends(get_current_user)]`），缺失/失效返回 401。
 
 ### 8.1 列表
 `GET /api/v1/courses/{course_id}/exam-projects` → 200 `list[ExamProject]`
@@ -348,6 +350,12 @@ body 可选 `{ "mock_graph": false }`；生产必须配置 LLM，否则 503。�
 
 > 来源 `app/api/v1/paper_versions.py`。前缀 `/api/v1/courses/{course_id}`
 > 注意路径两种形态：`exam-projects/{project_id}/paper-versions/...` 与 `paper-versions/{pv_id}/...`。
+>
+> ⚠️ **鉴权**：本节全部端点（**含 §9.6–9.9 导出**）需请求头
+> `Authorization: Bearer <token>`（router 级 `dependencies=[Depends(get_current_user)]`），
+> 缺失或失效返回 401。token 禁止拼进 URL query；前端导出/整体预览不走裸 URL，
+> 而是带鉴权拉取 Blob 后用 object URL 下载/内嵌（`frontend/src/api/domains/paperVersions.ts`
+> 的 `fetchExport` + `src/api/http.ts` 的 `requestBlob`）。
 
 ### 9.1 当前试卷版本（按项目解析）
 `GET /api/v1/courses/{course_id}/exam-projects/{project_id}/paper-versions/current` → 200
@@ -419,6 +427,23 @@ body：`{ "stem":"","question_type":"short_answer","options":[],"answer":"","exp
 `DELETE /api/v1/courses/{course_id}/paper-versions/{pv_id}/items/{item_index}`
 → 200；其后题目的 `display_order` 自动前移 1。
 
+### 9.3e 单题 AI 改题（提案，需教师确认）
+`POST /api/v1/courses/{course_id}/paper-versions/{pv_id}/items/{item_index}/ai-revise`
+body：`{ "instruction":"让四个选项表述更平行" }`（`instruction` 必填非空）
+→ **202** `{ "task_run_id":"uuid" }`。LLM 未配置 503；试卷不存在/题号越界 404；已定稿 409；空要求 422。
+
+- **只产提案，不写试卷数据**：worker（`task_type=ai_revise_item`，租约 300s）以合同槽位
+  （`coverage_atom`/`answer_boundary`/`forbidden_context`）+ 知识卡为约束调模型；提案必须过
+  `validate_generated_question` 收口——未过则带反馈纠错 1 次，仍不过如实上报（比例/难度/去重
+  等约束由确定性校验兜底，不进 prompt）。
+- 提案存 `task_runs.result`：`{ item_index, instruction, current, proposal, change_summary,
+  validation:{passed,code,message}, attempts }`；用 §8 的 `GET /exam-projects/task-runs/{id}` 轮询，
+  `succeeded` 后取 `result`。
+- AI 只许改 `stem/options/answer/explanation`；题型/分值/难度/认知层级/考查原子由合同锁定不给改。
+- `validation.passed=false` 时前端禁用确认；教师确认后由前端调 §9.3 PATCH（`teacher_override_patch`
+  只传变更字段）落库——与手动改题同一条写路径，教师可继续手动改回（原题分层保留在 `payload`）。
+- 幂等：同题同要求的**在途**任务复用同一 `task_run_id`；已到终态则换新键真正重新生成。
+
 ### 9.4 确认试卷版本
 `POST /api/v1/courses/{course_id}/paper-versions/{pv_id}/confirm`
 body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409（detail 含 `item_indices`）。
@@ -429,10 +454,12 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
 ### 9.6 导出：答案细则 JSON
 `GET /api/v1/courses/{course_id}/exam-projects/{project_id}/paper-versions/{pv_id}/export/json`
 → 附件下载（`Content-Disposition: attachment; filename="answer_detail_v{n}.json"`）。
+需 `Authorization: Bearer <token>`；401 时不会下发文件。
 含 `missing_answer_count` 与逐题 `answer_missing` 标记；`stem` 已剥离题干自带的编号/分值前缀。
 
 ### 9.7 导出：学生卷 HTML
 `GET /api/v1/courses/{course_id}/exam-projects/{project_id}/paper-versions/{pv_id}/export/student`
+需 `Authorization: Bearer <token>`（§9.7–9.9 三份 HTML 导出同规则）。
 → `text/html`（无答案，可打印 PDF）。正式卷面：信息头（课程名称/总分/题量，考试时间/形式/
 试卷类型/学分留空待填）+ 题次表 + 按题型分节（一、单选题（共N题，每题X分，共Y分））+ 连续题号。
 

@@ -354,3 +354,103 @@ def test_batch_completion_logs_summary(caplog):
     ]
     summary = next(r.getMessage() for r in infos if "批次完成" in r.getMessage())
     assert "calls=" in summary
+
+
+# ---------------------------------------------------------------------------
+# 同章回补防线：anchor 取自合同、占用面取全卷、防线链不再区分"缺失/不合格"
+# ---------------------------------------------------------------------------
+
+def _surplus_ep2_slots(ep2_anchor: str) -> list[dict]:
+    """EP1 三题独立成批 + EP2 一题（另一并行批次的富余考点）。"""
+    return (
+        [_slot(i, "EP1", anchor_key="ch1") for i in (1, 2, 3)]
+        + [_slot(4, "EP2", anchor_key=ep2_anchor, card_id="C4",
+                 coverage_atom="EP2契约原子", answer_boundary="EP2契约边界")]
+    )
+
+
+def _surplus_cards() -> dict:
+    # C1~C3 的原子全部被 EP1 自己的合同占用（同考点无富余原子，换原子必失败）；
+    # C4 含一个被 EP2 合同签约的原子 + 一个真正富余的原子
+    return {
+        "C1": {"assessable_content": ["原子1"], "answer_boundary": "边界1"},
+        "C2": {"assessable_content": ["原子2"], "answer_boundary": "边界2"},
+        "C3": {"assessable_content": ["原子3"], "answer_boundary": "边界3"},
+        "C4": {"assessable_content": ["EP2契约原子", "EP2富余原子"],
+               "answer_boundary": "EP2富余边界"},
+    }
+
+
+def _surplus_units() -> list[dict]:
+    # 生产链路（generation_runner_service._load_generation_context）的 units 形状：
+    # 只有 unit_id / exam_point_id / card_ids，**不携带 anchor_key**
+    return [
+        {"unit_id": "U-EP1", "exam_point_id": "EP1", "card_ids": ["C1", "C2", "C3"]},
+        {"unit_id": "U-EP2", "exam_point_id": "EP2", "card_ids": ["C4"]},
+    ]
+
+
+def test_backfill_rescues_present_but_failing_question():
+    """第三道防线此前只在"题目缺失"时生效：题目存在但重试与换原子全部失守
+    就直接标 needs_review，与"单题重试 → 换原子 → 同章回补"的防线链注释矛盾。
+    同时锁定 anchor 来源：生产 units 不带 anchor_key，同章信息必须取自合同。"""
+    bad = _question(1, stem="根据课件第3页的内容，关于原子1的问题", options=["甲"], answer="")
+    gateway = FakeBatchGateway(scenarios={1: [bad, bad, bad]})
+    result = build_generation_graph(gateway).invoke({
+        "contract": _surplus_ep2_slots(ep2_anchor="ch1"),
+        "knowledge_cards": _surplus_cards(),
+        "units": _surplus_units(),
+    })
+    question = next(q for q in result["questions"] if q["item_index"] == 1)
+    assert question["quality"]["status"] == "pass"
+    assert question.get("needs_review") is not True
+    # 同考点三个原子全被占用 → 换原子失败 → 回补到同章 EP2 的富余原子
+    assert question["coverage_atom"] == "EP2富余原子"
+    assert question["backfilled_from"]["from_exam_point_id"] == "EP1"
+    assert question["backfilled_from"]["to_exam_point_id"] == "EP2"
+    assert result["final_check"]["passed"] is True, result["final_check"]
+
+
+def test_backfill_never_crosses_chapters_without_contract_anchor():
+    """同章红线必须 fail-closed：EP2 属于另一章（ch2）时绝不回补过去。
+    此前 anchor 缺失（生产 units 无 anchor_key）被当作"不限章"放行，
+    同章约束在真实运行中静默失效、跨章挤占考纲章节权重。"""
+    bad = _question(1, stem="根据课件第3页的内容，关于原子1的问题", options=["甲"], answer="")
+    gateway = FakeBatchGateway(scenarios={1: [bad, bad, bad]})
+    result = build_generation_graph(gateway).invoke({
+        "contract": _surplus_ep2_slots(ep2_anchor="ch2"),
+        "knowledge_cards": _surplus_cards(),
+        "units": _surplus_units(),
+    })
+    question = next(q for q in result["questions"] if q["item_index"] == 1)
+    assert question["needs_review"] is True
+    assert question["quality"]["status"] == "blocker"
+    assert "backfilled_from" not in question
+
+
+def test_backfill_never_takes_atoms_contracted_by_other_batches():
+    """回补目标考点属于并行批次：其已签约原子（EP2契约原子）不得被占用。
+    此前占用面只含本批题位，回补会偷走并行批次的合同原子 → 全卷重复原子、
+    终检 atom_uniqueness 挂红（且生产链路 runner 不消费 final_check，静默入库）。"""
+    class DropOriginalAtomGateway(FakeBatchGateway):
+        """凡以原原子"原子1"出的题（批调用/单题重试）一律丢弃，
+        迫使防线走到同章回补；回补载荷带新原子，正常返回。"""
+
+        def generate_batch(self, payload):
+            questions = super().generate_batch(payload)
+            if any(spec.coverage_atom == "原子1" for spec in payload.questions):
+                return [q for q in questions if q.get("item_index") != 1]
+            return questions
+
+    gateway = DropOriginalAtomGateway()
+    result = build_generation_graph(gateway).invoke({
+        "contract": _surplus_ep2_slots(ep2_anchor="ch1"),
+        "knowledge_cards": _surplus_cards(),
+        "units": _surplus_units(),
+    })
+    question = next(q for q in result["questions"] if q["item_index"] == 1)
+    assert question["coverage_atom"] == "EP2富余原子"
+    assert question.get("needs_review") is not True
+    atoms = [q["coverage_atom"] for q in result["questions"]]
+    assert len(atoms) == len(set(atoms))
+    assert result["final_check"]["passed"] is True, result["final_check"]

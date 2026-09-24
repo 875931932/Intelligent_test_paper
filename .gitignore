@@ -31,3 +31,7 @@ backend/scripts/debug_*.py
 backend/scripts/check_*.py
 backend/.token.txt
 .codegraph/
+
+# pytest-cov ²úÎï
+backend/.coverage
+.coverage

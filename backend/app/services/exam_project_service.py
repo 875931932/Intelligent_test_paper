@@ -22,6 +22,7 @@ from app.db.schema import (
     quality_checks,
     task_runs,
 )
+from app.services.contract_execution_service import coerce_contract_snapshot
 from app.services.paper_version_service import summarize_paper_versions_for_projects
 
 
@@ -61,7 +62,9 @@ def get_current_contract_snapshot(
     ).mappings().first()
     if row is None:
         return None
-    snap = dict(row.get("contract_snapshot") or {})
+    # dict() 保留拷贝语义：调用方改返回值不能污染会话里的行对象；
+    # coerce 兜底 JSON 文本快照（原 dict(str) 会直接抛错）。
+    snap = dict(coerce_contract_snapshot(row.get("contract_snapshot")) or {})
     if not snap:
         return None
 

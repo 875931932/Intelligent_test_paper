@@ -135,3 +135,17 @@ def test_backfill_finds_nothing_without_siblings():
         batch_points={"ep_a"}, occupied_atom_keys=set(), occupied_boundaries=[],
         used_points={}, max_per_point=1,
     ) is None
+
+
+def test_backfill_fails_closed_when_anchor_unknown():
+    """anchor 缺失不得被当作"不限章"放行：此前 `anchor == ""` 会跳过同章比较，
+    生产链路 units 不携带 anchor_key 时同章红线静默失效（跨章回补）。"""
+    slot = _slot(anchor_key="")
+    picked = _pick_backfill_target(
+        slot, {"card_b1": _card("card_b1", "原子乙")},
+        {"ep_a": ["card_a1"], "ep_b": ["card_b1"]},
+        {"ep_a": "", "ep_b": "ch1"},   # 本考点章标识缺失
+        batch_points={"ep_a"}, occupied_atom_keys=set(), occupied_boundaries=[],
+        used_points={}, max_per_point=1,
+    )
+    assert picked is None

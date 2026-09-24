@@ -2,9 +2,10 @@ import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState }
 import {
   Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, ClipboardList, ExternalLink, Eye,
   FileJson, FileText, KeySquare,
-  Pencil, Plus, RefreshCw, RotateCcw, Save, Trash2,
+  Pencil, Plus, RefreshCw, RotateCcw, Save, Sparkles, Trash2,
 } from 'lucide-react';
 import { api } from '@/api/client';
+import type { PaperExportKind } from '@/api/domains/paperVersions';
 import { getErrorMessage } from '@/api/errors';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
@@ -17,6 +18,7 @@ import {
   QUESTION_TYPE_OPTIONS, QUESTION_TYPE_ORDER, dlabel, qlabel, sectionLabel,
 } from '@/lib/examDisplay';
 import type { ExamProject, PaperVersion, PaperVersionItem } from '@/types/api';
+import { AiRevisePanel } from './AiRevisePanel';
 
 // ─── 题型与选项工具 ───
 
@@ -300,7 +302,7 @@ function FieldLabel({ label, children }: { label: string; children: React.ReactN
 // ─── 试卷档案卡 ───
 
 /** 可导出的三份卷面 + 答案细则 JSON；前三种同时也是整体预览的页签 */
-type ExportKind = 'student' | 'card' | 'answer' | 'json';
+type ExportKind = PaperExportKind;
 type PreviewKind = Exclude<ExportKind, 'json'>;
 
 const PREVIEW_TABS: Array<{ key: PreviewKind; label: string }> = [
@@ -475,7 +477,7 @@ function QuestionIndex({
 
 function QuestionDetail({
   item, examPointName, editing, readonly, submitting,
-  hasPrev, hasNext, onEdit, onCancelEdit, onSave, onDelete, onMove, onPrev, onNext, onDirtyChange,
+  hasPrev, hasNext, onEdit, onAiRevise, onCancelEdit, onSave, onDelete, onMove, onPrev, onNext, onDirtyChange,
 }: {
   item: PaperVersionItem;
   examPointName?: string;
@@ -485,6 +487,8 @@ function QuestionDetail({
   hasPrev: boolean;
   hasNext: boolean;
   onEdit: () => void;
+  /** 展开/收起单题 AI 改题面板（仅非编辑、非定稿态可见） */
+  onAiRevise?: () => void;
   onCancelEdit: () => void;
   onSave: (v: EditorSubmit) => void;
   onDelete: () => void;
@@ -604,6 +608,9 @@ function QuestionDetail({
             {!readonly && (
               <Button size="sm" onClick={onEdit} icon={<Pencil size={14} />}>编辑本题</Button>
             )}
+            {!readonly && onAiRevise && (
+              <Button variant="secondary" size="sm" onClick={onAiRevise} icon={<Sparkles size={14} />}>AI 改题</Button>
+            )}
             <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
               <Button variant="secondary" size="sm" disabled={!hasPrev} onClick={onPrev} icon={<ChevronLeft size={14} />}>上一题</Button>
               <Button variant="secondary" size="sm" disabled={!hasNext} onClick={onNext}>下一题<ChevronRight size={14} /></Button>
@@ -643,8 +650,13 @@ export default function PaperPanel({
   const [adding, setAdding] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [finalizeOpen, setFinalizeOpen] = useState(false);
+  // 单题 AI 改题面板的展开状态：一次会话属于一道题，切题即收起
+  const [aiOpen, setAiOpen] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewKind, setPreviewKind] = useState<PreviewKind>('student');
+  // 整体预览的带鉴权 blob object URL（作 iframe src）；加载中/失败时为 null
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   // 右栏编辑器草稿是否有未保存改动：切题/翻题/换序都会让编辑器随 key 重挂载、
   // 草稿蒸发，靠它在这些动作前拦一次确认。
   const [dirty, setDirty] = useState(false);
@@ -687,6 +699,11 @@ export default function PaperPanel({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pv.id, questions.length]);
+
+  // 换题即收起 AI 改题面板：提案与 diff 都是单题会话，留在新题上会误导
+  useEffect(() => {
+    setAiOpen(false);
+  }, [selected]);
 
   // 分组（按题型分节，节内保持卷面顺序）
   const groups = useMemo(() => {
@@ -878,19 +895,58 @@ export default function PaperPanel({
   };
 
   // ── 导出与整体预览 ──
+  // 导出端点需要 Authorization 头：iframe / window.open 裸开 URL 都带不了，
+  // 也禁止把 token 拼进 query（会进浏览器历史与日志）。统一做法是带鉴权
+  // 拉取 Blob → 用 object URL 作 iframe src / 程序化 <a download> 下载。
 
-  // 导出与预览共用同一 URL：预览 iframe 打开的就是导出产物，所见即所得，
-  // 不会另有一套前端渲染与真实导出漂移。
-  const exportUrl = (kind: ExportKind): string => {
+  // 打开预览或切换页签时拉一次；关闭/切页签的 cleanup 负责释放 object URL。
+  useEffect(() => {
+    if (!previewOpen) return;
     const pid = project?.id ?? '';
-    if (kind === 'student') return api.paperVersions.exportStudent(courseId, pid, pv.id);
-    if (kind === 'card') return api.paperVersions.exportAnswerCard(courseId, pid, pv.id);
-    if (kind === 'answer') return api.paperVersions.exportAnswerKey(courseId, pid, pv.id);
-    return api.paperVersions.exportJson(courseId, pid, pv.id);
-  };
+    if (!pid) return;
+    let created: string | null = null;
+    let cancelled = false;
+    setPreviewLoading(true);
+    api.paperVersions
+      .fetchExport(previewKind, courseId, pid, pv.id, token ?? undefined)
+      .then(({ blob }) => {
+        if (cancelled) return;
+        created = URL.createObjectURL(blob);
+        setPreviewUrl(created);
+        setPreviewLoading(false);
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        setPreviewLoading(false);
+        addToast('预览加载失败: ' + getErrorMessage(e), 'error');
+        setPreviewOpen(false);
+      });
+    return () => {
+      cancelled = true;
+      if (created) URL.revokeObjectURL(created);
+      setPreviewUrl(null);
+    };
+  }, [previewOpen, previewKind, project?.id, pv.id, courseId, token, addToast]);
 
-  const handleExport = (kind: ExportKind) => {
-    window.open(exportUrl(kind), '_blank', 'noopener');
+  const handleExport = async (kind: ExportKind) => {
+    const pid = project?.id ?? '';
+    if (!pid) return;
+    try {
+      const { blob, filename } = await api.paperVersions.fetchExport(
+        kind, courseId, pid, pv.id, token ?? undefined,
+      );
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // 下载启动后再回收；提前 revoke 会让个别浏览器拿不到文件
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (e) {
+      addToast('导出失败: ' + getErrorMessage(e), 'error');
+    }
   };
 
   const previewModal = (
@@ -924,22 +980,39 @@ export default function PaperPanel({
             variant="secondary"
             size="sm"
             icon={<ExternalLink size={14} />}
-            onClick={() => window.open(exportUrl(previewKind), '_blank', 'noopener')}
+            onClick={() => {
+              // 同一份已拉取的 Blob 换个标签页看；URL 是 blob: object URL，
+              // 不含任何鉴权信息
+              if (previewUrl) window.open(previewUrl, '_blank', 'noopener');
+            }}
           >
             新标签打开
           </Button>
         </div>
       }
     >
-      <iframe
-        key={previewKind}
-        src={exportUrl(previewKind)}
-        title="试卷整体预览"
-        style={{
-          display: 'block', width: '100%', height: '64vh',
-          border: '1px solid rgba(0,0,0,0.08)', borderRadius: 8, background: '#fff',
-        }}
-      />
+      {previewUrl ? (
+        <iframe
+          key={previewKind}
+          src={previewUrl}
+          title="试卷整体预览"
+          style={{
+            display: 'block', width: '100%', height: '64vh',
+            border: '1px solid rgba(0,0,0,0.08)', borderRadius: 8, background: '#fff',
+          }}
+        />
+      ) : (
+        <div
+          style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            width: '100%', height: '64vh',
+            border: '1px solid rgba(0,0,0,0.08)', borderRadius: 8,
+            background: '#fff', color: 'var(--text-tertiary)', fontSize: '0.85rem',
+          }}
+        >
+          {previewLoading ? '预览加载中…' : '预览不可用'}
+        </div>
+      )}
     </Modal>
   );
 
@@ -1054,7 +1127,8 @@ export default function PaperPanel({
               submitting={saving}
               hasPrev={navIdx > 0}
               hasNext={navIdx >= 0 && navIdx < navList.length - 1}
-              onEdit={() => { setDirty(false); setEditing(true); }}
+              onEdit={() => { setDirty(false); setEditing(true); setAiOpen(false); }}
+              onAiRevise={() => setAiOpen((v) => !v)}
               onCancelEdit={() => { setDirty(false); setEditing(false); }}
               onSave={(v) => handleSave(current.item_index, v)}
               onDelete={() => handleDelete(current.item_index)}
@@ -1066,6 +1140,19 @@ export default function PaperPanel({
           ) : (
             <div className="glass-card" style={{ padding: '40px 20px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>
               请在左侧选择题号
+            </div>
+          )}
+          {/* AI 改题面板：提案 → diff 预览 → 确认后走既有 PATCH 落库 */}
+          {current && !editing && aiOpen && (
+            <div style={{ marginTop: '14px' }}>
+              <AiRevisePanel
+                key={current.item_index}
+                courseId={courseId}
+                pvId={pv.id}
+                item={current}
+                onApplied={onChanged}
+                onClose={() => setAiOpen(false)}
+              />
             </div>
           )}
           <p style={{ marginTop: '10px', fontSize: '0.75rem', color: 'var(--text-tertiary)', textAlign: 'center' }}>

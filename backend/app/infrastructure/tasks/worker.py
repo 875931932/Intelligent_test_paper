@@ -68,6 +68,12 @@ class TaskContext:
 TaskHandler = Callable[[TaskContext], dict]
 _HANDLERS: dict[str, TaskHandler] = {}
 
+# 各任务类型的最长合法执行时长差异极大：生成要跑十几分钟；AI 改题是
+# 1~2 轮模型调用（45s 超时 × 2 尝试 × 2 轮，最坏 ~180s）；其余按短任务算。
+# 租约必须覆盖最坏执行时长，否则任务没跑完租约先过期，complete_task 条件
+# 失败，任务被 recovery 重新领取、模型白白重烧一遍。
+_LEASE_SECONDS_BY_TYPE = {"generation_run": 1800, "ai_revise_item": 300}
+
 
 def register_task_handler(task_type: str, handler: TaskHandler) -> None:
     if not task_type.strip():
@@ -114,7 +120,7 @@ def execute_task(task_id: str, *, worker_id: str | None = None) -> bool:
         if row is None:
             return False
         course_id = row["course_id"]
-        lease_seconds = 1800 if row["task_type"] == "generation_run" else 60
+        lease_seconds = _LEASE_SECONDS_BY_TYPE.get(row["task_type"], 60)
         if not claim_task(
             session,
             course_id=course_id,
@@ -195,3 +201,17 @@ def _handle_generation_run(context: TaskContext) -> dict:
 
 
 register_task_handler("generation_run", _handle_generation_run)
+
+
+def _handle_ai_revise_item(context: TaskContext) -> dict:
+    """执行单题 AI 改题提案：只调模型产出提案与校验结果，不写试卷数据。
+
+    落库由教师在前端确认后走既有 PATCH teacher_override 端点完成。
+    """
+    from app.services.ai_revise_service import execute_ai_revise_task
+
+    context.report_progress(stage="revising", progress=10)
+    return execute_ai_revise_task(context.session, payload=dict(context.payload))
+
+
+register_task_handler("ai_revise_item", _handle_ai_revise_item)

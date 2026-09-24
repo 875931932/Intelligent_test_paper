@@ -53,6 +53,23 @@ def _row_to_dict(row) -> dict[str, Any]:
     return dict(row._asdict()) if hasattr(row, "_asdict") else dict(row)
 
 
+def coerce_contract_snapshot(raw: Any) -> dict | None:
+    """把 ``generation_runs.contract_snapshot`` 列值规整为 dict。
+
+    JSON 列在部分链路会被存成文本（历史数据/手工迁移），一律兜底
+    ``json.loads``；解析失败或类型不对返回 None，调用方按「无快照」降级。
+    读快照的所有入口（合同避重、冲突提取、当前合同、重跑种子、AI 改题）
+    必须走本函数——曾经有两个入口漏掉文本兜底，快照一旦是文本就直接
+    在 ``.get`` 上崩掉，且各处行为不一致。
+    """
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    return raw if isinstance(raw, dict) else None
+
+
 # 历史避重回看窗口：只统计该课程最近 N 份合同用过的原子。窗口有界，
 # 防止老试卷把整个池子标成"已用过"使避重退化成无效；更早的试卷允许
 # 复用，最近几套保证不重样。
@@ -80,13 +97,8 @@ def _collect_used_atom_texts(
     ).all()
     used: set[str] = set()
     for row in rows:
-        snap = row._mapping.get("contract_snapshot")
-        if isinstance(snap, str):  # JSON 列被存成文本时的兜底解析
-            try:
-                snap = json.loads(snap)
-            except ValueError:
-                continue
-        if not isinstance(snap, dict):
+        snap = coerce_contract_snapshot(row._mapping.get("contract_snapshot"))
+        if snap is None:
             continue
         for slot in snap.get("slots") or []:
             if not isinstance(slot, dict):
@@ -554,7 +566,8 @@ def get_contract_conflicts(
     ).one_or_none()
     if row is None:
         return []
-    snap = row._mapping.get("contract_snapshot") or {}
+    # coerce 兜底 JSON 文本快照：修复文本存储时直接在 .get 上崩掉的隐患
+    snap = coerce_contract_snapshot(row._mapping.get("contract_snapshot")) or {}
     conflicts = snap.get("conflicts_pre_vs_post") or {}
     result: list[dict] = []
     for key in ("pre_revision", "post_revision"):

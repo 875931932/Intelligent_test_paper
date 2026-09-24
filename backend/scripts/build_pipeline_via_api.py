@@ -45,12 +45,17 @@ from app.db.schema import (
     knowledge_catalog_versions,
 )
 from app.db.session import get_session, get_session_factory
+from app.services.auth_service import hash_password
 
 OUTPUT_DIR = ROOT / "frontend" / "public" / "demo"
 OUTPUT_FILE = OUTPUT_DIR / "pipeline.json"
 
 COURSE_ID = "c1"
 PREFIX = f"/api/v1/courses/{COURSE_ID}"
+
+# exam_projects / paper_versions 路由要求 Bearer 鉴权，demo 客户端用这组账号登录
+DEMO_USERNAME = "demo_teacher"
+DEMO_PASSWORD = "demo-pass-123"
 
 # ---------------------------------------------------------------------------
 # 种子配置
@@ -162,7 +167,10 @@ def build_seeded_factory(tmp_path: Path) -> tuple[Any, sessionmaker[Session]]:
     factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
 
     with factory() as s:
-        s.add(User(id="u1", display_name="T-Demo", role="teacher"))
+        s.add(User(
+            id="u1", username=DEMO_USERNAME, password_hash=hash_password(DEMO_PASSWORD),
+            display_name="T-Demo", role="teacher",
+        ))
         s.flush()
         s.add(Course(id=COURSE_ID, owner_id="u1", slug="data-struct", name="数据结构与算法"))
         s.commit()
@@ -420,7 +428,16 @@ def make_client(engine: Any, factory: sessionmaker[Session]) -> TestClient:
 
     app.state.mock_graph_invoke = _mock_graph_invoke
 
-    client = TestClient(app)
+    # 路由级 Bearer 鉴权：先真实登录拿 token，再用带 Authorization 头的 client 发请求
+    runner = TestClient(app)
+    login = runner.post(
+        "/api/v1/auth/login",
+        json={"username": DEMO_USERNAME, "password": DEMO_PASSWORD},
+    )
+    if login.status_code != 200:
+        raise RuntimeError(f"demo 登录失败: {login.status_code} {login.text}")
+
+    client = TestClient(app, headers={"Authorization": "Bearer " + login.json()["token"]})
     # 记录 cleanup（显式注册，稍后在调用方统一清理）
     client.__dict__["_pipeline_cleanup"] = _CleanupHandle(app)
     return client

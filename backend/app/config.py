@@ -53,6 +53,17 @@ class Settings(BaseSettings):
     llm_api_key: str = ""
     llm_base_url: str = ""
     llm_model: str = ""
+
+    def llm_configured(self) -> bool:
+        """LLM 三件套（key/base_url/model）是否齐备——齐备才允许发起真实模型调用。
+
+        generate 端点的 503、生成运行器的前置校验、AI 改题的入队检查一律用它，
+        禁止各自复制判定式（判定标准只此一处）。
+        """
+        return all(
+            value.strip()
+            for value in (self.llm_api_key, self.llm_base_url, self.llm_model)
+        )
     # 知识目录组织阶段按能力分层选模：分类只做相关性判断，可换经济模型；
     # 归并做知识抽取，需更强模型。两者留空时回退到 llm_model，不受影响。
     llm_classify_model: str = ""

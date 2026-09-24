@@ -14,6 +14,7 @@ from app.db.schema import (
     paper_versions,
     task_runs,
 )
+from app.api.v1.auth import get_current_user
 from app.db.session import get_session, get_session_factory
 from app.config import settings
 from app.services import exam_project_service
@@ -38,7 +39,13 @@ from app.services.generation_runner_service import (
     enqueue_generation,
 )
 
-router = APIRouter(prefix="/api/v1/courses/{course_id}/exam-projects", tags=["exam-projects"])
+# 试卷生成→导出链路的项目/蓝图/合同/生成端点全部要求登录：
+# router 级依赖一次覆盖全部端点，新增端点默认带鉴权。
+router = APIRouter(
+    prefix="/api/v1/courses/{course_id}/exam-projects",
+    tags=["exam-projects"],
+    dependencies=[Depends(get_current_user)],
+)
 
 
 class ExamProjectCreate(BaseModel):
@@ -442,11 +449,7 @@ def generate(
 ) -> dict:
     _get_project_or_404(session, course_id=course_id, project_id=project_id)
     mock_graph = bool(body.mock_graph) if body is not None else False
-    if not mock_graph and not all(value.strip() for value in (
-        settings.llm_api_key,
-        settings.llm_base_url,
-        settings.llm_model,
-    )):
+    if not mock_graph and not settings.llm_configured():
         raise HTTPException(status_code=503, detail="LLM model is not configured")
 
     try:
