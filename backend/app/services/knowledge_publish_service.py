@@ -321,6 +321,7 @@ class DatabaseKnowledgeRepository:
                             evidence_role=decision.evidence_role,
                             confidence=decision.confidence,
                             prompt_material=decision.prompt_material,
+                            retrieval_score=decision.retrieval_score,
                             status="candidate",
                         )
                     )
@@ -1157,17 +1158,20 @@ class DatabaseKnowledgeRepository:
                 live_direct_by_point.setdefault(decision.exam_point_code, []).append(decision)
         for point_code in publishable_exam_point_codes:
             direct = live_direct_by_point.get(point_code, [])
-            # 归一化：live 且补证据改判/历史遗留的 direct 决策若未带 answer/rubric
-            # 角色，统一视为 answer_basis——能成为该考点 live direct 即意味着它
-            # 直接支撑该考点可考核事实（补证据改判语义=确认可考核）。兜底修复
-            # 历史版本补证据改判未随改判落 answer_basis 的脏数据，避免误拦。
+            # 归一化仅兜底**角色缺失**（role 为空/NULL）的脏数据：历史版本补证据
+            # 改判未随改判落 answer_basis，遗留 role=NULL 的 live direct。能成为
+            # 该考点 live direct 即意味着直接支撑该考点可考核事实，统一视为
+            # answer_basis，避免 answer/rubric 软字段判死误拦。
+            # ⚠️ 显式非 answer/rubric 角色（如 fact）不归一化：那是"该 direct
+            # 不承载答案/评分依据"的明确语义（典型场景：删除的资料带走了唯一的
+            # answer 依据，只剩 fact 角色的直证），必须落到底部安全闸拒绝。
             if direct and not any(
                 (d.evidence_role or "").strip().casefold() in _ANSWER_OR_RUBRIC_ROLES
                 for d in direct
-            ):
+            ) and any(not (d.evidence_role or "").strip() for d in direct):
                 _logger.warning(
                     "publish gate: point %s direct evidence missing answer/rubric role; "
-                    "normalizing to answer_basis course=%s run=%s direct_roles=%s",
+                    "normalizing blank roles to answer_basis course=%s run=%s direct_roles=%s",
                     point_code,
                     course_id,
                     run_id,
@@ -1178,12 +1182,17 @@ class DatabaseKnowledgeRepository:
                         d.model_copy(update={"evidence_role": "answer_basis"})
                         if d.relevance_class is RelevanceClass.DIRECT
                         and d.exam_point_code == point_code
+                        and not (d.evidence_role or "").strip()
                         else d
                     )
                     for d in filtered.evidence_decisions
                 ]
                 direct = live_direct_by_point[point_code] = [
-                    d.model_copy(update={"evidence_role": "answer_basis"})
+                    (
+                        d.model_copy(update={"evidence_role": "answer_basis"})
+                        if not (d.evidence_role or "").strip()
+                        else d
+                    )
                     for d in direct
                 ]
             if not any(
@@ -1266,6 +1275,11 @@ def _validated_embeddings(
 _EVIDENCE_MERGE_TARGET_CHARS = 1200
 # 短于该值的 block 视为碎块，与后续 block 聚合；超长 block 保持独立。
 _EVIDENCE_MERGE_MIN_CHARS = 200
+# 合并后单块长度硬上限。碎块聚合路径天然有界（TARGET + MIN - 1 ≈ 1399），
+# 无上界的只有「超长 block 独立成 chunk」路径——实测存在 6365 字符的巨型块，
+# 会在嵌入（超长截断）、分类（每对携带整块文本）与抽取时拖垮 token 并稀释
+# 判断粒度。超上限的块按行/句边界切段后再各自独立成 chunk。
+_EVIDENCE_MERGE_MAX_CHARS = 2400
 
 # 实验报告/作业封面、表单区与声明区的识别特征。这些块不含可迁移知识、
 # 只是教学资料的封面或页面元信息（课程名/学生信息/提交日期/装订表单等），
@@ -1330,6 +1344,47 @@ def _drop_cover_form_blocks(blocks: list[dict]) -> list[dict]:
     return blocks[cut_at:]
 
 
+def _split_long_text(text: str, limit: int) -> list[str]:
+    """把超长文本切成若干 ≤limit 字符的段，优先在行边界与句末标点断开。
+
+    句末标点断开保证每段是完整的句子（供教师溯源与模型判断）；
+    超长单行（无换行的整页文本）先取句末标点、取不到再按 limit 硬切。
+    """
+
+    segments: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    def emit() -> None:
+        nonlocal current, current_len
+        if current:
+            segments.append("\n".join(current))
+            current = []
+            current_len = 0
+
+    for raw_line in text.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if len(line) > limit:
+            emit()
+            while len(line) > limit:
+                window = line[:limit]
+                cut = max(window.rfind(mark) for mark in "。！？；;!?")
+                cut = cut + 1 if cut >= limit // 2 else limit
+                segments.append(line[:cut])
+                line = line[cut:].strip()
+            if line:
+                current, current_len = [line], len(line)
+            continue
+        if current and current_len + 1 + len(line) > limit:
+            emit()
+        current.append(line)
+        current_len += len(line) + (1 if len(current) > 1 else 0)
+    emit()
+    return segments
+
+
 def _merged_evidence_blocks(blocks: list[dict]) -> list[tuple[dict, list[dict]]]:
     """把相邻碎 block 聚合为更长的 evidence chunk。
 
@@ -1370,10 +1425,16 @@ def _merged_evidence_blocks(blocks: list[dict]) -> list[tuple[dict, list[dict]]]
         text_len = len(text)
         if text_len >= _EVIDENCE_MERGE_MIN_CHARS:
             # 长块自成 chunk：先把已聚合的碎块冲刷出去，再独立冲刷本块，
-            # 避免长语义块被前面的碎块标题污染。
+            # 避免长语义块被前面的碎块标题污染。超过硬上限的块先按行/句
+            # 边界切段、每段独立成 chunk（碎块聚合路径 ≤1399，天然有界）。
             flush()
-            buffer.append(block)
-            flush()
+            if text_len <= _EVIDENCE_MERGE_MAX_CHARS:
+                buffer.append(block)
+                flush()
+                continue
+            for segment in _split_long_text(text, _EVIDENCE_MERGE_MAX_CHARS):
+                buffer.append({**block, "text": segment})
+                flush()
             continue
         buffer.append(block)
         buffer_chars += text_len

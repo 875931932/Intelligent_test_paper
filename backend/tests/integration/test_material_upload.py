@@ -86,6 +86,9 @@ def test_organization_run_requires_all_semantic_dependencies(client, monkeypatch
     monkeypatch.setattr(settings, "llm_model", "")
     attributes = {
         "organization_embedder": object(),
+        # extractor 守卫排在 classifier/consolidator 之前，先注入以保证被删的
+        # 依赖能暴露自己的消息。
+        "knowledge_point_extractor": object(),
         "exam_point_evidence_classifier": object(),
         "exam_point_knowledge_consolidator": object(),
     }

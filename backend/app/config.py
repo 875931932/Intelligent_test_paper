@@ -97,15 +97,17 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""
     embedding_model: str = ""
     embedding_api_format: str = "openai"
-    # 召回规模直接决定分类阶段的 (考点, chunk) 对数量与模型 token 消耗：
-    # top_k 24→12 且 min_score 0.25→0.30，削减重复 chunk 传递与无效分类输出。
+    # 召回规模直接决定分类阶段的 (考点, chunk) 对数量与模型 token 消耗。
+    # 量化回放：top_k 打满率仅 0.6~2.4%、每对平均召回 2.2~3.4 块——瓶颈在
+    # min_score 而非 top_k，故 top_k 维持 12；min_score 0.30→0.40 砍掉低分尾部
+    # 垃圾对（分类侧对级浪费 80.7%、条级垃圾 88.6%，是输入 token 的主要去向）。
     organization_retrieval_top_k: int = Field(default=12, gt=0)
-    organization_retrieval_min_score: float = Field(default=0.30, ge=0, le=1)
-    # 检索查询增强：操作/实验类考点的 retrieval_intent 是"动词+对象"短句，与材料
-    # 中"知识陈述"式文本词面重叠少，收紧阈值后相关块漏召回。开启后每个考点用
-    # retrieval_intent 与「考点名+考核要求」两个 query 分别检索再合并取 top_k，
-    # 不增加模型调用（仅多一次嵌入），零破坏地提升召回。
-    organization_retrieval_expand_query: bool = True
+    organization_retrieval_min_score: float = Field(default=0.40, ge=0, le=1)
+    # 检索查询增强（retrieval_intent + 「考点名+考核要求」双 query 合并取 top_k）：
+    # 曾用于缓解收紧阈值后操作/实验类考点的漏召回，但候选对近乎翻倍，是分类垃圾对
+    # 的重要来源，量化后默认关闭。若出现漏召回，置 true（或
+    # ORGANIZATION_RETRIEVAL_EXPAND_QUERY=true）试跑一轮，对比垃圾率再定去留。
+    organization_retrieval_expand_query: bool = False
     organization_max_workers: int = Field(default=16, gt=0)
     # 生成自愈：题位在本考点内三道防线（单题重试 → 换同考点原子 → 批缺失恢复）
     # 全部失守后，允许从**同章**其他考点回补，避免整题丢弃导致卷面缺题。

@@ -122,6 +122,10 @@ class EvidenceDecision(BaseModel):
     content_kind: ContentKind
     prompt_material: str | None = None
     confidence: int = Field(ge=0, le=100)
+    # 检索混合分（staging_retrieval_service 打分，0~1）：分类模型不输出此字段，
+    # 由 organization_graph 分类节点用权威召回分数回填；仅作观测/调参依据
+    # （垃圾率×分数分布），不参与准入、归并与发布判定。历史数据无此字段 → None。
+    retrieval_score: float | None = None
 
     @field_validator(
         "exam_point_code",
@@ -508,20 +512,25 @@ def fact_semantically_supported(atom_key: str, evidence_keys: frozenset[str]) ->
         return True
     if best_bigram_coverage >= _SEMANTIC_BIGRAM_COVERAGE_MIN:
         return True
-    union_token_coverage = (
-        len(atom_tokens & union_tokens) / len(atom_tokens)
-        if atom_tokens and union_tokens
-        else 0.0
-    )
-    union_bigram_coverage = (
-        len(atom_bigrams & union_bigrams) / len(atom_bigrams)
-        if atom_bigrams and union_bigrams
-        else 0.0
-    )
-    if union_token_coverage >= _UNION_SEMANTIC_COVERAGE_MIN:
-        return True
-    if union_bigram_coverage >= _UNION_BIGRAM_COVERAGE_MIN:
-        return True
+    # 联合兜底仅对"多证据"启用（见 docstring 3 的前提：多条证据综合成一条
+    # 事实，单条天然覆盖不了）。单证据时联合集合就是该证据自身，若还按更松的
+    # 联合阈值放行，等于给单证据开口子绕过上面的严格单证据口径——结构相似、
+    # 术语全新的"参数替换"型编造会借此漏网。
+    if len(evidence_keys) > 1:
+        union_token_coverage = (
+            len(atom_tokens & union_tokens) / len(atom_tokens)
+            if atom_tokens and union_tokens
+            else 0.0
+        )
+        union_bigram_coverage = (
+            len(atom_bigrams & union_bigrams) / len(atom_bigrams)
+            if atom_bigrams and union_bigrams
+            else 0.0
+        )
+        if union_token_coverage >= _UNION_SEMANTIC_COVERAGE_MIN:
+            return True
+        if union_bigram_coverage >= _UNION_BIGRAM_COVERAGE_MIN:
+            return True
     if _longest_contiguous_bigram_run(
         atom_key, evidence_keys
     ) >= _MIN_CONTIGUOUS_BIGRAM_RUN:

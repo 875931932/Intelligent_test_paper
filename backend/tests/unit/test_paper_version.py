@@ -251,6 +251,58 @@ def test_update_rejected_after_finalize(session):
         )
 
 
+def test_update_rejects_blank_stem_and_empty_answer_override(session):
+    """手改覆写与手动新增同口径校验：空题干/空答案直接拦截。"""
+    pv_id, _ = _full_pipeline_to_candidate_paper(session)
+    with pytest.raises(PaperVersionError, match="题干不能为空"):
+        update_paper_item(
+            session,
+            course_id="c1", paper_version_id=pv_id, item_index=1,
+            teacher_override_patch={"stem": "   "},
+        )
+    with pytest.raises(PaperVersionError, match="答案不能为空"):
+        update_paper_item(
+            session,
+            course_id="c1", paper_version_id=pv_id, item_index=1,
+            teacher_override_patch={"answer": ""},
+        )
+
+
+def test_update_validation_skips_contentless_patch_but_blocks_content_patch(session):
+    """无内容补丁（仅 clear_needs_review）不触发校验——历史脏数据仍可确认已审；
+    一旦提交内容补丁，合并结果必须整体合法（此处缺答案被拦）。"""
+    pv_id, _ = _full_pipeline_to_candidate_paper(session)
+    gq_id = session.execute(
+        select(paper_items.c.generated_question_id).where(
+            paper_items.c.paper_version_id == pv_id,
+            paper_items.c.display_order == 1,
+        )
+    ).scalar_one()
+    payload = session.execute(
+        select(generated_questions.c.payload).where(generated_questions.c.id == gq_id)
+    ).scalar_one()
+    session.execute(
+        generated_questions.update()
+        .where(generated_questions.c.id == gq_id)
+        .values(payload={**payload, "answer": ""})
+    )
+    session.commit()
+
+    result = update_paper_item(
+        session,
+        course_id="c1", paper_version_id=pv_id, item_index=1,
+        teacher_override_patch={}, clear_needs_review=True,
+    )
+    assert not result.get("needs_review")
+
+    with pytest.raises(PaperVersionError, match="答案不能为空"):
+        update_paper_item(
+            session,
+            course_id="c1", paper_version_id=pv_id, item_index=1,
+            teacher_override_patch={"stem": "新题干"},
+        )
+
+
 # --- TR-5.2 ---
 
 def test_confirm_rejects_pending_needs_review_unless_forced(session):

@@ -116,6 +116,30 @@ def _migrate_evidence_chunk_columns(engine: Engine) -> None:
                 conn.execute(text("ALTER TABLE evidence_chunks ADD COLUMN source_evidence_chunk_id VARCHAR(64)"))
 
 
+def _migrate_evidence_link_score(engine: Engine) -> None:
+    """Idempotently add retrieval_score column to exam_point_evidence_links.
+
+    检索分数观测列（垃圾率×分数分布的调参依据）；旧表无此列，create_all 不会
+    ALTER 已存在表，需显式迁移。无法内省（bootstrap 单测的 mock engine）时跳过。
+    """
+
+    try:
+        insp = inspect(engine)
+        if not insp.has_table("exam_point_evidence_links"):
+            return
+        existing = {c["name"] for c in insp.get_columns("exam_point_evidence_links")}
+    except Exception:
+        # 迁移是尽力而为的幂等维护：无法内省时不阻断启动（与 evidence link FK 迁移同口径）。
+        return
+    if "retrieval_score" in existing:
+        return
+    with engine.begin() as conn:
+        if engine.dialect.name == "postgresql":
+            conn.execute(text("ALTER TABLE exam_point_evidence_links ADD COLUMN retrieval_score DOUBLE PRECISION"))
+        else:
+            conn.execute(text("ALTER TABLE exam_point_evidence_links ADD COLUMN retrieval_score FLOAT"))
+
+
 def _seed_dev_data(bind: Engine | Connection) -> None:
     """Upsert the admin test account and fold any legacy 'owner-dev' data into it."""
 
@@ -192,6 +216,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
                 _migrate_user_columns(engine)
                 _migrate_evidence_link_fk(engine)
                 _migrate_evidence_chunk_columns(engine)
+                _migrate_evidence_link_score(engine)
                 if seed:
                     _seed_dev_data(conn)
         else:
@@ -201,6 +226,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             _migrate_user_columns(engine)
             _migrate_evidence_link_fk(engine)
             _migrate_evidence_chunk_columns(engine)
+            _migrate_evidence_link_score(engine)
             if seed:
                 _seed_dev_data(engine)
     finally:

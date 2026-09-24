@@ -459,6 +459,7 @@ def test_organization_retrieval_settings_have_safe_defaults(monkeypatch):
         "EMBEDDING_API_FORMAT",
         "ORGANIZATION_RETRIEVAL_TOP_K",
         "ORGANIZATION_RETRIEVAL_MIN_SCORE",
+        "ORGANIZATION_RETRIEVAL_EXPAND_QUERY",
         "ORGANIZATION_MAX_WORKERS",
     ):
         monkeypatch.delenv(variable, raising=False)
@@ -471,7 +472,9 @@ def test_organization_retrieval_settings_have_safe_defaults(monkeypatch):
     assert settings.embedding_model == ""
     assert settings.embedding_api_format == "openai"
     assert settings.organization_retrieval_top_k == 12
-    assert settings.organization_retrieval_min_score == 0.30
+    assert settings.organization_retrieval_min_score == 0.40
+    # 双 query 展开使候选对翻倍、是分类垃圾对的重要来源，量化后默认关闭。
+    assert settings.organization_retrieval_expand_query is False
     assert settings.organization_max_workers == 16
 
 

@@ -33,7 +33,9 @@ def test_knowledge_requires_complete_llm_configuration(monkeypatch, missing_sett
             )
 
         assert response.status_code == 503
-        assert response.json()["detail"] == "semantic classifier is not configured"
+        # org-runs 依赖序：embedder → knowledge point extractor → classifier →
+        # consolidator。LLM 配置不全时，第一个 LLM 守卫（extractor）先失败。
+        assert response.json()["detail"] == "knowledge point extractor is not configured"
     finally:
         for state_name in (
             "organization_embedder",

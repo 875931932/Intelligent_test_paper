@@ -278,8 +278,11 @@ def build_organization_graph(
         def extract_batch(
             material_version_id: str,
             chunks: list[StagingChunk],
-        ) -> tuple[list[str], int, int, int]:
-            """抽取一批块，产出 (陈述id, 剔除数, 陈述数, 跳过数)。
+        ) -> tuple[list, int]:
+            """线程内纯 LLM 抽取一批块，产出 (按拆分顺序的成功抽取结果, 跳过数)。
+
+            只调 extractor.extract_material，不做任何落库（repository 是单
+            Session，非线程安全，落库统一回主线程）。
 
             stepfun 是推理型模型，重块（表格/公式/超长/命令密集）会吃穿输出预算
             导致 content 为空或非 JSON。遇到这类负载失败时把批对半拆分递归自愈；
@@ -307,16 +310,14 @@ def build_organization_graph(
                         len(chunks) - mid,
                         exc.error_code,
                     )
-                    left_ids, left_dropped, left_stmts, left_skipped = extract_batch(
+                    left_results, left_skipped = extract_batch(
                         material_version_id, chunks[:mid]
                     )
-                    right_ids, right_dropped, right_stmts, right_skipped = extract_batch(
+                    right_results, right_skipped = extract_batch(
                         material_version_id, chunks[mid:]
                     )
                     return (
-                        left_ids + right_ids,
-                        left_dropped + right_dropped,
-                        left_stmts + right_stmts,
+                        left_results + right_results,
                         left_skipped + right_skipped,
                     )
                 if exc.error_code in _EXTRACTION_SPLITTABLE_ERRORS:
@@ -327,19 +328,45 @@ def build_organization_graph(
                         exc.error_code,
                         exc,
                     )
-                    return [], 1, 0, 1
+                    return [], 1
                 raise
-            dropped = len(result.dropped_chunk_ids)
-            statements = len(result.statements)
-            persisted = repository.persist_statements(
-                embedder,
-                course_id=state["course_id"],
-                run_id=state["run_id"],
-                material_version_id=material_version_id,
-                statements=result.statements,
-            )
-            return persisted, dropped, statements, 0
+            return [result], 0
 
+        # 先按与串行版完全一致的方式枚举全部批次（material 排序 + 批内 chunk 按
+        # id 排序 + 按 batch_size 连续切）：temperature=0 的响应缓存按 prompt_hash
+        # 命中，批次组成一变缓存即全失效，故批次构成一字不动，只把执行并发化。
+        batches: list[tuple[str, int, list[StagingChunk]]] = []
+        for material_version_id in sorted(chunks_by_material):
+            material_chunks = sorted(
+                chunks_by_material[material_version_id], key=lambda item: item.id
+            )
+            for batch_index, start in enumerate(
+                range(0, len(material_chunks), batch_size)
+            ):
+                batches.append(
+                    (
+                        material_version_id,
+                        batch_index,
+                        material_chunks[start : start + batch_size],
+                    )
+                )
+
+        # LLM 抽取按批次并发提交；(material_version_id, batch_index) 作为回填槽位。
+        extracted: dict[tuple[str, int], tuple[list, int]] = {}
+        with ThreadPoolExecutor(max_workers=settings.organization_max_workers) as executor:
+            future_batches = {
+                executor.submit(extract_batch, material_version_id, batch): (
+                    material_version_id,
+                    batch_index,
+                )
+                for material_version_id, batch_index, batch in batches
+            }
+            for future in as_completed(future_batches):
+                extracted[future_batches[future]] = future.result()
+
+        # 落库（persist_statements = 单 Session + embedder，非线程安全）必须在主线
+        # 线程；按 material 排序 + 批内原序回填，evidence_chunk_ids / extraction_stats
+        # 与串行版逐字节等价——不能用 as_completed 的完成顺序直接 extend。
         for material_version_id in sorted(chunks_by_material):
             material_chunks = sorted(
                 chunks_by_material[material_version_id], key=lambda item: item.id
@@ -351,14 +378,25 @@ def build_organization_graph(
                 "statement_ids": 0,
                 "skipped": 0,
             }
-            for start in range(0, len(material_chunks), batch_size):
-                batch = material_chunks[start : start + batch_size]
-                ids, dropped, statements, skipped = extract_batch(material_version_id, batch)
-                stats["dropped"] += dropped
-                stats["statements"] += statements
-                stats["statement_ids"] += len(ids)
+            for batch_index, start in enumerate(
+                range(0, len(material_chunks), batch_size)
+            ):
+                results, skipped = extracted[(material_version_id, batch_index)]
+                for result in results:
+                    dropped = len(result.dropped_chunk_ids)
+                    statements = len(result.statements)
+                    persisted = repository.persist_statements(
+                        embedder,
+                        course_id=state["course_id"],
+                        run_id=state["run_id"],
+                        material_version_id=material_version_id,
+                        statements=result.statements,
+                    )
+                    stats["dropped"] += dropped
+                    stats["statements"] += statements
+                    stats["statement_ids"] += len(persisted)
+                    statement_ids.extend(persisted)
                 stats["skipped"] += skipped
-                statement_ids.extend(ids)
             extraction_stats[material_version_id] = stats
             log.info(
                 "extract_knowledge_points %s: chunks=%d dropped=%d statements=%d persisted=%d skipped=%d",
@@ -426,6 +464,7 @@ def build_organization_graph(
                     key=lambda item: (-item.score, item.chunk.id),
                 )
                 recalled_ids: list[str] = []
+                recalled_scores: dict[str, float] = {}
                 for item in ranked:
                     chunk = item.chunk
                     if (
@@ -437,6 +476,9 @@ def build_organization_graph(
                         )
                     if chunk.id not in recalled_ids:
                         recalled_ids.append(chunk.id)
+                        # ranked 已按分数降序，首个出现即该 chunk 的最高分。
+                        # 分数随 pair 落 state，供分类节点回填到决策（观测用）。
+                        recalled_scores[chunk.id] = float(item.score)
                     if len(recalled_ids) == settings.organization_retrieval_top_k:
                         break
                 if recalled_ids:
@@ -446,6 +488,7 @@ def build_organization_graph(
                             "exam_point_code": point.code,
                             "material_version_id": material_version_id,
                             "evidence_chunk_ids": recalled_ids,
+                            "evidence_chunk_scores": recalled_scores,
                         }
                     )
             if not point_has_recall:
@@ -641,6 +684,35 @@ def build_organization_graph(
                 item["stage"],
             )
         )
+        # 检索分数回填（观测口径）：分类响应不携带分数，用权威召回分数按
+        # (考点, 资料, chunk) 覆盖写入——包括清掉模型幻觉出的值；查不到
+        # （如测试注入的无分 pair）则为 None。不参与准入、归并与发布判定。
+        score_by_key = {
+            (pair["exam_point_code"], pair["material_version_id"], chunk_id): score
+            for pair in state.get("retrieval_pairs", [])
+            for chunk_id, score in (pair.get("evidence_chunk_scores") or {}).items()
+        }
+        decisions = [
+            item.model_copy(
+                update={
+                    "decisions": [
+                        decision.model_copy(
+                            update={
+                                "retrieval_score": score_by_key.get(
+                                    (
+                                        decision.exam_point_code,
+                                        item.material_version_id,
+                                        decision.evidence_chunk_id,
+                                    )
+                                )
+                            }
+                        )
+                        for decision in item.decisions
+                    ]
+                }
+            )
+            for item in decisions
+        ]
         return {
             "file_decisions": [item.model_dump(mode="json") for item in decisions],
             "failed_pairs": failures,

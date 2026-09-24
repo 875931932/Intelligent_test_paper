@@ -345,6 +345,9 @@ exam_point_evidence_links = _course_table(
     Column("evidence_role", String(60)),
     Column("confidence", Integer),
     Column("prompt_material", Text),
+    # 检索混合分（staging_retrieval_service 的 0.35 词面 + 0.65 语义）：仅观测/
+    # 调参用（垃圾率×分数分布），不参与准入与发布判定，可为空。
+    Column("retrieval_score", Float),
     Column("status", String(40), nullable=False, default="candidate", server_default="candidate"),
     constraints=(
         UniqueConstraint(

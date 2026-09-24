@@ -182,6 +182,7 @@ def _tree(*, coverage_status="sufficient"):
         evidence_role="answer_or_rubric_basis",
         content_kind=ContentKind.FACT,
         confidence=95,
+        retrieval_score=0.6,
     )
     return KnowledgeTreeCandidate(
         framework_version_id="framework-v1",
@@ -328,6 +329,7 @@ def test_database_repository_publishes_catalog_and_index_atomically(tmp_path):
         assert session.scalar(select(index_memberships.c.knowledge_card_id)) is not None
         assert session.scalar(select(index_versions.c.status)) == "published"
         assert session.scalar(select(exam_point_evidence_links.c.relevance_class)) == "direct"
+        assert session.scalar(select(exam_point_evidence_links.c.retrieval_score)) == 0.6
         published_payload = session.execute(
             select(knowledge_catalog_versions.c.payload).where(
                 knowledge_catalog_versions.c.id == candidate_id
@@ -1059,6 +1061,9 @@ def test_publish_rejects_when_deleted_source_removes_only_answer_or_rubric_basis
             .where(organization_runs.c.id == "organization-run")
             .values(input_snapshot=expanded_frozen_input)
         )
+        # 必须提交：persist_candidate 会先 rollback 宽容重置连接，未提交的
+        # input_snapshot 更新会被丢弃，publish 时快照不匹配。
+        session.commit()
         state["file_decisions"].append(
             {
                 "exam_point_code": "EP-1",
@@ -1108,6 +1113,9 @@ def test_publish_keeps_card_when_redundant_deleted_source_has_complete_live_repl
             .where(organization_runs.c.id == "organization-run")
             .values(input_snapshot=expanded_frozen_input)
         )
+        # 必须提交：persist_candidate 会先 rollback 宽容重置连接，未提交的
+        # input_snapshot 更新会被丢弃，publish 时快照不匹配。
+        session.commit()
         repository = DatabaseKnowledgeRepository(session)
         candidate_id = repository.persist_candidate(state, tree)
         delete_material(session, course_id="course", material_id="material")

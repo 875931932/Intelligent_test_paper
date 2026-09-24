@@ -105,7 +105,8 @@ def test_schema_persists_exam_points_relevance_and_source_free_generation_extens
     relevance_link = Base.metadata.tables["exam_point_evidence_links"]
     assert {
         "organization_run_id", "exam_point_id", "evidence_chunk_id", "relevance_class",
-        "support_claim", "evidence_role", "confidence", "prompt_material", "status",
+        "support_claim", "evidence_role", "confidence", "prompt_material",
+        "retrieval_score", "status",
     } <= set(relevance_link.c.keys())
     assert {
         "ck_exam_point_evidence_links_relevance_class",
@@ -392,6 +393,9 @@ def test_postgresql_bootstrap_uses_transactional_advisory_lock(monkeypatch):
     monkeypatch.setattr(init_db, "_engine", lambda _: Engine())
     monkeypatch.setattr(Base.metadata, "create_all", lambda *_: None)
     monkeypatch.setattr(init_db, "_migrate_user_columns", lambda _: None)
+    # 该迁移步骤内部用 sqlalchemy.inspect 探测列结构，假 Engine 不支持；
+    # 本测试只关心 advisory lock 语句，跳过列迁移。
+    monkeypatch.setattr(init_db, "_migrate_evidence_chunk_columns", lambda _: None)
 
     init_db.bootstrap_database("postgresql+psycopg://example/exam", seed=False)
 

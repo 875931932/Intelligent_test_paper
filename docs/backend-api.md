@@ -403,6 +403,8 @@ query 可选过滤：`item_index_min` / `item_index_max` / `question_type`
 ### 9.3 修改题目项
 `PATCH /api/v1/courses/{course_id}/paper-versions/{pv_id}/items/{item_index}`
 body：`{ "teacher_override_patch":{}, "clear_needs_review":false }`（仅这两 key）
+：内容补丁按与手动新增同口径校验（题干/答案必填、多选答案须对应 ≥2 个选项），
+违反返回 422；仅 `clear_needs_review`（无内容补丁）不触发校验。
 
 覆写字段与题型口径：
 - `answer` 对**判断题**是布尔值（`true`/`false`），其余题型为字符串；前端保存时会

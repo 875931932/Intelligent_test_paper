@@ -46,6 +46,9 @@ def test_minio_adapter_uses_fake_s3_client_for_presign_head_and_stream_without_d
     storage = MinioStorage.__new__(MinioStorage)
     storage.bucket = "materials"
     storage.client = client
+    # presign_put 走独立的公网预签名客户端（__init__ 中创建），__new__ 绕过
+    # __init__ 后需要显式注入，否则 AttributeError。
+    storage._presigner = client
 
     url = storage.presign_put(object_key="courses/c/session/file.pdf", content_type="application/pdf", sha256="a" * 64, expires_in=300)
     info = storage.head_object("courses/c/session/file.pdf")
@@ -73,6 +76,7 @@ def test_presigned_put_uses_sigv4_and_path_style():
     storage = MinioStorage.__new__(MinioStorage)
     storage.bucket = "materials"
     storage.client = client
+    storage._presigner = client  # presign_put 使用独立预签名客户端，见 __init__
 
     url = storage.presign_put(object_key="courses/c/uploads/s/file.pdf", content_type="application/pdf", sha256="a" * 64, expires_in=300)
 

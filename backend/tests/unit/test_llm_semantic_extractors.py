@@ -705,6 +705,9 @@ def test_syllabus_extractor_normalizes_single_requirement_and_compact_anchor():
 
 
 def test_syllabus_extractor_normalizes_percent_weight_and_drops_extra_anchor_fields():
+    # 两个锚点、考点权重合计恰为 100，跳过"权重闭合缩放到 100"的重标定，
+    # 否则 5 会被等比放大成 100；同时保留 exam_weight="5%" 字符串入参，
+    # 兜底路径仍须把百分号解析成数字。
     client = RecordingJsonClient(
         [
             {
@@ -715,7 +718,13 @@ def test_syllabus_extractor_normalizes_percent_weight_and_drops_extra_anchor_fie
                         "exam_weight": "5%",
                         "alignment_keys": ["rag-teaching"],
                         "source_heading": "期末考试",
-                    }
+                    },
+                    {
+                        "key": "ml",
+                        "title": "机器学习基础",
+                        "exam_weight": "95%",
+                        "alignment_keys": ["ml-teaching"],
+                    },
                 ],
                 "exam_points": [
                     {
@@ -731,7 +740,21 @@ def test_syllabus_extractor_normalizes_percent_weight_and_drops_extra_anchor_fie
                         "operational_detail_policy": "supporting_only",
                         "retrieval_intent": "检索偏差及诊断依据",
                         "teaching_anchor_keys": ["rag-teaching"],
-                    }
+                    },
+                    {
+                        "code": "ml-basics",
+                        "anchor_key": "ml",
+                        "title": "机器学习基础概念",
+                        "assessment_requirement": "能够陈述基础概念",
+                        "weight_value": 95,
+                        "weight_source": "assessment_syllabus",
+                        "weight_group_id": "ml",
+                        "cognitive_targets": ["understand"],
+                        "assessment_orientations": ["conceptual"],
+                        "operational_detail_policy": "supporting_only",
+                        "retrieval_intent": "检索基础概念依据",
+                        "teaching_anchor_keys": ["ml-teaching"],
+                    },
                 ],
                 "final_exam_rules": {},
             }
@@ -1093,9 +1116,11 @@ def test_consolidator_receives_only_one_point_admitted_decisions_and_keeps_sourc
     card = units[0].cards[0]
     assert card.evidence_chunk_ids == ["e1"]
     assert card.prompt_material == ["可结合检索场景设问"]
-    # 语义画像字段（concept_cluster 等）已从归并输出中移除，保持默认空
-    assert card.concept_cluster == ""
-    assert card.answer_proposition == ""
+    # concept_cluster/answer_proposition 是语义画像字段：prompt 要求模型产出、
+    # 归并保留并入库（合同聚类/蓝图画像消费），断言保留模型给定值；来源类
+    # 字段（instance_carriers/source_locations 等）不得进入卡片主体，仍被剔除。
+    assert card.concept_cluster == "检索质量影响因素"
+    assert card.answer_proposition == "切分粒度会影响召回"
     assert card.instance_carriers == []
     assert "source_locator" not in card.model_dump(mode="json")
 

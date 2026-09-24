@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from time import sleep
 
 import pytest
@@ -414,6 +415,98 @@ def test_extraction_skips_single_chunk_that_fails_schema_validation():
     ) == 3
 
 
+def _extraction_chunks():
+    """material-1 切 3+2、material-2 切 3+1，共 4 个抽取批次。"""
+    return [
+        StagingChunk(id=f"c{i}", material_version_id="material-1", content=f"知识点{i}")
+        for i in range(1, 6)
+    ] + [
+        StagingChunk(id=f"d{i}", material_version_id="material-2", content=f"资料二{i}")
+        for i in range(1, 5)
+    ]
+
+
+_EXPECTED_EXTRACTION_BATCHES = [
+    ("material-1", ("c1", "c2", "c3")),
+    ("material-1", ("c4", "c5")),
+    ("material-2", ("d1", "d2", "d3")),
+    ("material-2", ("d4",)),
+]
+
+
+class PeakTrackingExtractor(RecordingExtractor):
+    """记录 extract_material 同时在飞的峰值，验证抽取批次确实并发执行。"""
+
+    def __init__(self):
+        super().__init__(drop_ids=set())
+        self._lock = threading.Lock()
+        self._in_flight = 0
+        self.peak_in_flight = 0
+
+    def extract_material(self, *, material_version_id, chunks, call_context=None, max_tokens=None):
+        with self._lock:
+            self._in_flight += 1
+            self.peak_in_flight = max(self.peak_in_flight, self._in_flight)
+        try:
+            sleep(0.05)
+            return super().extract_material(
+                material_version_id=material_version_id,
+                chunks=chunks,
+                call_context=call_context,
+                max_tokens=max_tokens,
+            )
+        finally:
+            with self._lock:
+                self._in_flight -= 1
+
+
+def test_extract_knowledge_points_runs_batches_concurrently(monkeypatch):
+    monkeypatch.setattr(settings, "organization_max_workers", 4)
+    chunks = _extraction_chunks()
+    extractor = PeakTrackingExtractor()
+    graph, _, _, _, _ = _graph(extractor=extractor, chunks=chunks)
+
+    graph.invoke(_state(chunks), config={"configurable": {"thread_id": "extract-peak"}})
+
+    # 批次按 material 排序 + 批内 chunk 按 id 排序 + batch_size 连续切，构成不变。
+    assert sorted(extractor.calls) == _EXPECTED_EXTRACTION_BATCHES
+    # 4 个批次按批提交且同时在飞，串行版峰值恒为 1。
+    assert extractor.peak_in_flight > 1
+
+
+def test_extraction_output_order_is_deterministic_across_runs(monkeypatch):
+    monkeypatch.setattr(settings, "organization_max_workers", 4)
+    chunks = _extraction_chunks()
+    runs = []
+    for index in range(2):
+        extractor = RecordingExtractor(drop_ids=set())
+        graph, _, _, _, repository = _graph(extractor=extractor, chunks=chunks)
+
+        graph.invoke(
+            _state(chunks), config={"configurable": {"thread_id": f"extract-det-{index}"}}
+        )
+
+        runs.append(
+            (
+                list(repository.persisted_state["evidence_chunk_ids"]),
+                dict(repository.persisted_state["extraction_stats"]),
+                sorted(extractor.calls),
+            )
+        )
+
+    # 批次组成与串行版逐字节一致（temperature=0 响应缓存按 prompt_hash 命中，
+    # 批次一变缓存即失效）。
+    assert runs[0][2] == _EXPECTED_EXTRACTION_BATCHES
+    # evidence_chunk_ids 顺序 = material 排序 + 批内原序，与并发完成顺序无关。
+    assert runs[0][0] == ["c1", "c2", "c3", "c4", "c5", "d1", "d2", "d3", "d4"]
+    assert runs[0][1] == {
+        "material-1": {"chunks": 5, "dropped": 0, "statements": 5, "statement_ids": 5, "skipped": 0},
+        "material-2": {"chunks": 4, "dropped": 0, "statements": 4, "statement_ids": 4, "skipped": 0},
+    }
+    # 同一输入跑两次，顺序与统计口径完全一致。
+    assert runs[1] == runs[0]
+
+
 def test_one_material_failure_is_redacted_and_does_not_block_other_materials():
     classifier = RecordingClassifier(fail_material="material-1")
     graph, _, _, _, repository = _graph(classifier=classifier)
@@ -471,7 +564,13 @@ def test_each_exam_point_material_pair_gets_its_own_top_k_budget(monkeypatch):
     ]
 
 
-def test_graph_embeds_each_exam_point_query_once_and_reuses_frozen_chunk_vectors():
+def test_graph_embeds_each_exam_point_query_once_and_reuses_frozen_chunk_vectors(
+    monkeypatch,
+):
+    # expand_query 默认已随量化调参关闭；本测试钉住 True 以保持展开分支（双 query
+    # 合并取 top_k）的覆盖，关闭分支由其余用例在默认值下覆盖。
+    monkeypatch.setattr(settings, "organization_retrieval_expand_query", True)
+
     class QueryOnlyEmbedder:
         def __init__(self):
             self.calls: list[list[str]] = []
@@ -523,6 +622,24 @@ def test_graph_embeds_each_exam_point_query_once_and_reuses_frozen_chunk_vectors
         (("EP-1", "EP-2"), "material-1", ("m1",)),
         (("EP-1", "EP-2"), "material-2", ("m2",)),
     ]
+
+
+def test_retrieval_score_flows_from_pairs_into_evidence_decisions():
+    graph, _, _, _, repository = _graph()
+
+    graph.invoke(_state(), config={"configurable": {"thread_id": "retrieval-score"}})
+
+    # PairSelectingRetriever 固定返回 0.9；分类响应不携带分数，决策上的
+    # retrieval_score 全部由分类节点从权威召回分数回填（含清掉幻觉值）。
+    decisions = repository.candidate.evidence_decisions
+    assert decisions
+    assert {decision.retrieval_score for decision in decisions} == {0.9}
+    raw_scores = {
+        decision.get("retrieval_score")
+        for file_decision in repository.persisted_state["file_decisions"]
+        for decision in file_decision["decisions"]
+    }
+    assert raw_scores == {0.9}
 
 
 class AdapterOutputError(RuntimeError):

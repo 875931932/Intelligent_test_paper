@@ -624,6 +624,20 @@ def update_paper_item(
             elif extra_key in payload:
                 finalized[extra_key] = payload[extra_key]
 
+        # 教师提交了内容补丁才校验，口径与手动新增一致（_validate_teacher_item）：
+        # 手改此前完全不设防，空题干/空答案/多选答案错位能直接写进卷面，
+        # 导出答卷与答案细则处就是空白或错位。仅 clear_needs_review（无内容补丁）
+        # 不触发，避免历史脏数据连"确认已审"都被拦死。
+        if teacher_override_patch:
+            _validate_teacher_item(
+                stem=finalized.get("stem", ""),
+                question_type=finalized.get("question_type")
+                or payload.get("question_type")
+                or "",
+                options=finalized.get("options"),
+                answer=finalized.get("answer"),
+            )
+
         values: dict[str, Any] = {
             "teacher_override": new_override,
             "finalized_text": finalized,
