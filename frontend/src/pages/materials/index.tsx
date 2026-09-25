@@ -413,9 +413,10 @@ export default function MaterialsPage() {
     return (
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '16px' }}>
         {filteredMaterials.map((m) => (
+          // 卡内文件卡降级为 sub-section：二级视图容器卡已是唯一一层玻璃
           <div
             key={m.id}
-            className="glass-card"
+            className="sub-section"
             style={{ padding: '18px', display: 'flex', flexDirection: 'column', gap: '12px' }}
           >
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
@@ -527,7 +528,7 @@ export default function MaterialsPage() {
       {/* ── 一级视图：子文件夹 ── */}
       {activeFolder !== null && activeSubFolder === null && currentFolder && (
         <div className="glass-card" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '18px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div className="row">
             <Button variant="secondary" size="sm" onClick={() => setActiveFolder(null)}>
               返回文件夹
             </Button>
@@ -538,13 +539,14 @@ export default function MaterialsPage() {
             {currentFolder.subFolders.map((s) => {
               const Icon = s.icon;
               return (
+                // 容器卡内的可点分区：sub-section 降级 + is-clickable 保留点击反馈
                 <button
                   key={s.key}
                   onClick={() => setActiveSubFolder(s.key)}
-                  className="glass-card"
+                  className="sub-section is-clickable"
                   style={{
-                    padding: '20px', textAlign: 'left', background: 'none', border: '1px solid var(--glass-border)',
-                    cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '14px',
+                    padding: '20px', textAlign: 'left',
+                    display: 'flex', alignItems: 'center', gap: '14px',
                   }}
                 >
                   <div style={{
@@ -568,7 +570,7 @@ export default function MaterialsPage() {
       {/* ── 二级视图：文件列表 ── */}
       {activeSubFolder !== null && currentSubFolder && (
         <div className="glass-card" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '18px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div className="row">
             <Button variant="secondary" size="sm" onClick={() => setActiveSubFolder(null)}>
               返回上级
             </Button>

@@ -649,7 +649,8 @@ function FrameworkBreakdown({ anchors, points }: {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
       {groups.map(({ anchor, points: pts }, gi) => (
-        <div key={gi} className="glass-card" style={{ padding: '14px 16px' }}>
+        // 卡内分组降级一档（sub-section）：容器卡已是唯一一层玻璃，分组不再套卡
+        <div key={gi} className="sub-section" style={{ padding: '14px 16px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
             <ChevronRight size={14} style={{ color: 'var(--purple)', flexShrink: 0 }} />
             <p style={{ fontWeight: 600, fontSize: '0.9rem' }}>{anchor.title}</p>
@@ -675,7 +676,7 @@ function FrameworkBreakdown({ anchors, points }: {
       ))}
 
       {orphanPoints.length > 0 && (
-        <div className="glass-card" style={{ padding: '14px 16px' }}>
+        <div className="sub-section" style={{ padding: '14px 16px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
             <ChevronRight size={14} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
             <p style={{ fontWeight: 600, fontSize: '0.9rem', color: 'var(--text-secondary)' }}>未归类考点</p>

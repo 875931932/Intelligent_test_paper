@@ -101,6 +101,47 @@ body::after {
 }
 
 /* ═══════════════════════════════════════════════
+   一层玻璃：卡内分组降级 + 结构工具类（工作流 E）
+   ═══════════════════════════════════════════════ */
+
+/* 卡内从属分组：浅底 + 1px 分隔线 + 10px 圆角，无阴影无独立 hover——
+   视觉降级一档表达从属关系，替代「玻璃卡里再嵌玻璃卡」 */
+.sub-section {
+  background: rgba(0, 0, 0, 0.02);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  border-radius: 10px;
+}
+/* 嵌套的可点分区（如文件夹按钮）：sub-section 本身无 hover，
+   可点的必须给反馈，否则用户发现不了它能点——卡内 hover 例外口子 */
+.sub-section.is-clickable {
+  cursor: pointer;
+  transition: background 0.2s var(--ease-out-expo);
+}
+.sub-section.is-clickable:hover {
+  background: rgba(0, 0, 0, 0.045);
+}
+
+/* 高频结构工具类：替代同款 inline style（存量 inline 不一次性改写，
+   新代码与被触碰的代码顺手迁移） */
+.card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ═══════════════════════════════════════════════
    Floating Island Sidebar
    ═══════════════════════════════════════════════ */
 
