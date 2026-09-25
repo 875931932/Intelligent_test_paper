@@ -78,6 +78,7 @@ f:\比赛项目\阅卷出题功能/
 │  │  概览   │ │ 资料库 │ │ 命题框架 │ │ 知识目录 │ │   试卷   │ │
 │  │Dashboard│ │Materials│ │Framework │ │Knowledge │ │  Paper   │ │
 │  └────────┘ └────────┘ └──────────┘ └──────────┘ └──────────┘ │
+│      （入口页：登录 /login、课程空间 /courses）                    │
 │      「试卷」模块内部是两个页签：                                  │
 │      ┌────────────────────┐   ┌────────────────────┐          │
 │      │ 出卷流水线           │   │ 试卷（双栏阅读器）  │          │
@@ -92,10 +93,10 @@ f:\比赛项目\阅卷出题功能/
 │  │ Auth   │ │Courses │ │Materials│ │Framework│ │Knowledge│      │
 │  │ Router │ │ Router │ │ Router │ │ Router │ │ Router │      │
 │  └────────┘ └────────┘ └────────┘ └────────┘ └────────┘      │
-│  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐      │
-│  │Blueprint│ │Generation│ │Exam    │ │Paper   │ │Health  │      │
-│  │ Router │ │ Router │ │Projects│ │Versions│ │ Check  │      │
-│  └────────┘ └────────┘ └────────┘ └────────┘ └────────┘      │
+│  ┌─────────────┐ ┌──────────────┐ ┌─────────┐                │
+│  │ ExamProjects│ │ PaperVersions│ │ Health  │                │
+│  │   Router    │ │    Router    │ │  Check  │                │
+│  └─────────────┘ └──────────────┘ └─────────┘                │
 └─────────────────────────────────────────────────────────────────┘
                                │
          ┌─────────────────────┼─────────────────────┐
@@ -137,8 +138,11 @@ f:\比赛项目\阅卷出题功能/
 | **合同** | `exam_projects.py`（contracts） | 逐题位锁定考查原子、答案域、禁用上下文 |
 | **生成** | `exam_projects.py`（generate） | 按合同分批生成 + 质量校验 + 落库试卷版本 |
 
-**试卷页签**：`paper_versions.py` 提供逐题编辑、增删、调序、定稿 / 撤销，以及三份导出
-（学生卷 HTML、答卷 HTML、答案细则 JSON）。
+**试卷页签**：`paper_versions.py` 提供逐题编辑、增删、调序、定稿 / 撤销，以及四份导出
+（学生卷 HTML、答卷 HTML、答题卡 HTML、答案细则 JSON——schema 自 `1.1.0` 起逐题带
+`rubric` 评分细则）。另有 **AI 助手四入口**（单题改题 / 整题生成 / 合同槽位解释 /
+整卷评审）：AI 只产出提案或只读报告（202 异步 + `task_runs` 轮询），落库一律经教师
+确认走既有端点，不绕确认流（接口细节见 `docs/backend-api.md` §9.3e–h）。
 
 ---
 
@@ -386,6 +390,14 @@ class GenerationState(TypedDict, total=False):
 
 **职责**：以考点为导向的材料整理流程，将原始材料组织为结构化的知识卡片。
 
+**编排与容错**（入口 `api/v1/knowledge.py`，非 graph 内部）：
+- 构建跑在后台 daemon 线程，HTTP 立即返回 202（`status=queued`），run 行在耗时阶段前先落库；
+- **读路径自愈**：进程重启留下的孤儿 run（线程已消亡、行停在 `queued`/`running`）在
+  GET 时就地判 `failed`（`error_code=interrupted_by_restart`），前端轮询下一拍解卡；
+  失败标记走全新会话 + 补插兜底，防止前端对已发放的 `run_id` 永远轮询 404
+  （详见 `docs/backend-api.md` §5.2）；
+- ⚠️ 该自愈依赖单进程部署（`_ACTIVE_ORG_RUN_IDS` 进程内存态），多 worker 部署须改租约心跳。
+
 ---
 
 ## 6. API 端点
@@ -426,21 +438,38 @@ app.include_router(paper_versions_router)    # /api/v1/courses/{course_id}/paper
 | GET | `/api/v1/courses/{course_id}/framework-versions/current` | 获取当前框架（含 `exam_rules`） |
 | PATCH | `/api/v1/courses/{course_id}/framework-versions/current/rules` | 修改考核规则（题型比例 / 章节权重） |
 
+#### Knowledge [backend/app/api/v1/knowledge.py](backend/app/api/v1/knowledge.py)
+
+> 前缀 `/api/v1/courses/{course_id}`（不带 `/knowledge` 段）；完整契约见 `docs/backend-api.md` §5。
+
+| 方法 | 路径 | 功能 |
+|------|------|------|
+| POST | `.../organization-runs` | 创建知识组织运行（202 异步） |
+| GET | `.../organization-runs/latest` | 最近一次运行（含孤儿自愈） |
+| GET | `.../organization-runs/{run_id}` | 运行详情（`interrupted_by_restart` 自愈） |
+| GET | `.../organization-runs/{run_id}/candidate` | 候选知识树 |
+| POST | `.../organization-runs/{run_id}/supplement-recommendations` | 覆盖不足考点的补料推荐（AI 预选→教师确认） |
+| POST | `.../organization-runs/{run_id}/publish` | 发布知识树 |
+| POST | `.../organization-runs/{run_id}/reject` | 拒绝候选（终态） |
+| GET | `.../published-knowledge` | 已发布知识（命题输入视图） |
+| GET | `.../published-knowledge/cards/{card_id}/evidence` | 知识卡证据链 |
+
 #### Exam Projects [backend/app/api/v1/exam_projects.py](backend/app/api/v1/exam_projects.py)
 
 | 方法 | 路径 | 功能 |
 |------|------|------|
 | GET/POST | `/api/v1/courses/{course_id}/exam-projects` | 项目列表 / 新建项目 |
-| GET/PATCH | `/api/v1/courses/{course_id}/exam-projects/{project_id}` | 项目详情 / 更新状态 |
+| GET/PATCH/DELETE | `/api/v1/courses/{course_id}/exam-projects/{project_id}` | 项目详情 / 更新状态 / 删除（级联派生数据，204） |
 | POST | `.../exam-projects/{project_id}/blueprints` | 创建蓝图（按考纲规则推导题型分布） |
 | GET | `.../blueprints/current/plan-items` | 当前蓝图的题位计划 |
 | POST | `.../blueprints/current/confirm` | 确认蓝图 |
 | POST | `.../contracts/allocate` | 分配合同 |
-| PATCH | `.../contracts/revise` | 修订合同 |
+| PATCH | `.../contracts/revise` | 修订合同（仅预览不落库） |
 | POST | `.../contracts/confirm` | 确认合同 |
 | GET | `.../contracts/current` | 当前已确认合同快照 |
+| POST | `.../contract-slots/{item_index}/explain` | 合同槽位 AI 解释与调整建议（202 只读） |
 | POST | `.../generate` | 启动生成任务（Celery） |
-| GET | `.../task-runs/{task_run_id}` | 查询生成任务进度 |
+| GET | `.../task-runs/{task_run_id}` | 查询生成/AI 提案任务进度 |
 
 #### Paper Versions [backend/app/api/v1/paper_versions.py](backend/app/api/v1/paper_versions.py)
 
@@ -452,11 +481,15 @@ app.include_router(paper_versions_router)    # /api/v1/courses/{course_id}/paper
 | PUT | `.../paper-versions/{pv_id}/items/reorder` | 调整题目顺序 |
 | POST | `.../paper-versions/{pv_id}/items` | 新增教师自拟题目（答案必填） |
 | DELETE | `.../paper-versions/{pv_id}/items/{item_index}` | 删除题目 |
+| POST | `.../paper-versions/{pv_id}/items/{item_index}/ai-revise` | 单题 AI 改题提案（202，需教师确认） |
+| POST | `.../paper-versions/{pv_id}/items/ai-generate` | AI 生成整道新题提案（202，需教师确认） |
+| POST | `.../paper-versions/{pv_id}/ai-review` | 整卷 AI 质量评审报告（202，只读） |
 | POST | `.../paper-versions/{pv_id}/confirm` | 定稿 |
 | POST | `.../paper-versions/{pv_id}/revert` | 撤销定稿 |
-| GET | `.../export/json` | 答案细则 JSON 下载 |
+| GET | `.../export/json` | 答案细则 JSON 下载（schema 1.1.0 起带 `rubric`） |
 | GET | `.../export/student` | 学生卷 HTML（可打印） |
 | GET | `.../export/answer-key` | 答卷 HTML（含答案，可打印） |
+| GET | `.../export/answer-card` | 答题卡 HTML（可打印） |
 
 #### Blueprints / Generation / Health
 
@@ -491,8 +524,12 @@ app.include_router(paper_versions_router)    # /api/v1/courses/{course_id}/paper
 | [document_processing_service.py](backend/app/services/document_processing_service.py) | 文档解析服务（MinerU 集成） |
 | [parse_service.py](backend/app/services/parse_service.py) | 解析任务编排 |
 | [material_service.py](backend/app/services/material_service.py) | 材料管理（上传 / 版本 / 哈希） |
-| [exam_project_service.py](backend/app/services/exam_project_service.py) | 考试项目管理 |
-| [paper_version_service.py](backend/app/services/paper_version_service.py) | 试卷版本管理 + 三份导出渲染 |
+| [exam_project_service.py](backend/app/services/exam_project_service.py) | 考试项目管理（含级联删除） |
+| [paper_version_service.py](backend/app/services/paper_version_service.py) | 试卷版本管理 + 四份导出渲染 |
+| [ai_revise_service.py](backend/app/services/ai_revise_service.py) | 单题 AI 改题提案（diff → 教师确认落库） |
+| [ai_create_service.py](backend/app/services/ai_create_service.py) | AI 整题生成提案（回填 → 教师确认落库） |
+| [contract_explain_service.py](backend/app/services/contract_explain_service.py) | 合同槽位 AI 解释与调整建议（只读异步） |
+| [paper_review_service.py](backend/app/services/paper_review_service.py) | 整卷 AI 质量评审报告（只读异步） |
 | [model_call_service.py](backend/app/services/model_call_service.py) | 模型调用记录 |
 | [staging_retrieval_service.py](backend/app/services/staging_retrieval_service.py) | 暂存区检索 |
 
@@ -540,13 +577,15 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract
 
 #### PaperVersionService
 
-**职责**：从生成结果创建 candidate 试卷 → 教师覆写 → 定稿 / 回滚，并渲染三份导出。
+**职责**：从生成结果创建 candidate 试卷 → 教师覆写 → 定稿 / 回滚，并渲染四份导出
+（学生卷 / 答卷 / 答题卡 HTML + 答案细则 JSON）。
 
 **导出渲染要点**：
 - `_strip_stem_noise()`：剥掉题干自带的编号 / 分值前缀，避免与导出题号叠成「1.1.」
 - `_section_groups()` / `_section_caption()`：按题型分节，生成「一、单选题（共N题，每题X分，共Y分）」
 - `_answer_keys()` / `answer_option_keys()`：答案解析成选项字母，兼容字母、选项原文、并列原文三种形态
-- `_exam_shell()`：三份导出共用的正式卷面外壳（信息头 + 题次表 + 装订线 + 学号姓名页脚）
+- `_exam_shell()`：三份卷面 HTML（学生卷 / 答卷 / 答题卡）共用的正式卷面外壳（信息头 + 题次表 + 装订线 + 学号姓名页脚）
+- 答题卡：客观题题号表格作答 + 主观题横线区，不出题面（题面在学生卷上）
 - 判断题答案渲染为「正确 / 错误」，缺答案显式标注【缺答案·需人工补充】
 
 ---
@@ -559,29 +598,49 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract
 
 ```python
 class LLMJsonClient:
-    """OpenAI 兼容的严格 JSON 客户端"""
-    def __init__(self, api_key, base_url, model, recorder=None)
-    def generate(self, messages, *, response_format=None, temperature=0) -> dict
-    def generate_batch(self, prompts, **kwargs) -> list[dict]
+    """OpenAI 兼容的严格 JSON 客户端（供应商参数按型号档案下发）"""
+    # 端点/模型无默认值：唯一配置来源是 settings(.env)，构造即打印生效配置
+    def __init__(self, *, api_key, base_url, model, timeout=90.0, max_attempts=4,
+                 large_prompt_max_attempts=2, disable_thinking=True, recorder=None)
+    def request_json(self, *, system_prompt, payload, temperature,
+                     call_context=None, response_validator=None, tool=None,
+                     max_tokens=None, reasoning_effort=None,
+                     response_schema=None) -> dict
 
 class LLMGateway:
-    """高层 LLM 包装器，提供批量生成能力"""
-    def generate_batch(self, prompts, **kwargs) -> list[dict]
+    """高层包装器：批式生成 + questions 数组结构校验 + 生效配置日志"""
+    def generate_batch(self, payload) -> list[dict]
+```
+
+**型号调优档案**：[backend/app/adapters/model/model_profiles.py](backend/app/adapters/model/model_profiles.py)
+
+```python
+@dataclass(frozen=True)
+class ModelProfile:            # 思考控制风格 + 能力开关（effort 档位集 / json_schema / tool_choice）
+    ...
+
+def resolve_model_profile(model, *, base_url) -> ModelProfile   # 型号名 → base_url → 通用档 三级回退
+def normalize_effort(effort, profile) -> str | None             # 档位收敛到型号支持集（防 400）
 ```
 
 **特性**：
-- 严格 JSON 模式验证
-- 自动重试与指数退避
-- 模型调用记录（DatabaseModelCallRecorder）
-- 可观测性（trace_id 追踪）
+- **换模型只改 `.env`**：网关按 `LLM_MODEL` 匹配档案插供应商参数，业务代码零改动；
+  未收录型号回退通用 OpenAI 兼容档，不加档案也不会坏（操作手册 `docs/LLM_TUNING.md`）
+- **结构约束**：`response_schema` → `response_format=json_schema+strict`
+  （必填字段由协议保证，消灭 schema 校验失败；档案不支持时自动回退 `json_object`）
+- 严格 JSON 模式验证 + 自动重试与指数退避（大 prompt >60k 字符收紧到 2 次重试）
+- **temperature=0 响应缓存**：按 `(model, prompt_hash)` 复用历史成功响应，知识目录重建趋近零成本
+- 模型调用记录（DatabaseModelCallRecorder → `model_calls`，失败详情在 `details`）
+- 可观测性（trace_id 追踪、构造期打印生效 base_url/model）
 
 **语义提取器**：[backend/app/adapters/model/llm_semantic_extractors.py](backend/app/adapters/model/llm_semantic_extractors.py)
 
 ```python
-class LLMSyllabusExtractor:
-    """教学大纲/考核大纲语义提取器"""
-    def extract_teaching(self, blocks, call_context) -> list[TeachingTopic]
-    def extract_assessment(self, blocks, call_context) -> AssessmentOutline   # 含考试规则
+class LLMSyllabusExtractor:                 # 教学/考核大纲提取（含考试规则）
+class LLMExamPointEvidenceClassifier:       # 批式「资料 × 考点」证据分类
+class LLMExamPointKnowledgeConsolidator:    # 逐考点证据归并（_CONSOLIDATION_MAX_TOKENS=8192）
+class LLMKnowledgePointExtractor:           # 知识点事实抽取（json_schema strict，schema_constrained 开关）
+class LLMSupplementRecommender:             # 覆盖不足考点的补料推荐（AI 预选→教师确认）
 ```
 
 **Embedding Gateway**：[backend/app/adapters/model/embedding_gateway.py](backend/app/adapters/model/embedding_gateway.py)
@@ -737,7 +796,7 @@ frontend/src/
 │   └── domains/                  # 按业务域拆分
 │       ├── auth.ts  courses.ts  materials.ts  framework.ts
 │       ├── knowledgeRun.ts  knowledgePublish.ts  knowledgeView.ts
-│       ├── examProjects.ts  paperVersions.ts  blueprints.ts
+│       ├── examProjects.ts  paperVersions.ts（含 AI 提案端点）
 ├── components/
 │   ├── layout/                   # Layout.tsx（外壳）+ Sidebar.tsx（悬浮岛侧栏）
 │   └── ui/                       # Badge Button Card Input Modal Select
@@ -757,7 +816,11 @@ frontend/src/
 │   └── paper/                    # 「试卷」模块
 │       ├── index.tsx             # 项目列表 + 项目详情（双页签外壳）
 │       ├── PipelinePanel.tsx     # 出卷流水线：蓝图 → 合同 → 生成
-│       └── PaperPanel.tsx        # 试卷页签：双栏阅读器 + 题目编辑器
+│       ├── PaperPanel.tsx        # 试卷页签：双栏阅读器 + 题目编辑器
+│       ├── AiRevisePanel.tsx     # 单题 AI 改题（提案 → diff → 确认）
+│       ├── AiCreatePanel.tsx     # AI 生成整道新题（提案回填表单）
+│       ├── ContractExplainPanel.tsx  # 合同槽位 AI 解释与调整建议
+│       └── PaperReviewPanel.tsx  # 整卷 AI 质量评审（只读报告）
 ├── stores/                       # zustand：auth / course / toast
 ├── styles/                       # design-tokens.css global.css App.css
 ├── types/api.ts                  # 与后端对应的 TypeScript 类型
@@ -803,7 +866,8 @@ frontend/src/
 **职责**：左侧按题型分节的题号索引（待审核 / 缺答案 / 已修改圆点 + 筛选），右侧当前
 题目完整呈现（题干、选项答案高亮、解析折叠、考点、待审核原因）；支持点题号、上一题 /
 下一题与键盘 ↑↓ 翻题；编辑为按需展开的单题表单；顶部档案卡集中呈现总分、题型分布、
-难度分布、待审核数与三个导出入口；定稿遇待审核题弹出门禁。
+难度分布、待审核数与**四个导出入口**（学生卷 / 答题卡 / 答卷 / 答案细则）及整体预览；
+定稿遇待审核题弹出门禁。
 
 #### ExamRulesCard（考核规则卡）
 
@@ -811,6 +875,19 @@ frontend/src/
 
 **职责**：展示考核大纲抽取出的考试形式、题型比例与章节命题权重，并支持教师修改后保存
 （PATCH `/framework-versions/current/rules`）。蓝图按这里的比例推导题型分布。
+
+#### AI 助手面板（提案 → 教师确认，不绕确认流）
+
+| 面板 | 文件 | 对应端点 |
+|------|------|----------|
+| AiRevisePanel 单题改题 | [pages/paper/AiRevisePanel.tsx](frontend/src/pages/paper/AiRevisePanel.tsx) | `POST .../items/{i}/ai-revise` |
+| AiCreatePanel 整题生成 | [pages/paper/AiCreatePanel.tsx](frontend/src/pages/paper/AiCreatePanel.tsx) | `POST .../items/ai-generate` |
+| ContractExplainPanel 槽位解释 | [pages/paper/ContractExplainPanel.tsx](frontend/src/pages/paper/ContractExplainPanel.tsx) | `POST .../contract-slots/{i}/explain` |
+| PaperReviewPanel 整卷评审 | [pages/paper/PaperReviewPanel.tsx](frontend/src/pages/paper/PaperReviewPanel.tsx) | `POST .../ai-review` |
+
+提案/报告均为异步任务（202 + `task-runs` 轮询，终态自停）；AI 只产出提案、diff 或
+只读报告，**落库一律经教师确认走既有 PATCH/POST 端点**（改题可逐字段撤销，撤销=
+把应用前旧值 PATCH 回去）。接口契约见 `docs/backend-api.md` §9.3e–h。
 
 #### API 客户端
 
@@ -857,6 +934,21 @@ class Settings(BaseSettings):
     llm_base_url: str = ""
     llm_model: str = ""
 
+    # 分阶段选模（知识目录三档，空=回退 llm_model）
+    llm_classify_model: str = ""
+    llm_consolidate_model: str = ""
+    llm_extract_model: str = ""
+
+    # 思考开关（抽取/大纲阶段、出题阶段各自独立）
+    llm_disable_thinking: bool = True
+    llm_generation_disable_thinking: bool = True
+
+    # 知识目录抽取调优（依据与故障速查见 docs/LLM_TUNING.md）
+    organization_extraction_batch_size: int = 3
+    organization_extraction_max_tokens: int = 6144     # 思考+正文共享预算（3072 顶格致 content 恒空的根治）
+    organization_extraction_reasoning_effort: str = "low"   # StepFun 官方「信息抽取」档
+    organization_extraction_json_schema: bool = True    # json_schema strict 结构约束；false 回退 json_object
+
     # Embedding 配置
     embedding_base_url: str = ""
     embedding_api_key: str = ""
@@ -881,7 +973,7 @@ class Settings(BaseSettings):
 
 ### 11.2 环境变量
 
-支持通过 `.env` 文件或环境变量覆盖配置：
+支持通过 `.env` 文件或环境变量覆盖配置（**完整清单见仓库根 `.env.example`**）：
 
 ```bash
 # 数据库
@@ -894,6 +986,17 @@ REDIS_URL=redis://localhost:6379/0
 LLM_API_KEY=your-api-key
 LLM_BASE_URL=https://api.stepfun.com/step_plan/v1
 LLM_MODEL=step-3.7-flash
+
+# 分阶段选模（空=回退 LLM_MODEL）
+LLM_CLASSIFY_MODEL=
+LLM_CONSOLIDATE_MODEL=
+LLM_EXTRACT_MODEL=
+
+# 模型调优开关（换模型/回退手册见 docs/LLM_TUNING.md）
+ORGANIZATION_EXTRACTION_JSON_SCHEMA=true    # false 一键回退 json_object 老行为
+ORGANIZATION_EXTRACTION_MAX_TOKENS=6144
+ORGANIZATION_EXTRACTION_REASONING_EFFORT=low
+ORGANIZATION_RETRIEVAL_MIN_SCORE=0.30
 
 # Embedding
 EMBEDDING_API_KEY=your-embedding-key
@@ -910,6 +1013,8 @@ S3_ACCESS_KEY=minio-dev
 S3_SECRET_KEY=minio-dev-password
 ```
 
+> 型号调优档案（换已收录型号只改 `LLM_MODEL`）：`backend/app/adapters/model/model_profiles.py`。
+
 ---
 
 ## 12. 依赖关系
@@ -919,7 +1024,7 @@ S3_SECRET_KEY=minio-dev-password
 ```
 app/
 ├── main.py
-│   └── 依赖: config, api.v1.* (9 routers)
+│   └── 依赖: config, api.v1.* (7 routers)
 │
 ├── config.py
 │   └── 依赖: pydantic-settings
@@ -927,13 +1032,11 @@ app/
 ├── api/v1/
 │   ├── auth.py            → services.auth_service
 │   ├── courses.py         → services.course_service
-│   ├── framework.py       → workflows.framework_graph, services.framework_service
-│   ├── knowledge.py       → services.knowledge_tree_service, knowledge_publish_service
-│   ├── materials.py       → services.material_service, document_processing_service
-│   ├── blueprints.py      → services.blueprint_service, contract_service
-│   ├── generation.py      → workflows.generation_graph
-│   ├── exam_projects.py   → services.exam_project_service, contract_execution_service
-│   └── paper_versions.py  → services.paper_version_service
+│   ├── framework.py       → workflows.framework_graph, services.framework_service, adapters.model.*
+│   ├── knowledge.py       → workflows.organization_graph, services.knowledge_publish_service, adapters.model.*（抽取器装配）
+│   ├── materials.py       → services.material_service, parse_service, adapters.storage.*
+│   ├── exam_projects.py   → services.exam_project_service, contract_execution_service, contract_explain_service, generation_runner_service
+│   └── paper_versions.py  → services.paper_version_service, ai_revise_service, ai_create_service, paper_review_service
 │
 ├── workflows/
 │   ├── framework_graph.py                → domain.framework.*, adapters.model.*
@@ -957,7 +1060,7 @@ app/
 │   └── model_calls.py
 │
 ├── adapters/
-│   ├── model/     → llm_gateway, llm_semantic_extractors, embedding_gateway
+│   ├── model/     → model_profiles（型号调优档案）, llm_gateway, llm_semantic_extractors, embedding_gateway
 │   ├── document/  → mineru_client, local_text_parser, protocol
 │   └── storage/   → minio_storage, local_storage
 │
@@ -977,9 +1080,10 @@ src/
 │   └── 依赖: api/http, api/domains/*
 │
 ├── pages/paper/
-│   ├── index.tsx           → PipelinePanel, PaperPanel, lib/examDisplay
+│   ├── index.tsx           → PipelinePanel, PaperPanel, AiRevise/AiCreate/ContractExplain/PaperReview 面板
 │   ├── PipelinePanel.tsx   → hooks/useNameMaps, lib/examDisplay, components/ui
-│   └── PaperPanel.tsx      → hooks/useNameMaps, lib/examDisplay, components/ui
+│   ├── PaperPanel.tsx      → hooks/useNameMaps, lib/examDisplay, components/ui
+│   └── Ai* / ContractExplain / PaperReview 面板 → api/client, components/ui（提案轮询）
 │
 ├── pages/framework/
 │   ├── index.tsx           → ExamRulesCard, components/ui
@@ -999,9 +1103,9 @@ src/
 
 ### 13.1 环境要求
 
-- **Python**: >= 3.12
+- **Python**: >= 3.12（包管理器固定 `uv`，见 `AGENTS.md` §3.1）
 - **Node.js**: >= 20
-- **PostgreSQL**: >= 14
+- **PostgreSQL**: >= 14（部署基线 PostgreSQL 16 + `vector` 扩展，见 `docs/DEPLOY_UBUNTU.md`）
 - **Redis**: >= 6.0
 - **MinIO**: （可选，生产环境对象存储；开发环境可回退本地存储）
 
@@ -1011,39 +1115,44 @@ src/
 
 ```bash
 cd backend
-pip install -e .
+uv sync            # 依赖同步（测试门禁还需 dev 组：uv sync --extra dev）
 ```
 
 #### 2. 配置环境变量
 
 ```bash
-cp ../.env.example .env
+# 仓库根（.env 由 config.py 从 backend/app/ 逐级向上定位，任何启动方式读到同一份）
+cp .env.example .env
 # 编辑 .env 文件，填入必要的 API Key 和连接信息
 ```
 
 #### 3. 初始化数据库
 
 ```bash
-python -m app.db.init_db
+cd backend
+uv run python -m app.db.init_db
 # 插入开发测试数据
-python -m app.db.init_db --seed
+uv run python -m app.db.init_db --seed
 ```
 
 #### 4. 启动服务
 
 ```bash
 # 开发模式
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 # 或使用 PowerShell 脚本（自动加载仓库根 .env）
 powershell -File start_dev.ps1
 ```
 
+> ⚠️ 直接 `python -m uvicorn` 不走 uv 且历史上不加载仓库根 `.env`，本项目统一用
+> `uv run` 或 `start_dev.ps1`。
+
 #### 5. 启动 Celery Worker（真实生成必须）
 
 ```bash
 cd backend
-celery -A app.infrastructure.tasks.celery_app.celery_app worker --loglevel=INFO
+uv run celery -A app.infrastructure.tasks.celery_app.celery_app worker --loglevel=INFO
 ```
 
 #### 6. 健康检查
@@ -1122,7 +1231,9 @@ Nginx 配置模板见 `deploy/nginx.conf.example`，详细步骤见
 | `answer_option_keys` | generation_service.py | 答案解析成选项字母 |
 | `validate_generated_question` | generation_service.py | 单题质量门禁 |
 | `BlueprintRequest` | blueprint/models.py | 蓝图请求 |
-| `LLMJsonClient` | adapters/model/llm_gateway.py | LLM 客户端 |
+| `LLMJsonClient` | adapters/model/llm_gateway.py | LLM 客户端（供应商参数按档案下发） |
+| `ModelProfile` / `resolve_model_profile` | adapters/model/model_profiles.py | 型号调优档案（换模型只改 .env） |
+| `LLMKnowledgePointExtractor` | adapters/model/llm_semantic_extractors.py | 知识点事实抽取（json_schema strict） |
 | `DatabaseFrameworkRepository` | services/framework_service.py | 框架仓库 |
 
 ### 14.2 前端核心组件
@@ -1155,10 +1266,14 @@ backend/tests/
 
 ```bash
 cd backend
-python -m pytest tests/ -q --ignore=tests/unit/test_material_service.py
+uv run pytest -q                    # 全量门禁（基线：1075 passed / 1 xfailed）
+uv run pytest --cov=app --cov-fail-under=80   # 覆盖率门禁
 ```
 
-> `test_material_service.py` 依赖 boto3，环境缺该依赖时跳过。
+> 唯一 xfail 是 `test_catalog_subgraph_still_rejects_atom_without_evidence_core`：
+> 编造内容检测的已知缺口——联合 bigram 覆盖阈值 `_UNION_BIGRAM_COVERAGE_MIN=0.35`
+> 会被中文套话 bigram 稀释（本例 0.385 恰好过阈），阈值校准待结合生产样本单独修复
+> （`strict=False`，测试 docstring 注明根因）。
 
 ### 15.2 前端验证
 
@@ -1215,12 +1330,14 @@ deploy/
 
 ### 17.2 相关文档
 
+- [后端 API 文档](docs/backend-api.md)（接口权威清单，联调唯一依据）
+- [模型调优与换模型手册](docs/LLM_TUNING.md)（型号档案 / 旋钮速查 / 故障速查）
+- [对话式出卷接线提案](docs/CONVERSATIONAL_GENERATION.md)（未实现的提案）
 - [部署指南](docs/DEPLOY_UBUNTU.md)
 - [交接文档](docs/HANDOVER.md)
-- [后端 API 文档](docs/backend-api.md)
 - [设计规格与实施计划](docs/superpowers/)
 
 ---
 
-*文档更新时间: 2026-09-22*
+*文档更新时间: 2026-09-25*
 *基于代码版本: 0.1.0*

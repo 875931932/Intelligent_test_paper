@@ -7,10 +7,10 @@
 
 - **类型**：全栈 Web 应用（FastAPI 后端 + React 前端），单仓库，主干分支 `main`。
 - **核心功能**：面向高校教师的纸质期末试卷生产线——
-  上传大纲与教学资料 → 知识目录 → 教师确认蓝图/合同 → AI 按合同出题 → 教师审核编辑 → 导出学生卷/答卷 HTML + 答案细则 JSON（阅卷端的直接输入）。
+  上传大纲与教学资料 → 知识目录 → 教师确认蓝图/合同 → AI 按合同出题 → 教师审核编辑 → 导出学生卷/答卷/答题卡 HTML + 答案细则 JSON（阅卷端的直接输入）。
 - **技术栈**：
   - 后端 `backend/`：FastAPI + SQLAlchemy 2.0 + PostgreSQL + Redis + Celery + LangGraph 工作流；适配器层接 LLM 、MinerU（解析）、MinIO/S3（存储）。
-  - 前端 `frontend/`：React 19 + TypeScript + Vite + Zustand，8 个页面模块（`src/pages/`）。
+  - 前端 `frontend/`：React 19 + TypeScript + Vite + Zustand，7 个页面模块（`src/pages/`）。
 - **范围声明**：在线考试/阅卷本身**明确不做**，本系统止于"导出纸质生产线产物"，权威说明见 `docs/` 设计文档。
 
 ## 2. 核心纪律（先读这一节）
@@ -37,7 +37,7 @@ uv sync                                        # 安装/同步依赖
 docker compose -f docker-compose.dev.yml up -d postgres redis minio  # 本地基础设施
 uv run python -m app.db.init_db                 # 建表/结构升级（create_all + 幂等迁移，本项目无 Alembic）
 uv run uvicorn app.main:app --reload            # API 服务，默认 http://127.0.0.1:8000
-uv run celery -A app.infrastructure.tasks.celery_app worker --loglevel=INFO  # Celery worker（或运行仓库根 start_worker.ps1）
+uv run celery -A app.infrastructure.tasks.celery_app worker --loglevel=INFO  # Celery worker（或运行 backend/start_worker.ps1）
 uv run pytest -q                               # 测试门禁
 ```
 
@@ -66,7 +66,7 @@ uv run pytest --cov=app --cov-report=term-missing --cov-fail-under=80
 ```text
 backend/
 ├── app/
-│   ├── api/v1/               # 9 个 FastAPI router，一个业务概念一个 router
+│   ├── api/v1/               # 7 个 FastAPI router，一个业务概念一个 router
 │   ├── workflows/            # 领域引擎 ★已验证封存★（见核心纪律）
 │   │   ├── framework_graph.py      # 双大纲 → 考点 / 考试规则
 │   │   ├── organization_graph.py   # 分类 → 事实 → 画像 → 知识卡
@@ -75,7 +75,7 @@ backend/
 │   ├── domain/               # 领域模块（blueprint / course / framework / generation / knowledge / material）
 │   ├── services/             # 用例编排（合同分配、导出等）
 │   ├── infrastructure/       # Celery（tasks/celery_app、outbox、worker）、技术设施
-│   ├── adapters/             # LLM / MinerU / MinIO-S3 外部系统适配器
+│   ├── adapters/             # LLM / MinerU / MinIO-S3 外部系统适配器（含型号调优档案 model_profiles）
 │   ├── db/                   # schema.py（37 表，按 course_id 隔离）+ session.py + init_db.py（结构变更唯一入口）
 │   ├── schemas/              # Pydantic v2 请求/响应模型
 │   ├── config.py             # 配置（自动向上查找仓库根 .env）
@@ -103,7 +103,7 @@ docs/                         # 设计文档，范围声明的唯一权威来源
 四层架构（自上而下）：
 
 1. **教师工作台（React）**：`/login`、`/courses`、课程概览、资料库、命题框架、知识目录、试卷。
-2. **应用服务层**：FastAPI 9 个 router（`app/api/v1/`）+ Celery worker + outbox 派发。
+2. **应用服务层**：FastAPI 7 个 router（`app/api/v1/`）+ Celery worker + outbox 派发。
 3. **领域引擎 ★已验证封存★**：`app/workflows/` 下三个 graph（见第 4 节）。
 4. **基础设施**：PostgreSQL（37 表、课程隔离多租户）、Redis 队列、模型网关。
 
@@ -111,7 +111,7 @@ docs/                         # 设计文档，范围声明的唯一权威来源
 
 ```text
 课程空间 → 资料库(四区) → 命题框架版本(冻结) → 知识目录(知识卡↔证据)
-→ 试卷项目 → 蓝图 → 合同 → 生成运行 → PaperVersion → 三份导出
+→ 试卷项目 → 蓝图 → 合同 → 生成运行 → PaperVersion → 四份导出（学生卷/答卷/答题卡 HTML + 答案细则 JSON）
 ```
 
 ## 6. 核心概念速查
@@ -124,7 +124,8 @@ docs/                         # 设计文档，范围声明的唯一权威来源
 | 知识卡/原子 | 一张卡只承载一个可独立判分的原子事实 |
 | 出卷流水线 | PipelinePanel：蓝图 → 合同 → 生成 |
 | 试卷页签 | PaperPanel：双栏阅读器，查看/编辑/定稿/导出（与流水线同属项目详情页的两个页签） |
-| 三份导出 | 学生卷 HTML、答卷 HTML、答案细则 JSON（阅卷端直接输入） |
+| 四份导出 | 学生卷 / 答卷 / 答题卡 HTML + 答案细则 JSON（阅卷端直接输入） |
+| 型号调优档案 | `adapters/model/model_profiles.py`：按型号登记供应商参数（effort 档位/json_schema/思考控制），换模型只改 `.env`，手册 `docs/LLM_TUNING.md` |
 
 ## 7. 代码规范
 
@@ -139,6 +140,7 @@ docs/                         # 设计文档，范围声明的唯一权威来源
 - FastAPI router 按业务概念拆分放在 `app/api/v1/`；router 只做协议转换，业务逻辑进 `services/`，重活进 `workers/`。
 - SQLAlchemy 2.0 写法：`Mapped[]` 标注 + `mapped_column`，查询必须显式 `where(course_id=...)`。
 - ⚠️ 外部系统（LLM、MinerU、MinIO/S3）**只能**通过 `adapters/` 访问；禁止在 router/service 里直接实例化厂商 SDK。
+- 换模型 / 调模型参数只改 `.env` 与 `app/adapters/model/model_profiles.py`（型号档案），供应商参数禁止散落在业务代码与 prompt 里；操作手册 `docs/LLM_TUNING.md`。
 - LangGraph 节点保持小而纯，输入输出走显式 state schema；模型调用只允许发生在 generation_graph 既有节点内，不要新增绕过合同的调用点。
 - 表结构变更必须同步修改 `app/db/schema.py`，并保证 `uv run python -m app.db.init_db` 能把旧库升到最新（在 init_db 的幂等迁移步骤中处理既有库）。⚠️ 本项目没有 Alembic，禁止执行任何 alembic 命令。
 - 解析、生成等长任务全部走 Celery + outbox 异步化，禁止在请求线程里同步调用 LLM/解析。

@@ -15,7 +15,8 @@ AI 驱动的组卷与阅卷平台，支持课程资料解析、考纲框架构�
 ### 前端
 - React 19 + TypeScript
 - Vite
-- Vitest
+- Zustand（状态管理）
+- Oxlint（代码检查；质量门禁 = `npm run build` + `npm run lint`，无单测框架）
 
 ### 外部服务
 - MinerU（文档解析）
@@ -39,12 +40,14 @@ AI 驱动的组卷与阅卷平台，支持课程资料解析、考纲框架构�
 ```bash
 APP_DIR="/opt/intelligent-test-paper"
 REPO_URL="https://gitee.com/yan-ace/zhinengchujuanxitong.git"
-BRANCH="master"
+BRANCH="main"
 
 sudo mkdir -p "$APP_DIR"
 sudo git clone --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
 cd "$APP_DIR"
 ```
+
+> 双远程：`gitee`（当前上游，`main`）+ `origin`（GitHub）。两边都以 `main` 为主干。
 
 ### 2. 配置环境变量
 
@@ -77,6 +80,9 @@ S3_SECRET_KEY=minio-dev-password
 S3_BUCKET=exam-materials
 S3_REGION=us-east-1
 ```
+
+> 完整清单（含分阶段选模、抽取预算、json_schema 开关等调优项）见 `.env.example`；
+> 换模型 / 模型故障速查见 [`docs/LLM_TUNING.md`](docs/LLM_TUNING.md)。
 
 ### 3. 初始化数据库
 
@@ -231,14 +237,20 @@ sudo systemctl status redis-server
 docker compose -f docker-compose.dev.yml up -d
 ```
 
-后端 API：
+后端 API（包管理器 `uv`，见 `AGENTS.md` §3.1）：
 
 ```bash
 cd backend
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -e .
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uv sync
+uv run python -m app.db.init_db --seed   # 首次：建表 + 测试账号
+uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Celery Worker（真实生成必须）：
+
+```bash
+cd backend
+uv run celery -A app.infrastructure.tasks.celery_app.celery_app worker --loglevel=INFO
 ```
 
 前端：
@@ -255,17 +267,17 @@ npm run dev
 .
 ├── backend/                 # 后端代码
 │   └── app/
-│       ├── api/v1/          # REST API 路由（9 个 router）
+│       ├── api/v1/          # REST API 路由（7 个 router）
 │       ├── domain/          # 领域模型与确定性算法（含考核规则归一化）
 │       ├── workflows/       # LangGraph 工作流（框架/整理/生成/知识目录）
 │       ├── services/        # 业务服务
-│       ├── adapters/        # 外部适配器（LLM/解析/存储）
+│       ├── adapters/        # 外部适配器（LLM/解析/存储，含型号调优档案 model_profiles）
 │       ├── db/              # 数据库 schema 与初始化
 │       ├── infrastructure/  # 基础设施（Celery 等）
 │       └── main.py          # FastAPI 入口
 ├── frontend/                # 前端代码（React 19 + TS）
 │   └── src/
-│       ├── pages/           # 页面：概览/资料库/命题框架/知识目录/试卷
+│       ├── pages/           # 页面：登录/课程空间/概览/资料库/命题框架/知识目录/试卷
 │       ├── components/      # 布局与 UI 基础组件
 │       ├── api/             # HTTP 层，按业务域拆分的客户端
 │       └── stores/ hooks/ lib/
@@ -274,6 +286,8 @@ npm run dev
 │   ├── backend-api.md       # 接口权威清单
 │   ├── DEPLOY_UBUNTU.md     # Ubuntu 部署
 │   ├── HANDOVER.md          # 交接文档
+│   ├── LLM_TUNING.md        # 模型调优 / 换模型手册
+│   ├── CONVERSATIONAL_GENERATION.md  # 对话式出卷接线提案（未实现）
 │   └── 素材/                # 演示课程素材与卷面范本
 ├── CODE_WIKI.md             # 代码全景（架构/领域/工作流/API/数据库/前端）
 ├── docker-compose.dev.yml   # 开发环境 Docker 配置

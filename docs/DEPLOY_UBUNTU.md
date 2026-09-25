@@ -39,7 +39,8 @@ redis-cli ping
 ```bash
 sudo mkdir -p /opt/intelligent-test-paper
 sudo chown -R "$USER":"$USER" /opt/intelligent-test-paper
-git clone https://github.com/875931932/Intelligent_test_paper.git /opt/intelligent-test-paper
+# 双远程：gitee 为当前同步上游（main 分支），github 为镜像，内容可能滞后
+git clone https://gitee.com/yan-ace/zhinengchujuanxitong.git /opt/intelligent-test-paper
 cd /opt/intelligent-test-paper
 
 python3.12 -m venv .venv
@@ -77,6 +78,11 @@ S3_BUCKET=exam-materials
 ```
 
 `LLM_BASE_URL` 需要填写实际模型网关地址；不要照抄示例中的模型名称或把 API Key 写入 shell 历史。
+
+可选的模型调优变量（分阶段选模 / 抽取预算 / json_schema 开关等）见 `.env.example` 的
+注释清单；换模型与故障速查见 [`docs/LLM_TUNING.md`](LLM_TUNING.md)。
+上线前若抽取出现 `model_schema_validation_failed`，先确认
+`ORGANIZATION_EXTRACTION_JSON_SCHEMA=true`（默认开；设 `false` 可回退 json_object 老行为）。
 
 ## 4. 初始化 PostgreSQL/pgvector
 
@@ -282,8 +288,11 @@ sudo nginx -t && sudo systemctl reload nginx
 1. `curl http://127.0.0.1:8000/api/v1/health`。
 2. 浏览器创建课程并上传大纲/教学材料。
 3. 解析资料，确认考核大纲和教学大纲均完成整理并由教师确认。
-4. 发布知识目录，确认蓝图、命题合同后启动生成。
+4. 发布知识目录（组织化 run 轮询到 `awaiting_teacher_confirmation`；服务中途重启导致的
+   孤儿 run 会在读取时自愈为 `failed(error_code=interrupted_by_restart)`，重新构建即可），
+   确认蓝图、命题合同后启动生成。
 5. 观察任务状态 `queued -> running -> succeeded/failed`，Worker 日志应出现正式模型调用。
-6. 在数据库 `model_calls` 检查 `stage = paper_generation`，确认不是 mock graph。
+6. 在数据库 `model_calls` 检查 `stage = paper_generation`，确认不是 mock graph；
+   知识目录阶段的调用失败详情看 `model_calls.details`（`docs/LLM_TUNING.md` §3）。
 
 生产部署前轮换开发沟通中曾暴露的数据库、Redis、对象存储和模型密钥，并使用 HTTPS、防火墙和最小权限账号。

@@ -1,10 +1,10 @@
 # AI 期末试卷命题系统 · 交接文档
 
-> 更新日期：2026-09-22
-> 状态：引擎层 + 教师工作台 + 试卷模块均已交付；出卷全链路可在浏览器端走通
+> 更新日期：2026-09-25
+> 状态：引擎层 + 教师工作台 + 试卷模块（含 AI 助手四入口）均已交付；出卷全链路可在浏览器端走通
 > 产品基线：`docs/superpowers/specs/2026-08-12-ai-final-exam-paper-design.md`（v2.3，务必先读）
 > 链路设计：`docs/superpowers/specs/2026-08-17-contract-first-generation-design.md`（合同优先生成）
-> 接口权威清单：`docs/backend-api.md`；代码全景：`CODE_WIKI.md`
+> 接口权威清单：`docs/backend-api.md`；代码全景：`CODE_WIKI.md`；模型调优：`docs/LLM_TUNING.md`
 
 ---
 
@@ -197,6 +197,17 @@ MinerU 解析 → 双大纲框架确认 → 知识目录发布 → 蓝图/合同
   三列（曾因发布时丢弃导致后端链路防重复机制静默退化——这是一个深刻教训：**改机制必须检查
   demo 和后端两条链路**）
 
+### 5.6 模型调用鲁棒性与运行自愈（2026-09 根治，操作手册 `docs/LLM_TUNING.md`）
+
+| 机制 | 位置 | 解决的问题 |
+|---|---|---|
+| 抽取输出预算 6144 / 归并预算 8192 | `config.py organization_extraction_max_tokens`、`llm_semantic_extractors._CONSOLIDATION_MAX_TOKENS` | 思考与正文共享 `max_tokens`，顶格截断致 content 恒空（`model_empty_response`，失败 out_tokens 精确卡上限） |
+| json_schema strict 结构约束 | `ORGANIZATION_EXTRACTION_JSON_SCHEMA` + `_extraction_strict_schema()` | 模型漏必填字段（`model_schema_validation_failed`）改由协议层保证；`false` 一键回退 json_object |
+| 型号调优档案 + effort 档位收敛 | `adapters/model/model_profiles.py` | 供应商参数因型号而异（如 2603 只收 low/high，乱发 400）；换模型只改 `.env`，业务码零改动 |
+| temperature=0 响应缓存 | `llm_gateway.request_json` | 同 `(model, prompt_hash)` 复用成功响应，知识目录重建成本趋零；换模型/改 prompt 自动失效 |
+| 大 prompt 重试收紧（>60k 字符 → 2 次） | `LLMJsonClient` | 分类批重发一次 = 等额再烧数万 token 输入 |
+| 孤儿 run 读路径自愈 | `knowledge.py _heal_interrupted_run` | 重启后线程已死、行卡 `running`，前端永远轮询 200——读取时就地判 `failed(interrupted_by_restart)`；⚠️ 依赖单进程部署，多 worker 须换租约心跳 |
+
 ---
 
 ## 6. 代码地图
@@ -216,9 +227,13 @@ backend\app\
 │   ├─ blueprint_service.py 蓝图：type_rules→plan_items（难度/认知/考查方式分布）
 │   ├─ blueprint_persistence_service.py  蓝图持久化 + 默认题型分布（优先考纲比例）
 │   ├─ generation_service.py 单题校验(题型schema/来源话术/难度) + 全卷终检 + 答案解析
-│   ├─ paper_version_service.py  ★试卷版本内核 + 三份导出渲染（学生卷/答卷/答案细则）
+│   ├─ paper_version_service.py  ★试卷版本内核 + 四份导出渲染（学生卷/答卷/答题卡/答案细则）
 │   ├─ knowledge_publish_service.py  发布：候选→教师确认→原子入库(含画像字段)
-│   └─ knowledge_tree_service.py     知识树校验（证据落地/同考点准入）
+│   ├─ knowledge_tree_service.py     知识树校验（证据落地/同考点准入）
+│   ├─ ai_revise_service.py          单题 AI 改题提案（diff→教师确认才落库）
+│   ├─ ai_create_service.py          AI 整题生成提案（回填→教师确认）
+│   ├─ contract_explain_service.py   合同槽位 AI 解释与调整建议（只读异步）
+│   └─ paper_review_service.py       整卷 AI 质量评审报告（只读异步）
 ├─ workflows\
 │   ├─ generation_graph.py  ★生成图：批并行→校验→重试→换原子→终检
 │   ├─ organization_graph.py 资料整理编排
@@ -227,7 +242,9 @@ backend\app\
 │   ├─ relevance.py         ★证据准入/事实落地判定/情境绑定/语义归一化
 │   └─ models.py            KnowledgeCardDraft 等领域对象
 ├─ adapters\model\
-│   └─ llm_semantic_extractors.py  分类/归并/大纲提取（含考试规则）
+│   ├─ model_profiles.py    ★型号调优档案：按型号登记供应商参数，换模型只改 .env
+│   ├─ llm_gateway.py       网关：档案参数下发 + json_schema strict + 重试/缓存/调用记录
+│   └─ llm_semantic_extractors.py  分类/归并/大纲提取（含考试规则）/事实抽取/补料推荐
 ├─ schemas\generation.py    批载荷编译（compile_batch_generation_payload）
 └─ db\schema.py             全部表结构（knowledge_cards 含画像三列）
 
@@ -237,6 +254,7 @@ backend\scripts\
 
 frontend\src\
 ├─ pages\paper\             ★「试卷」模块：index(外壳) / PipelinePanel(流水线) / PaperPanel(阅读器)
+│                            + AiRevise(改题) / AiCreate(出题) / ContractExplain(槽位解释) / PaperReview(整卷评审) 面板
 ├─ pages\framework\         命题框架 + ExamRulesCard（考核规则查看/修改）
 ├─ pages\{dashboard,materials,knowledge}\  概览 / 资料库 / 知识目录
 ├─ components\layout\       Layout + Sidebar（悬浮岛侧栏）
@@ -253,24 +271,37 @@ frontend\src\
 
 - ✅ 引擎层全链路真实数据验证：37 题 / 100 分 / ~12 次模型调用 / final_check 全绿 / 0 needs_review
 - ✅ 考点比例严格等于考纲权重、原子不重复（唯一+互斥构造性保证）、语义簇分散、答案不互泄
-- ✅ 教师工作台七个页面路由全部接通真实 API（概览/资料库/命题框架/知识目录/试卷）
+- ✅ 教师工作台七个页面路由全部接通真实 API（登录/课程空间/概览/资料库/命题框架/知识目录/试卷）
 - ✅ 「试卷」模块：出卷流水线（蓝图→合同→生成）+ 试卷双栏阅读器（查看/编辑/调序/增删/定稿）
+- ✅ **试卷 AI 助手四入口**（2026-09，提案式、不绕确认流）：单题改题（提案→diff→确认/撤销）、
+  AI 整题生成（回填表单）、合同槽位解释与调整建议、整卷质量评审（`docs/backend-api.md` §9.3e–h）
 - ✅ 考核规则全链路：提取 → 归一化 → 持久化 → 查看/修改 → 蓝图消费（题型比例与章节权重）
-- ✅ 三份导出按高校卷面模板渲染：学生卷 / 答卷（信息头 + 题次表 + 装订线 + 答案速查表）/ 答案细则 JSON
-- ✅ 后端 pytest 全量（`--ignore=tests/unit/test_material_service.py`）：778 passed / 18 failed
-  （18 条均为历史存量失败，与本次改动无关，改动前后用 stash 对比确认过）
+- ✅ 四份导出按高校卷面模板渲染：学生卷 / 答卷（信息头 + 题次表 + 装订线 + 答案速查表）/
+  答题卡 / 答案细则 JSON（schema 1.1.0 起逐题带 `rubric`，生成→编辑→导出全链路贯通）；
+  另有试卷整体预览与综合题分问排版
+- ✅ 知识目录鲁棒性根治（2026-09-24/25）：run 行先于内容落库、失败标记补插兜底、
+  孤儿 run 读路径自愈（`interrupted_by_restart`）、构建轮询止损/基线回退、嵌入索引键双契约
+- ✅ 模型调优体系（2026-09-25，StepFun 官方文档核对）：型号调优档案独立成档
+  `model_profiles.py` + 抽取 `json_schema` strict 结构约束 + 输出预算重校准（抽取 6144 /
+  归并 8192）+ 召回阈值 min_score 0.30——手册 `docs/LLM_TUNING.md`
+- ✅ 后端门禁全绿：`uv run pytest -q` **1075 passed / 1 xfailed**（唯一 xfail=编造检测的
+  联合 bigram 阈值已知缺口，测试 docstring 注明根因）+ 覆盖率 **84.30%**（≥80 门禁）；
+  前端 `npm run build` 0 error、oxlint 8 warning 基线持平
 
 ### 已知问题（不阻塞，接手时留意）
 
-1. `tests\unit\test_material_service.py` 因环境缺 boto3 无法收集（与代码无关）
-2. Redis 未连接时健康检查黄；Celery 不可用则真实生成无法派发（inline_runner 仅测试用）
-3. EP3（继续预训练）等池稀缺考点，同簇判断题可能到 3-4 题（互不相邻，属供给数学极限；
+1. Redis 未连接时健康检查黄；Celery 不可用则真实生成无法派发（inline_runner 仅测试用）
+2. EP3（继续预训练）等池稀缺考点，同簇判断题可能到 3-4 题（互不相邻，属供给数学极限；
    根治靠补资料而非改算法）
-4. 直接 `python -m uvicorn` 启动不加载 .env，必须用 `start_dev.ps1`
-5. 偶发 `Fact top-up failed: LLMGatewayError`：补抽网络失败，非致命（首轮结果继续用）
-6. **旧框架没有考试规则**：本次改动前构建的框架 payload 里 `final_exam_rules` 是空 dict，
+3. 直接 `python -m uvicorn` 启动不加载 .env，必须用 `start_dev.ps1`（或 `uv run uvicorn`）
+4. 偶发 `Fact top-up failed: LLMGatewayError`：补抽网络失败，非致命（首轮结果继续用）
+5. **旧框架没有考试规则**：构建改动前的框架 payload 里 `final_exam_rules` 是空 dict，
    框架页会显示"没有解析出考试规则"并提供「补充规则」；重新构建一次框架即可自动带上考纲比例
-7. 前端无单元测试文件，门禁是 `npm run build` + `npm run lint`；端到端行为由后端 pytest 锁定
+6. 前端无单元测试文件，门禁是 `npm run build` + `npm run lint`；端到端行为由后端 pytest 锁定
+7. **github（origin）push 曾连续 443 超时未同步**：gitee 是当前上游；网络恢复后
+   `git push origin main` 补推，避免服务器从 github 拉到旧代码
+8. 孤儿 run 自愈依赖**单进程部署**（`_ACTIVE_ORG_RUN_IDS` 进程内存态）：改多 worker 须换
+   租约心跳，否则跨进程误杀活跃 run（`knowledge.py` 注释有说明）
 
 ---
 
@@ -296,6 +327,8 @@ frontend\src\
 |---|---|---|
 | 代码全景 | `CODE_WIKI.md` | 架构/领域模型/工作流/API/服务/数据库/前端/测试 |
 | 接口权威清单 | `docs/backend-api.md` | 从 FastAPI 路由逐条提取，联调唯一依据 |
+| 模型调优手册 | `docs/LLM_TUNING.md` | 型号档案/旋钮速查/换模型流程/故障速查（`model_calls.details`） |
+| 对话式出卷提案 | `docs/CONVERSATIONAL_GENERATION.md` | 未实现的接线建议 + 红线自查清单 |
 | 产品设计基线 v2.3 | `docs/superpowers/specs/2026-08-12-ai-final-exam-paper-design.md` | 产品对象/权限/数据边界/P0-P5/27条必测场景（**接手必读**） |
 | 合同优先生成设计 | `docs/superpowers/specs/2026-08-17-contract-first-generation-design.md` | 命题引擎重构的完整设计 rationale |
 | 实施计划存档 | `docs/superpowers/plans/` | 历轮迭代的实施记录（历史档案，路径可能已变） |
@@ -306,6 +339,7 @@ frontend\src\
 
 ## 10. 联系上下文
 
-- 模型：LLM（.env `LLM_MODEL`）；文档解析 MinerU；向量 DashScope qwen embedding
+- 模型：LLM（.env `LLM_MODEL`，**换模型只改这里**——型号调优档案 `model_profiles.py`，
+  手册 `docs/LLM_TUNING.md`）；文档解析 MinerU；向量 DashScope qwen embedding
 - demo 每次运行会打印 `Contract allocation seed: <n>`——复现某张卷子时在代码里固定该种子即可
 - 试卷导出的版式范本在 `docs/素材/`（A卷试卷 / 答卷A卷 / 评分标准A 三件套）

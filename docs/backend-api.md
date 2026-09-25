@@ -205,15 +205,30 @@ body 同 `exam_rules` 结构（`question_type_ratios` / `chapter_weights` 等）
 ```json
 { "material_version_ids": ["uuid", "..."] }
 ```
-响应：`{ "run_id": "uuid", "candidate_id": "uuid", "status": "awaiting_teacher_confirmation" }`
+响应：`{ "run_id": "uuid", "candidate_id": null, "status": "queued" }`
+（run 行由后台线程在耗时阶段前先落库（`status=running`）并推进到
+`awaiting_teacher_confirmation`；HTTP 立即返回 `queued` 只是受理回执，
+后续一律以轮询 §5.2 的状态为准。）
+
+### 5.1b 最近一次运行
+`GET /api/v1/courses/{course_id}/organization-runs/latest` → 运行记录对象（附 `run_id`）
+无任何 run 时 404。与 §5.2 同样经过孤儿自愈（见下）。
 
 ### 5.2 运行详情
 `GET /api/v1/courses/{course_id}/organization-runs/{run_id}` → 运行记录对象
 
 > 进程重启/崩溃中断的 run（线程已消亡但行停在 `queued`/`running`）在读取时就地判为 `failed`（`error_code=interrupted_by_restart`），前端轮询下一拍即解卡；`latest` 同理。
+> run 状态机：`running → awaiting_teacher_confirmation → published | rejected`；任一阶段失败 → `failed`（带 `error_code`/`error_message`）。发布新版本后旧版本 `superseded`。
 
 ### 5.3 候选项
 `GET /api/v1/courses/{course_id}/organization-runs/{run_id}/candidate` → 候选对象
+
+### 5.3b 补料推荐（AI 预选，需教师确认）
+`POST /api/v1/courses/{course_id}/organization-runs/{run_id}/supplement-recommendations` → 200
+body：`{ "exam_point_code": "string" }`
+对覆盖不足的考点，AI 从间接证据里预选可改判为直接证据的条目。模型只做建议，
+改判仍由教师在发布确认时提交，不绕过确认流；推荐失败降级为 `recommended: []`（200），
+不阻塞手动补证据。考点不在候选中 404；覆盖已充足时返回空推荐 + `note`。
 
 ### 5.4 发布知识树
 `POST /api/v1/courses/{course_id}/organization-runs/{run_id}/publish` → 200
@@ -222,6 +237,11 @@ body 同 `exam_rules` 结构（`question_type_ratios` / `chapter_weights` 等）
   "reviewed_topic_codes":["string"], "reviewed_exam_point_codes":["string"], "teacher_exclusions":["string"] }
 ```
 返回发布结果；冲突 409。
+
+### 5.4b 拒绝候选知识树
+`POST /api/v1/courses/{course_id}/organization-runs/{run_id}/reject` → 200
+把候选版本与 run 一并标记为 `rejected`（终态，不可再 publish）。
+仅限仍处于待确认态的候选，否则 409（`no longer awaiting confirmation`）。
 
 ### 5.5 已发布知识（命题输入视图）★前端蓝图/合同主数据
 `GET /api/v1/courses/{course_id}/published-knowledge` → 200
@@ -280,6 +300,10 @@ body 同 `exam_rules` 结构（`question_type_ratios` / `chapter_weights` 等）
 
 ### 8.4 更新状态
 `PATCH /api/v1/courses/{course_id}/exam-projects/{project_id}`；body `{ "status": "string" }`
+
+### 8.4b 删除项目
+`DELETE /api/v1/courses/{course_id}/exam-projects/{project_id}` → **204**（无 body）
+级联删除项目及其全部派生数据（蓝图 / 题位 / 生成运行 / 题目 / 试卷版本）；不存在 404。
 
 ### 8.5 创建蓝图
 `POST /api/v1/courses/{course_id}/exam-projects/{project_id}/blueprints` → **201**
