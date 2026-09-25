@@ -318,6 +318,11 @@ evidence_chunks = _course_table(
     Column("content_hash", String(64), nullable=False),
     Column("locator", JSON),
     Column("embedding", JSON),
+    # 向量的生成模型（provenance）。换 embedding 模型后旧向量不可比：同维异源
+    # 时对新查询的语义分≈0，内容寻址复用会让旧块对新模型永久不可见（曾致 75%
+    # 语料隐身）。持久化时写入 settings.embedding_model，缓存命中与行更新都先
+    # 比对模型，不匹配即重嵌回写——下次重建自动全量自愈。
+    Column("embedding_model", String(64)),
     # 证据块类型：raw=原始文本块；statement=从原始块蒸馏出的知识点陈述。
     # 下游检索/分类/归并只消费 statement；raw 保留作为溯源与补证据展示来源。
     Column("kind", String(20), nullable=False, server_default="raw", default="raw"),

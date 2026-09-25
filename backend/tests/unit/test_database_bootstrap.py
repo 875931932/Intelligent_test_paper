@@ -7,7 +7,12 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.schema import CreateIndex, CreateTable
 
-from app.db.init_db import bootstrap_database, extension_exists, table_exists
+from app.db.init_db import (
+    _migrate_evidence_chunk_columns,
+    bootstrap_database,
+    extension_exists,
+    table_exists,
+)
 from app.db.schema import Base, CORE_TABLE_NAMES
 
 
@@ -54,6 +59,26 @@ def test_bootstrap_seed_is_idempotent(database_url):
         with engine.connect() as connection:
             assert connection.exec_driver_sql("SELECT COUNT(*) FROM users WHERE id='admin'").scalar_one() == 1
             assert connection.exec_driver_sql("SELECT COUNT(*) FROM users WHERE id='owner-dev'").scalar_one() == 0
+    finally:
+        engine.dispose()
+
+
+def test_migrate_evidence_chunk_columns_adds_embedding_model(database_url):
+    """旧库缺 kind/source_evidence_chunk_id/embedding_model 列时幂等补齐。"""
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE evidence_chunks (id VARCHAR(64) PRIMARY KEY)"
+            )
+        _migrate_evidence_chunk_columns(engine)
+        columns = {
+            column["name"]
+            for column in inspect(engine).get_columns("evidence_chunks")
+        }
+        assert {"kind", "source_evidence_chunk_id", "embedding_model"} <= columns
+        # 幂等：重复迁移不重复加列、不报错。
+        _migrate_evidence_chunk_columns(engine)
     finally:
         engine.dispose()
 

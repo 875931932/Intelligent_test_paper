@@ -14,6 +14,7 @@ from uuid import uuid4
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db.schema import (
     assessment_units,
     content_blocks,
@@ -1615,7 +1616,7 @@ def create_organization_state(
     # 2) evidence chunk 数量从上千降到数百，分类阶段的 JSON 包装开销同步缩小。
     # 3) 合并是确定性的：同一资料版本产出同一批文本，向量可跨 run 复用
     #    （ix_evidence_chunks_course_material_hash 索引即为此设计）。
-    #    仅对新增/变化的块调用嵌入 API；嵌入模型更换（维度不一致）时整批重嵌。
+    #    仅对新增/变化的块调用嵌入 API；嵌入模型更换（模型名不一致）时逐块重嵌并回写。
     embedded_blocks: list[tuple[str, dict, list[float], list[dict]]] = []
     embedding_dimension: int | None = None
     for version_id, blocks in selected_blocks:
@@ -1625,7 +1626,11 @@ def create_organization_state(
         cached: dict[str, list[float]] = {}
         if hashes:
             for row in session.execute(
-                select(evidence_chunks.c.content_hash, evidence_chunks.c.embedding)
+                select(
+                    evidence_chunks.c.content_hash,
+                    evidence_chunks.c.embedding,
+                    evidence_chunks.c.embedding_model,
+                )
                 .where(
                     evidence_chunks.c.course_id == course_id,
                     evidence_chunks.c.material_version_id == version_id,
@@ -1633,7 +1638,10 @@ def create_organization_state(
                     evidence_chunks.c.embedding.is_not(None),
                 )
             ).mappings():
-                cached.setdefault(row["content_hash"], row["embedding"])
+                # 向量只在生成模型一致时可复用：换模型后即使维度相同，新旧
+                # 向量也互不可比（对新查询语义分≈0），跨模型复用会让旧块隐身。
+                if row["embedding_model"] == settings.embedding_model:
+                    cached.setdefault(row["content_hash"], row["embedding"])
         vectors: list[list[float]] = []
         missing: list[tuple[int, str]] = []
         for index, (text, digest) in enumerate(zip(texts, hashes, strict=True)):
@@ -1698,7 +1706,11 @@ def create_organization_state(
             }
             merged_text = merged_block["text"].strip()
             existing = session.execute(
-                select(evidence_chunks.c.id, evidence_chunks.c.embedding).where(
+                select(
+                    evidence_chunks.c.id,
+                    evidence_chunks.c.embedding,
+                    evidence_chunks.c.embedding_model,
+                ).where(
                     evidence_chunks.c.id == evidence_id,
                     evidence_chunks.c.course_id == course_id,
                     evidence_chunks.c.material_version_id == version_id,
@@ -1707,15 +1719,19 @@ def create_organization_state(
             if existing is not None:
                 # 内容寻址复用：id 相同即同资料同内容，旧行就是同一条知识块，
                 # 不再插入（表为 append-only，重复插入必撞主键）。历史行早于
-                # 确定性 id 方案时缺 embedding，此处补齐以保证新 run 检索可用。
-                if existing["embedding"] is None:
+                # 确定性 id 方案时缺 embedding，或行向量由旧模型生成
+                # （embedding_model 不一致）时重嵌回写，保证新 run 检索可用。
+                if (
+                    existing["embedding"] is None
+                    or existing["embedding_model"] != settings.embedding_model
+                ):
                     session.execute(
                         evidence_chunks.update()
                         .where(
                             evidence_chunks.c.id == evidence_id,
                             evidence_chunks.c.course_id == course_id,
                         )
-                        .values(embedding=vector)
+                        .values(embedding=vector, embedding_model=settings.embedding_model)
                     )
                 evidence_ids.append(evidence_id)
                 continue
@@ -1732,6 +1748,7 @@ def create_organization_state(
                     content_hash=sha256(merged_text.encode()).hexdigest(),
                     locator=locator,
                     embedding=vector,
+                    embedding_model=settings.embedding_model,
                 )
             )
         session.commit()
@@ -1762,8 +1779,10 @@ def persist_statement_evidence_chunks(
     """把抽取出的知识点陈述落库为 kind='statement' 的证据块。
 
     与原始块同一套内容寻址复用：id 从 (material_version, content_hash 'statement:'
-    前缀) 派生，同一资料的同一陈述在重复 run 中命中旧行，仅补齐缺失的 embedding，
-    重建 run 的嵌入成本趋近于零。statement 通过 source_evidence_chunk_id 回溯
+    前缀) 派生，同一资料的同一陈述在重复 run 中命中旧行，补齐缺失的 embedding，
+    重建 run 的嵌入成本趋近于零。向量按生成模型门控复用：embedding_model 与当前
+    settings.embedding_model 不一致（含历史 NULL 行）即重嵌回写，换模型后的重建
+    run 自动全量自愈。statement 通过 source_evidence_chunk_id 回溯
     到抽取它的原始块，供教师溯源。
     """
     if not statements:
@@ -1833,14 +1852,21 @@ def persist_statement_evidence_chunks(
     cached: dict[str, list[float]] = {}
     if hashes:
         for cache_row in session.execute(
-            select(evidence_chunks.c.content_hash, evidence_chunks.c.embedding).where(
+            select(
+                evidence_chunks.c.content_hash,
+                evidence_chunks.c.embedding,
+                evidence_chunks.c.embedding_model,
+            ).where(
                 evidence_chunks.c.course_id == course_id,
                 evidence_chunks.c.material_version_id == material_version_id,
                 evidence_chunks.c.content_hash.in_(hashes),
                 evidence_chunks.c.embedding.is_not(None),
             )
         ).mappings():
-            cached.setdefault(cache_row["content_hash"], cache_row["embedding"])
+            # 向量只在生成模型一致时可复用：换模型后同维向量异源，
+            # 对新查询语义分≈0，跨模型复用会让旧陈述在检索中永久隐身。
+            if cache_row["embedding_model"] == settings.embedding_model:
+                cached.setdefault(cache_row["content_hash"], cache_row["embedding"])
     vectors: list[list[float] | None] = []
     missing_index: list[int] = []
     for index, (text, digest) in enumerate(zip(texts, hashes, strict=True)):
@@ -1863,21 +1889,25 @@ def persist_statement_evidence_chunks(
         for position, index in enumerate(missing_index):
             vectors[index] = fresh[position]
 
-    run_chunk_index_offset = (
-        session.scalar(
-            select(func.max(evidence_chunks.c.chunk_index)).where(
-                evidence_chunks.c.organization_run_id == run_id,
-                evidence_chunks.c.course_id == course_id,
-            )
+    max_run_chunk_index = session.scalar(
+        select(func.max(evidence_chunks.c.chunk_index)).where(
+            evidence_chunks.c.organization_run_id == run_id,
+            evidence_chunks.c.course_id == course_id,
         )
-        or -1
     )
+    # 显式判 None：0 是合法的最大值（run 内仅一个块），用 `or -1` 兜底会把
+    # 0 当假值算回 -1，statement 的 chunk_index 落到 0 撞 uq_evidence_chunks_run_index。
+    run_chunk_index_offset = -1 if max_run_chunk_index is None else max_run_chunk_index
     persisted_ids: list[str] = []
     try:
         for index, row in enumerate(rows):
             statement_id = row["id"]
             existing = session.execute(
-                select(evidence_chunks.c.id, evidence_chunks.c.embedding).where(
+                select(
+                    evidence_chunks.c.id,
+                    evidence_chunks.c.embedding,
+                    evidence_chunks.c.embedding_model,
+                ).where(
                     evidence_chunks.c.id == statement_id,
                     evidence_chunks.c.course_id == course_id,
                     evidence_chunks.c.material_version_id == material_version_id,
@@ -1885,14 +1915,19 @@ def persist_statement_evidence_chunks(
             ).mappings().first()
             vector = vectors[index]
             if existing is not None:
-                if existing["embedding"] is None and vector is not None:
+                # 缺向量补齐；行向量由旧模型生成（embedding_model 不一致，含
+                # 历史 NULL）时以当前模型重嵌的向量回写，重建即全量自愈。
+                if (
+                    existing["embedding"] is None
+                    or existing["embedding_model"] != settings.embedding_model
+                ) and vector is not None:
                     session.execute(
                         evidence_chunks.update()
                         .where(
                             evidence_chunks.c.id == statement_id,
                             evidence_chunks.c.course_id == course_id,
                         )
-                        .values(embedding=vector)
+                        .values(embedding=vector, embedding_model=settings.embedding_model)
                     )
                 persisted_ids.append(statement_id)
                 continue
@@ -1909,6 +1944,7 @@ def persist_statement_evidence_chunks(
                     content_hash=row["content_hash"],
                     locator=row["locator"],
                     embedding=vectors[index],
+                    embedding_model=settings.embedding_model,
                     kind="statement",
                     source_evidence_chunk_id=row["source_evidence_chunk_id"],
                 )

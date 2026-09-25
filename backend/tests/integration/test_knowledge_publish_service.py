@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from types import SimpleNamespace
+
 import pytest
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db.schema import (
     Base,
     Course,
@@ -43,6 +46,7 @@ from app.services.knowledge_publish_service import (
     KnowledgePublishError,
     create_organization_state,
     get_organization_candidate,
+    persist_statement_evidence_chunks,
     reject_organization_run,
 )
 from app.services.material_service import delete_material
@@ -687,6 +691,148 @@ def test_create_organization_state_reuses_deterministic_chunk_ids_across_runs(tm
         )
         assert [c.id for c in chunks] == second["evidence_chunk_ids"]
         assert chunks[0].content == "RAG包括检索、上下文构造和生成"
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_create_organization_state_reembeds_when_embedding_model_changes(tmp_path, monkeypatch):
+    """换 embedding 模型后旧向量同维异源：缓存失效、重嵌并回写 embedding_model。
+
+    陈旧向量曾致 75% 语料对新模型的语义分≈0、在检索中永久隐身（内容寻址
+    跨 run 复用却不校验生成模型是根因），此处回归。
+    """
+    engine, session = _session(tmp_path)
+    try:
+        monkeypatch.setattr(settings, "embedding_model", "model-a")
+        first_embedder = RecordingEmbedder()
+        first = create_organization_state(
+            session,
+            course_id="course",
+            material_version_ids=["material-v1"],
+            embedder=first_embedder,
+        )
+        assert first_embedder.calls == [["RAG包括检索、上下文构造和生成"]]
+        row = session.execute(
+            select(evidence_chunks.c.embedding_model).where(
+                evidence_chunks.c.id == first["evidence_chunk_ids"][0]
+            )
+        ).mappings().one()
+        assert row["embedding_model"] == "model-a"
+
+        session.execute(
+            organization_runs.update()
+            .where(organization_runs.c.id == first["run_id"])
+            .values(status="rejected")
+        )
+        session.commit()
+
+        # 换模型：同维向量也不复用，重嵌并回写行上的 embedding_model。
+        monkeypatch.setattr(settings, "embedding_model", "model-b")
+        second_embedder = RecordingEmbedder()
+        second = create_organization_state(
+            session,
+            course_id="course",
+            material_version_ids=["material-v1"],
+            embedder=second_embedder,
+        )
+        assert second["evidence_chunk_ids"] == first["evidence_chunk_ids"]
+        assert second_embedder.calls == [["RAG包括检索、上下文构造和生成"]]
+        row = session.execute(
+            select(evidence_chunks.c.embedding, evidence_chunks.c.embedding_model).where(
+                evidence_chunks.c.id == first["evidence_chunk_ids"][0]
+            )
+        ).mappings().one()
+        assert row["embedding_model"] == "model-b"
+        assert row["embedding"] == [1.0, 1.0]
+
+        # 同模型第三次构建：命中向量缓存，零嵌入调用。
+        session.execute(
+            organization_runs.update()
+            .where(organization_runs.c.id == second["run_id"])
+            .values(status="rejected")
+        )
+        session.commit()
+        third_embedder = RecordingEmbedder()
+        create_organization_state(
+            session,
+            course_id="course",
+            material_version_ids=["material-v1"],
+            embedder=third_embedder,
+        )
+        assert third_embedder.calls == []
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_persist_statement_gates_vector_cache_by_embedding_model(tmp_path, monkeypatch):
+    """陈述向量按生成模型门控：同模型复用、换模型重嵌回写（陈旧向量自愈路径）。"""
+    engine, session = _session(tmp_path)
+    try:
+        monkeypatch.setattr(settings, "embedding_model", "model-a")
+        state = create_organization_state(
+            session,
+            course_id="course",
+            material_version_ids=["material-v1"],
+            embedder=RecordingEmbedder(),
+        )
+        statement = SimpleNamespace(
+            statement="检索模块负责从知识库召回与问题相关的片段",
+            source_evidence_chunk_id=state["evidence_chunk_ids"][0],
+            content_kind="fact",
+        )
+        first_embedder = RecordingEmbedder()
+        ids = persist_statement_evidence_chunks(
+            session,
+            first_embedder,
+            course_id="course",
+            run_id=state["run_id"],
+            material_version_id="material-v1",
+            statements=[statement],
+        )
+        assert len(ids) == 1
+        assert first_embedder.calls == [["检索模块负责从知识库召回与问题相关的片段"]]
+        row = session.execute(
+            select(evidence_chunks.c.embedding, evidence_chunks.c.embedding_model).where(
+                evidence_chunks.c.id == ids[0]
+            )
+        ).mappings().one()
+        assert row["embedding_model"] == "model-a"
+
+        # 同模型重复落库：命中向量缓存，零嵌入调用，不产生重复行。
+        again_embedder = RecordingEmbedder()
+        persisted_again = persist_statement_evidence_chunks(
+            session,
+            again_embedder,
+            course_id="course",
+            run_id=state["run_id"],
+            material_version_id="material-v1",
+            statements=[statement],
+        )
+        assert persisted_again == ids
+        assert again_embedder.calls == []
+
+        # 换模型：旧向量（同维但异源）不再复用，重嵌并回写。
+        monkeypatch.setattr(settings, "embedding_model", "model-b")
+        switched_embedder = RecordingEmbedder()
+        persist_statement_evidence_chunks(
+            session,
+            switched_embedder,
+            course_id="course",
+            run_id=state["run_id"],
+            material_version_id="material-v1",
+            statements=[statement],
+        )
+        assert switched_embedder.calls == [["检索模块负责从知识库召回与问题相关的片段"]]
+        rows = session.execute(
+            select(evidence_chunks.c.embedding, evidence_chunks.c.embedding_model).where(
+                evidence_chunks.c.id == ids[0]
+            )
+        ).mappings().all()
+        assert len(rows) == 1
+        assert rows[0]["embedding_model"] == "model-b"
+        assert rows[0]["embedding"] == [1.0, 1.0]
     finally:
         session.close()
         engine.dispose()

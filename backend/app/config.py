@@ -71,8 +71,9 @@ class Settings(BaseSettings):
     # 知识点抽取模型：把原始文本块蒸馏成自包含知识点陈述、剔除封面/行政/纯
     # 操作流程等非知识块。留空回退到 llm_model，不受影响。
     llm_extract_model: str = ""
-    # 抽取阶段单次调用送入的原始块数：chunk 约 1200 字符，输出为每块 0~3 条
-    # 陈述。step-3.7-flash 是推理型模型：批过大（6 块重型块）时模型把全部输出
+    # 抽取阶段单次调用送入的原始块数：chunk 约 1200 字符（合并后为数百至一千余
+    # 字的聚合大块），输出为每块 0~20 条陈述（2026-09-25 放开原 3 条天花板）。
+    # step-3.7-flash 是推理型模型：批过大（6 块重型块）时模型把全部输出
     # 预算耗在 reasoning 字段，content 为空导致整批失败；批 3 重型块实测 14s 稳定
     # 返回，思考在预算内结束且留有 content 输出。
     organization_extraction_batch_size: int = Field(default=3, gt=0)
@@ -85,7 +86,12 @@ class Settings(BaseSettings):
     # 结束，不会因上限抬高多计费；6144 满预算思考约 130s，仍远低于
     # organization_model_timeout=240s。若重校准后仍偶发顶格，下一杠杆是用
     # LLM_EXTRACT_MODEL 给抽取阶段换更强的模型（分层选模钩子已内建）。
-    organization_extraction_max_tokens: int = Field(default=6144, gt=0)
+    # 2026-09-25 再校准 6144→12288：蒸馏 prompt 放开「每块最多 3 条」到 20 条
+    # （聚合大块限 3 条导致对话模板等知识被择优丢弃），单批输出量随之变长；
+    # 分类阶段不设上限时实测均值 7833 / 最大 11784 全成功（见 docs/LLM_TUNING.md），
+    # 12288 留足思考+正文共享预算（满预算约 260s，已随 organization_model_timeout
+    # 同步上调保证「预算顶格先于 HTTP 超时」的不变式）。
+    organization_extraction_max_tokens: int = Field(default=12288, gt=0)
     # 知识点抽取的推理强度（StepFun step-3.7-flash 的 reasoning_effort 三档：
     # low/medium/high）。信息抽取用 low 最省预算，避免思考占满输出额度导致
     # content 为空/截断非 JSON。显式下发优先于全局 llm_disable_thinking。
@@ -144,7 +150,10 @@ class Settings(BaseSettings):
     # 知识目录组织阶段的模型调用超时（秒）。分类/归并 prompt 较大（数万 token），
     # 默认 90s 超时在推理型模型上不足以完成响应，超时失败会整材料放弃并烧掉 token；
     # 该阶段已异步化，放长超时不影响前端体验。
-    organization_model_timeout: float = Field(default=240.0, gt=0)
+    # 2026-09-25 240→480：抽取 max_tokens 提到 12288 后满预算思考约 260s，必须
+    # 保持「满预算时长 < HTTP 超时」——否则顶格调用以超时而非 finish_reason=length
+    # 失败，error_code 不在可拆批集合，会整 run 失败而不是对半拆批自愈。
+    organization_model_timeout: float = Field(default=480.0, gt=0)
     # 框架大纲抽取阶段的模型调用超时（秒）。考核大纲 prompt 较大（数万 token），
     # 默认 90s 超时会触发 transport error，需放长到足以容纳完整响应。
     framework_model_timeout: float = Field(default=240.0, gt=0)

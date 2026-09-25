@@ -163,6 +163,29 @@ def test_classify_file_rejects_chunks_from_another_material():
     assert caught.value.error_code == "model_input_scope_violation"
 
 
+def test_classify_prompt_treats_concrete_answer_facts_as_direct():
+    """具体参数/配置类知识句也是 direct 判据：不得因带数值/形似步骤而压成 supporting。
+
+    回归：CH2『chunk_size=500/chunk_overlap=150』『删过长过短片段+补元数据』等
+    可评分知识句曾被判 supporting conf=90，导致考点无 direct 证据。
+    """
+    response = {"file_decisions": [_file_item("EP1", chunk_ids=("c1",))]}
+    client = FakeJsonClient(response)
+    classifier = LLMExamPointEvidenceClassifier(client)
+
+    classifier.classify_file(
+        exam_points=[_point("EP1")],
+        material_version_id="M1",
+        chunks=[_chunk("c1")],
+    )
+
+    prompt = client.system_prompts[0]
+    assert "不因写得具体而降级" in prompt
+    assert "chunk_size 控制分块长度" in prompt
+    assert "supporting 只收不构成答案本体的语境" in prompt
+    assert "也不要因同批多数 chunk 无关而对承载知识的少数条目保守处理" in prompt
+
+
 def _supporting(chunk_id) -> dict:
     return {
         "evidence_chunk_id": chunk_id,

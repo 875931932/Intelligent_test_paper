@@ -93,10 +93,11 @@ def _migrate_evidence_link_fk(engine: Engine) -> None:
 
 
 def _migrate_evidence_chunk_columns(engine: Engine) -> None:
-    """Idempotently add kind / source_evidence_chunk_id columns to evidence_chunks.
+    """Idempotently add kind / source_evidence_chunk_id / embedding_model columns.
 
     知识点抽取环节新增：区分原始块(raw)与蒸馏陈述(statement)，并记录陈述的
-    溯源原始块 id。旧表无这些列，create_all 不会 ALTER 已存在表，需显式迁移。
+    溯源原始块 id；embedding_model 记录向量的生成模型（换模型后旧向量不可比，
+    命中缓存前需比对）。旧表无这些列，create_all 不会 ALTER 已存在表，需显式迁移。
     """
 
     insp = inspect(engine)
@@ -114,6 +115,8 @@ def _migrate_evidence_chunk_columns(engine: Engine) -> None:
             conn.execute(text("ALTER TABLE evidence_chunks ADD COLUMN kind VARCHAR(20) NOT NULL DEFAULT 'raw'"))
             if "source_evidence_chunk_id" not in existing:
                 conn.execute(text("ALTER TABLE evidence_chunks ADD COLUMN source_evidence_chunk_id VARCHAR(64)"))
+        if "embedding_model" not in existing:
+            conn.execute(text("ALTER TABLE evidence_chunks ADD COLUMN embedding_model VARCHAR(64)"))
 
 
 def _migrate_evidence_link_score(engine: Engine) -> None:

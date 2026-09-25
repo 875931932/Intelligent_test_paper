@@ -38,6 +38,8 @@ class RecordingJsonClient:
         response_validator=None,
         tool=None,
         max_tokens=None,
+        reasoning_effort=None,
+        response_schema=None,
     ):
         self.recorded_payloads.append(
             {
@@ -1790,3 +1792,49 @@ def test_extractor_schema_constrained_sends_json_schema_response_format():
 
     # 默认关闭 → 不下发 schema（老行为由既有 json_object 断言锁定）
     assert LLMKnowledgePointExtractor(client).response_schema is None
+
+
+def test_extract_prompt_keeps_every_knowledge_point_in_dense_blocks():
+    """回归：聚合大块（~1000 字、数十知识点）限 3 条/块且择优蒸馏，
+    导致『对话模板/apply_chat_template』等知识被挤出 statement 层、下游考点无米。"""
+    client = RecordingJsonClient(
+        [
+            {
+                "material_version_id": "mv-1",
+                "dropped_chunk_ids": [],
+                "statements": [
+                    {
+                        "source_evidence_chunk_id": "chunk-1",
+                        "statement": (
+                            "tokenizer 的 apply_chat_template 负责将 prompt 与 "
+                            "completion 拼接为模型的训练文本格式。"
+                        ),
+                        "content_kind": "mechanism",
+                    }
+                ],
+            }
+        ]
+    )
+    extractor = LLMKnowledgePointExtractor(client)
+    chunk = StagingChunk(
+        id="chunk-1",
+        material_version_id="mv-1",
+        content="（4.4）通过 apply_chat_template 将 prompt 与 completion 拼接为训练文本格式。",
+    )
+    result = extractor.extract_material(material_version_id="mv-1", chunks=[chunk])
+
+    prompt = client.recorded_payloads[0]["system"]
+    # 全量逐句提取，而非「1~3 条」的量纲（3 条天花板是丢知识的直接根因）
+    assert "逐句提取块内全部独立知识点陈述" in prompt
+    assert "1~3 条" not in prompt
+    # 反择优判据：遗漏的知识在后续环节永远无法找回
+    assert "禁止择优只挑最显眼的几条" in prompt
+    assert "后续环节永远无法找回" in prompt
+    # 操作步骤嵌入的机制/格式知识判例（对话模板类实锤）
+    assert "apply_chat_template" in prompt
+    assert "对话模板" in prompt
+    # 放开的单片段上限
+    assert "每个片段最多提取 20 条陈述" in prompt
+    assert "最多提取 3 条陈述" not in prompt
+    # 采纳链路照常工作
+    assert [item.statement for item in result.statements]
