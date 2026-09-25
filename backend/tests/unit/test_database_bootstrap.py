@@ -9,6 +9,7 @@ from sqlalchemy.schema import CreateIndex, CreateTable
 
 from app.db.init_db import (
     _migrate_evidence_chunk_columns,
+    _migrate_knowledge_link_role,
     bootstrap_database,
     extension_exists,
     table_exists,
@@ -79,6 +80,47 @@ def test_migrate_evidence_chunk_columns_adds_embedding_model(database_url):
         assert {"kind", "source_evidence_chunk_id", "embedding_model"} <= columns
         # 幂等：重复迁移不重复加列、不报错。
         _migrate_evidence_chunk_columns(engine)
+    finally:
+        engine.dispose()
+
+
+def test_migrate_knowledge_link_role_normalizes_answer_basis(database_url):
+    """卡级链接 role 答案域值（answer_basis）幂等归一到相关性域 direct。
+
+    'fact'（旧写端对空 role 的兜底，源自非 direct 决策）无法回推原值，不动。
+    """
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE knowledge_evidence_links ("
+                "id VARCHAR(64) PRIMARY KEY, "
+                "evidence_role VARCHAR(60) NOT NULL)"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO knowledge_evidence_links VALUES ('l1', 'answer_basis')"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO knowledge_evidence_links VALUES ('l2', 'direct')"
+            )
+            connection.exec_driver_sql(
+                "INSERT INTO knowledge_evidence_links VALUES ('l3', 'fact')"
+            )
+        _migrate_knowledge_link_role(engine)
+        with engine.connect() as connection:
+            roles = {
+                row[0]: row[1]
+                for row in connection.exec_driver_sql(
+                    "SELECT id, evidence_role FROM knowledge_evidence_links"
+                )
+            }
+        assert roles == {"l1": "direct", "l2": "direct", "l3": "fact"}
+        # 幂等：重复迁移不报错、结果不变。
+        _migrate_knowledge_link_role(engine)
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql(
+                "SELECT evidence_role FROM knowledge_evidence_links WHERE id='l1'"
+            ).scalar_one() == "direct"
     finally:
         engine.dispose()
 

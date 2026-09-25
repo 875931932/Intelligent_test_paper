@@ -143,6 +143,34 @@ def _migrate_evidence_link_score(engine: Engine) -> None:
             conn.execute(text("ALTER TABLE exam_point_evidence_links ADD COLUMN retrieval_score FLOAT"))
 
 
+def _migrate_knowledge_link_role(engine: Engine) -> None:
+    """Idempotently归一 knowledge_evidence_links.evidence_role 到相关性域。
+
+    卡级链接 role 曾误落答案域值（answer_basis——direct 决策按 content_kind 推导的
+    答案角色），而 grounded 判定（published-knowledge 的 evidence_role='direct'）与
+    前端证据标签读的是相关性域，导致已发布目录全量「未落地」（2026-09-25 根因）。
+    写端已改为落 relevance_class；历史 answer_basis 只可能由 direct 决策产生，
+    确定性归一为 direct。'fact'（旧写端对空 role 的兜底，源自非 direct 决策）无法
+    回推原值，保持不动。
+    """
+
+    try:
+        insp = inspect(engine)
+        if not insp.has_table("knowledge_evidence_links"):
+            return
+    except Exception:
+        # 迁移是尽力而为的幂等维护：无法内省时不阻断启动（同 retrieval_score 口径）。
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE knowledge_evidence_links "
+                "SET evidence_role = 'direct' "
+                "WHERE evidence_role = 'answer_basis'"
+            )
+        )
+
+
 def _seed_dev_data(bind: Engine | Connection) -> None:
     """Upsert the admin test account and fold any legacy 'owner-dev' data into it."""
 
@@ -220,6 +248,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
                 _migrate_evidence_link_fk(engine)
                 _migrate_evidence_chunk_columns(engine)
                 _migrate_evidence_link_score(engine)
+                _migrate_knowledge_link_role(engine)
                 if seed:
                     _seed_dev_data(conn)
         else:
@@ -230,6 +259,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             _migrate_evidence_link_fk(engine)
             _migrate_evidence_chunk_columns(engine)
             _migrate_evidence_link_score(engine)
+            _migrate_knowledge_link_role(engine)
             if seed:
                 _seed_dev_data(engine)
     finally:

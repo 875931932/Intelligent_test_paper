@@ -918,7 +918,13 @@ class DatabaseKnowledgeRepository:
                                 course_id=course_id,
                                 knowledge_card_id=card_id,
                                 evidence_chunk_id=evidence_id,
-                                evidence_role=decision.evidence_role or "fact",
+                                # 卡级 role 走相关性域（direct/…）：grounded 判定
+                                # （published-knowledge 的 evidence_role='direct'）与
+                                # 前端证据标签都读这个域。不能落 decision.evidence_role
+                                # ——那是答案域（answer_basis，由 direct 决策的
+                                # content_kind 推导），混入会让 grounded 恒为 0
+                                # （2026-09-25 全量 382 卡「未落地」的根因）。
+                                evidence_role=decision.relevance_class.value,
                                 confidence=decision.confidence,
                                 teacher_confirmed=True,
                                 lifecycle_status="active",

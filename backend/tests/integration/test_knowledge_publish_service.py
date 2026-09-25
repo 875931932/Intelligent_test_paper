@@ -330,6 +330,9 @@ def test_database_repository_publishes_catalog_and_index_atomically(tmp_path):
         assert session.scalar(select(knowledge_cards.c.answer_proposition).where(knowledge_cards.c.name == "RAG基本流程")) == "检索、上下文构造和生成"
         assert session.scalar(select(knowledge_cards.c.prompt_material).where(knowledge_cards.c.name == "RAG基本流程")) == ["RAG流程语境"]
         assert session.scalar(select(knowledge_evidence_links.c.evidence_chunk_id)) == "evidence-1"
+        # 卡级 role 必须落相关性域 direct：写端曾误落答案域 answer_basis，
+        # 而 grounded 判定读 evidence_role='direct'，混域会让全量卡判「未落地」。
+        assert session.scalar(select(knowledge_evidence_links.c.evidence_role)) == "direct"
         assert session.scalar(select(index_memberships.c.knowledge_card_id)) is not None
         assert session.scalar(select(index_versions.c.status)) == "published"
         assert session.scalar(select(exam_point_evidence_links.c.relevance_class)) == "direct"
