@@ -44,6 +44,7 @@ class RecordingJsonClient:
                 "user": payload,
                 "temperature": temperature,
                 "call_context": call_context,
+                "max_tokens": max_tokens,
             }
         )
         response = self.responses.pop(0)
@@ -1108,6 +1109,11 @@ def test_consolidator_receives_only_one_point_admitted_decisions_and_keeps_sourc
         admitted_decisions=[decision],
         chunks_by_id=chunks_by_id,
     )
+
+    # 思考+正文共享输出预算：归并必须显式带足额 max_tokens。4096 时代生产
+    # 失败调用 out_tokens 精确卡上限（成功最高才 3170），content 被顶成恒空。
+    assert client.recorded_payloads[-1]["max_tokens"] is not None
+    assert client.recorded_payloads[-1]["max_tokens"] >= 6144
 
     request = client.recorded_payloads[-1]["user"]
     assert request["exam_point"]["code"] == "rag-diagnosis"

@@ -107,11 +107,16 @@ class Settings(BaseSettings):
     embedding_model: str = ""
     embedding_api_format: str = "openai"
     # 召回规模直接决定分类阶段的 (考点, chunk) 对数量与模型 token 消耗。
-    # 量化回放：top_k 打满率仅 0.6~2.4%、每对平均召回 2.2~3.4 块——瓶颈在
-    # min_score 而非 top_k，故 top_k 维持 12；min_score 0.30→0.40 砍掉低分尾部
-    # 垃圾对（分类侧对级浪费 80.7%、条级垃圾 88.6%，是输入 token 的主要去向）。
+    # top_k 维持 12：瓶颈在 min_score 而非 top_k。min_score 标定随语料口径变化：
+    # 0.30→0.40 是在原始块语料上砍低分尾部垃圾对（分类侧对级浪费 80.7%）；
+    # 语料换成蒸馏陈述后（1971 原始块 → 452 条陈述），打分 = 0.35*词法 +
+    # 0.65*语义，短 intent×短陈述的词法项≈0，0.40 等效语义门槛≈0.62，而已达
+    # top1 语义中位数仅 0.60——阈值恰好卡在可达分布中位数上，离线回放（对账
+    # 99/99 复现线上召回）显示 62 个考点中 26 个零召回，是覆盖不足的主因。
+    # 回落 0.30：零召回归零，候选对 112→670（约 6 倍分类输入，噪声由分类器
+    # out_of_scope 承接）。
     organization_retrieval_top_k: int = Field(default=12, gt=0)
-    organization_retrieval_min_score: float = Field(default=0.40, ge=0, le=1)
+    organization_retrieval_min_score: float = Field(default=0.30, ge=0, le=1)
     # 检索查询增强（retrieval_intent + 「考点名+考核要求」双 query 合并取 top_k）：
     # 曾用于缓解收紧阈值后操作/实验类考点的漏召回，但候选对近乎翻倍，是分类垃圾对
     # 的重要来源，量化后默认关闭。若出现漏召回，置 true（或

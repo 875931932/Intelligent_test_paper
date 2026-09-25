@@ -549,7 +549,9 @@ def test_organization_retrieval_settings_have_safe_defaults(monkeypatch):
     assert settings.embedding_model == ""
     assert settings.embedding_api_format == "openai"
     assert settings.organization_retrieval_top_k == 12
-    assert settings.organization_retrieval_min_score == 0.40
+    # 陈述语料标定：0.40 等效语义门槛 0.62 超过可达 top1 中位数 0.60，
+    # 半数考点结构性零召回；0.30 使零召回归零（详见 config 注释）。
+    assert settings.organization_retrieval_min_score == 0.30
     # 双 query 展开使候选对翻倍、是分类垃圾对的重要来源，量化后默认关闭。
     assert settings.organization_retrieval_expand_query is False
     assert settings.organization_max_workers == 16

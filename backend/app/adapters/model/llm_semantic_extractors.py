@@ -398,7 +398,11 @@ _CARD_FIELDS = {
 # 归并输出上限：给足余量避免截断，但不必过大（每批仅 1~3 张卡）。
 _BATCH_DIRECT_MAX = 4
 _BATCH_TOTAL_MAX = 6
-_CONSOLIDATION_MAX_TOKENS = 4096
+# 归并输出预算：max_tokens 是「思考+正文」共享的顶格额度（StepFun reasoning
+# 计入其中）。4096 曾在生产把归并顶成恒空——失败调用 out_tokens 精确卡在
+# 4096（成功调用最高才 3170），与抽取 3072 时代同根因。8192 = 2 倍失败上限；
+# 分类阶段不设上限时均值 7833 / 最大 11784 全成功，8192 在模型能力范围内。
+_CONSOLIDATION_MAX_TOKENS = 8192
 
 
 def _collect_all_cards(node: Any) -> list[dict[str, Any]]:
