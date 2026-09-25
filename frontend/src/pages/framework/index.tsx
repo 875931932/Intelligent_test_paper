@@ -4,6 +4,7 @@ import { useParams } from 'react-router-dom';
 import { RefreshCw, Check, X, ChevronRight, ChevronDown, AlertTriangle, Target } from 'lucide-react';
 import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
+import { formatPercent } from '@/lib/format';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
 import { Modal, Badge, Spinner, ProgressPanel } from '@/components/ui';
@@ -542,7 +543,7 @@ function CandidateView({ courseId, candidate, rejecting, onReject, onOpenConfirm
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {blocking.map((c, i) => (
               <div key={i} style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,149,0,0.06)', fontSize: '0.875rem' }}>
-                <p style={{ fontWeight: 500 }}>{c.message || c.key}</p>
+                <p style={{ fontWeight: 500 }}>{c.message}</p>
               </div>
             ))}
           </div>
@@ -557,7 +558,7 @@ function CandidateView({ courseId, candidate, rejecting, onReject, onOpenConfirm
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '12px' }}>
             {advisory.map((c, i) => (
               <div key={i} style={{ padding: '10px 12px', borderRadius: '10px', background: 'var(--info-subtle)', fontSize: '0.875rem' }}>
-                <p>{c.message || c.key}</p>
+                <p>{c.message}</p>
               </div>
             ))}
           </div>
@@ -647,7 +648,7 @@ function FrameworkBreakdown({ anchors, points }: {
             <ChevronRight size={14} style={{ color: 'var(--purple)', flexShrink: 0 }} />
             <p style={{ fontWeight: 600, fontSize: '0.9rem' }}>{anchor.title}</p>
             <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginLeft: 'auto', whiteSpace: 'nowrap' }}>
-              {anchor.exam_weight}%
+              {formatPercent(anchor.exam_weight)}
             </span>
           </div>
           {(anchor.ability_requirements || []).length > 0 && (

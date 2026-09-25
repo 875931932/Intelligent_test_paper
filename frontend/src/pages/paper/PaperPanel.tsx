@@ -17,6 +17,7 @@ import {
   DIFFICULTY_OPTIONS, EXAM_PROJECT_STATUS_META, PAPER_STATUS_META,
   QUESTION_TYPE_OPTIONS, QUESTION_TYPE_ORDER, dlabel, qlabel, sectionLabel,
 } from '@/lib/examDisplay';
+import { formatScore, friendlyId } from '@/lib/format';
 import type { AiCreateProposal, ExamProject, PaperVersion, PaperVersionItem } from '@/types/api';
 import { AiCreatePanel } from './AiCreatePanel';
 import { AiRevisePanel } from './AiRevisePanel';
@@ -422,7 +423,7 @@ function PaperProfile({
                   padding: '4px 10px', borderRadius: 999, fontSize: '0.76rem', fontWeight: 600,
                   background: 'var(--accent-subtle)', color: 'var(--accent)',
                 }}>
-                  {qlabel(t)} {v.score}分·{v.count}题
+                  {qlabel(t)} {formatScore(v.score)}分·{v.count}题
                 </span>
               );
             })}
@@ -516,7 +517,7 @@ function QuestionIndex({
                 <span style={{ fontSize: '0.8rem', color: active ? 'var(--accent)' : 'var(--text-secondary)', minWidth: 28 }}>
                   {qlabel(item.question_type)}
                 </span>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>{item.score}分</span>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>{formatScore(item.score)}分</span>
                 <span style={{ marginLeft: 'auto', display: 'flex', gap: '4px' }}>
                   {flagged && (
                     <span title="待审核" style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--warning)' }} />
@@ -581,7 +582,7 @@ function QuestionDetail({
       <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
         <span style={{ fontSize: '1.05rem', fontWeight: 700, color: 'var(--text-tertiary)' }}>{item.item_index}.</span>
         <Badge variant="info">{qlabel(item.question_type)}</Badge>
-        <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{item.score} 分</span>
+        <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{formatScore(item.score)} 分</span>
         {item.difficulty && <Badge variant="default">{dlabel(item.difficulty)}</Badge>}
         {item.has_override && <Badge variant="purple">已修改</Badge>}
         {flagged && <Badge variant="warning">需审核</Badge>}
@@ -674,8 +675,11 @@ function QuestionDetail({
           )}
 
           {(examPointName || item.exam_point_id) && (
-            <div style={{ marginTop: '14px', fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
-              考点：{examPointName || item.exam_point_id}
+            <div
+              style={{ marginTop: '14px', fontSize: '0.75rem', color: 'var(--text-tertiary)' }}
+              title={!examPointName && item.exam_point_id ? item.exam_point_id : undefined}
+            >
+              考点：{examPointName || friendlyId(item.exam_point_id, '未匹配考点')}
             </div>
           )}
 

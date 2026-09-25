@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/Button';
 import { Badge, ProgressPanel, type ProgressStatus } from '@/components/ui';
 import { useNameMaps, type NameMaps } from '@/hooks/useNameMaps';
 import { clabel, dlabel, qlabel } from '@/lib/examDisplay';
+import { formatScore, friendlyId } from '@/lib/format';
 import { ContractExplainPanel } from './ContractExplainPanel';
 import type { ContractSnapshot } from '@/api/domains/examProjects';
 import type { ExamProject, ExamRules, PlanItem, TaskRun } from '@/types/api';
@@ -67,16 +68,17 @@ const GENERATION_QUEUED_MESSAGES = ['等待 Celery worker 接管任务…'];
 // 用户侧只看到一个"排队中"无法区分是正常等待还是卡死。
 const QUEUED_HINT_SECONDS = 60;
 
+// 名称降级链：映射名 → 业务 code 原文 → 友好占位（裸 ID 永不渲染，真值走单元格 title）
 function examPointLabel(maps: NameMaps, id: string): string {
-  return maps.examPoints[id] || id;
+  return maps.examPoints[id] || friendlyId(id, '未匹配考点');
 }
 
 function anchorLabel(maps: NameMaps, key: string): string {
-  return maps.anchors[key] || key;
+  return maps.anchors[key] || friendlyId(key, '未匹配范围');
 }
 
 function cardLabel(maps: NameMaps, id: string): string {
-  return maps.cards[id] || id;
+  return maps.cards[id] || friendlyId(id, '未匹配知识卡');
 }
 
 // ═══════════════════════════════════════════════
@@ -221,7 +223,7 @@ function renderBlueprint({
               这份蓝图的题型比例与「考核规则」不一致
             </div>
             <div style={{ color: 'var(--text-secondary)' }}>
-              {mismatch.map((m) => `${qlabel(m.question_type)} 考纲 ${m.expected.toFixed(0)} 分 / 蓝图 ${m.actual.toFixed(0)} 分`).join('；')}
+              {mismatch.map((m) => `${qlabel(m.question_type)} 考纲 ${formatScore(m.expected)} 分 / 蓝图 ${formatScore(m.actual)} 分`).join('；')}
               。通常是蓝图建在考核规则解析出来之前，或当时按默认分布生成。
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginTop: '10px', flexWrap: 'wrap' }}>
@@ -238,7 +240,7 @@ function renderBlueprint({
           <div>
             <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: '16px' }}>
               <div style={{ minWidth: '120px' }}>
-                <div style={{ fontSize: '1.7rem', fontWeight: 700, lineHeight: 1 }}>{totalScore}</div>
+                <div style={{ fontSize: '1.7rem', fontWeight: 700, lineHeight: 1 }}>{formatScore(totalScore)}</div>
                 <div style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', marginTop: '4px' }}>总分 · {planItems.length} 题</div>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, minWidth: '220px' }}>
@@ -248,13 +250,13 @@ function renderBlueprint({
                       padding: '4px 10px', borderRadius: '999px', fontSize: '0.78rem', fontWeight: 600,
                       background: 'rgba(0,113,227,0.08)', color: '#0071e3',
                     }}>
-                      {qlabel(t)} {v.score}分·{v.count}题
+                      {qlabel(t)} {formatScore(v.score)}分·{v.count}题
                     </span>
                   ))}
                 </div>
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 16px' }}>
                   {chapterDist.map(([c, s]) => (
-                    <span key={c} style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{anchorLabel(maps, c)}：{s}分</span>
+                    <span key={c} style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>{anchorLabel(maps, c)}：{formatScore(s)}分</span>
                   ))}
                 </div>
               </div>
@@ -267,10 +269,10 @@ function renderBlueprint({
                     <tr key={item.item_index}>
                       <td>{item.item_index}</td>
                       <td>{qlabel(item.question_type)}</td>
-                      <td><strong>{item.score}</strong></td>
+                      <td><strong>{formatScore(item.score)}</strong></td>
                       <td>{dlabel(item.difficulty)}</td>
-                      <td>{item.anchor_key ? anchorLabel(maps, item.anchor_key) : '-'}</td>
-                      <td>{item.exam_point_id ? examPointLabel(maps, item.exam_point_id) : '-'}</td>
+                      <td title={item.anchor_key || undefined}>{item.anchor_key ? anchorLabel(maps, item.anchor_key) : '-'}</td>
+                      <td title={item.exam_point_id || undefined}>{item.exam_point_id ? examPointLabel(maps, item.exam_point_id) : '-'}</td>
                       <td>{clabel(item.cognitive_level) || '-'}</td>
                     </tr>
                   ))}
@@ -484,10 +486,10 @@ function renderContract({
                   {/* item_index 与 plan_items 同源 1 起、与蓝图表同号，勿 +1 */}
                   <td>{s.item_index}</td>
                   <td>{qlabel(s.question_type)}</td>
-                  <td><strong>{s.score}</strong></td>
+                  <td><strong>{formatScore(s.score)}</strong></td>
                   <td>{dlabel(s.difficulty)}</td>
-                  <td>{examPointLabel(maps, s.exam_point_id)}</td>
-                  <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={cardLabel(maps, s.card_id)}>{cardLabel(maps, s.card_id)}</td>
+                  <td title={s.exam_point_id || undefined}>{examPointLabel(maps, s.exam_point_id)}</td>
+                  <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={s.card_id ? (maps.cards[s.card_id] || s.card_id) : undefined}>{cardLabel(maps, s.card_id)}</td>
                   <td>
                     <Button
                       size="sm"

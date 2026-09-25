@@ -71,23 +71,25 @@ body::after {
   box-shadow: var(--glass-shadow);
 }
 
+/* 静态容器不挂 hover 动效：上浮会暗示「可点击」，是虚假可点线索；
+   交互动效只给显式声明的 .card-hover（课程卡 / 统计卡等真可点卡） */
 .glass-card {
   background: var(--surface);
   border: 1px solid rgba(255, 255, 255, 0.5);
   border-radius: var(--radius-lg);
   box-shadow: var(--glass-shadow);
-  transition: transform 0.35s var(--ease-out-expo),
-              box-shadow 0.35s var(--ease-out-expo),
-              border-color 0.3s ease;
 }
 
-.glass-card:hover {
+/* 可点击卡片：全站唯一允许 hover 上浮的卡 */
+.card-hover {
+  transition: transform 0.3s var(--ease-out-expo),
+              box-shadow 0.3s var(--ease-out-expo);
+}
+.card-hover:hover {
   transform: translateY(-2px);
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.1), 0 4px 12px rgba(0, 0, 0, 0.04);
-  border-color: rgba(0, 0, 0, 0.12);
 }
-
-.glass-card:active {
+.card-hover:active {
   transform: translateY(0) scale(0.99);
 }
 
@@ -546,14 +548,15 @@ body::after {
   border-bottom: 1px solid rgba(0, 0, 0, 0.04);
   transition: background-color 0.15s ease;
 }
-.data-table tbody tr {
-  transition: transform 0.15s ease, background-color 0.15s ease;
-}
 .data-table tbody tr:hover td {
   background: rgba(0, 113, 227, 0.03);
 }
-.data-table tbody tr:hover {
-  transform: scale(1.002);
+/* 行不做 hover 位移：表格行不是可点对象，scale 位移只会在扫读时抖动 */
+
+/* 表格横向滚动容器（蓝图/合同阶段的宽表） */
+.table-wrapper {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* ═══════════════════════════════════════════════
@@ -587,10 +590,6 @@ body::after {
   0% { background-position: -200% 0; }
   100% { background-position: 200% 0; }
 }
-@keyframes float {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-6px); }
-}
 @keyframes progressSlide {
   0% { transform: translateX(-100%); }
   100% { transform: translateX(350%); }
@@ -610,28 +609,17 @@ body::after {
   animation: scaleIn 0.35s var(--ease-out-expo);
 }
 
-/* ── 交错动画 ── */
+/* ── 交错动画（仅首屏卡片入场，一次性；不用于列表行） ── */
 .stagger-item {
   opacity: 0;
-  animation: slideInUp 0.5s var(--ease-out-expo) forwards;
+  animation: slideInUp 0.4s var(--ease-out-expo) forwards;
 }
-.stagger-item:nth-child(1) { animation-delay: 0.05s; }
-.stagger-item:nth-child(2) { animation-delay: 0.12s; }
-.stagger-item:nth-child(3) { animation-delay: 0.19s; }
-.stagger-item:nth-child(4) { animation-delay: 0.26s; }
-.stagger-item:nth-child(5) { animation-delay: 0.33s; }
-.stagger-item:nth-child(6) { animation-delay: 0.40s; }
-
-/* ── 图标微动效 ── */
-.icon-float {
-  animation: float 3s ease-in-out infinite;
-  display: inline-block;
-}
-.icon-float-delay {
-  animation: float 3s ease-in-out infinite;
-  animation-delay: -1.5s;
-  display: inline-block;
-}
+.stagger-item:nth-child(1) { animation-delay: 0.04s; }
+.stagger-item:nth-child(2) { animation-delay: 0.1s; }
+.stagger-item:nth-child(3) { animation-delay: 0.16s; }
+.stagger-item:nth-child(4) { animation-delay: 0.22s; }
+.stagger-item:nth-child(5) { animation-delay: 0.28s; }
+.stagger-item:nth-child(6) { animation-delay: 0.34s; }
 
 /* ── 页面切换 ── */
 .page-enter {
@@ -667,7 +655,8 @@ body::after {
 
 /* ── 响应式微调 ── */
 @media (max-width: 768px) {
-  .glass-card:hover {
+  /* 触屏会把 hover 粘在点击上，卡片上浮在移动端只会造成误触感 */
+  .card-hover:hover {
     transform: none;
   }
   .btn-primary:hover:not(:disabled) {

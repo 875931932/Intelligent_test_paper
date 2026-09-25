@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { BadgeSuccess, BadgeWarning, BadgePurple, Badge } from '@/components/ui/Badge';
 import { SkeletonCardGrid } from '@/components/ui/Skeleton';
+import { EXAM_PROJECT_STATUS_META } from '@/lib/examDisplay';
 import type { MaterialResponse, CurrentFrameworkResponse, PublishedKnowledgeResponse, ExamProject } from '@/types/api';
 
 const DashboardPage: FC = () => {
@@ -319,7 +320,11 @@ const DashboardPage: FC = () => {
                     }}
                   >
                     <span style={{ fontSize: '0.8125rem' }}>{project.name}</span>
-                    <Badge>{project.status}</Badge>
+                    <span title={project.status}>
+                      <Badge variant={EXAM_PROJECT_STATUS_META[project.status]?.variant ?? 'default'}>
+                        {EXAM_PROJECT_STATUS_META[project.status]?.label ?? '未知状态'}
+                      </Badge>
+                    </span>
                   </div>
                 ))
               )}

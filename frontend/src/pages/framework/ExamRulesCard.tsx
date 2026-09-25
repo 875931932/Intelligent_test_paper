@@ -5,6 +5,7 @@ import { getErrorMessage } from '@/api/errors';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
 import { QUESTION_TYPE_OPTIONS, qlabel } from '@/lib/examDisplay';
+import { formatPercent, friendlyId } from '@/lib/format';
 import type { ExamRules } from '@/types/api';
 
 const EMPTY_RULES: ExamRules = {
@@ -110,7 +111,7 @@ export function ExamRulesCard({
                       padding: '4px 10px', borderRadius: 999, fontSize: '0.78rem', fontWeight: 600,
                       background: 'var(--accent-subtle)', color: 'var(--accent)',
                     }}>
-                      {qlabel(r.question_type)} {r.ratio}%
+                      {qlabel(r.question_type)} {formatPercent(r.ratio)}
                     </span>
                   ))}
                 </div>
@@ -123,7 +124,7 @@ export function ExamRulesCard({
                 <div style={{ display: 'flex', gap: '6px 16px', flexWrap: 'wrap', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
                   {(rules?.chapter_weights ?? []).map((c) => (
                     <span key={c.anchor_key}>
-                      {anchors.find((a) => a.key === c.anchor_key)?.title || c.anchor_key}：<strong style={{ color: 'var(--text)' }}>{c.weight}%</strong>
+                      {anchors.find((a) => a.key === c.anchor_key)?.title || friendlyId(c.anchor_key, '未匹配范围')}：<strong style={{ color: 'var(--text)' }}>{formatPercent(c.weight)}</strong>
                     </span>
                   ))}
                 </div>
@@ -155,7 +156,7 @@ export function ExamRulesCard({
               <p style={{ fontSize: '0.82rem', fontWeight: 600 }}>题型比例</p>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                 <span style={{ fontSize: '0.75rem', color: Math.abs(ratioSum - 100) < 0.5 ? 'var(--success)' : 'var(--warning)' }}>
-                  合计 {ratioSum.toFixed(1)}%
+                  合计 {formatPercent(ratioSum)}
                 </span>
                 <Button variant="ghost" size="sm" onClick={() => setDraft({ ...draft, question_type_ratios: [...draft.question_type_ratios, { question_type: 'single_choice', ratio: 0 }] })} icon={<Plus size={14} />}>加题型</Button>
               </div>
@@ -196,7 +197,7 @@ export function ExamRulesCard({
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
               <p style={{ fontSize: '0.82rem', fontWeight: 600 }}>章节命题权重</p>
               <span style={{ fontSize: '0.75rem', color: Math.abs(chapterSum - 100) < 0.5 ? 'var(--success)' : 'var(--warning)' }}>
-                合计 {chapterSum.toFixed(1)}%
+                合计 {formatPercent(chapterSum)}
               </span>
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>

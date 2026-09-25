@@ -7,7 +7,7 @@ import { useToastStore } from '@/stores/toast';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import type { AiCreateProposal, AiCreateResult, TaskRun } from '@/types/api';
-import { toText } from '@/lib/examDisplay';
+import { DIFFICULTY_LABELS, QUESTION_TYPE_LABELS, toText } from '@/lib/examDisplay';
 
 /** 任务终态（与后端 task_runs 状态机一致） */
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
@@ -119,7 +119,11 @@ export function AiCreatePanel({
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
             {result.validation.passed
               ? <Badge variant="success">校验通过</Badge>
-              : <Badge variant="error">未通过校验 · {result.validation.code}</Badge>}
+              : (
+                  <span title={result.validation.code}>
+                    <Badge variant="error">未通过校验</Badge>
+                  </span>
+                )}
             {!result.validation.passed && (
               <span style={{ fontSize: '0.78rem', color: 'var(--error)' }}>{result.validation.message}</span>
             )}
@@ -141,8 +145,8 @@ export function AiCreatePanel({
             }}
           >
             <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-              <Badge variant="info">{p.question_type}</Badge>
-              {p.difficulty && <Badge variant="default">{p.difficulty}</Badge>}
+              <Badge variant="info">{QUESTION_TYPE_LABELS[p.question_type] ?? p.question_type}</Badge>
+              {p.difficulty && <Badge variant="default">{DIFFICULTY_LABELS[p.difficulty] ?? p.difficulty}</Badge>}
             </div>
             <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', color: 'var(--text)' }}>{toText(p.stem)}</div>
             {p.options != null && (

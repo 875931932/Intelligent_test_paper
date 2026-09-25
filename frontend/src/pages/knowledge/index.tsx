@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
+import { formatConfidence, formatPercent } from '@/lib/format';
 import { useToastStore } from '@/stores/toast';
 import { Button, Modal, Select, Badge, Spinner, ProgressPanel } from '@/components/ui';
 import type {
@@ -793,7 +794,7 @@ export default function KnowledgePage() {
                     <div key={i} style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(0,0,0,0.02)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                         <Badge variant={EvidenceRoleVariant(ev.evidence_role)}>{EvidenceRoleLabel(ev.evidence_role)}</Badge>
-                        <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>{Math.round(ev.confidence || 0)}%</span>
+                        <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>{formatConfidence(ev.confidence)}</span>
                       </div>
                       <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>{ev.content}</p>
                       <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{formatLocator(ev.locator)}</p>
@@ -976,7 +977,7 @@ function CandidatePanel({ candidate, courseId, runId, supplementOps, onSupplemen
   const suppOptions = useMemo(
     () => supplementable.map((s) => {
       const level = s.relevance_class === 'supporting' ? '支持' : '背景';
-      const conf = typeof s.confidence === 'number' ? `置信${s.confidence}` : '';
+      const conf = typeof s.confidence === 'number' ? `置信 ${formatConfidence(s.confidence)}` : '';
       const claim = (s.support_claim || '').replace(/\s+/g, ' ').slice(0, 48);
       return {
         id: s.evidence_chunk_id,
@@ -1248,7 +1249,7 @@ function CandidatePanel({ candidate, courseId, runId, supplementOps, onSupplemen
                         {suppPreview.relevance_class === 'supporting' ? '支持证据' : '背景证据'}
                       </Badge>
                       <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
-                        置信度 {suppPreview.confidence}
+                        置信度 {formatConfidence(suppPreview.confidence)}
                         {suppPreviewPage !== null && ` · 第 ${suppPreviewPage} 页`}
                         {suppPreview.evidence_role && ` · ${EvidenceRoleLabel(suppPreview.evidence_role)}`}
                       </span>
@@ -1470,7 +1471,7 @@ const TreeView = memo(function TreeView(props: {
               <span style={{ color: '#0071e3' }}><Target size={14} /></span>
               <span style={{ fontWeight: 600, fontSize: '0.875rem' }}>{point.title || point.code}</span>
               <span style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>({point.code})</span>
-              <span style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>{point.weight_value}%</span>
+              <span style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>{formatPercent(point.weight_value)}</span>
             </div>
             {isExp && (
               <div style={{ marginLeft: '24px' }}>
@@ -1774,9 +1775,9 @@ const GraphView = memo(function GraphView(props: {
         y: rnd() * (GRAPH_H + 6000) - 3000,
         r: 0.5 + rnd() * 1.7,
         big: rnd() < 0.1,
-        cls: bucket < 0.34 ? 'tw1' : bucket < 0.67 ? 'tw2' : 'tw3',
+        // 三档静态透明度分层代替旧版循环闪烁：1400 颗常驻星的无限动画是白耗的 GPU 负担
+        opacity: bucket < 0.34 ? 0.35 : bucket < 0.67 ? 0.6 : 0.9,
         hue: warm < 0.22 ? '#9ecbff' : warm < 0.4 ? '#ffe9c4' : '#ffffff',
-        delay: (rnd() * 6).toFixed(1),
       };
     });
   }, []);
@@ -2000,16 +2001,6 @@ const GraphView = memo(function GraphView(props: {
           onPointerCancel={onSvgPointerUp}
           onPointerDown={onBgPointerDown}
         >
-          <style>{`
-            .gb { animation: gbFloat 3.6s ease-in-out infinite; }
-            @keyframes gbFloat { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-2.5px); } }
-            .tw1 { animation: tw1 4.6s ease-in-out infinite; }
-            @keyframes tw1 { 0%, 100% { opacity: .18; } 50% { opacity: .95; } }
-            .tw2 { animation: tw2 6.4s ease-in-out infinite; }
-            @keyframes tw2 { 0%, 100% { opacity: .85; } 50% { opacity: .28; } }
-            .tw3 { animation: tw3 5.2s ease-in-out infinite; }
-            @keyframes tw3 { 0%, 100% { opacity: .32; } 50% { opacity: .78; } }
-          `}</style>
           <defs>
             <marker id="gh-arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
               <path d="M0,0 L8,3 L0,6 Z" fill="#4da3ff" />
@@ -2038,10 +2029,10 @@ const GraphView = memo(function GraphView(props: {
             </radialGradient>
           </defs>
           <g transform={transform}>
-            {/* 背景星尘：坐标在画布系随缩放平移，类名控制三组错相闪烁 */}
+            {/* 背景星尘：坐标在画布系随缩放平移，三档静态透明度分层 */}
             <g>
               {bgStars.map((st, i) => (
-                <g key={'st' + i} className={st.cls} style={{ animationDelay: st.delay + 's' }}>
+                <g key={'st' + i} opacity={st.opacity}>
                   {st.big && <circle cx={st.x} cy={st.y} r={st.r * 5} fill="url(#glow-star)" opacity={0.5} />}
                   <circle cx={st.x} cy={st.y} r={st.r} fill={st.hue} />
                 </g>
@@ -2080,18 +2071,16 @@ const GraphView = memo(function GraphView(props: {
                   onPointerDown={(e) => onNodePointerDown(e, n)}
                   style={{ cursor: 'grab' }}
                 >
-                  <g className="gb" style={{ animationDelay: (hashStr(n.key) % 20) / 10 + 's' }}>
-                    <line x1={p.x - n.r * 2.4} y1={p.y} x2={p.x + n.r * 2.4} y2={p.y} stroke="rgba(255,255,255,0.45)" strokeWidth={1} style={{ pointerEvents: 'none' }} />
-                    <line x1={p.x} y1={p.y - n.r * 2.4} x2={p.x} y2={p.y + n.r * 2.4} stroke="rgba(255,255,255,0.45)" strokeWidth={1} style={{ pointerEvents: 'none' }} />
-                    <circle cx={p.x} cy={p.y} r={hov ? n.r * 3.1 : n.r * 2.6} fill="url(#glow-pt)" style={{ transition: 'r 0.15s' }} />
-                    <circle cx={p.x} cy={p.y} r={n.r + (hov ? 3 : 0)} fill="#f2f8ff" stroke="#4da3ff" strokeWidth={1.6} style={{ transition: 'r 0.15s' }} />
-                    {/* 标题挂核外深底：浅字+深描边与深空天然高对比（旧版序号压在
-                        同色系光晕上糊成一片）；hover 展开全名；核内留白做纯恒星。 */}
-                    <text x={p.x} y={p.y + n.r + (hov ? 6 : 0) + 12} textAnchor="middle" fontSize={hov ? 10.5 : 9} fontWeight="600" fill="#eaf2ff"
-                      style={{ paintOrder: 'stroke', stroke: '#050914', strokeWidth: 3, strokeLinejoin: 'round', pointerEvents: 'none' }}>
-                      {hov ? n.full : n.label}
-                    </text>
-                  </g>
+                  <line x1={p.x - n.r * 2.4} y1={p.y} x2={p.x + n.r * 2.4} y2={p.y} stroke="rgba(255,255,255,0.45)" strokeWidth={1} style={{ pointerEvents: 'none' }} />
+                  <line x1={p.x} y1={p.y - n.r * 2.4} x2={p.x} y2={p.y + n.r * 2.4} stroke="rgba(255,255,255,0.45)" strokeWidth={1} style={{ pointerEvents: 'none' }} />
+                  <circle cx={p.x} cy={p.y} r={hov ? n.r * 3.1 : n.r * 2.6} fill="url(#glow-pt)" style={{ transition: 'r 0.15s' }} />
+                  <circle cx={p.x} cy={p.y} r={n.r + (hov ? 3 : 0)} fill="#f2f8ff" stroke="#4da3ff" strokeWidth={1.6} style={{ transition: 'r 0.15s' }} />
+                  {/* 标题挂核外深底：浅字+深描边与深空天然高对比（旧版序号压在
+                      同色系光晕上糊成一片）；hover 展开全名；核内留白做纯恒星。 */}
+                  <text x={p.x} y={p.y + n.r + (hov ? 6 : 0) + 12} textAnchor="middle" fontSize={hov ? 10.5 : 9} fontWeight="600" fill="#eaf2ff"
+                    style={{ paintOrder: 'stroke', stroke: '#050914', strokeWidth: 3, strokeLinejoin: 'round', pointerEvents: 'none' }}>
+                    {hov ? n.full : n.label}
+                  </text>
                 </g>
               );
             })}
@@ -2110,18 +2099,16 @@ const GraphView = memo(function GraphView(props: {
                   onPointerDown={(e) => onNodePointerDown(e, n)}
                   style={{ cursor: 'grab' }}
                 >
-                  <g className="gb" style={{ animationDelay: (hashStr(n.key) % 20) / 10 + 's' }}>
-                    <circle cx={p.x} cy={p.y} r={hov ? n.r * 2.9 : n.r * 2.4} fill="url(#glow-un)" style={{ transition: 'r 0.15s' }} />
-                    <circle cx={p.x} cy={p.y} r={n.r + (hov ? 2.5 : 0)} fill="#f6efff" stroke="#c084fc" strokeWidth={1.4} style={{ transition: 'r 0.15s' }} />
-                    {/* 核内只留「N卡」计数；标题挂核外深底（浅字深描边高对比），
-                        hover 展开全名。 */}
-                    <text x={p.x} y={p.y + 2.5} textAnchor="middle" fontSize="6.5" fontWeight="600" fill="#5b2196"
-                      style={{ paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 1.4, strokeLinejoin: 'round', pointerEvents: 'none' }}>{n.sub}</text>
-                    <text x={p.x} y={p.y + n.r + (hov ? 5 : 0) + 11} textAnchor="middle" fontSize={hov ? 10 : 8.5} fontWeight="600" fill="#f3e8ff"
-                      style={{ paintOrder: 'stroke', stroke: '#050914', strokeWidth: 3, strokeLinejoin: 'round', pointerEvents: 'none' }}>
-                      {hov ? n.full : n.label}
-                    </text>
-                  </g>
+                  <circle cx={p.x} cy={p.y} r={hov ? n.r * 2.9 : n.r * 2.4} fill="url(#glow-un)" style={{ transition: 'r 0.15s' }} />
+                  <circle cx={p.x} cy={p.y} r={n.r + (hov ? 2.5 : 0)} fill="#f6efff" stroke="#c084fc" strokeWidth={1.4} style={{ transition: 'r 0.15s' }} />
+                  {/* 核内只留「N卡」计数；标题挂核外深底（浅字深描边高对比），
+                      hover 展开全名。 */}
+                  <text x={p.x} y={p.y + 2.5} textAnchor="middle" fontSize="6.5" fontWeight="600" fill="#5b2196"
+                    style={{ paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 1.4, strokeLinejoin: 'round', pointerEvents: 'none' }}>{n.sub}</text>
+                  <text x={p.x} y={p.y + n.r + (hov ? 5 : 0) + 11} textAnchor="middle" fontSize={hov ? 10 : 8.5} fontWeight="600" fill="#f3e8ff"
+                    style={{ paintOrder: 'stroke', stroke: '#050914', strokeWidth: 3, strokeLinejoin: 'round', pointerEvents: 'none' }}>
+                    {hov ? n.full : n.label}
+                  </text>
                 </g>
               );
             })}
@@ -2146,31 +2133,29 @@ const GraphView = memo(function GraphView(props: {
                   }}
                   style={{ cursor: 'pointer' }}
                 >
-                  <g className="gb" style={{ animationDelay: (hashStr(n.key) % 24) / 10 + 's' }}>
-                    <circle
-                      cx={p.x} cy={p.y}
-                      r={hovered ? n.r * 3.4 : n.r * 2.7}
-                      fill={`url(#glow-${gi < 0 ? 0 : gi})`}
-                      opacity={n.grounded ? 0.95 : 0.4}
-                      style={{ transition: 'r 0.15s' }}
-                    />
-                    <circle
-                      cx={p.x} cy={p.y}
-                      r={n.r + (hovered ? 3 : 0)}
-                      fill={n.color}
-                      fillOpacity={n.grounded ? 0.95 : 0.35}
-                      stroke={n.grounded ? 'rgba(255,255,255,0.8)' : '#ff5c5c'}
-                      strokeWidth={n.grounded ? 0.8 : 1.6}
-                      strokeDasharray={n.grounded ? undefined : '3 2'}
-                      style={{ transition: 'r 0.15s, fill-opacity 0.15s' }}
-                    />
-                    {hovered && (
-                      <text x={p.x} y={p.y - n.r - 8} textAnchor="middle" fontSize="9.5" fontWeight="600" fill="#eaf2ff"
-                        style={{ paintOrder: 'stroke', stroke: '#050914', strokeWidth: 3.5, strokeLinejoin: 'round', pointerEvents: 'none' }}>
-                        {truncate(n.label, 18)}
-                      </text>
-                    )}
-                  </g>
+                  <circle
+                    cx={p.x} cy={p.y}
+                    r={hovered ? n.r * 3.4 : n.r * 2.7}
+                    fill={`url(#glow-${gi < 0 ? 0 : gi})`}
+                    opacity={n.grounded ? 0.95 : 0.4}
+                    style={{ transition: 'r 0.15s' }}
+                  />
+                  <circle
+                    cx={p.x} cy={p.y}
+                    r={n.r + (hovered ? 3 : 0)}
+                    fill={n.color}
+                    fillOpacity={n.grounded ? 0.95 : 0.35}
+                    stroke={n.grounded ? 'rgba(255,255,255,0.8)' : '#ff5c5c'}
+                    strokeWidth={n.grounded ? 0.8 : 1.6}
+                    strokeDasharray={n.grounded ? undefined : '3 2'}
+                    style={{ transition: 'r 0.15s, fill-opacity 0.15s' }}
+                  />
+                  {hovered && (
+                    <text x={p.x} y={p.y - n.r - 8} textAnchor="middle" fontSize="9.5" fontWeight="600" fill="#eaf2ff"
+                      style={{ paintOrder: 'stroke', stroke: '#050914', strokeWidth: 3.5, strokeLinejoin: 'round', pointerEvents: 'none' }}>
+                      {truncate(n.label, 18)}
+                    </text>
+                  )}
                 </g>
               );
             })}

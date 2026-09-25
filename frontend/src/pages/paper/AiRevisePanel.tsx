@@ -177,7 +177,11 @@ export function AiRevisePanel({
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
             {result.validation.passed
               ? <Badge variant="success">校验通过</Badge>
-              : <Badge variant="error">未通过校验 · {result.validation.code}</Badge>}
+              : (
+                  <span title={result.validation.code}>
+                    <Badge variant="error">未通过校验</Badge>
+                  </span>
+                )}
             {!result.validation.passed && (
               <span style={{ fontSize: '0.78rem', color: 'var(--error)' }}>{result.validation.message}</span>
             )}

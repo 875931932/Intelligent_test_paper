@@ -136,7 +136,7 @@ const loginStyles = `
     border-radius: 50%;
     filter: blur(80px);
     opacity: 0.45;
-    animation: orbFloat 12s ease-in-out infinite;
+    /* 静态光斑：常驻页面的无限漂移动画既分心又耗 GPU，渐变底色已足够 */
   }
 
   .orb-1 {
@@ -145,7 +145,6 @@ const loginStyles = `
     background: radial-gradient(circle, rgba(0, 113, 227, 0.08), transparent 70%);
     top: -10%;
     left: -5%;
-    animation-delay: 0s;
   }
 
   .orb-2 {
@@ -154,8 +153,6 @@ const loginStyles = `
     background: radial-gradient(circle, rgba(0, 113, 227, 0.06), transparent 70%);
     bottom: -10%;
     right: -5%;
-    animation-delay: -4s;
-    animation-duration: 14s;
   }
 
   .orb-3 {
@@ -165,15 +162,6 @@ const loginStyles = `
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    animation-delay: -8s;
-    animation-duration: 16s;
-  }
-
-  @keyframes orbFloat {
-    0%, 100% { transform: translate(0, 0) scale(1); }
-    25% { transform: translate(60px, -40px) scale(1.1); }
-    50% { transform: translate(-30px, 50px) scale(0.9); }
-    75% { transform: translate(-50px, -30px) scale(1.05); }
   }
 
   .login-card {
