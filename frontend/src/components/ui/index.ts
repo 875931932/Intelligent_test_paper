@@ -8,3 +8,4 @@ export * from './Spinner';
 export * from './Skeleton';
 export * from './Toast';
 export * from './ProgressPanel';
+export * from './FloatingPanel';

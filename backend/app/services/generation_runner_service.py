@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
 from app.db.schema import (
+    exam_points,
     exam_projects,
     generated_questions,
     generation_runs,
@@ -575,8 +576,28 @@ def execute_generation_task(
         )
 
         # d) 批量插入 generated_questions
+        # 考点名快照进载荷：随 exam_point_id 追加 exam_point_title/exam_point_code
+        # 两键。卷面是历史快照，目录重建后旧考点 ID 会失联，展示层优先读快照、
+        # 旧卷再走映射；只增不改（查不到就跳过），符合「冻结即不可变」。
+        ep_ids = {ep for ep in (q.get("exam_point_id") for q in questions) if ep}
+        ep_labels: dict[str, tuple[str, str]] = {}
+        if ep_ids:
+            for ep_row in session.execute(
+                select(exam_points.c.id, exam_points.c.title, exam_points.c.code).where(
+                    exam_points.c.course_id == course_id,
+                    exam_points.c.id.in_(ep_ids),
+                )
+            ).all():
+                ep_labels[ep_row._mapping["id"]] = (
+                    ep_row._mapping["title"] or "",
+                    ep_row._mapping["code"] or "",
+                )
         gq_rows = []
         for q in questions:
+            payload = {k: v for k, v in q.items() if k != "quality"}
+            ep_label = ep_labels.get(q.get("exam_point_id"))
+            if ep_label is not None:
+                payload["exam_point_title"], payload["exam_point_code"] = ep_label
             gq_rows.append({
                 "id": _nid(),
                 "course_id": course_id,
@@ -585,7 +606,7 @@ def execute_generation_task(
                 "knowledge_card_id": q.get("knowledge_card_id"),
                 "revision_no": 1,
                 "status": "candidate",
-                "payload": {k: v for k, v in q.items() if k != "quality"},
+                "payload": payload,
             })
         if gq_rows:
             session.execute(generated_questions.insert(), gq_rows)

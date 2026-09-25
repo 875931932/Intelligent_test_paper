@@ -474,6 +474,10 @@ def get_paper_version(
             "plan_item_id": d.get("plan_item_id"),
             "knowledge_card_id": d.get("knowledge_card_id"),
             "exam_point_id": payload.get("exam_point_id") or d.get("plan_exam_point_id"),
+            # 考点名快照（生成时写进 payload，见 generation_runner）：
+            # 目录重建后映射失效的历史卷仍能显示真实考点名，前端优先读它
+            "exam_point_title": payload.get("exam_point_title"),
+            "exam_point_code": payload.get("exam_point_code"),
             "stem": stem,
             "options": options,
             "answer": answer,

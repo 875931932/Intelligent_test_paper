@@ -192,7 +192,8 @@ def _full_pipeline_to_candidate_paper(session, *, fail_indices=None):
         from app.db.schema import plan_items as pi_t
         rows = session.execute(
             select(pi_t.c.id, pi_t.c.item_index, pi_t.c.knowledge_card_id,
-                   pi_t.c.question_type, pi_t.c.difficulty, pi_t.c.cognitive_level)
+                   pi_t.c.question_type, pi_t.c.difficulty, pi_t.c.cognitive_level,
+                   pi_t.c.exam_point_id)
             .where(pi_t.c.blueprint_version_id == gr.get("blueprint_version_id"))
             .order_by(pi_t.c.item_index)
         ).all()
@@ -208,6 +209,8 @@ def _full_pipeline_to_candidate_paper(session, *, fail_indices=None):
             out.append({
                 "plan_item_id": item["id"],
                 "knowledge_card_id": item.get("knowledge_card_id"),
+                # 真实图会把合同溯源字段盖到题上（_stamp_question），mock 同口径
+                "exam_point_id": item.get("exam_point_id"),
                 "stem": f"原始题干 n={n+1}",
                 "options": [f"A{n+1}", f"B{n+1}", f"C{n+1}", f"D{n+1}"],
                 "answer": f"A{n+1}",
@@ -251,6 +254,42 @@ def test_update_rejected_after_finalize(session):
             course_id="c1", paper_version_id=pv_id, item_index=1,
             teacher_override_patch={"stem": "新题干"},
         )
+
+
+# --- P1 考点名快照：写卷时随 exam_point_id 落 title/code，读取原样透传 ---
+
+def test_exam_point_title_code_snapshot(session):
+    pv_id, _ = _full_pipeline_to_candidate_paper(session)
+
+    # 1) generated_questions 载荷带快照键，且与 exam_points 表一致
+    rows = session.execute(
+        select(generated_questions.c.payload).where(
+            generated_questions.c.course_id == "c1",
+            generated_questions.c.revision_no == 1,
+        )
+    ).all()
+    assert rows
+    snapshot: dict[str, tuple[str, str]] = {}
+    for r in rows:
+        p = r._mapping["payload"]
+        assert p.get("exam_point_id"), "mock 题应带 exam_point_id"
+        assert p.get("exam_point_title"), "载荷缺 exam_point_title 快照"
+        assert p.get("exam_point_code"), "载荷缺 exam_point_code 快照"
+        snapshot[p["exam_point_id"]] = (p["exam_point_title"], p["exam_point_code"])
+    assert snapshot == {
+        "au1": ("考点1", "EP1"),
+        "au2": ("考点2", "EP2"),
+        "au3": ("考点3", "EP3"),
+    }
+
+    # 2) 读取接口把快照透传给前端：即便日后旧考点 ID 在目录中失联，
+    #    试卷仍能显示真实考点名（前端优先读快照字段）
+    pv = get_paper_version(session, pv_id, course_id="c1")
+    assert pv["questions"]
+    for q in pv["questions"]:
+        title, code = snapshot[q["exam_point_id"]]
+        assert q["exam_point_title"] == title
+        assert q["exam_point_code"] == code
 
 
 def test_update_rejects_blank_stem_and_empty_answer_override(session):

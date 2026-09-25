@@ -7,7 +7,7 @@ import { getErrorMessage } from '@/api/errors';
 import { formatPercent } from '@/lib/format';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
-import { Modal, Badge, Spinner, ProgressPanel } from '@/components/ui';
+import { Modal, Badge, ProgressPanel, SkeletonForm } from '@/components/ui';
 import { ExamRulesCard } from './ExamRulesCard';
 import type { FrameworkCandidate, CurrentFrameworkResponse, AssessmentAnchor, FrameworkExamPoint } from '@/types/api';
 
@@ -383,8 +383,14 @@ export default function FrameworkPage() {
 
   if (loading) {
     return (
-      <div className="page-enter" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '120px 20px' }}>
-        <Spinner size="lg" />
+      <div className="page-enter" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        {/* 骨架屏贴合「考核规则卡 + 大纲卡片」布局，避免加载完布局跳变 */}
+        <div className="glass-card" style={{ padding: '24px' }}>
+          <SkeletonForm fields={3} />
+        </div>
+        <div className="glass-card" style={{ padding: '24px' }}>
+          <SkeletonForm fields={4} />
+        </div>
       </div>
     );
   }

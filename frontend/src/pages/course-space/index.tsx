@@ -117,7 +117,10 @@ export default function CourseSpacePage() {
             display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '20px',
           }}>
             {loading ? (
-              <p style={{ color: 'var(--text-secondary)', fontSize: '0.9375rem', padding: '24px 4px' }}>加载课程中…</p>
+              // 直接铺进父网格：形状与真实课程卡一致，加载完不跳变
+              Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="skeleton skeleton-card" />
+              ))
             ) : (
               <>
             {courses.map((course) => (

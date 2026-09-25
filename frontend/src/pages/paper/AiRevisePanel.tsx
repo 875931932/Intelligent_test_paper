@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, RotateCcw, Sparkles, X } from 'lucide-react';
+import { Check, RotateCcw, Sparkles } from 'lucide-react';
 import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
 import { useAuthStore } from '@/stores/auth';
@@ -40,14 +40,13 @@ function sameValue(a: unknown, b: unknown): boolean {
  * 确认后走既有 PATCH teacher_override 落库；应用后可一键撤销。
  */
 export function AiRevisePanel({
-  courseId, pvId, item, onApplied, onClose,
+  courseId, pvId, item, onApplied,
 }: {
   courseId: string;
   pvId: string;
   item: PaperVersionItem;
   /** 应用/撤销后通知父级刷新试卷 */
   onApplied: () => void;
-  onClose: () => void;
 }) {
   const token = useAuthStore((s) => s.token);
   const addToast = useToastStore((s) => s.addToast);
@@ -147,7 +146,6 @@ export function AiRevisePanel({
 
   return (
     <div
-      className="glass-card"
       style={{
         padding: '16px 24px 16px 22px',
         borderLeft: '3px solid var(--purple, #7c5cff)',
@@ -156,18 +154,7 @@ export function AiRevisePanel({
         gap: '12px',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <Sparkles size={16} style={{ color: 'var(--purple, #7c5cff)' }} />
-        <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>AI 改题 · 第 {item.item_index} 题</span>
-        <Badge variant="purple">提案需确认</Badge>
-        <button
-          onClick={onClose}
-          aria-label="关闭"
-          style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', display: 'flex' }}
-        >
-          <X size={16} />
-        </button>
-      </div>
+      {/* 头部（标题/最小化/关闭）由 FloatingPanel 外壳统一提供 */}
 
       {/* 指令输入在面板底部（见下），结果区可任意加长而不挤压输入区 */}
 

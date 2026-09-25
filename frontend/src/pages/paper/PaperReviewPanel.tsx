@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { FileSearch, X } from 'lucide-react';
+import { FileSearch } from 'lucide-react';
 import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
 import { useAuthStore } from '@/stores/auth';
@@ -19,11 +19,10 @@ const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
  * 修复问题由教师走试卷页既有编辑/AI 改题/重新生成功能。
  */
 export function PaperReviewPanel({
-  courseId, pvId, onClose,
+  courseId, pvId,
 }: {
   courseId: string;
   pvId: string;
-  onClose: () => void;
 }) {
   const token = useAuthStore((s) => s.token);
   const addToast = useToastStore((s) => s.addToast);
@@ -71,7 +70,6 @@ export function PaperReviewPanel({
 
   return (
     <div
-      className="glass-card"
       style={{
         padding: '16px 24px 16px 22px',
         borderLeft: '3px solid #5856d6',
@@ -80,18 +78,7 @@ export function PaperReviewPanel({
         gap: '12px',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <FileSearch size={16} style={{ color: '#5856d6' }} />
-        <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>AI 质量评审</span>
-        <Badge variant="purple">只读报告</Badge>
-        <button
-          onClick={onClose}
-          aria-label="关闭"
-          style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', display: 'flex' }}
-        >
-          <X size={16} />
-        </button>
-      </div>
+      {/* 头部（标题/最小化/关闭）由 FloatingPanel 外壳统一提供 */}
 
       {/* 关注点输入在面板底部（见下），报告可任意加长而不挤压输入区 */}
 
@@ -165,15 +152,10 @@ export function PaperReviewPanel({
         </>
       )}
 
-      {/* 页脚：范围定位（试卷稿，不是学生答卷评分）+ 落地路径 + 关闭 */}
-      <div style={{ display: 'flex', gap: '10px', alignItems: 'center', paddingTop: '10px', borderTop: '1px solid rgba(0,0,0,0.06)' }}>
-        <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', margin: 0, lineHeight: 1.6 }}>
-          AI 只读评审，不含学生答卷评分；修复请用试卷页既有编辑/改题功能。
-        </p>
-        <Button size="sm" variant="ghost" onClick={onClose} style={{ marginLeft: 'auto' }}>
-          关闭
-        </Button>
-      </div>
+      {/* 页脚：范围定位（试卷稿，不是学生答卷评分）+ 落地路径；关闭由外壳提供 */}
+      <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', margin: 0, lineHeight: 1.6, paddingTop: '10px', borderTop: '1px solid rgba(0,0,0,0.06)' }}>
+        AI 只读评审，不含学生答卷评分；修复请用试卷页既有编辑/改题功能。
+      </p>
 
       {/* 关注点输入（悬浮）：置于面板末尾并 sticky 钉住滚动容器底边，
           报告再长也不会把输入条推出视野；不透明背景 + 阴影保证浮在报告

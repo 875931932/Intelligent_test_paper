@@ -7,7 +7,7 @@ import { api } from '@/api/client';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
-import { Badge, ProgressPanel, type ProgressStatus } from '@/components/ui';
+import { Badge, ProgressPanel, FloatingPanel, type ProgressStatus } from '@/components/ui';
 import { useNameMaps, type NameMaps } from '@/hooks/useNameMaps';
 import { clabel, dlabel, qlabel } from '@/lib/examDisplay';
 import { formatScore, friendlyId } from '@/lib/format';
@@ -466,23 +466,30 @@ function renderContract({
             </ul>
           </div>
         )}
+        {/* AI 解释：只读建议，锚定悬浮在被点行的下方（不占表格上方空间） */}
         {explainItem !== null && (
-          <ContractExplainPanel
-            key={explainItem}
-            courseId={courseId}
-            projectId={sp.id}
-            itemIndex={explainItem}
-            allocationSeed={contractVariant - 1}
-            blueprintVersionId={sp.active_blueprint_version_id}
+          <FloatingPanel
+            title={<>AI 解释 · 题位 {explainItem} <Badge variant="purple">只读建议</Badge></>}
+            pillLabel={`AI 解释 · 题位 ${explainItem}`}
+            anchorSelector={`[data-contract-slot="${explainItem}"]`}
             onClose={() => setExplainItem(null)}
-          />
+          >
+            <ContractExplainPanel
+              key={explainItem}
+              courseId={courseId}
+              projectId={sp.id}
+              itemIndex={explainItem}
+              allocationSeed={contractVariant - 1}
+              blueprintVersionId={sp.active_blueprint_version_id}
+            />
+          </FloatingPanel>
         )}
         <div className="table-wrapper">
           <table className="data-table">
             <thead><tr><th>#</th><th>题型</th><th>分值</th><th>难度</th><th>考点</th><th>知识卡</th><th>操作</th></tr></thead>
             <tbody>
               {contractSnapshot.slots.map((s) => (
-                <tr key={s.item_index}>
+                <tr key={s.item_index} data-contract-slot={s.item_index}>
                   {/* item_index 与 plan_items 同源 1 起、与蓝图表同号，勿 +1 */}
                   <td>{s.item_index}</td>
                   <td>{qlabel(s.question_type)}</td>

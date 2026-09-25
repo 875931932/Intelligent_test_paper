@@ -11,7 +11,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
-import { Modal } from '@/components/ui';
+import { Modal, FloatingPanel } from '@/components/ui';
 import { useNameMaps } from '@/hooks/useNameMaps';
 import {
   DIFFICULTY_OPTIONS, EXAM_PROJECT_STATUS_META, PAPER_STATUS_META,
@@ -1168,13 +1168,16 @@ export default function PaperPanel({
         onReview={() => setReviewOpen((v) => !v)}
       />
 
-      {/* AI 质量评审面板：只读报告，工具栏按钮开关；试卷加载即可用（含 readonly/定稿态） */}
+      {/* AI 质量评审面板：只读报告，工具栏按钮开关；试卷加载即可用（含 readonly/定稿态）。
+          悬浮于右下角，不占页面流（旧版插在页首会把双栏整体下压） */}
       {reviewOpen && (
-        <PaperReviewPanel
-          courseId={courseId}
-          pvId={pv.id}
+        <FloatingPanel
+          title={<>AI 质量评审 <Badge variant="purple">只读报告</Badge></>}
+          pillLabel="AI 质量评审"
           onClose={() => setReviewOpen(false)}
-        />
+        >
+          <PaperReviewPanel courseId={courseId} pvId={pv.id} />
+        </FloatingPanel>
       )}
 
       {/* 双栏：左题号索引，右当前题目。两卡等高平齐：高度的唯一来源是这一行
@@ -1229,7 +1232,10 @@ export default function PaperPanel({
             <QuestionDetail
               key={current.item_index}
               item={current}
-              examPointName={current.exam_point_id ? maps.examPoints[current.exam_point_id] : undefined}
+              examPointName={
+                current.exam_point_title ||
+                (current.exam_point_id ? maps.examPoints[current.exam_point_id] : undefined)
+              }
               editing={editing}
               readonly={readonly}
               submitting={saving}
@@ -1256,16 +1262,22 @@ export default function PaperPanel({
               请在左侧选择题号
             </div>
           )}
-          {/* AI 改题面板：提案 → diff 预览 → 确认后走既有 PATCH 落库 */}
+          {/* AI 改题面板：提案 → diff 预览 → 确认后走既有 PATCH 落库。
+              悬浮于右下角，不占双栏布局 */}
           {current && !editing && aiOpen && (
-            <AiRevisePanel
-              key={current.item_index}
-              courseId={courseId}
-              pvId={pv.id}
-              item={current}
-              onApplied={onChanged}
+            <FloatingPanel
+              title={<>AI 改题 · 第 {current.item_index} 题 <Badge variant="purple">提案需确认</Badge></>}
+              pillLabel={`AI 改题 · 第 ${current.item_index} 题`}
               onClose={() => setAiOpen(false)}
-            />
+            >
+              <AiRevisePanel
+                key={current.item_index}
+                courseId={courseId}
+                pvId={pv.id}
+                item={current}
+                onApplied={onChanged}
+              />
+            </FloatingPanel>
           )}
         </div>
       </div>

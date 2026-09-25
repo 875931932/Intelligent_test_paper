@@ -7,7 +7,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
 import { Badge, Input } from '@/components/ui';
-import { SkeletonCardGrid } from '@/components/ui/Skeleton';
+import { SkeletonCardGrid, SkeletonList } from '@/components/ui/Skeleton';
 import PipelinePanel from './PipelinePanel';
 import PaperPanel from './PaperPanel';
 import { EXAM_PROJECT_STATUS_META, PAPER_STATUS_META } from '@/lib/examDisplay';
@@ -349,8 +349,8 @@ export default function PaperPage() {
       </div>
 
       {tab === 'pipeline' ? null : paperLoading && !paper ? (
-        <div className="glass-card" style={{ padding: '48px 24px', textAlign: 'center', color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>
-          正在加载试卷…
+        <div className="glass-card" style={{ padding: '32px 24px' }}>
+          <SkeletonList rows={4} />
         </div>
       ) : !paper ? (
         <div className="glass-card" style={{ padding: '48px 24px', textAlign: 'center' }}>

@@ -8,7 +8,7 @@ import type { LucideIcon } from 'lucide-react';
 import { api } from '@/api/client';
 import { useCourseStore } from '@/stores/course';
 import { useToastStore } from '@/stores/toast';
-import { Button, Modal, Badge, Spinner } from '@/components/ui';
+import { Button, Modal, Badge, SkeletonCardGrid } from '@/components/ui';
 import { computeSha256 } from '@/lib/sha256';
 import type { MaterialResponse } from '@/types/api';
 
@@ -395,11 +395,7 @@ export default function MaterialsPage() {
 
   const fileGrid = () => {
     if (loading) {
-      return (
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '80px 0' }}>
-          <Spinner size="lg" />
-        </div>
-      );
+      return <SkeletonCardGrid count={6} />;
     }
 
     if (filteredMaterials.length === 0) {

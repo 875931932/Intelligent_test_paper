@@ -474,6 +474,125 @@ body::after {
 }
 
 /* ═══════════════════════════════════════════════
+   AI 对话浮层（FloatingPanel）
+   ═══════════════════════════════════════════════ */
+
+.floating-panel {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: var(--z-floating);
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(72vh, 760px);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-elevated);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 16px 56px rgba(0, 0, 0, 0.18);
+  animation: slideInUp 0.28s var(--ease-out-expo);
+}
+/* 最小化：隐藏而非卸载，子面板轮询/状态保留 */
+.floating-panel.is-minimized {
+  display: none;
+}
+/* 锚定模式：绝对定位悬浮在锚点（被点击的行）下方，top/left 由脚本按
+   锚点实测位置写入，随页面滚动跟随；宽高约束沿用基础规则 */
+.floating-panel.is-anchored {
+  position: absolute;
+  right: auto;
+  bottom: auto;
+}
+.floating-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 10px 10px 16px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  flex-shrink: 0;
+}
+.floating-panel-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text);
+  overflow: hidden;
+  white-space: nowrap;
+}
+.floating-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-tertiary);
+  cursor: pointer;
+}
+.floating-icon-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+  color: var(--text);
+}
+/* 内部滚动：头部/胶囊固定，内容区自滚（面板内输入条自身 sticky 底边） */
+.floating-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.floating-pill {
+  position: fixed;
+  /* 胶囊统一挂顶栏下方右侧：右下角整块让给展开面板，两个位置天然不打架，
+     也不与左侧悬浮岛侧栏冲突 */
+  top: 64px;
+  right: 24px;
+  z-index: var(--z-floating);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: var(--radius-full);
+  background: var(--surface-elevated);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.16);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  animation: slideInUp 0.28s var(--ease-out-expo);
+}
+/* 多个面板同时最小化时，胶囊纵向错开（body 直系 button 只有胶囊） */
+body > .floating-pill:nth-of-type(2) {
+  top: 112px;
+}
+@media (max-width: 640px) {
+  /* 窄屏面板改底部抽屉：贴边全宽，避免悬浮卡遮挡半屏（锚定模式除外——
+     它按行定位，left/top 是脚本内联值，若再补 right/bottom 会被拉伸） */
+  .floating-panel:not(.is-anchored) {
+    left: 8px;
+    right: 8px;
+    bottom: 8px;
+    width: auto;
+    max-height: 78vh;
+  }
+  .floating-pill {
+    top: 60px;
+    left: 8px;
+    right: 8px;
+    width: auto;
+    justify-content: center;
+  }
+  body > .floating-pill:nth-of-type(2) {
+    top: 108px;
+  }
+}
+
+/* ═══════════════════════════════════════════════
    Toast
    ═══════════════════════════════════════════════ */
 

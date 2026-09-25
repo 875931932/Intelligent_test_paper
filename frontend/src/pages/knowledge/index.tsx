@@ -9,7 +9,7 @@ import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
 import { formatConfidence, formatPercent } from '@/lib/format';
 import { useToastStore } from '@/stores/toast';
-import { Button, Modal, Select, Badge, Spinner, ProgressPanel } from '@/components/ui';
+import { Button, Modal, Select, Badge, Spinner, ProgressPanel, SkeletonTable } from '@/components/ui';
 import type {
   PublishedKnowledgeResponse, KnowledgeCard, AssessmentUnit, EvidenceChunk,
   FrameworkExamPoint, KnowledgeCandidatePayload, CandidateKnowledgeTopic,
@@ -469,8 +469,11 @@ export default function KnowledgePage() {
 
   if (loading) {
     return (
-      <div className="page-enter" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '120px 20px' }}>
-        <Spinner size="lg" />
+      <div className="page-enter" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+        {/* 骨架屏贴合默认「目录树 + 表格」布局，避免加载完布局跳变 */}
+        <div className="glass-card" style={{ padding: '24px' }}>
+          <SkeletonTable rows={6} />
+        </div>
       </div>
     );
   }

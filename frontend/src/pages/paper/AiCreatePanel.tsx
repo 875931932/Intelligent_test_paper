@@ -1,11 +1,12 @@
-import { useEffect, useState } from 'react';
-import { Check, Sparkles } from 'lucide-react';
+import { useEffect, useState, type CSSProperties } from 'react';
+import { Check, ChevronDown, Sparkles } from 'lucide-react';
 import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
+import { Spinner } from '@/components/ui/Spinner';
 import type { AiCreateProposal, AiCreateResult, TaskRun } from '@/types/api';
 import { DIFFICULTY_LABELS, QUESTION_TYPE_LABELS, toText } from '@/lib/examDisplay';
 
@@ -41,6 +42,9 @@ export function AiCreatePanel({
   const [taskRunId, setTaskRunId] = useState<string | null>(null);
   const [result, setResult] = useState<AiCreateResult | null>(null);
   const [filled, setFilled] = useState(false);
+  // 默认折叠成一条：新增弹窗首屏应是出题表单，AI 生成是可选入口。
+  // 折叠只卸载内容块，组件本身不卸载——轮询与已输入的指令都保留。
+  const [collapsed, setCollapsed] = useState(true);
 
   // 轮询生成任务（与 AiRevisePanel 同款：依赖只取 id，终态自停）
   useEffect(() => {
@@ -94,22 +98,56 @@ export function AiCreatePanel({
     addToast('提案已填入表单，请核对分值后点「加入试卷」', 'success');
   };
 
-  return (
-    <div
-      className="glass-card"
+  const rootStyle: CSSProperties = {
+    borderLeft: '3px solid var(--purple, #7c5cff)',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '12px',
+  };
+
+  // 折叠条：整条可点。折叠态只渲染这一条（首屏让位给出题表单），
+  // 展开态在其下方带出指令区与提案预览
+  const toggleBar = (
+    <button
+      type="button"
+      onClick={() => setCollapsed((v) => !v)}
+      aria-expanded={!collapsed}
       style={{
-        padding: '16px 24px 16px 22px',
-        borderLeft: '3px solid var(--purple, #7c5cff)',
-        display: 'flex',
-        flexDirection: 'column',
-        gap: '12px',
+        display: 'flex', alignItems: 'center', gap: '8px', width: '100%',
+        background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+        textAlign: 'left', color: 'var(--text)',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <Sparkles size={16} style={{ color: 'var(--purple, #7c5cff)' }} />
-        <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>AI 生成题目</span>
-        <Badge variant="purple">提案需确认</Badge>
+      <Sparkles size={16} style={{ color: 'var(--purple, #7c5cff)', flexShrink: 0 }} />
+      <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>AI 生成题目</span>
+      <Badge variant="purple">提案需确认</Badge>
+      {running && <Spinner size="sm" />}
+      {collapsed && result && <Badge variant="success">已生成提案</Badge>}
+      <span style={{ marginLeft: 'auto', fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>
+        {collapsed ? '展开' : '收起'}
+      </span>
+      <ChevronDown
+        size={14}
+        style={{
+          color: 'var(--text-tertiary)', flexShrink: 0,
+          transform: collapsed ? 'rotate(0deg)' : 'rotate(180deg)',
+          transition: 'transform 0.2s',
+        }}
+      />
+    </button>
+  );
+
+  if (collapsed) {
+    return (
+      <div className="glass-card" style={{ ...rootStyle, padding: '10px 14px' }}>
+        {toggleBar}
       </div>
+    );
+  }
+
+  return (
+    <div className="glass-card" style={{ ...rootStyle, padding: '16px 24px 16px 22px' }}>
+      {toggleBar}
 
       {/* 指令输入在面板底部（见下），提案预览可任意加长而不挤压输入区 */}
 

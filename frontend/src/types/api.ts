@@ -464,6 +464,9 @@ export interface PaperVersionItem {
   plan_item_id?: string | null;
   knowledge_card_id?: string | null;
   exam_point_id?: string | null;
+  /** 生成时写进载荷的考点名快照：目录重建后映射失效，展示优先读它（P1 后端增量） */
+  exam_point_title?: string | null;
+  exam_point_code?: string | null;
   question_type: string;
   stem: string;
   options?: Record<string, string> | string[];

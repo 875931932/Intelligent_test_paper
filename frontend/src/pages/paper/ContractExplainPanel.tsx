@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Sparkles, X } from 'lucide-react';
+import { Sparkles } from 'lucide-react';
 import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
 import { useAuthStore } from '@/stores/auth';
@@ -18,7 +18,7 @@ const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
  * 「合同修订」（revise → confirm）或切换分配方案重新分配。
  */
 export function ContractExplainPanel({
-  courseId, projectId, itemIndex, allocationSeed, blueprintVersionId, onClose,
+  courseId, projectId, itemIndex, allocationSeed, blueprintVersionId,
 }: {
   courseId: string;
   projectId: string;
@@ -27,7 +27,6 @@ export function ContractExplainPanel({
   /** 当前「分配方案」对应的种子（第 N 版 = N-1），解释须与所见方案一致 */
   allocationSeed: number;
   blueprintVersionId?: string | null;
-  onClose: () => void;
 }) {
   const token = useAuthStore((s) => s.token);
   const addToast = useToastStore((s) => s.addToast);
@@ -79,7 +78,6 @@ export function ContractExplainPanel({
 
   return (
     <div
-      className="glass-card"
       style={{
         padding: '16px 24px 16px 22px',
         borderLeft: '3px solid #5856d6',
@@ -88,18 +86,7 @@ export function ContractExplainPanel({
         gap: '12px',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-        <Sparkles size={16} style={{ color: '#5856d6' }} />
-        <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>AI 解释 · 题位 {itemIndex}</span>
-        <Badge variant="purple">只读建议</Badge>
-        <button
-          onClick={onClose}
-          aria-label="关闭"
-          style={{ marginLeft: 'auto', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-tertiary)', display: 'flex' }}
-        >
-          <X size={16} />
-        </button>
-      </div>
+      {/* 头部（标题/最小化/关闭）由 FloatingPanel 外壳统一提供 */}
 
       {/* 追问输入在面板底部（见下），解释可任意加长而不挤压输入区 */}
 
