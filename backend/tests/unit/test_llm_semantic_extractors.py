@@ -11,6 +11,7 @@ from app.adapters.model.llm_semantic_extractors import (
     LLMExamPointEvidenceClassifier,
     LLMExamPointKnowledgeConsolidator,
     LLMJsonClient,
+    LLMKnowledgePointExtractor,
     LLMModelError,
     LLMSyllabusExtractor,
 )
@@ -1728,3 +1729,64 @@ def test_consolidator_rejects_card_with_only_hallucinated_ids():
     assert excinfo.value.error_code == "model_output_evidence_gap"
     assert "GHOST-A" in str(excinfo.value)
     assert "GHOST-B" in str(excinfo.value)
+
+
+def test_extractor_schema_constrained_sends_json_schema_response_format():
+    """schema_constrained=True → 下发 json_schema strict，必填字段由协议保证。
+
+    2026-09-25 故障形态：模型偷懒回 {} 缺 material_version_id，四连重试全数
+    model_schema_validation_failed。strict 解码把 required 全量锁进协议层。
+    """
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        content = json.dumps(
+            {
+                "material_version_id": "mv-1",
+                "dropped_chunk_ids": [],
+                "statements": [
+                    {
+                        "source_evidence_chunk_id": "chunk-1",
+                        "statement": "强化学习通过奖励信号优化策略：智能体执行动作获得奖励并更新策略。",
+                        "content_kind": "mechanism",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+        return httpx.Response(
+            200,
+            headers={"x-request-id": "req-1"},
+            json={"choices": [{"message": {"content": content}}]},
+        )
+
+    client = LLMJsonClient(
+        api_key="test-key",
+        base_url="https://llm.invalid/v1",
+        # 型号档案优先于 base_url：json_schema 能力由型号决定
+        model="step-3.7-flash",
+        max_attempts=1,
+        client=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    extractor = LLMKnowledgePointExtractor(client, schema_constrained=True)
+    chunk = StagingChunk(
+        id="chunk-1",
+        material_version_id="mv-1",
+        content="强化学习通过奖励信号优化策略。",
+    )
+    result = extractor.extract_material(material_version_id="mv-1", chunks=[chunk])
+    assert [item.statement for item in result.statements]
+
+    body = json.loads(requests[0].content)
+    fmt = body["response_format"]
+    assert fmt["type"] == "json_schema"
+    assert fmt["json_schema"]["strict"] is True
+    schema = fmt["json_schema"]["schema"]
+    # strict 约定：全量 required + additionalProperties:false（杜绝回 {} 缺字段）
+    assert "material_version_id" in schema["required"]
+    assert set(schema["required"]) == set(schema["properties"])
+    assert schema["additionalProperties"] is False
+
+    # 默认关闭 → 不下发 schema（老行为由既有 json_object 断言锁定）
+    assert LLMKnowledgePointExtractor(client).response_schema is None

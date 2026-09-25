@@ -90,6 +90,13 @@ class Settings(BaseSettings):
     # low/medium/high）。信息抽取用 low 最省预算，避免思考占满输出额度导致
     # content 为空/截断非 JSON。显式下发优先于全局 llm_disable_thinking。
     organization_extraction_reasoning_effort: str = "low"
+    # 抽取响应启用 json_schema 严格结构约束（官方 JSON Mode：json_schema+strict，
+    # 2026-09-25 实测生产 step_plan 端点接受）：解码按 _ExtractionResponse 的
+    # schema 走，必填字段在场由协议保证，从源头消灭「模型偷懒回 {} 缺
+    # material_version_id」的 model_schema_validation_failed 连环重试。
+    # false 回退 json_object 老行为；未收录型号由档案自动回退，不受此开关影响
+    # （见 adapters/model/model_profiles.py）。
+    organization_extraction_json_schema: bool = True
     # 抽取/分类/归并阶段关闭长链路推理：OpenAI 兼容端点发 thinking=disabled；
     # StepFun 无思考开关，改用 reasoning_effort=low（官方标注 low 档适合信息
     # 抽取），避免推理消耗输出额度导致 JSON 内容为空/被截断，并节省 token。true=关闭。

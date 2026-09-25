@@ -13,6 +13,8 @@ import httpx
 
 from app.domain.model_calls import ModelCallContext
 
+from app.adapters.model.model_profiles import normalize_effort, resolve_model_profile
+
 logger = logging.getLogger("model.gateway")
 
 # 并发洪泛是分类/归并阶段 HTTP 429 限流的根源：organization_max_workers=16
@@ -196,6 +198,7 @@ class LLMJsonClient:
         tool: dict[str, Any] | None = None,
         max_tokens: int | None = None,
         reasoning_effort: str | None = None,
+        response_schema: dict[str, Any] | None = None,
     ) -> dict:
         prompt = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else dict(payload)
         canonical_prompt = json.dumps(prompt, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -262,7 +265,15 @@ class LLMJsonClient:
             should_retry = True
             try:
                 with _LLM_SEMAPHORE:
-                    response = self._post(system_prompt, canonical_prompt, temperature, tool, max_tokens, reasoning_effort)
+                    response = self._post(
+                        system_prompt,
+                        canonical_prompt,
+                        temperature,
+                        tool,
+                        max_tokens,
+                        reasoning_effort,
+                        response_schema,
+                    )
                 headers = getattr(response, "headers", {})
                 request_id = headers.get("x-request-id") if hasattr(headers, "get") else None
                 status_code = getattr(response, "status_code", None)
@@ -470,18 +481,13 @@ class LLMJsonClient:
         tool: dict[str, Any] | None = None,
         max_tokens: int | None = None,
         reasoning_effort: str | None = None,
+        response_schema: dict[str, Any] | None = None,
     ) -> httpx.Response:
-        # StepFun（api.stepfun.com/.ai）未文档化 thinking/tool_choice 参数，
-        # 其余 OpenAI 兼容端点两者均支持：按 base_url 分流避免未知参数
-        # 触发 400。tool_choice 缺省时模型若不触发 tool_calls，由
-        # _extract_tool_arguments 兜底解析 content JSON。
-        #
-        # StepFun step-3.7-flash 是推理型模型，可用 reasoning_effort 三档控制
-        # 思考强度（low/medium/high）。信息抽取用 low 最省预算、避免思考占满
-        # 输出额度导致 content 为空/截断非 JSON。调用方可显式传入档位；越过
-        # reasoning_effort 时沿用 disable_thinking=True 的旧行为（stepfun=low，
-        # 非 stepfun=关闭思考）。
-        is_stepfun = "stepfun" in self.base_url
+        # 供应商参数按“型号档案”下发（见 model_profiles.py）：思考控制风格、
+        # tool_choice 门控、json_schema 能力均以档案为准；未收录型号按 base_url
+        # 回退通用 OpenAI 兼容档，历史行为不变。档案同时负责把 reasoning_effort
+        # 收敛到型号支持集（如 step-3.5-flash-2603 只收 low/high）。
+        profile = resolve_model_profile(self.model, base_url=self.base_url)
         json_body: dict[str, Any] = {
             "model": self.model,
             "temperature": temperature,
@@ -494,12 +500,26 @@ class LLMJsonClient:
             json_body["max_tokens"] = max_tokens
         if tool is not None:
             json_body["tools"] = [{"type": "function", "function": tool}]
-            if not is_stepfun:
+            if profile.supports_tool_choice:
                 json_body["tool_choice"] = "required"
+        elif response_schema is not None and profile.supports_json_schema:
+            # strict 结构约束（官方 JSON Mode）：解码按 schema 走，必填字段在场
+            # 由协议保证，不再依赖模型自觉；未收录型号自动回退下方 json_object。
+            json_body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "response",
+                    "strict": True,
+                    "schema": response_schema,
+                },
+            }
         else:
             json_body["response_format"] = {"type": "json_object"}
-        if is_stepfun:
-            effort = reasoning_effort or ("low" if self.disable_thinking else None)
+        if profile.thinking_style == "reasoning_effort":
+            requested = reasoning_effort or (
+                profile.default_effort if self.disable_thinking else None
+            )
+            effort = normalize_effort(requested, profile)
             if effort:
                 json_body["reasoning_effort"] = effort
         elif self.disable_thinking:

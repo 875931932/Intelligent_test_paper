@@ -69,6 +69,8 @@ class JsonRequester(Protocol):
         response_validator=None,
         tool: dict[str, Any] | None = None,
         max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+        response_schema: dict[str, Any] | None = None,
     ) -> dict: ...
 
 
@@ -1307,6 +1309,35 @@ class _ExtractionResponse(BaseModel):
     statements: list[_ExtractionStatementResponse] = Field(default_factory=list)
 
 
+def _stricten_json_schema(node: object) -> None:
+    """就地整形为供应商 strict 约定：凡带 properties 的 object 补
+    additionalProperties:false 并把全部属性列入 required。
+
+    Pydantic 的 extra=forbid 已给 object 附 additionalProperties:false，但
+    required 只含无默认值字段——strict 解码要求全量 required。顺带让
+    dropped_chunk_ids/statements 两个带默认值字段也强制在场（模型输出 [] 即可）。
+    缺字段正是 2026-09-25「模型偷懒回 {} 缺 material_version_id」连环
+    model_schema_validation_failed 的头部根因，strict 解码从协议层杜绝。
+    """
+    if isinstance(node, dict):
+        properties = node.get("properties")
+        if isinstance(properties, dict):
+            node["additionalProperties"] = False
+            node["required"] = sorted(properties)
+        for value in node.values():
+            _stricten_json_schema(value)
+    elif isinstance(node, list):
+        for item in node:
+            _stricten_json_schema(item)
+
+
+def _extraction_strict_schema() -> dict:
+    """抽取响应的 json_schema strict 结构约束（response_format 下发用）。"""
+    schema = _ExtractionResponse.model_json_schema()
+    _stricten_json_schema(schema)
+    return schema
+
+
 class KnowledgePointStatement(BaseModel):
     """从原始块蒸馏出的一条自包含知识点陈述。"""
 
@@ -1331,11 +1362,21 @@ class LLMKnowledgePointExtractor:
     使证据从"原文长文"升级为"可迁移知识点陈述"，减少背景/说明类误判。
     """
 
-    def __init__(self, client: JsonRequester, *, reasoning_effort: str | None = None) -> None:
+    def __init__(
+        self,
+        client: JsonRequester,
+        *,
+        reasoning_effort: str | None = None,
+        schema_constrained: bool = False,
+    ) -> None:
         self.client = client
         # StepFun step-3.7-flash 推理型模型：信息抽取用 low 档最省预算，避免
         # 思考占满输出额度导致 content 为空/截断非 JSON。None 交由客户端默认。
         self.reasoning_effort = reasoning_effort
+        # json_schema strict 结构约束（官方 JSON Mode）：解码按 schema 走，
+        # 必填字段在场由协议保证，不再依赖模型自觉；型号不支持时网关自动
+        # 回退 json_object（见 model_profiles.py）。None=关闭走老行为。
+        self.response_schema = _extraction_strict_schema() if schema_constrained else None
 
     def extract_material(
         self,
@@ -1428,6 +1469,7 @@ class LLMKnowledgePointExtractor:
             response_validator=validate_response,
             max_tokens=max_tokens,
             reasoning_effort=self.reasoning_effort,
+            response_schema=self.response_schema,
         )
         response = collected["response"]
 

@@ -121,6 +121,7 @@ def get_knowledge_point_extractor(request: Request) -> LLMKnowledgePointExtracto
         extractor = LLMKnowledgePointExtractor(
             client,
             reasoning_effort=settings.organization_extraction_reasoning_effort,
+            schema_constrained=settings.organization_extraction_json_schema,
         )
         request.app.state.knowledge_point_extractor = extractor
         return extractor
