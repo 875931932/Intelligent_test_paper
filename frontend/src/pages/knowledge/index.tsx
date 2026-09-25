@@ -216,10 +216,16 @@ export default function KnowledgePage() {
   // Load published（并恢复进行中 / 待确认的构建，刷新后进度不丢失）
   const loadPublished = useCallback(async () => {
     if (!courseId) return;
+    setLoading(true);
     try {
-      setLoading(true);
-      const data = await api.knowledge.getPublished(courseId);
-      if (data?.published !== false) {
+      // 并行拉取已发布目录与最新 run，先判定目标态（published/building/candidate）
+      // 再放行渲染：串行写法会先渲染旧 published 树、再等 3MB 候选加载完才切
+      // 「待确认」，新页面打开必然先闪旧构建再跳新构建（2026-09-25 反馈根治）。
+      const [data, latest] = await Promise.all([
+        api.knowledge.getPublished(courseId).catch(() => null),
+        api.knowledge.getLatest(courseId).catch(() => null),
+      ]);
+      if (data && data.published !== false) {
         // 后端 knowledge_cards 是 {id: card} 字典，卡片对象本身不含 id；
         // 树/图谱/详情均依赖 card.id，这里统一注入，避免点击无响应与 key 重复。
         const kc = data.knowledge_cards || {};
@@ -227,33 +233,24 @@ export default function KnowledgePage() {
           Object.entries(kc).map(([k, v]) => [k, { ...(v as object), id: k }])
         );
         setKnowledge({ ...data, knowledge_cards: kcWithId } as PublishedKnowledgeResponse);
-        setBuildState('published');
         preBuildStateRef.current = 'published';
       } else {
         setKnowledge(null);
-        setBuildState('idle');
         preBuildStateRef.current = 'idle';
       }
-    } catch {
-      setKnowledge(null);
-      setBuildState('idle');
-      preBuildStateRef.current = 'idle';
+      if (latest?.status === 'running' || latest?.status === 'queued') {
+        setBuildState('building');
+        startPolling(latest.run_id);
+      } else if (latest?.status === 'awaiting_teacher_confirmation') {
+        setRunId(latest.run_id);
+        // 成功切「待确认」；失败回退 preBuildStateRef（published/idle）
+        await loadCandidate(latest.run_id);
+      } else {
+        // 无历史 run，或 run 已终态（published/failed/rejected）→ 展示基线
+        setBuildState(preBuildStateRef.current);
+      }
     } finally {
       setLoading(false);
-    }
-    try {
-      const latest = await api.knowledge.getLatest(courseId);
-      if (latest) {
-        if (latest.status === 'running' || latest.status === 'queued') {
-          setBuildState('building');
-          startPolling(latest.run_id);
-        } else if (latest.status === 'awaiting_teacher_confirmation') {
-          setRunId(latest.run_id);
-          await loadCandidate(latest.run_id);
-        }
-      }
-    } catch {
-      // 无历史 run 时忽略
     }
   }, [courseId, startPolling, loadCandidate]);
 
