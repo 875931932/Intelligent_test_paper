@@ -5,6 +5,8 @@
 :root {
   /* ── 背景层 ── */
   --bg: #f2f2f7;
+  /* 主内容区页面底色（Layout 主区），sticky 条的不透明底必须与它同源 */
+  --page-bg: #f4f6f9;
   --bg-secondary: #ffffff;
   --surface: rgba(255, 255, 255, 0.72);
   --surface-solid: #ffffff;

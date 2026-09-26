@@ -398,7 +398,15 @@ export default function FrameworkPage() {
   return (
     <div className="page-enter" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
+      {/* Header：顶部操作 sticky，长内容滚动时「构建新框架」不丢失。
+          padding-top 只在初始态加 6px 内白，卡底边与下方 gap 不动（负 margin 会让
+          sticky 卡在滚动口顶部露出缝隙，故不做负边距补偿） */}
+      <div style={{
+        display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
+        gap: '16px', flexWrap: 'wrap',
+        position: 'sticky', top: 0, zIndex: 'var(--z-sticky)',
+        background: 'var(--page-bg)', paddingTop: '6px',
+      }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <h1 style={{ fontSize: '1.75rem', fontWeight: 700, letterSpacing: '-0.03em' }}>命题框架</h1>

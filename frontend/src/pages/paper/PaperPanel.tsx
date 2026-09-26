@@ -501,13 +501,20 @@ export default function PaperPanel({
           两卡底部即行底，天然平齐；左卡超长时仍靠自身 overflowY 内部滚动。 */}
       <div style={{ display: 'flex', gap: '16px', maxHeight: 'calc(100vh - 140px)' }}>
         <div
-          className="glass-card"
+          className="glass-card paper-index-card"
           style={{
-            width: 240, flexShrink: 0, padding: '10px 8px 14px',
+            width: 240, flexShrink: 0, padding: '0 8px',
             position: 'sticky', top: 16, overflowY: 'auto',
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '0 6px 8px' }}>
+          {/* 滤镜行 sticky top：列表内部滚动到哪操作都在（高度即 --index-toolbar-h，
+              分组头按同一变量改钉在本行下方） */}
+          <div style={{
+            position: 'sticky', top: 0, zIndex: 2,
+            height: 'var(--index-toolbar-h)', boxSizing: 'border-box',
+            margin: '0 -8px', padding: '10px 14px 8px', background: 'var(--surface-solid)',
+            display: 'flex', alignItems: 'center', gap: '6px',
+          }}>
             <Button
               variant={onlyNeedsReview ? 'primary' : 'secondary'} size="sm"
               onClick={toggleFilter}
@@ -532,8 +539,13 @@ export default function PaperPanel({
               }}
             />
           )}
+          {/* 操作行 sticky bottom：列表停在顶部时「新增题目」不被推出视野（全出血盖住卡底内距） */}
           {!readonly && (
-            <div style={{ padding: '10px 6px 0', marginTop: '6px', borderTop: '1px solid rgba(0,0,0,0.06)' }}>
+            <div style={{
+              position: 'sticky', bottom: 0, margin: '6px -8px 0',
+              padding: '10px 14px 14px', background: 'var(--surface-solid)',
+              borderTop: '1px solid rgba(0,0,0,0.06)',
+            }}>
               <Button variant="secondary" size="sm" onClick={() => setAddOpen(true)} icon={<Plus size={14} />} style={{ width: '100%' }}>
                 新增题目
               </Button>

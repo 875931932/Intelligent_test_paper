@@ -252,11 +252,12 @@ export function CandidatePanel({ candidate, courseId, runId, supplementOps, onSu
               return (
                 <div
                   key={code}
+                  className="reveal-hover"
                   style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', borderRadius: '10px', background: 'rgba(0,0,0,0.02)', flexWrap: 'wrap' }}
                 >
                   <div style={{ flex: '1 1 260px', minWidth: 0 }}>
                     <div style={{ fontSize: '0.875rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pointLabels.get(code) || code}</div>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>{code}</div>
+                    <div className="reveal-target" style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>{code}</div>
                     {pointRequirement.has(code) && (
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', lineHeight: 1.5, marginTop: 2, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
                         {pointRequirement.get(code)}

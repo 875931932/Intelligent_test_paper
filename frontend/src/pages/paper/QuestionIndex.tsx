@@ -25,7 +25,7 @@ export function QuestionIndex({
         <div key={g.key}>
           <div style={{
             display: 'flex', alignItems: 'baseline', justifyContent: 'space-between',
-            padding: '10px 8px 6px', position: 'sticky', top: 0,
+            padding: '10px 8px 6px', position: 'sticky', top: 'var(--index-toolbar-h, 0px)',
             background: 'var(--bg)', zIndex: 1,
           }}>
             <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-secondary)' }}>{g.label}</span>

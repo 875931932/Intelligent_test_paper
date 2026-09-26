@@ -140,6 +140,22 @@ body::after {
   flex-direction: column;
   gap: 12px;
 }
+/* F2 渐进披露：次级信息（如候选行的 code 副行）默认隐形、悬浮/聚焦该行才显示。
+   opacity 保位——行高不回流，悬浮时不产生跳动；键盘 focus-within 同样可达 */
+.reveal-hover .reveal-target {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+.reveal-hover:hover .reveal-target,
+.reveal-hover:focus-within .reveal-target {
+  opacity: 1;
+}
+
+/* F2 sticky：试卷索引卡滤镜行高度锚点。分组头（QuestionIndex）按同一变量钉在
+   滤镜行正下方，52 = 上10 + 按钮34 + 下8（改 btn-sm 高度时两处一起改） */
+.paper-index-card {
+  --index-toolbar-h: 52px;
+}
 
 /* ═══════════════════════════════════════════════
    Floating Island Sidebar

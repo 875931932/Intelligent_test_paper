@@ -1,7 +1,7 @@
 import { Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Pencil, Sparkles, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
-import { dlabel, qlabel } from '@/lib/examDisplay';
+import { clabel, dlabel, qlabel } from '@/lib/examDisplay';
 import { formatScore, friendlyId } from '@/lib/format';
 import type { PaperVersionItem } from '@/types/api';
 import { QuestionEditor } from './QuestionEditor';
@@ -39,6 +39,23 @@ export function QuestionDetail({
   const keys = optionKeysOf(item.answer, opts.map((o) => o.text));
   const answerText = normalizeAnswer(item.answer);
 
+  // 元数据（考点/难度/认知/审核原因）默认收进一行摘要徽标，details 展开看详情（F2 渐进披露）
+  const epText = examPointName || (item.exam_point_id ? friendlyId(item.exam_point_id, '未匹配考点') : '');
+  const epTitle = !examPointName && item.exam_point_id ? item.exam_point_id : undefined;
+  const hasMeta = !!(epText || item.cognitive_level || (flagged && item.needs_review_reason));
+  const headerBadges = (
+    <>
+      <span style={{ fontSize: '1.05rem', fontWeight: 700, color: 'var(--text-tertiary)' }}>{item.item_index}.</span>
+      <Badge variant="info">{qlabel(item.question_type)}</Badge>
+      <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{formatScore(item.score)} 分</span>
+      {item.difficulty && <Badge variant="default">{dlabel(item.difficulty)}</Badge>}
+      {item.cognitive_level && <Badge variant="default">{clabel(item.cognitive_level)}</Badge>}
+      {item.has_override && <Badge variant="purple">已修改</Badge>}
+      {flagged && <Badge variant="warning">需审核</Badge>}
+      {!answerText && <Badge variant="error">缺答案</Badge>}
+    </>
+  );
+
   return (
     <div
       className="glass-card"
@@ -51,15 +68,35 @@ export function QuestionDetail({
         borderLeft: '3px solid ' + (flagged ? 'var(--warning)' : 'rgba(0,113,227,0.35)'),
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-        <span style={{ fontSize: '1.05rem', fontWeight: 700, color: 'var(--text-tertiary)' }}>{item.item_index}.</span>
-        <Badge variant="info">{qlabel(item.question_type)}</Badge>
-        <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{formatScore(item.score)} 分</span>
-        {item.difficulty && <Badge variant="default">{dlabel(item.difficulty)}</Badge>}
-        {item.has_override && <Badge variant="purple">已修改</Badge>}
-        {flagged && <Badge variant="warning">需审核</Badge>}
-        {!answerText && <Badge variant="error">缺答案</Badge>}
-      </div>
+      {/* 一行摘要徽标：阅读态作为 details 摘要（展开看考点全文/审核原因），编辑态直接平铺 */}
+      {editing || !hasMeta ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>{headerBadges}</div>
+      ) : (
+        <details>
+          <summary style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap', cursor: 'pointer', userSelect: 'none', listStyle: 'none' }}>
+            {headerBadges}
+            {epText && (
+              <span title={epTitle} style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', maxWidth: '240px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {epText}
+              </span>
+            )}
+            <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>详情 ▾</span>
+          </summary>
+          <div style={{ marginTop: '8px', padding: '8px 12px', borderRadius: 8, background: 'rgba(0,0,0,0.03)', fontSize: '0.8rem', lineHeight: 1.7, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {epText && (
+              <div title={epTitle}>
+                考点：{epText}{item.exam_point_code ? `（${item.exam_point_code}）` : ''}
+              </div>
+            )}
+            {item.cognitive_level && <div>认知：{clabel(item.cognitive_level)}</div>}
+            {flagged && item.needs_review_reason && (
+              <div title={item.needs_review_reason} style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', wordBreak: 'break-word' }}>
+                <span style={{ fontWeight: 600, color: 'var(--warning)' }}>待审核原因：</span>{item.needs_review_reason}
+              </div>
+            )}
+          </div>
+        </details>
+      )}
 
       {editing ? (
         <div style={{ marginTop: '16px' }}>
@@ -135,24 +172,6 @@ export function QuestionDetail({
               <summary style={{ cursor: 'pointer', color: 'var(--text-tertiary)', userSelect: 'none' }}>评分细则</summary>
               <div style={{ marginTop: '6px', color: 'var(--text-secondary)', lineHeight: 1.75, whiteSpace: 'pre-wrap' }}>{rubricText(item.rubric)}</div>
             </details>
-          )}
-
-          {flagged && item.needs_review_reason && (
-            <div style={{
-              marginTop: '14px', padding: '10px 14px', borderRadius: 8, fontSize: '0.825rem', lineHeight: 1.65,
-              background: 'var(--warning-subtle)', color: 'var(--text-secondary)',
-            }}>
-              <span style={{ fontWeight: 600, color: 'var(--warning)' }}>待审核原因：</span>{item.needs_review_reason}
-            </div>
-          )}
-
-          {(examPointName || item.exam_point_id) && (
-            <div
-              style={{ marginTop: '14px', fontSize: '0.75rem', color: 'var(--text-tertiary)' }}
-              title={!examPointName && item.exam_point_id ? item.exam_point_id : undefined}
-            >
-              考点：{examPointName || friendlyId(item.exam_point_id, '未匹配考点')}
-            </div>
           )}
 
           {/* marginTop:auto 把按钮行推到卡片底部（拉伸后的卡片内部留白落在内容与按钮之间） */}
