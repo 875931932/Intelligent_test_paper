@@ -5,6 +5,7 @@ import { clabel, dlabel, qlabel } from '@/lib/examDisplay';
 import { formatScore, friendlyId } from '@/lib/format';
 import type { PaperVersionItem } from '@/types/api';
 import { QuestionEditor } from './QuestionEditor';
+import { StemBlocks } from './StemBlocks';
 import {
   type EditorSubmit,
   draftFromItem, normalizeAnswer, optionKeysOf, optionsToEntries, rubricText,
@@ -128,7 +129,10 @@ export function QuestionDetail({
       ) : (
         <>
           {item.stem && (
-            <div style={{ marginTop: '14px', fontSize: '1rem', lineHeight: 1.8, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{item.stem}</div>
+            <div style={{ marginTop: '14px', fontSize: '1rem', lineHeight: 1.8 }}>
+              {/* 表格/代码块按导出同款渲染，综合题对比表不再是裸竖线纯文字 */}
+              <StemBlocks text={item.stem} />
+            </div>
           )}
 
           {opts.length > 0 ? (
@@ -163,7 +167,9 @@ export function QuestionDetail({
           {item.explanation && (
             <details style={{ marginTop: '14px', fontSize: '0.875rem' }}>
               <summary style={{ cursor: 'pointer', color: 'var(--text-tertiary)', userSelect: 'none' }}>解析</summary>
-              <div style={{ marginTop: '6px', color: 'var(--text-secondary)', lineHeight: 1.75, whiteSpace: 'pre-wrap' }}>{item.explanation}</div>
+              <div style={{ marginTop: '6px', color: 'var(--text-secondary)', lineHeight: 1.75 }}>
+                <StemBlocks text={item.explanation} />
+              </div>
             </details>
           )}
 

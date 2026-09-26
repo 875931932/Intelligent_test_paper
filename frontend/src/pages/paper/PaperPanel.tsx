@@ -335,6 +335,8 @@ export default function PaperPanel({
     try {
       const { blob, filename } = await api.paperVersions.fetchExport(
         kind, courseId, pid, pv.id, token ?? undefined,
+        // 答题卡下载为可编辑 docx；整体预览不走这里，恒为 html
+        kind === 'card' ? 'docx' : undefined,
       );
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
