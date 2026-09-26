@@ -240,20 +240,26 @@ def test_export_answer_key_marks_answers_and_missing(monkeypatch):
     assert "1 题缺答案" in html
 
 
-def test_answer_card_renders_grid_and_write_lines(monkeypatch):
-    """答题卡：客观题只有空白表格，主观题给作答横线，全卷不出题面与答案。"""
+def test_answer_card_renders_grid_lines_and_boxes(monkeypatch):
+    """答题卡按范本：客观题格子表、填空一题一线、主观题矩形大框，全卷不出题面与答案。"""
     pv = dict(_SAMPLE_PV)
     pv["questions"] = _SAMPLE_PV["questions"] + [
-        {"item_index": 3, "question_type": "short_answer", "stem": "简述题", "answer": "要点", "score": 5,
+        {"item_index": 3, "question_type": "fill_blank", "stem": "填空题干", "answer": "LLM", "score": 2,
+         "options": [], "difficulty": "medium"},
+        {"item_index": 4, "question_type": "short_answer", "stem": "简述题", "answer": "要点", "score": 5,
          "options": [], "difficulty": "medium"},
     ]
     monkeypatch.setattr(pvs, "get_paper_version", lambda *a, **k: pv)
     html = export_answer_card_html(_FakeSession(), "pv1", course_id="c1")
     assert "答题卡" in html
+    # 客观题 → 空白格子表
     assert "<th>题号</th>" in html and "<th>1</th>" in html and "<th>2</th>" in html
     assert '<td class="blank-cell"></td>' in html
-    # 5 分主观题 → 5 行作答横线；客观题不产生横线
-    assert html.count('<div class="blank-line"></div>') == 5
+    # 填空题一题一线；简答题一个矩形大框（不按分值铺横线）
+    assert html.count('class="fill-line"') == 1
+    assert html.count('<div class="answer-box"></div>') == 1
+    # 每节标题右侧带得分/评卷人小框（4 节）
+    assert html.count('<table class="mark-box">') == 4
     # 考生信息栏在底部学号栏不重复
     assert '<div class="id-row">' in html
     assert '<div class="sign-row">' not in html
@@ -261,14 +267,16 @@ def test_answer_card_renders_grid_and_write_lines(monkeypatch):
     assert "题干一" not in html and "简述题" not in html and "【答案】" not in html
 
 
-def test_answer_card_gives_each_subquestion_its_own_area(monkeypatch):
+def test_answer_card_comprehensive_gets_full_page_boxes(monkeypatch):
+    """综合题按范本给整页空白大框：除首题外逐题换页，不出分问文字与题面。"""
     pv = dict(_SAMPLE_PV)
-    pv["questions"] = [_comprehensive()]
+    pv["questions"] = [_comprehensive(), _comprehensive(item_index=8)]
     monkeypatch.setattr(pvs, "get_paper_version", lambda *a, **k: pv)
     html = export_answer_card_html(_FakeSession(), "pv1", course_id="c1")
-    assert '<span class="sub-no">（1）</span> 请在不改变整体结构的前提下补全代码' in html
-    assert '<span class="sub-no">（2）</span> 可以从哪些方向优化？' in html
-    assert "（6分）" in html and "（4分）" in html
-    # 6 分问 6 行 + 4 分问 4 行
-    assert html.count('<div class="blank-line"></div>') == 10
-    assert "补全下面的加载代码" not in html  # 答题卡不出题面
+    assert html.count('class="answer-box answer-box--page"') == 2
+    # 首题随节标题同块不换页，第二题起逐题换页
+    assert html.count('class="card-box-item card-box-item--page"') == 1
+    # 不出题面，也不出分问题面/分值（结构在学生卷上）
+    assert "补全下面的加载代码" not in html
+    assert "请在不改变整体结构" not in html and "可以从哪些方向优化" not in html
+    assert "（6分）" not in html and "（4分）" not in html

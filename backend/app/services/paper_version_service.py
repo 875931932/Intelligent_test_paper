@@ -1111,7 +1111,7 @@ _SECTION_ORDER = [
 _CN_NUMERALS = "一二三四五六七八九十"
 
 # 客观题答案可压缩成单个字母/对错 → 答题卡用题号表格作答；
-# 其余题型需要成段作答空间 → 答题卡给横线区。
+# 填空题 → 一题一条横线；其余主观题 → 矩形大框（综合题整页大框）。
 _OBJECTIVE_TYPES = {"single_choice", "multiple_choice", "true_false"}
 
 # 题干自带的层级编号（"1." / "1.1" / "1.1."）与分值前缀（"（10分）"）。
@@ -1259,10 +1259,10 @@ def _exam_shell(
         "考试时间：＿＿＿＿分钟&emsp;&emsp;考试形式：＿＿＿＿"
         "&emsp;&emsp;试卷类型：＿＿＿＿&emsp;&emsp;学分：＿＿＿＿"
     )
+    # 装订线与命题范本一致：左侧双虚线（A卷试卷/答卷A卷均为左侧装订，页面中部与右侧无竖线）
     binding = (
         '<div class="binding binding-left">装订线</div>'
-        '<div class="binding binding-center">装订线</div>'
-        '<div class="binding binding-right">装订线</div>'
+        '<div class="binding binding-left-2"></div>'
         if binding_lines
         else ""
     )
@@ -1276,6 +1276,7 @@ def _exam_shell(
 <html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{_esc(title)}</title>
 <style>
+  @page {{ size: A4; }}
   * {{ box-sizing: border-box; }}
   body {{ font-family: 'SimSun','宋体',serif; max-width: 780px; margin: 0 auto; padding: 36px 28px 60px; color: #1d1d1f; background: #fff; }}
   .doc-title {{ text-align: center; font-size: 22px; font-weight: 700; letter-spacing: 2px; margin: 0 0 14px; }}
@@ -1301,10 +1302,6 @@ def _exam_shell(
   .answer-grid {{ border-collapse: collapse; margin: 4px 0 18px; font-size: 13px; text-align: center; }}
   .answer-grid th, .answer-grid td {{ border: 1px solid #b9b9bd; padding: 5px 9px; }}
   .answer-grid th {{ background: #f5f5f7; font-weight: 600; }}
-  .blank-line {{ border-bottom: 1px solid #8e8e93; height: 30px; margin: 10px 0; }}
-  .write-area {{ margin: 8px 0 4px; }}
-  .write-area .blank-line {{ height: 26px; }}
-  .score-box {{ font-size: 13px; color: #6e6e73; margin-bottom: 2px; }}
   .code {{ font-family: 'Consolas','Courier New',monospace; font-size: 13px; line-height: 1.6;
            background: #f5f5f7; border: 1px solid #e5e5e7; border-radius: 4px;
            padding: 10px 12px; margin: 8px 0; white-space: pre-wrap; overflow-x: auto; }}
@@ -1315,24 +1312,36 @@ def _exam_shell(
   .q-sub-answer {{ font-size: 13px; line-height: 1.8; color: #1a7e34; margin: 2px 0 8px; }}
   .id-row {{ display: flex; flex-wrap: wrap; gap: 8px 26px; font-size: 13px;
              padding: 9px 12px; margin-bottom: 14px; border: 1px solid #1d1d1f; }}
-  .card-question {{ margin-bottom: 18px; page-break-inside: avoid; }}
-  .card-q-head {{ display: flex; justify-content: space-between; align-items: baseline;
-                  font-size: 13.5px; margin-bottom: 2px; }}
-  .card-q-head .q-no {{ font-weight: 700; }}
-  .card-q-score {{ color: #6e6e73; }}
-  .card-sub {{ font-size: 13.5px; line-height: 1.8; margin-top: 6px; }}
-  .card-sub .sub-no {{ font-weight: 700; }}
-  .card-grid th {{ min-width: 34px; }}
+  /* 答题卡（版式对齐 docs/素材/答卷A卷 范本）：格子 / 横线 / 矩形大框三种作答区 */
+  .card-section {{ page-break-inside: auto; }}
+  .card-block {{ page-break-inside: avoid; }}
+  .card-head {{ display: flex; justify-content: space-between; align-items: flex-start;
+                gap: 20px; margin-bottom: 14px; }}
+  .card-head .section-title {{ margin: 0; }}
+  .mark-box {{ border-collapse: collapse; flex: none; font-size: 13px; }}
+  .mark-box th, .mark-box td {{ border: 1px solid #1d1d1f; width: 88px; height: 20px;
+                                padding: 4px 0; text-align: center; }}
+  .mark-box th {{ font-weight: 600; }}
+  .card-grid {{ width: 100%; }}
+  .card-grid th, .card-grid td {{ border-color: #1d1d1f; }}
+  .card-grid th {{ background: #fff; min-width: 34px; }}
   .card-grid td.blank-cell {{ height: 32px; min-width: 34px; }}
+  .card-fill {{ display: flex; align-items: baseline; gap: 10px; margin-bottom: 14px;
+                font-size: 14px; page-break-inside: avoid; }}
+  .card-fill .fill-line {{ width: 40%; height: 26px; border-bottom: 1px solid #1d1d1f; }}
+  .card-box-item {{ margin-bottom: 26px; page-break-inside: avoid; }}
+  .card-box-item .q-no {{ display: block; margin-bottom: 6px; font-size: 14px; }}
+  .answer-box {{ border: 1px solid #1d1d1f; height: 44mm; }}
+  .answer-box--page {{ height: 240mm; }}
+  .card-box-item--page {{ page-break-before: always; margin-bottom: 0; }}
   .sign-row {{ display: flex; gap: 28px; margin-top: 30px; font-size: 13px; }}
   .binding {{ position: fixed; top: 0; bottom: 0; writing-mode: vertical-rl; text-align: center;
               font-size: 12px; color: #8e8e93; letter-spacing: 6px; }}
-  .binding-left {{ left: 26px; border-left: 1px dashed #b9b9bd; }}
-  .binding-center {{ left: 50%; border-left: 1px dashed #b9b9bd; }}
-  .binding-right {{ right: 26px; border-right: 1px dashed #b9b9bd; }}
+  .binding-left {{ left: 12px; border-left: 1px dashed #b9b9bd; }}
+  .binding-left-2 {{ left: 34px; border-left: 1px dashed #b9b9bd; }}
   .footer {{ margin-top: 34px; padding-top: 12px; border-top: 1px solid #e5e5e7;
              text-align: center; font-size: 12px; color: #86868b; }}
-  @media print {{ body {{ padding: 18px 34px; }} .binding {{ display: block; }} }}
+  @media print {{ body {{ padding: 18px 46px; }} .binding {{ display: block; }} }}
 </style></head>
 <body>
   {binding}
@@ -1608,20 +1617,6 @@ def export_answer_key_html(
     )
 
 
-def _write_lines(count: int) -> str:
-    """成段作答横线（`.blank-line`），行数由分值推导。"""
-    return "".join('<div class="blank-line"></div>' for _ in range(count))
-
-
-def _line_count(score: Any, *, default: int) -> int:
-    """作答横线行数跟分值走，夹在 2~8 行：低分题不占半页，高分题也写得下。"""
-    try:
-        n = int(round(float(score)))
-    except (TypeError, ValueError):
-        n = default
-    return max(2, min(8, n))
-
-
 def _answer_card_grid(questions: list[dict], *, per_row: int = 10) -> str:
     """答题卡客观题作答表格：题号一行、空白答案格一行，超 10 题继续换行不溢出。"""
     rows: list[str] = []
@@ -1634,42 +1629,52 @@ def _answer_card_grid(questions: list[dict], *, per_row: int = 10) -> str:
     return f'<table class="answer-grid card-grid">{"".join(rows)}</table>'
 
 
-def _render_card_question(q: dict) -> str:
-    """答题卡主观题：题号 + 分值 +（综合题）分问 + 成段作答横线；不出题面，
-    题面在学生卷上，答题卡只负责承接作答。"""
-    subs = q.get("subquestions") or []
-    rows: list[str] = []
-    if subs:
-        for i, sub in enumerate(subs, start=1):
-            prompt = _sub_prompt(sub)
-            score = _sub_score(sub)
-            tail = f"（{_trim_number(score)}分）" if score is not None else ""
-            rows.append(
-                f'<div class="card-sub"><span class="sub-no">（{i}）</span> '
-                f"{_esc(prompt)}{_esc(tail)}</div>"
-            )
-            rows.append(_write_lines(_line_count(score, default=4)))
-    else:
-        rows.append(_write_lines(_line_count(q.get("score"), default=5)))
+def _render_card_fill(q: dict) -> str:
+    """填空题作答位（范本样式）：题号 + 一条横线，一题一线。"""
     return (
-        f'<div class="card-question">'
-        f'<div class="card-q-head"><span class="q-no">{q.get("item_index", 0)}.</span>'
-        f'<span class="card-q-score">{_trim_number(q.get("score") or 0)}分</span></div>'
-        f'{"".join(rows)}</div>'
+        f'<div class="card-fill"><span class="q-no">{q.get("item_index", 0)}.</span>'
+        '<span class="fill-line"></span></div>'
+    )
+
+
+def _render_card_box(q: dict, *, full_page: bool, page_break: bool) -> str:
+    """主观题作答位（范本样式）：题号 + 矩形大框。综合题用整页大框，除首题外逐题换页；
+    不带分值与分问文字——题面/分问结构在学生卷上，答题卡只承接作答。"""
+    box_cls = "answer-box answer-box--page" if full_page else "answer-box"
+    item_cls = "card-box-item card-box-item--page" if page_break else "card-box-item"
+    return (
+        f'<div class="{item_cls}">'
+        f'<span class="q-no">{q.get("item_index", 0)}.</span>'
+        f'<div class="{box_cls}"></div></div>'
     )
 
 
 def _render_answer_card_sections(groups: list[dict]) -> str:
-    """答题卡分节：客观题 → 题号表格；其余 → 逐题作答横线区。"""
+    """答题卡分节（对齐 docs/素材/答卷A卷 范本）：客观题格子表、填空一题一线、
+    其余主观题矩形大框（综合题整页大框逐题换页）；每节标题右侧带得分/评卷人小框，
+    节标题与首个作答区同块不拆页。"""
     blocks = []
     for group in groups:
-        if group["type"] in _OBJECTIVE_TYPES:
-            inner = _answer_card_grid(group["items"])
+        head = (
+            f'<div class="card-head"><h2 class="section-title">{_esc(_section_caption(group))}</h2>'
+            '<table class="mark-box"><tr><th>得分</th><th>评卷人</th></tr>'
+            "<tr><td></td><td></td></tr></table></div>"
+        )
+        qt = group["type"]
+        if qt in _OBJECTIVE_TYPES:
+            regions = [_answer_card_grid(group["items"])]
+        elif qt == "fill_blank":
+            regions = [_render_card_fill(q) for q in group["items"]]
         else:
-            inner = "".join(_render_card_question(q) for q in group["items"])
+            full = qt == "comprehensive"
+            regions = [
+                _render_card_box(q, full_page=full, page_break=full and i > 0)
+                for i, q in enumerate(group["items"])
+            ]
+        first, *rest = regions
         blocks.append(
-            f'<div class="section"><h2 class="section-title">{_esc(_section_caption(group))}</h2>'
-            f"{inner}</div>"
+            f'<div class="section card-section"><div class="card-block">{head}{first}</div>'
+            f'{"".join(rest)}</div>'
         )
     return "".join(blocks)
 
@@ -1680,8 +1685,8 @@ def export_answer_card_html(
     *,
     course_id: str,
 ) -> str:
-    """答题卡：学生作答用空卷（考生信息栏 + 客观题题号表格 + 主观题成段作答区）。
-    不含题面与答案，与学生卷配套使用。"""
+    """答题卡：学生作答用空卷（考生信息栏 + 客观题格子表 + 填空横线 + 主观题矩形大框），
+    版式对齐 docs/素材/答卷A卷 范本。不含题面与答案，与学生卷配套使用。"""
     pv = get_paper_version(session, paper_version_id, course_id=course_id)
     questions = pv.get("questions", [])
     groups = _section_groups(questions)
