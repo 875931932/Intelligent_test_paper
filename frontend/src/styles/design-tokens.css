@@ -26,6 +26,8 @@
   --sidebar-blur: blur(24px) saturate(1.8);
   --sidebar-shadow: 0 4px 24px rgba(0, 0, 0, 0.06), 0 1px 4px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.8);
   --topbar-height: 52px;
+  /* 主内容区最大宽度（Layout 主区） */
+  --content-max-width: 1400px;
 
   /* ── 文字 ── */
   --text: #1d1d1f;

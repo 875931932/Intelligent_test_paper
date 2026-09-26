@@ -7,13 +7,14 @@ interface Props {
 
 export function Layout({ children, sidebar }: Props) {
   return (
-    <div style={{ display: 'flex', minHeight: '100vh', background: '#f4f6f9' }}>
+    <div style={{ display: 'flex', minHeight: '100vh', background: 'var(--page-bg)' }}>
       {sidebar}
       <main style={{
         flex: 1,
-        padding: '24px 32px 24px 260px',
+        // 侧栏让位与内容宽度全部走 token，改侧栏宽度时布局自动跟随
+        padding: '24px 32px 24px var(--sidebar-width)',
         minHeight: '100vh',
-        maxWidth: '1400px',
+        maxWidth: 'var(--content-max-width)',
         margin: '0 auto',
         width: '100%',
       }}>
