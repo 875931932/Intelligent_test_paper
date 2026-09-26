@@ -564,7 +564,7 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
 
 ### 9.7 导出：学生卷 HTML
 `GET /api/v1/courses/{course_id}/exam-projects/{project_id}/paper-versions/{pv_id}/export/student`
-需 `Authorization: Bearer <token>`（§9.7–9.9 三份 HTML 导出同规则）。
+需 `Authorization: Bearer <token>`（§9.7–9.9 各导出含答题卡 docx 变体同规则）。
 → `text/html`（无答案，可打印 PDF）。正式卷面：信息头（课程名称/总分/题量，考试时间/形式/
 试卷类型/学分留空待填）+ 题次表 + 按题型分节（一、单选题（共N题，每题X分，共Y分））+ 连续题号。
 
@@ -574,6 +574,10 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
   答案实际落在 §9.9 答题卡上。
 - 单选/多选题干末尾补作答括号 `（  ）`，判断题补 `（ ）`；题干已自带括号时不重复补。
 - 综合题按 `subquestions` 渲染分问：`（1）题面（6分）`；题干里的 ``` 围栏切成等宽 `<pre class="code">` 代码块。
+- 题干里的 GFM 管道表格（首尾都有 `|`、第二行为 `---` 分隔行）渲染为真实 `<table class="md-table">`：
+  全宽、collapse、1px 边框、单元格居中、表头灰底加粗；列数以表头行为准（少补空、多截断）；
+  ``` 围栏内部保持代码原样不转表格；无表格的纯文本排版与原先逐字一致。
+  站内阅读（题目详情的题干/解析）按同一规则渲染（前端 `StemBlocks`），AI 编辑场景仍显示原文。
 - 不打印难度/分值元信息行（难度属内部信息；分值由节标题与分问标注表达）。该行仅答卷保留。
 
 ### 9.8 导出：答卷（含答案）HTML
@@ -582,9 +586,11 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
 答案选项打 ✓ 标绿；缺答案标注【缺答案·需人工补充】。综合题额外给出**逐问答案**
 （`subquestions[].answer`），并保留难度/分值元信息行供阅卷参考。
 
-### 9.9 导出：答题卡 HTML
+### 9.9 导出：答题卡 HTML / docx
 `GET /api/v1/courses/{course_id}/exam-projects/{project_id}/paper-versions/{pv_id}/export/answer-card`
-→ `text/html`（空白作答卷，可打印 PDF）。与学生卷配套：只承接作答，**不出题面、不含答案**。
+查询参数 `format=html|docx`（默认 `html`，非法值 422）；需 `Authorization: Bearer <token>`。
+
+**format=html** → `text/html`（空白作答卷，可打印 PDF）。与学生卷配套：只承接作答，**不出题面、不含答案**。
 版式对齐 `docs/素材/答卷A卷` 范本（A4，`@page { size: A4; }`）：
 
 - 考生信息栏（学号/姓名/考场/座位号/专业名称）置于信息头与题次表之间，底部不再重复学号栏。
@@ -595,6 +601,19 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
 - 每节标题右侧带「得分 / 评卷人」小格；节标题与首个作答区不拆页。
 - 装订线为**左侧双虚线**（与 A卷试卷 / 答卷A卷 范本一致），页面中部与右侧无竖线；
   答卷（§9.8）同款，学生卷不带装订线。
+
+**format=docx** → `application/vnd.openxmlformats-officedocument.wordprocessingml.document`
+（`Content-Disposition: attachment; filename=answer-card.docx`，前端命名 `答题卡.docx`）：
+
+- 可编辑 Word 试卷，实现见 `app/services/answer_card_docx.py`；模板
+  `app/services/templates/answer_card.docx`（源自 `docs/素材/答卷A卷.doc` 转换），
+  生成时清空正文保留 `sectPr`——页眉装订线/考场学号栏、页脚页码域、页面设置原样继承。
+- 正文按数据重建：标题与信息头（14pt）、考生信息栏（带框，专业名称主动断行防拆词）、
+  题次表、每节「节标题 + 得分/评卷人小格」（全段 keepNext，含竖向合并延续格，保证节标题与首作答区不拆页）、
+  客观题格子表（每 10 题一块全宽等分）、填空横线（12pt 新宋体 `_`×31）、
+  主观题矩形框（EXACTLY 行高 + cantSplit 整行不跨页）、综合题整页大框
+  （首题高按「页高 − 节间距 − 节标题 − 题号行 − 余量」扣减使其与节标题同页，其后逐题题号行 `page-break-before`）。
+- 前端「下载」按钮取 docx；整体预览/打印仍走 html（`?format` 缺省）。
 
 ---
 
