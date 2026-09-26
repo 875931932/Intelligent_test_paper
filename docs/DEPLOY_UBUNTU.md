@@ -79,6 +79,33 @@ S3_BUCKET=exam-materials
 
 `LLM_BASE_URL` 需要填写实际模型网关地址；不要照抄示例中的模型名称或把 API Key 写入 shell 历史。
 
+### 升级已有部署（每次 git pull 之后必须执行）
+
+代码更新经常伴随依赖变更（`backend/pyproject.toml`，如答题卡 docx 导出引入的
+`python-docx`）。只 `git pull` 不重装依赖，服务会在导入新依赖时启动失败
+（`ModuleNotFoundError`，systemd 反复重启）。标准升级流程：
+
+```bash
+cd /opt/intelligent-test-paper
+git pull
+
+# 1) 同步后端依赖（幂等，建议每次都跑；pyproject/uv.lock 变更时必须）
+source .venv/bin/activate
+python -m pip install -e ./backend
+deactivate
+
+# 2) 仅当 backend/app/db/schema.py 有变更时：跑一次幂等结构升级
+cd backend && set -a && . ../.env && set +a
+PYTHONPATH=. python -m app.db.init_db --seed && cd ..
+
+# 3) 前端有变更时重建静态文件
+cd frontend && npm ci && npm run build && cd ..
+
+# 4) 重启两个服务进程
+sudo systemctl restart exam-api exam-worker
+curl http://127.0.0.1:8000/api/v1/health
+```
+
 可选的模型调优变量（分阶段选模 / 抽取预算 / json_schema 开关等）见 `.env.example` 的
 注释清单；换模型与故障速查见 [`docs/LLM_TUNING.md`](LLM_TUNING.md)。
 上线前若抽取出现 `model_schema_validation_failed`，先确认
