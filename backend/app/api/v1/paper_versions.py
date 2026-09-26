@@ -14,6 +14,7 @@ from app.services import ai_create_service, ai_revise_service, paper_review_serv
 from app.services.ai_create_service import AiCreateConflict, AiCreateError
 from app.services.ai_revise_service import AiReviseConflict, AiReviseError
 from app.services.answer_card_docx import export_answer_card_docx
+from app.services.exam_paper_docx import export_exam_paper_docx
 from app.services.paper_review_service import PaperReviewError
 from app.services.paper_version_service import (
     Conflict,
@@ -464,14 +465,25 @@ def export_student(
     course_id: str,
     project_id: str,
     pv_id: str,
+    export_format: str = Query("html", alias="format", pattern="^(html|docx)$"),
     session: Session = Depends(get_session),
 ):
-    """学生卷 HTML（无答案，可浏览器打印为 PDF）。"""
+    """学生卷：format=html 正式卷面（无答案，可浏览器打印为 PDF）；
+    format=docx 可编辑 Word，版式取自 A卷试卷范本模板。"""
     try:
-        html = export_student_paper_html(session, pv_id, course_id=course_id)
+        if export_format == "docx":
+            data = export_exam_paper_docx(session, pv_id, course_id=course_id)
+        else:
+            data = export_student_paper_html(session, pv_id, course_id=course_id)
     except PaperVersionError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
-    return HTMLResponse(content=html)
+    if export_format == "docx":
+        return Response(
+            content=data,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": 'attachment; filename="exam-paper.docx"'},
+        )
+    return HTMLResponse(content=data)
 
 
 @router.get("/exam-projects/{project_id}/paper-versions/{pv_id}/export/answer-key")

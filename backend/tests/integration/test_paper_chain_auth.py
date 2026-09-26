@@ -74,6 +74,7 @@ PAPER_ENDPOINTS = [
     ("GET", f"{C}/exam-projects/p1/paper-versions/pv1/export/answer-key", None),
     ("GET", f"{C}/exam-projects/p1/paper-versions/pv1/export/answer-card", None),
     # 同一端点的 docx 变体（可编辑 Word），查询参数不同但鉴权同规则
+    ("GET", f"{C}/exam-projects/p1/paper-versions/pv1/export/student?format=docx", None),
     ("GET", f"{C}/exam-projects/p1/paper-versions/pv1/export/answer-card?format=docx", None),
 ]
 EXAM_PROJECT_ENDPOINTS = [

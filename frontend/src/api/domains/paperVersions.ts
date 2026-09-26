@@ -6,7 +6,7 @@ export type PaperExportKind = 'student' | 'card' | 'answer' | 'json';
 
 export type PaperExportFile = { blob: Blob; filename: string };
 
-/** 导出格式：答题卡额外支持 docx（可编辑 Word）；其余导出恒为 html */
+/** 导出格式：答题卡与学生卷额外支持 docx（可编辑 Word）；其余导出恒为 html */
 export type PaperExportFormat = 'html' | 'docx';
 
 const EXPORT_SUFFIX: Record<PaperExportKind, string> = {
@@ -59,7 +59,7 @@ export const paperVersionsApi = {
   /**
    * 拉取导出产物（带 Authorization 头，token 不进 URL）。
    * 导出下载与整体预览统一走这里：返回 Blob 由调用方生成 object URL。
-   * format 仅对答题卡生效（'docx' → ?format=docx，可编辑 Word）；
+   * format 对答题卡与学生卷生效（'docx' → ?format=docx，可编辑 Word）；
    * 整体预览恒为 html（iframe 内渲染/打印），其余类型无 docx 变体，忽略该参数。
    * JSON 文件名与后端 Content-Disposition 同规则：answer_detail_v{n}.json。
    */
@@ -71,10 +71,10 @@ export const paperVersionsApi = {
     token?: string,
     format?: PaperExportFormat,
   ): Promise<PaperExportFile> => {
-    const docx = kind === 'card' && format === 'docx';
+    const docx = (kind === 'card' || kind === 'student') && format === 'docx';
     const path = exportPath(kind, courseId, projectId, pvId) + (docx ? '?format=docx' : '');
     const blob = await requestBlob(path, {}, token);
-    if (docx) return { blob, filename: '答题卡.docx' };
+    if (docx) return { blob, filename: kind === 'card' ? '答题卡.docx' : '考试卷.docx' };
     if (kind !== 'json') return { blob, filename: HTML_FILENAME[kind] };
     let versionNo = 1;
     try {

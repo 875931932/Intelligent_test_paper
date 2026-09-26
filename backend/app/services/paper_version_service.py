@@ -1439,19 +1439,22 @@ def _md_table_html(header: list[str], rows: list[list[str]]) -> str:
     return f'<table class="md-table"><thead><tr>{ths}</tr></thead><tbody>{trs}</tbody></table>'
 
 
-def _text_blocks_html(chunk: str) -> str:
-    """正文块转 HTML：GFM 管道表格转真实 <table>，其余整段转义（表格之外与旧行为一致）。"""
+def _text_blocks(chunk: str) -> list[tuple[str, Any]]:
+    """正文块解析（HTML 与 Word 导出共用的唯一规则）：GFM 管道表格识别为
+    ("table", (表头, 数据行))，其余正文聚成 ("text", 原文)；空文本段丢弃。"""
     if not chunk.strip():
-        return ""
+        return []
     if "|" not in chunk:
-        return _esc(chunk.strip())
+        return [("text", chunk.strip())]
     lines = chunk.split("\n")
-    parts: list[str] = []
+    blocks: list[tuple[str, Any]] = []
     buf: list[str] = []  # 尚未聚成块的正文行
 
     def flush_buf() -> None:
         if buf:
-            parts.append(_esc("\n".join(buf).strip()))
+            text = "\n".join(buf).strip()
+            if text:
+                blocks.append(("text", text))
             buf.clear()
 
     i = 0
@@ -1464,31 +1467,53 @@ def _text_blocks_html(chunk: str) -> str:
             while i < len(lines) and _TABLE_ROW_RE.match(lines[i]):
                 rows.append(_table_cells(lines[i]))
                 i += 1
-            parts.append(_md_table_html(header, rows))
+            blocks.append(("table", (header, rows)))
             continue
         buf.append(lines[i])
         i += 1
     flush_buf()
-    return "".join(parts)
+    return blocks
 
 
-def _stem_html(stem: str) -> str:
-    """题干转 HTML：``` 围栏切成等宽代码块（综合题的补全代码场景），
-    正文里的 GFM 管道表格转真实 <table>（综合题的特性对比表），其余整段转义。"""
+def _stem_blocks(stem: str) -> list[tuple[str, Any]]:
+    """题干块解析：``` 围栏切成 ("code", 代码)（综合题的补全代码场景），
+    正文段交给 _text_blocks（管道表格识别同规则）。"""
     if "```" not in (stem or ""):
-        return _text_blocks_html(stem or "")
-    pieces: list[str] = []
-    for i, chunk in enumerate(stem.split("```")):
+        return _text_blocks(stem or "")
+    blocks: list[tuple[str, Any]] = []
+    for i, chunk in enumerate((stem or "").split("```")):
         if i % 2 == 0:
-            html_chunk = _text_blocks_html(chunk)
-            if html_chunk:
-                pieces.append(html_chunk)
+            blocks.extend(_text_blocks(chunk))
             continue
         # 代码段首行是语言标记（```python），不是代码本体
         lines = chunk.split("\n", 1)
         code = lines[1] if len(lines) > 1 else lines[0]
-        pieces.append(f'<pre class="code">{_esc(code.rstrip())}</pre>')
-    return "".join(pieces)
+        blocks.append(("code", code.rstrip()))
+    return blocks
+
+
+def _blocks_html(blocks: list[tuple[str, Any]]) -> str:
+    """解析块 → HTML：text 转义、code 转 <pre>、table 转 <table>。"""
+    parts: list[str] = []
+    for kind, payload in blocks:
+        if kind == "text":
+            parts.append(_esc(payload))
+        elif kind == "code":
+            parts.append(f'<pre class="code">{_esc(payload)}</pre>')
+        else:
+            parts.append(_md_table_html(*payload))
+    return "".join(parts)
+
+
+def _text_blocks_html(chunk: str) -> str:
+    """正文块转 HTML（解析规则见 _text_blocks，与 Word 导出共用）。"""
+    return _blocks_html(_text_blocks(chunk))
+
+
+def _stem_html(stem: str) -> str:
+    """题干转 HTML（解析规则见 _stem_blocks）：``` 围栏 → 等宽代码块，
+    GFM 管道表格 → 真实 <table>，其余整段转义。"""
+    return _blocks_html(_stem_blocks(stem))
 
 
 def _sub_prompt(sub: Any) -> str:
