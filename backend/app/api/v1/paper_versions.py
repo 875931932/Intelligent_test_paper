@@ -1,8 +1,8 @@
 """PaperVersion 相关端点（课程作用域）。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -13,6 +13,7 @@ from app.db.session import get_session
 from app.services import ai_create_service, ai_revise_service, paper_review_service
 from app.services.ai_create_service import AiCreateConflict, AiCreateError
 from app.services.ai_revise_service import AiReviseConflict, AiReviseError
+from app.services.answer_card_docx import export_answer_card_docx
 from app.services.paper_review_service import PaperReviewError
 from app.services.paper_version_service import (
     Conflict,
@@ -493,11 +494,22 @@ def export_answer_card(
     course_id: str,
     project_id: str,
     pv_id: str,
+    export_format: str = Query("html", alias="format", pattern="^(html|docx)$"),
     session: Session = Depends(get_session),
 ):
-    """答题卡 HTML（学生作答用空卷，可浏览器打印为 PDF）。"""
+    """答题卡导出：format=html（学生作答用空卷，可浏览器打印为 PDF）；
+    format=docx（可编辑 Word，版式取自答卷A卷范本模板）。"""
     try:
-        html = export_answer_card_html(session, pv_id, course_id=course_id)
+        if export_format == "docx":
+            data = export_answer_card_docx(session, pv_id, course_id=course_id)
+        else:
+            data = export_answer_card_html(session, pv_id, course_id=course_id)
     except PaperVersionError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
-    return HTMLResponse(content=html)
+    if export_format == "docx":
+        return Response(
+            content=data,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": 'attachment; filename="answer-card.docx"'},
+        )
+    return HTMLResponse(content=data)
