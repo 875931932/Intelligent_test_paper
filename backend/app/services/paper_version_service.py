@@ -1305,6 +1305,10 @@ def _exam_shell(
   .code {{ font-family: 'Consolas','Courier New',monospace; font-size: 13px; line-height: 1.6;
            background: #f5f5f7; border: 1px solid #e5e5e7; border-radius: 4px;
            padding: 10px 12px; margin: 8px 0; white-space: pre-wrap; overflow-x: auto; }}
+  /* 题干里的 GFM 管道表格（综合题特性对比表）：正式表格，不再是竖线纯文字 */
+  .md-table {{ border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 13px; }}
+  .md-table th, .md-table td {{ border: 1px solid #1d1d1f; padding: 5px 8px; text-align: center; }}
+  .md-table th {{ background: #f5f5f7; font-weight: 600; }}
   .q-subs {{ padding-left: 26px; margin-top: 6px; }}
   .q-sub {{ font-size: 14px; line-height: 1.9; }}
   .q-sub .sub-no {{ font-weight: 700; }}
@@ -1403,15 +1407,82 @@ def _answer_blank(qtype: str) -> str:
     return "（  ）" if qtype in {"single_choice", "multiple_choice"} else "（ ）"
 
 
+# GFM 管道表格（综合题的对比表/数据表）：整行 | a | b |，第二行为 |---|---| 分隔行。
+# 要求首尾都有管道，正文里的零散竖线（如 "A|B"）不会被误判成表格。
+_TABLE_ROW_RE = re.compile(r"^\s*\|.*\|\s*$")
+_TABLE_CELL_RE = re.compile(r"^:?-{2,}:?$")
+
+
+def _table_cells(row: str) -> list[str]:
+    """拆一行管道表格为单元格文本（去首尾管道，各格去空白）。"""
+    return [cell.strip() for cell in row.strip()[1:-1].split("|")]
+
+
+def _is_table_delim(row: str) -> bool:
+    if not _TABLE_ROW_RE.match(row):
+        return False
+    cells = _table_cells(row)
+    return bool(cells) and all(_TABLE_CELL_RE.match(cell) for cell in cells)
+
+
+def _md_table_html(header: list[str], rows: list[list[str]]) -> str:
+    """GFM 表格 → <table>：表头 th、数据行 td；列数以表头为准，少的补齐、多的截齐。"""
+    cols = max(len(header), 1)
+
+    def pad(cells: list[str]) -> list[str]:
+        return (cells + [""] * cols)[:cols]
+
+    ths = "".join(f"<th>{_esc(c)}</th>" for c in pad(header))
+    trs = "".join(
+        "<tr>" + "".join(f"<td>{_esc(c)}</td>" for c in pad(row)) + "</tr>" for row in rows
+    )
+    return f'<table class="md-table"><thead><tr>{ths}</tr></thead><tbody>{trs}</tbody></table>'
+
+
+def _text_blocks_html(chunk: str) -> str:
+    """正文块转 HTML：GFM 管道表格转真实 <table>，其余整段转义（表格之外与旧行为一致）。"""
+    if not chunk.strip():
+        return ""
+    if "|" not in chunk:
+        return _esc(chunk.strip())
+    lines = chunk.split("\n")
+    parts: list[str] = []
+    buf: list[str] = []  # 尚未聚成块的正文行
+
+    def flush_buf() -> None:
+        if buf:
+            parts.append(_esc("\n".join(buf).strip()))
+            buf.clear()
+
+    i = 0
+    while i < len(lines):
+        if _TABLE_ROW_RE.match(lines[i]) and _is_table_delim(lines[i + 1] if i + 1 < len(lines) else ""):
+            flush_buf()
+            header = _table_cells(lines[i])
+            i += 2  # 跳过表头与分隔行
+            rows: list[list[str]] = []
+            while i < len(lines) and _TABLE_ROW_RE.match(lines[i]):
+                rows.append(_table_cells(lines[i]))
+                i += 1
+            parts.append(_md_table_html(header, rows))
+            continue
+        buf.append(lines[i])
+        i += 1
+    flush_buf()
+    return "".join(parts)
+
+
 def _stem_html(stem: str) -> str:
-    """题干转 HTML：``` 围栏切成等宽代码块（综合题的补全代码场景），其余整段转义。"""
+    """题干转 HTML：``` 围栏切成等宽代码块（综合题的补全代码场景），
+    正文里的 GFM 管道表格转真实 <table>（综合题的特性对比表），其余整段转义。"""
     if "```" not in (stem or ""):
-        return _esc(stem)
+        return _text_blocks_html(stem or "")
     pieces: list[str] = []
     for i, chunk in enumerate(stem.split("```")):
         if i % 2 == 0:
-            if chunk.strip():
-                pieces.append(_esc(chunk.strip()))
+            html_chunk = _text_blocks_html(chunk)
+            if html_chunk:
+                pieces.append(html_chunk)
             continue
         # 代码段首行是语言标记（```python），不是代码本体
         lines = chunk.split("\n", 1)
@@ -1443,7 +1514,7 @@ def _render_subquestions(subs: list[Any], *, with_answer: bool) -> str:
         prompt = _sub_prompt(sub)
         score = _sub_score(sub)
         tail = f'<span class="sub-score">（{_trim_number(score)}分）</span>' if score is not None else ""
-        rows.append(f'<div class="q-sub"><span class="sub-no">（{i}）</span> {_esc(prompt)}{tail}</div>')
+        rows.append(f'<div class="q-sub"><span class="sub-no">（{i}）</span> {_stem_html(prompt)}{tail}</div>')
         if with_answer:
             sub_answer = _answer_text(sub.get("answer") if isinstance(sub, dict) else None)
             if sub_answer:
@@ -1493,7 +1564,7 @@ def _render_question_html(q: dict, *, with_answer: bool) -> str:
                 '<div class="q-answer-line q-answer-missing">【缺答案·需人工补充】</div>'
             )
         if q.get("explanation"):
-            parts.append(f'<div class="q-explain">解析：{_esc(q["explanation"])}</div>')
+            parts.append(f'<div class="q-explain">解析：{_stem_html(q["explanation"])}</div>')
         parts.append(
             f'<div class="q-meta">难度：{_esc(_difficulty_label(q.get("difficulty")))}'
             f' ｜ 分值：{_trim_number(q.get("score") or 0)}分</div>'

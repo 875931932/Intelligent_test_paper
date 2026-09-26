@@ -8,6 +8,7 @@ from app.services.paper_version_service import (
     _section_caption,
     _section_groups,
     _sections_table_html,
+    _stem_html,
     _strip_stem_noise,
     _sub_prompt,
     export_answer_card_html,
@@ -162,6 +163,42 @@ def test_stem_code_fence_becomes_monospace_block():
     assert '<pre class="code">' in html
     assert "loader = WebBaseLoader(url)" in html
     assert "```" not in html
+
+
+def test_stem_pipe_table_becomes_real_table():
+    """综合题的 GFM 管道表格必须渲染成 <table>，不再是一竖线排的纯文字。"""
+    stem = (
+        "特性约束如下表所示。\n"
+        "| 评价指标 | TurboMind | PyTorchEngine |\n"
+        "|:---|:---:|---:|\n"
+        "| 初始化资源占用 | 高 | 低 |\n"
+        "| 生成速度 | 快 | 较慢 |\n"
+        "请结合上表回答。"
+    )
+    html = _render_question_html(
+        {"item_index": 1, "question_type": "short_answer", "stem": stem, "answer": "x", "score": 5},
+        with_answer=True,
+    )
+    assert '<table class="md-table">' in html
+    assert "<thead><tr><th>评价指标</th><th>TurboMind</th><th>PyTorchEngine</th></tr></thead>" in html
+    assert "<td>初始化资源占用</td>" in html and "<td>较慢</td>" in html
+    # 表格之外的正文仍在，竖线原文不再裸露
+    assert "特性约束如下表所示。" in html and "请结合上表回答。" in html
+    assert "| 评价指标" not in html and "|---" not in html
+
+
+def test_pipe_table_inside_code_fence_stays_code():
+    """围栏里的竖线行是代码本体，不能被误判成表格。"""
+    html = _stem_html("对比：\n```text\n| a | b |\n|---|---|\n```")
+    assert '<pre class="code">' in html
+    assert "md-table" not in html
+    assert "| a | b |" in html
+
+
+def test_ragged_table_rows_pad_and_truncate_to_header_width():
+    html = _stem_html("| a | b | c |\n|---|---|---|\n| 1 | 2 |\n| 1 | 2 | 3 | 4 |")
+    # 两行数据都归到 3 列：少的补齐、多的截齐，表格列数才不塌
+    assert html.count("<td>") == 6
 
 
 def test_student_paper_adds_answer_blank_and_section_hint():
