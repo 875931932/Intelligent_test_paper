@@ -827,7 +827,7 @@ frontend/src/
 │       ├── PaperPanel.tsx        # 试卷页签：双栏阅读器 + 题目编辑器
 │       ├── AiRevisePanel.tsx     # 单题 AI 改题（提案 → diff → 确认）
 │       ├── AiCreatePanel.tsx     # AI 生成整道新题（提案回填表单）
-│       ├── stage/BlueprintSuggestPanel.tsx  # 蓝图题位 AI 调整建议（逐条应用）
+│       ├── stage/BlueprintSuggestPanel.tsx  # 蓝图题位 AI 调整建议（逐条应用，应用完自动折叠）
 │       └── PaperReviewPanel.tsx  # 整卷 AI 质量评审（只读报告）
 ├── stores/                       # zustand：auth / course / toast
 ├── styles/                       # design-tokens.css global.css App.css

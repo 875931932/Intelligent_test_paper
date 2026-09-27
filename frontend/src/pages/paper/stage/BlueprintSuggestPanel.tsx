@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Sparkles, Wand2 } from 'lucide-react';
+import { Check, ChevronUp, Sparkles, Wand2 } from 'lucide-react';
 import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
 import { useAuthStore } from '@/stores/auth';
@@ -116,6 +116,7 @@ export function BlueprintSuggestPanel({
   const [busy, setBusy] = useState(false);
   const [taskRunId, setTaskRunId] = useState<string | null>(null);
   const [result, setResult] = useState<BlueprintSuggestResult | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
   const [applied, setApplied] = useState<Set<string>>(new Set());
   const [applyingKey, setApplyingKey] = useState<string | null>(null);
   const [applyingAll, setApplyingAll] = useState(false);
@@ -136,6 +137,7 @@ export function BlueprintSuggestPanel({
           const res = tr.result as unknown as BlueprintSuggestResult;
           setResult(res);
           setApplied(new Set());
+          setCollapsed(false);
           addToast(
             res.suggestions.length > 0
               ? `AI 给出 ${res.suggestions.length} 条调整建议，确认后点「应用」`
@@ -182,6 +184,23 @@ export function BlueprintSuggestPanel({
 
   const pending = result ? result.suggestions.filter((s) => !applied.has(keyOf(s))) : [];
 
+  /** 已落地条数（本会话点过应用的、或当前值已等于建议值的） */
+  const appliedCount = result
+    ? result.suggestions.filter(
+        (s) => applied.has(keyOf(s))
+          || matchesCurrent(s, planItems.find((p) => p.item_index === s.item_index)),
+      ).length
+    : 0;
+
+  /** 全部建议是否都已落地——应用完自动折叠的判定（部分失败不收起） */
+  const allSatisfied = (extra: Set<string>): boolean =>
+    !!result
+    && result.suggestions.every(
+      (s) => extra.has(keyOf(s))
+        || applied.has(keyOf(s))
+        || matchesCurrent(s, planItems.find((p) => p.item_index === s.item_index)),
+    );
+
   const handleApplyOne = async (s: BlueprintSuggestion) => {
     const key = keyOf(s);
     setApplyingKey(key);
@@ -191,6 +210,8 @@ export function BlueprintSuggestPanel({
         setApplied((prev) => new Set(prev).add(key));
         addToast(`已应用第 ${s.item_index} 题的${FIELD_LABELS[s.field]}调整`, 'success');
         reload();
+        // 最后一条也落地 → 建议清单自动折叠成一行状态
+        if (allSatisfied(new Set([key]))) setCollapsed(true);
       }
     } finally {
       setApplyingKey(null);
@@ -201,9 +222,11 @@ export function BlueprintSuggestPanel({
     if (pending.length === 0) return;
     setApplyingAll(true);
     let okCount = 0;
+    const appliedNow = new Set(applied);
     try {
       for (const s of pending) {
         if (await applyOne(s)) {
+          appliedNow.add(keyOf(s));
           setApplied((prev) => new Set(prev).add(keyOf(s)));
           okCount += 1;
         }
@@ -214,6 +237,8 @@ export function BlueprintSuggestPanel({
         failed > 0 ? `已应用 ${okCount} 条建议，${failed} 条失败` : `已应用 ${okCount} 条建议`,
         failed > 0 ? 'error' : 'success',
       );
+      // 全部落地才收起；有失败的留在眼前，教师能看见漏网条目
+      if (allSatisfied(appliedNow)) setCollapsed(true);
     } finally {
       setApplyingAll(false);
     }
@@ -254,11 +279,41 @@ export function BlueprintSuggestPanel({
         )}
       </div>
 
-      {result && (
+      {result && collapsed && (
+        <button
+          type="button"
+          onClick={() => setCollapsed(false)}
+          style={{
+            display: 'flex', alignItems: 'center', gap: '8px', width: '100%',
+            padding: '7px 10px', borderRadius: 8, cursor: 'pointer', textAlign: 'left',
+            background: 'var(--surface, #fff)', border: '1px solid var(--border, #d2d2d7)',
+            fontSize: '0.78rem', color: 'var(--text-secondary)',
+          }}
+        >
+          <Check size={13} style={{ color: 'var(--accent)', flexShrink: 0 }} />
+          <span>
+            {result.suggestions.length > 0
+              ? `已应用 ${appliedCount}/${result.suggestions.length} 条调整建议`
+              : 'AI 检查完成：蓝图无需调整'}
+          </span>
+          <span style={{ marginLeft: 'auto', color: 'var(--accent)', fontWeight: 600 }}>
+            展开查看
+          </span>
+        </button>
+      )}
+      {result && !collapsed && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-          <p style={{ fontSize: '0.8rem', lineHeight: 1.7, color: 'var(--text-secondary)' }}>
-            {result.summary}
-          </p>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+            <p style={{ flex: 1, fontSize: '0.8rem', lineHeight: 1.7, color: 'var(--text-secondary)' }}>
+              {result.summary}
+            </p>
+            <Button
+              size="sm" variant="secondary"
+              onClick={() => setCollapsed(true)} icon={<ChevronUp size={13} />}
+            >
+              收起
+            </Button>
+          </div>
           {result.suggestions.length === 0 && (
             <p style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>
               没有需要调整的题位。
