@@ -26,6 +26,7 @@ from app.db.schema import (
     knowledge_catalog_versions,
     plan_items,
 )
+from app.domain.blueprint.models import UnitCoverage
 from app.services import blueprint_persistence_service
 from app.services.blueprint_persistence_service import (
     BlueprintPersistenceError,
@@ -361,3 +362,216 @@ def test_update_plan_item_rejected_when_blueprint_not_draft(session):
         select(plan_items.c.difficulty).where(plan_items.c.id == pi_id)
     ).one()
     assert row._mapping["difficulty"] == "high"
+
+
+# --- 考试侧重点（assessment_focus）：确定性折算成各题型的考查方式分布 ---
+
+
+def _set_focus(session, focus: list[dict]):
+    """往 fv1 的 payload 写入考试侧重点（模拟教师在考核规则卡保存）。"""
+    payload = dict(session.execute(
+        select(framework_versions.c.payload).where(framework_versions.c.id == "fv1")
+    ).one()._mapping["payload"] or {})
+    payload["final_exam_rules"] = {"assessment_focus": focus}
+    session.execute(
+        framework_versions.update()
+        .where(framework_versions.c.id == "fv1")
+        .values(payload=payload)
+    )
+    session.commit()
+
+
+def _stored_type_rules(session, bv_id: str) -> dict:
+    return session.execute(
+        select(blueprint_versions.c.type_rules).where(blueprint_versions.c.id == bv_id)
+    ).one()._mapping["type_rules"]
+
+
+def test_focus_practical_converges_to_zero_without_directly_assessable_unit(session):
+    """设了偏实操但无可直考单元：实操确定性收敛为 0，蓝图照常生成。
+
+    实操可考性缺省为假（考点 policy 才是权威），不能因为教师声明了实操偏好
+    就让出卷失败；收敛结果随 type_rules 持久化，题位表逐题可见。
+    """
+    _set_focus(session, [
+        {"assessment_mode": "practical_operation", "weight": 60},
+        {"assessment_mode": "conceptual", "weight": 40},
+    ])
+    bv_id, _ = create_draft_blueprint(session, **_draft_params(count=10, per=10))
+    items = list_plan_items(session, bv_id, course_id="c1")
+    assert items
+    # 实操全部过滤后，剩余权重归一 → 单一概念理解
+    assert {it["assessment_mode"] for it in items} == {"conceptual"}
+    dist = _stored_type_rules(session, bv_id)["single_choice"]["assessment_mode_distribution"]
+    assert "practical_operation" not in dist
+    assert abs(sum(dist.values()) - 100) < 0.01
+
+
+def test_focus_fully_ineligible_leaves_engine_defaults_untouched(session):
+    """侧重点全是不可考方式时一档都不注入：不改引擎默认分布（均衡兜底）。"""
+    _set_focus(session, [{"assessment_mode": "practical_operation", "weight": 100}])
+    bv_id, _ = create_draft_blueprint(session, **_draft_params(count=10, per=10))
+    assert "assessment_mode_distribution" not in _stored_type_rules(session, bv_id)["single_choice"]
+    items = list_plan_items(session, bv_id, course_id="c1")
+    # single_choice 默认分布只有理论记忆与概念理解
+    assert {it["assessment_mode"] for it in items} <= {"theory_recall", "conceptual"}
+
+
+def test_focus_practical_assigned_when_point_directly_assessable(session):
+    """考点可直考时实操按侧重点落位；超容量收敛到可直考章权重上界。
+
+    这是实操的首次可达路径：前端 units 载荷不含 policy，靠服务按考点行回填。
+    """
+    session.execute(
+        exam_points.update()
+        .where(exam_points.c.id == "au1")
+        .values(operational_detail_policy="directly_assessable")
+    )
+    session.commit()
+    _set_focus(session, [
+        {"assessment_mode": "practical_operation", "weight": 50},
+        {"assessment_mode": "theory_recall", "weight": 50},
+    ])
+    params = _draft_params(count=10, per=10)
+    params["units_payload"][0]["exam_point_id"] = "au1"
+    params["units_payload"][1]["exam_point_id"] = "au2"
+    bv_id, _ = create_draft_blueprint(session, **params)
+    items = list_plan_items(session, bv_id, course_id="c1")
+
+    practical = [it for it in items if it["assessment_mode"] == "practical_operation"]
+    practical_score = sum(float(it["score"]) for it in practical)
+    # 实操需求 50 分 > 可直考章 A1 权重 40 → 收敛到上界 40
+    assert practical_score > 0
+    assert practical_score <= 40
+    # 实操槽位只能落进可直考章 A1（A2 只是 supporting_only）
+    assert all(it["anchor_key"] == "A1" for it in practical)
+    assert abs(sum(float(it["score"]) for it in items) - 100) < 0.01
+
+
+def test_focus_does_not_override_explicit_mode_distribution(session):
+    """教师/脚本显式下发的考查方式分布优先，侧重点不覆盖。"""
+    _set_focus(session, [{"assessment_mode": "practical_operation", "weight": 100}])
+    params = _draft_params(count=10, per=10)
+    params["type_rules"] = {
+        "single_choice": {
+            "count": 10, "score": 10,
+            "assessment_mode_distribution": {"theory_recall": 100},
+        }
+    }
+    bv_id, _ = create_draft_blueprint(session, **params)
+    items = list_plan_items(session, bv_id, course_id="c1")
+    assert {it["assessment_mode"] for it in items} == {"theory_recall"}
+    dist = _stored_type_rules(session, bv_id)["single_choice"]["assessment_mode_distribution"]
+    assert dist == {"theory_recall": 100}
+
+
+def test_confirm_blueprint_succeeds_with_practical_focus(session):
+    """确认阶段的防御性重跑必须看到同样的实操可考性。
+
+    回归：创建时注入过实操分布，确认时重建单元若不回填 policy，
+    会撞 "practical_operation has no eligible chapter"。
+    """
+    session.execute(
+        exam_points.update()
+        .where(exam_points.c.id == "au1")
+        .values(operational_detail_policy="directly_assessable")
+    )
+    session.commit()
+    _set_focus(session, [
+        {"assessment_mode": "practical_operation", "weight": 30},
+        {"assessment_mode": "theory_recall", "weight": 70},
+    ])
+    params = _draft_params(count=10, per=10)
+    params["units_payload"][0]["exam_point_id"] = "au1"
+    params["units_payload"][1]["exam_point_id"] = "au2"
+    bv_id, _ = create_draft_blueprint(session, **params)
+    dist = _stored_type_rules(session, bv_id)["single_choice"]["assessment_mode_distribution"]
+    assert dist.get("practical_operation", 0) > 0
+
+    result = confirm_blueprint(
+        session, course_id="c1", project_id="ep1", blueprint_version_id=bv_id
+    )
+    assert result["status"] == "confirmed"
+
+
+def test_allocation_ladder_raises_last_error_when_all_attempts_fail(session):
+    """分配阶梯三级全失败时把最后的校验错误抛给教师，不静默吞错。
+
+    10 分一道题切不平 A1=45 的章容量 → 三次尝试（注入/去实操/回原分布）
+    必然全部失败，验证逐级降级的出口是抛错而不是死循环或空计划。
+    """
+    _set_focus(session, [{"assessment_mode": "conceptual", "weight": 100}])
+    params = _draft_params(count=10, per=10)
+    params["chapter_weights"] = {"A1": 45, "A2": 55}
+    with pytest.raises(BlueprintValidationError, match="jointly satisfied"):
+        create_draft_blueprint(session, **params)
+
+
+def test_without_practical_strips_and_falls_back_to_engine_default():
+    """阶梯中间退路：剔除实操并归一；只剩实操的分布交回引擎默认。"""
+    rules = {
+        "single_choice": {
+            "count": 10, "score": 10,
+            "assessment_mode_distribution": {"practical_operation": 40, "theory_recall": 60},
+        },
+        "short_answer": {
+            "count": 5, "score": 10,
+            "assessment_mode_distribution": {"practical_operation": 100},
+        },
+        "true_false": {"count": 5, "score": 10},
+    }
+    out = blueprint_persistence_service._without_practical(
+        rules, {"single_choice", "short_answer"}
+    )
+    dist = out["single_choice"]["assessment_mode_distribution"]
+    assert "practical_operation" not in dist
+    assert abs(sum(dist.values()) - 100) < 0.01
+    assert "assessment_mode_distribution" not in out["short_answer"]
+    assert out["true_false"] is rules["true_false"]
+
+
+def test_enrich_units_respects_explicit_policy_and_looks_up_by_id_or_code(session):
+    """回填只补缺失：显式值尊重、查不到考点的单元保持缺省、code 兜底可匹配。"""
+    units = [
+        # 显式声明 → 不动
+        {"unit_id": "au1", "exam_point_id": "au1", "operational_detail_policy": "forbidden"},
+        # 查无此考点 → 保持缺省（引擎按 supporting_only 处理）
+        {"unit_id": "ghost", "exam_point_id": "no-such-point"},
+        # 只有 code（历史/脚本口径）→ 按 fv 内唯一 code 匹配；非可直考不放开实操
+        {"unit_id": "u3", "exam_point_id": "EP1"},
+    ]
+    blueprint_persistence_service._enrich_units_with_policy(
+        session, units, course_id="c1", framework_version_id="fv1"
+    )
+    assert units[0]["operational_detail_policy"] == "forbidden"
+    assert "operational_detail_policy" not in units[1]
+    assert units[2]["operational_detail_policy"] == "supporting_only"
+    assert "allowed_assessment_modes" not in units[2]
+
+
+def test_mode_eligible_mirrors_engine_guards():
+    """可考性判定与引擎 _eligible_units 同口径（三道闸门逐一拦截）。"""
+    unit = UnitCoverage(
+        unit_id="u1",
+        anchor_key="A1",
+        card_ids=["c1"],
+        allowed_assessment_modes=["theory_recall", "practical_operation"],
+        operational_detail_policy="supporting_only",
+    )
+    # 实操在允许清单里，但政策不是可直考 → 拦
+    assert not blueprint_persistence_service._mode_eligible(
+        unit, mode="practical_operation", question_type="single_choice", card_question_types={}
+    )
+    # 同政策下理论记忆可考（政策只管实操）
+    assert blueprint_persistence_service._mode_eligible(
+        unit, mode="theory_recall", question_type="single_choice", card_question_types={}
+    )
+    # 不在允许清单的方式 → 拦
+    assert not blueprint_persistence_service._mode_eligible(
+        unit, mode="conceptual", question_type="single_choice", card_question_types={}
+    )
+    # 卡片限定题型，单元里没有卡能出该题型 → 拦
+    assert not blueprint_persistence_service._mode_eligible(
+        unit, mode="theory_recall", question_type="essay",
+        card_question_types={"c1": ["single_choice"]},
+    )

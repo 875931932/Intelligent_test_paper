@@ -23,6 +23,7 @@ from app.db.schema import (
     plan_items,
 )
 from app.domain.blueprint.models import (
+    ASSESSMENT_MODES,
     BlueprintPlan,
     BlueprintRequest,
     CardSemanticProfile,
@@ -30,6 +31,7 @@ from app.domain.blueprint.models import (
 )
 from app.domain.framework.exam_rules import (
     canonical_question_type,
+    normalize_exam_rules,
     rules_have_type_ratios,
     type_rules_from_ratios,
 )
@@ -155,6 +157,233 @@ def _default_type_rules(
     return restrict(dict(_DEFAULT_TYPE_RULES))
 
 
+def _assessment_focus(
+    session: Session,
+    *,
+    course_id: str,
+    framework_version_id: str,
+) -> dict[str, float]:
+    """读取考核大纲声明的考试侧重点（归一到 100 的各考查方式权重）。
+
+    与题型比例同一来源（框架 payload 的 final_exam_rules）：教师在考核规则卡
+    改完侧重点，下一次出卷即按新侧重点分配；未声明时为空 dict，蓝图按题型
+    默认分布出卷。
+    """
+    payload = _framework_payload(
+        session, course_id=course_id, framework_version_id=framework_version_id
+    )
+    rules = payload.get("final_exam_rules") if isinstance(payload, dict) else None
+    focus: dict[str, float] = {}
+    for entry in normalize_exam_rules(rules).get("assessment_focus", []):
+        focus[str(entry["assessment_mode"])] = float(entry["weight"])
+    return focus
+
+
+def _enrich_units_with_policy(
+    session: Session,
+    units_payload: list[dict],
+    *,
+    course_id: str,
+    framework_version_id: str,
+) -> None:
+    """按考点行回填单元的实操考核政策（缺失才填，显式值尊重）。
+
+    前端创建蓝图只下发 unit_id/exam_point_id/anchor_key/card_ids，UnitCoverage
+    的 operational_detail_policy 缺省 supporting_only、allowed_assessment_modes
+    缺省不含 practical_operation——实操可考性在 UI 流程里永远为假。考点行才是
+    政策的权威来源，推导口径与 scripts/build_real_material_demo.py 一致
+    （policy == directly_assessable 才允许实操）。
+    """
+    keys = {
+        str(u.get("exam_point_id") or "").strip()
+        for u in units_payload
+        if isinstance(u, dict) and not u.get("operational_detail_policy")
+    }
+    keys.discard("")
+    if not keys:
+        return
+    rows = session.execute(
+        select(
+            exam_points.c.id,
+            exam_points.c.code,
+            exam_points.c.operational_detail_policy,
+        ).where(
+            exam_points.c.course_id == course_id,
+            or_(
+                # id 全局唯一，直接匹配；code 只在本框架版本内唯一，防跨版本撞码
+                exam_points.c.id.in_(keys),
+                and_(
+                    exam_points.c.code.in_(keys),
+                    exam_points.c.framework_version_id == framework_version_id,
+                ),
+            ),
+        )
+    ).all()
+    policy_by_key: dict[str, str] = {}
+    for r in rows:
+        policy_by_key[str(r._mapping["id"])] = r._mapping["operational_detail_policy"]
+        if r._mapping["code"]:
+            policy_by_key[str(r._mapping["code"])] = r._mapping["operational_detail_policy"]
+    base_modes = [m for m in ASSESSMENT_MODES if m != "practical_operation"]
+    for u in units_payload:
+        if not isinstance(u, dict) or u.get("operational_detail_policy"):
+            continue
+        policy = policy_by_key.get(str(u.get("exam_point_id") or "").strip())
+        if not policy:
+            continue
+        u["operational_detail_policy"] = policy
+        if policy == "directly_assessable" and not u.get("allowed_assessment_modes"):
+            u["allowed_assessment_modes"] = [*base_modes, "practical_operation"]
+
+
+def _mode_eligible(
+    unit: UnitCoverage,
+    *,
+    mode: str,
+    question_type: str,
+    card_question_types: dict[str, list[str]],
+) -> bool:
+    """单元是否可考该（题型 × 考查方式）组合——与蓝图引擎 _eligible_units 同口径。"""
+    if mode not in unit.allowed_assessment_modes:
+        return False
+    if mode == "practical_operation" and unit.operational_detail_policy != "directly_assessable":
+        return False
+    return any(
+        not card_question_types.get(cid) or question_type in card_question_types[cid]
+        for cid in unit.card_ids
+    )
+
+
+def _normalize_mode_weights(weights: dict[str, float]) -> dict[str, float]:
+    """考查方式权重归一到 100（非正权重剔除；全零返回空 dict）。"""
+    positive = {m: w for m, w in weights.items() if w > 0}
+    total = sum(positive.values())
+    if total <= 0:
+        return {}
+    return {m: round(w / total * 100.0, 4) for m, w in positive.items()}
+
+
+def _cap_practical_weight(
+    weights: dict[str, dict[str, float]],
+    *,
+    type_rules: dict,
+    units: list[UnitCoverage],
+    chapter_weights: dict[str, float],
+    total_score: float,
+) -> None:
+    """实操占比以"含可直考单元的章节权重和"为上界，超出按比例收敛（就地归一）。
+
+    实操槽位只能落进可直考章，其总容量即这些章的权重和；超出的部分确定性地
+    等比缩回上界内（留 1% 余量吸收题数取整），保证"没有足够可直考的实操单元"
+    时出卷不失败。
+    """
+    mode = "practical_operation"
+    if not any(dist.get(mode, 0) > 0 for dist in weights.values()):
+        return
+    eligible_anchors = {
+        unit.anchor_key
+        for unit in units
+        if mode in unit.allowed_assessment_modes
+        and unit.operational_detail_policy == "directly_assessable"
+    }
+    cap = sum(float(w) for a, w in chapter_weights.items() if a in eligible_anchors)
+    # 全部章都可直考（cap≈100）时无实际上界；其余情况留 1% 余量
+    limit = cap if cap > 99.99 else cap * 0.99
+    for _ in range(20):
+        demand = sum(
+            float(type_rules[qt].get("count", 0))
+            * float(type_rules[qt].get("score", 0))
+            * dist.get(mode, 0)
+            / 100.0
+            for qt, dist in weights.items()
+        )
+        demand_pct = demand / total_score * 100.0 if total_score > 0 else 0.0
+        if demand_pct <= limit + 0.01:
+            return
+        factor = limit / demand_pct if demand_pct > 0 else 0.0
+        for dist in weights.values():
+            dist[mode] = dist.get(mode, 0) * factor
+            scaled = _normalize_mode_weights(dist)
+            dist.clear()
+            dist.update(scaled)
+
+
+def _apply_assessment_focus(
+    type_rules: dict,
+    *,
+    focus: dict[str, float],
+    units: list[UnitCoverage],
+    chapter_weights: dict[str, float],
+    card_question_types: dict[str, list[str]],
+    total_score: float,
+) -> tuple[dict, set[str]]:
+    """把考试侧重点折算进各题型的考查方式分布，并确定性收敛到可考范围。
+
+    规则（教师/脚本显式下发的 assessment_mode_distribution 永远优先）：
+    1. 逐（题型 × 方式）过滤无任何可考单元的组合，过滤到空就不注入，交回
+       引擎默认分布（默认不含实操，天然可考）；
+    2. 实操占比按可直考章容量收敛归一——没有可直考单元时实操归 0，蓝图
+       照常生成；题位表逐题可见考查方式，收敛结果教师看得见。
+    返回 (新 type_rules, 注入了分布的题型集合)。
+    """
+    if not focus:
+        return type_rules, set()
+    weights: dict[str, dict[str, float]] = {}
+    for qt, rule in type_rules.items():
+        if not isinstance(rule, dict) or "assessment_mode_distribution" in rule:
+            continue
+        eligible = {
+            mode: w
+            for mode, w in focus.items()
+            if w > 0
+            and any(
+                _mode_eligible(
+                    unit,
+                    mode=mode,
+                    question_type=qt,
+                    card_question_types=card_question_types,
+                )
+                for unit in units
+            )
+        }
+        if eligible:
+            weights[qt] = _normalize_mode_weights(eligible)
+    if not weights:
+        return type_rules, set()
+    _cap_practical_weight(
+        weights,
+        type_rules=type_rules,
+        units=units,
+        chapter_weights=chapter_weights,
+        total_score=total_score,
+    )
+    applied: set[str] = set()
+    out = dict(type_rules)
+    for qt, dist in weights.items():
+        if dist:
+            out[qt] = {**type_rules[qt], "assessment_mode_distribution": dist}
+            applied.add(qt)
+    return out, applied
+
+
+def _without_practical(type_rules: dict, applied: set[str]) -> dict:
+    """从注入的分布里剔除实操（其余权重归一）——分配阶梯的中间退路。"""
+    out: dict = {}
+    for qt, rule in type_rules.items():
+        if qt not in applied:
+            out[qt] = rule
+            continue
+        dist = rule.get("assessment_mode_distribution") or {}
+        rest = _normalize_mode_weights(
+            {m: w for m, w in dist.items() if m != "practical_operation"}
+        )
+        if rest:
+            out[qt] = {**rule, "assessment_mode_distribution": rest}
+        else:
+            out[qt] = {k: v for k, v in rule.items() if k != "assessment_mode_distribution"}
+    return out
+
+
 def _nid() -> str:
     """生成短小写 UUID。"""
     return uuid.uuid4().hex[:16]
@@ -181,6 +410,14 @@ def create_draft_blueprint(
     card_question_types: dict[str, list[str]],
 ) -> tuple[str, BlueprintPlan]:
     """创建草稿蓝图版本：分配计划 → 持久化 blueprint_version + sections + plan_items。"""
+    # 0. 实操考核政策按考点行回填：前端 units 载荷不含该字段，缺失会让实操
+    #    在 UI 流程里永远不可考（与 demo 脚本的 policy→modes 推导同口径）。
+    _enrich_units_with_policy(
+        session,
+        units_payload,
+        course_id=course_id,
+        framework_version_id=framework_version_id,
+    )
     # 1. 构造请求对象
     units = [UnitCoverage(**u) for u in units_payload]
     profiles = {
@@ -204,25 +441,50 @@ def create_draft_blueprint(
         if abs(weight_sum - 100) > 0.01:
             scale = 100.0 / weight_sum
             chapter_weights = {k: float(v) * scale for k, v in chapter_weights.items()}
-    request = BlueprintRequest(
-        total_score=sum(
-            float(r.get("count", 0)) * float(r.get("score", 0))
-            for r in type_rules.values()
-        ),
-        type_rules=type_rules,
-        chapter_weights=chapter_weights,
-        units=units,
-        card_semantic_profiles=profiles,
-        card_question_types=card_question_types,
+    # 考试侧重点（考核规则卡声明）→ 各题型考查方式分布，先确定性收敛到
+    # 可考范围；注入的分布随 type_rules 持久化，确认阶段防御性重跑输入一致。
+    total_score = sum(
+        float(r.get("count", 0)) * float(r.get("score", 0))
+        for r in type_rules.values()
     )
+    focused_rules, focus_applied = _apply_assessment_focus(
+        type_rules,
+        focus=_assessment_focus(
+            session, course_id=course_id, framework_version_id=framework_version_id
+        ),
+        units=units,
+        chapter_weights=chapter_weights,
+        card_question_types=card_question_types,
+        total_score=total_score,
+    )
+    # 2. 确定性分配阶梯：注入侧重点 → 剔除实操 → 回退原分布（引擎默认）。
+    #    与合同分配的阈值回退同款：逐级降级，全部失败才把校验错误抛给教师。
+    candidates = [focused_rules]
+    if focus_applied:
+        candidates.append(_without_practical(focused_rules, focus_applied))
+        candidates.append(type_rules)
 
-    # 2. 调用引擎分配计划
-    try:
-        plan: BlueprintPlan = allocate_plan_items(request)
-    except BlueprintValidationError:
-        raise
-    except Exception as exc:  # pragma: no cover - 引擎外的异常
-        raise BlueprintPersistenceError(f"蓝图分配失败: {exc}") from exc
+    plan: BlueprintPlan | None = None
+    last_error: BlueprintValidationError | None = None
+    for rules in candidates:
+        request = BlueprintRequest(
+            total_score=total_score,
+            type_rules=rules,
+            chapter_weights=chapter_weights,
+            units=units,
+            card_semantic_profiles=profiles,
+            card_question_types=card_question_types,
+        )
+        try:
+            plan = allocate_plan_items(request)
+            type_rules = rules
+            break
+        except BlueprintValidationError as exc:
+            last_error = exc
+        except Exception as exc:  # pragma: no cover - 引擎外的异常
+            raise BlueprintPersistenceError(f"蓝图分配失败: {exc}") from exc
+    if plan is None:
+        raise last_error or BlueprintPersistenceError("蓝图分配失败")
 
     try:
         # 3. 计算 version_no
@@ -575,6 +837,15 @@ def confirm_blueprint(
                 "anchor_key": _anchor(uid),
                 "card_ids": sorted(card_set) if card_set else ["__placeholder__"],
             })
+
+        # 实操考核政策按考点行回填：创建阶段注入过实操分布的蓝图，确认时的
+        # 防御性重跑必须看到同样的可考性，否则 "has no eligible chapter"。
+        _enrich_units_with_policy(
+            session,
+            rebuilt_units,
+            course_id=course_id,
+            framework_version_id=bv_data["framework_version_id"],
+        )
 
         # 加载卡片语义画像（如存在，否则默认）
         card_rows = session.execute(

@@ -1,17 +1,22 @@
-"""考核大纲里的结构化考试规则：题型比例与章节命题权重。
+"""考核大纲里的结构化考试规则：题型比例、章节命题权重与考试侧重点。
 
 考纲通常写明"选择题占 20%/判断题占 20%…"以及"第1章 5%/第2章 25%…"的命题
 权重表。这些是命题的硬约束，必须原样进入框架并被蓝图消费，否则出卷比例与
-考纲声明脱节。本模块做两件确定性的事：
+考纲声明脱节。本模块做三件确定性的事：
 
 1. ``normalize_exam_rules``：把模型/教师给的自由形态规则归一成内部约定
-   （题型名统一英文枚举、剔除未知项、比例归一到 100）；
+   （题型名统一英文枚举、剔除未知项、比例归一到 100；考试侧重点按考查
+   方式同样归一）；
 2. ``type_rules_from_ratios``：按题型比例推导蓝图的 type_rules
-   （题数取整后定点修正，保证总分精确闭合）。
+   （题数取整后定点修正，保证总分精确闭合）；
+3. 考试侧重点 ``assessment_focus`` 只声明各考查方式的权重偏好，由蓝图
+   创建时确定性地折算成各题型的考查方式分布——权重本身不进任何 prompt。
 """
 from __future__ import annotations
 
 import re
+
+from app.domain.blueprint.models import ASSESSMENT_MODES
 
 # 模型与教师都可能用中文题型名，统一映射到内部英文枚举
 QUESTION_TYPE_ALIASES: dict[str, str] = {
@@ -79,7 +84,13 @@ def _ratio_list(raw: object, *, anchor_keys: set[str] | None = None) -> list[tup
         for entry in raw:
             if not isinstance(entry, dict):
                 continue
-            key = entry.get("question_type") or entry.get("anchor_key") or entry.get("key") or entry.get("type")
+            key = (
+                entry.get("question_type")
+                or entry.get("anchor_key")
+                or entry.get("key")
+                or entry.get("type")
+                or entry.get("assessment_mode")
+            )
             value = entry.get("ratio") if "ratio" in entry else entry.get("weight")
             if key is not None:
                 items.append((key, value))
@@ -139,6 +150,15 @@ def normalize_exam_rules(raw: object, *, anchor_keys: list[str] | None = None) -
         chapters = []
     chapters = _normalize_to_100(chapters)
 
+    # 考试侧重点：教师声明的各考查方式权重偏好（归一到 100，未知方式与
+    # 负值剔除，全零视为未声明）。为空时蓝图按题型默认分布出卷。
+    focus: list[tuple[str, float]] = []
+    for mode, weight in _ratio_list(rules.get("assessment_focus")):
+        if mode in ASSESSMENT_MODES:
+            focus.append((mode, weight))
+    focus = _normalize_to_100(focus)
+    focus = [(key, value) for key, value in focus if value > 0]
+
     duration = rules.get("duration_minutes")
     if isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration < 0:
         duration = None
@@ -152,6 +172,9 @@ def normalize_exam_rules(raw: object, *, anchor_keys: list[str] | None = None) -
         "total_score": float(total_score) if total_score is not None else None,
         "question_type_ratios": [{"question_type": key, "ratio": value} for key, value in ratios],
         "chapter_weights": [{"anchor_key": key, "weight": value} for key, value in chapters],
+        "assessment_focus": [
+            {"assessment_mode": key, "weight": value} for key, value in focus
+        ],
     }
 
 

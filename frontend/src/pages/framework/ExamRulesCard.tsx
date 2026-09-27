@@ -4,9 +4,9 @@ import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
-import { QUESTION_TYPE_OPTIONS, qlabel } from '@/lib/examDisplay';
+import { QUESTION_TYPE_OPTIONS, qlabel, mlabel } from '@/lib/examDisplay';
 import { formatPercent, friendlyId } from '@/lib/format';
-import type { ExamRules } from '@/types/api';
+import type { ExamRuleFocus, ExamRules } from '@/types/api';
 
 const EMPTY_RULES: ExamRules = {
   exam_form: '',
@@ -14,7 +14,44 @@ const EMPTY_RULES: ExamRules = {
   total_score: null,
   question_type_ratios: [],
   chapter_weights: [],
+  assessment_focus: [],
 };
+
+/** 五项考查方式（侧重点权重编辑行的固定顺序） */
+const FOCUS_MODES = [
+  'theory_recall',
+  'conceptual',
+  'application',
+  'problem_solving',
+  'practical_operation',
+] as const;
+
+/**
+ * 考试侧重点预设：均衡 = 不声明（蓝图按题型默认分布），其余是权重组合。
+ * 预设只是快捷入口——教师仍可逐项微调，全部归零即回到均衡。
+ */
+const FOCUS_PRESETS: Array<{ key: string; label: string; weights: Record<string, number> }> = [
+  { key: 'balanced', label: '均衡', weights: {} },
+  { key: 'theory', label: '偏理论', weights: { theory_recall: 45, conceptual: 25, application: 20, problem_solving: 10 } },
+  { key: 'understand', label: '偏理解', weights: { conceptual: 45, application: 25, problem_solving: 15, theory_recall: 15 } },
+  { key: 'practice', label: '偏实操', weights: { practical_operation: 40, application: 25, problem_solving: 20, conceptual: 15 } },
+];
+
+function focusEntries(weights: Record<string, number>): ExamRuleFocus[] {
+  return Object.entries(weights).map(([assessment_mode, weight]) => ({
+    assessment_mode: assessment_mode as ExamRuleFocus['assessment_mode'],
+    weight,
+  }));
+}
+
+/** 归一后的权重签名（去零、取整、排序），用于判断当前侧重点命中了哪个预设 */
+function focusSignature(entries: ExamRuleFocus[] | undefined): string {
+  return (entries ?? [])
+    .filter((e) => Number(e.weight) > 0)
+    .map((e) => `${e.assessment_mode}:${Math.round(Number(e.weight))}`)
+    .sort()
+    .join(',');
+}
 
 /**
  * 考核规则卡：考核大纲声明的题型比例与章节命题权重。
@@ -40,6 +77,7 @@ export function ExamRulesCard({
     ...(rules ?? {}),
     question_type_ratios: [...(rules?.question_type_ratios ?? [])],
     chapter_weights: [...(rules?.chapter_weights ?? [])],
+    assessment_focus: [...(rules?.assessment_focus ?? [])],
   }));
   const [saving, setSaving] = useState(false);
 
@@ -50,19 +88,35 @@ export function ExamRulesCard({
       // 后端应对旧框架补齐字段，这里再兜一层：不假设 API 一定返回完整数组
       question_type_ratios: [...(rules?.question_type_ratios ?? [])],
       chapter_weights: [...(rules?.chapter_weights ?? [])],
+      assessment_focus: [...(rules?.assessment_focus ?? [])],
     });
     setEditing(true);
   };
 
   const ratioSum = (draft.question_type_ratios ?? []).reduce((s, r) => s + (Number(r.ratio) || 0), 0);
   const chapterSum = (draft.chapter_weights ?? []).reduce((s, c) => s + (Number(c.weight) || 0), 0);
+  const focusSum = (draft.assessment_focus ?? []).reduce((s, e) => s + (Number(e.weight) || 0), 0);
   const hasRules = (rules?.question_type_ratios?.length ?? 0) > 0;
+  // 当前权重命中了哪个预设（全零/空 = 均衡；其余不匹配则视为自定义微调）
+  const activePreset = FOCUS_PRESETS.find(
+    (p) => focusSignature(draft.assessment_focus) === focusSignature(focusEntries(p.weights)),
+  )?.key;
+
+  const setFocusWeight = (mode: string, weight: number) => {
+    const current = draft.assessment_focus ?? [];
+    const idx = current.findIndex((e) => e.assessment_mode === mode);
+    const next = [...current];
+    if (idx >= 0) next[idx] = { ...next[idx], weight };
+    else next.push({ assessment_mode: mode as ExamRuleFocus['assessment_mode'], weight });
+    // 全部归零 = 均衡：清空声明，蓝图回退题型默认分布
+    setDraft({ ...draft, assessment_focus: next.filter((e) => Number(e.weight) > 0) });
+  };
 
   const handleSave = async () => {
     setSaving(true);
     try {
       await api.framework.updateExamRules(courseId, draft);
-      addToast('考核规则已保存，下次出卷将按新比例分配', 'success');
+      addToast('考核规则已保存，下次出卷按新比例与侧重点分配', 'success');
       setEditing(false);
       onSaved();
     } catch (e) {
@@ -78,7 +132,7 @@ export function ExamRulesCard({
         <div>
           <h3 style={{ fontSize: '1rem', fontWeight: 700, letterSpacing: '-0.01em' }}>考核规则</h3>
           <p style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', marginTop: '3px' }}>
-            来自考核大纲的考试形式、题型比例与章节命题权重；蓝图按此推导试卷结构
+            考纲声明的考试形式、题型比例与章节命题权重，可另设考试侧重点；蓝图按此推导试卷结构
           </p>
         </div>
         {editing ? (
@@ -112,6 +166,22 @@ export function ExamRulesCard({
                       background: 'var(--accent-subtle)', color: 'var(--accent)',
                     }}>
                       {qlabel(r.question_type)} {formatPercent(r.ratio)}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {(rules?.assessment_focus?.length ?? 0) > 0 && (
+              <div>
+                <p style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-tertiary)', marginBottom: '6px' }}>考试侧重点</p>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {(rules?.assessment_focus ?? []).map((e) => (
+                    <span key={e.assessment_mode} style={{
+                      padding: '4px 10px', borderRadius: 999, fontSize: '0.78rem', fontWeight: 600,
+                      background: 'var(--accent-subtle)', color: 'var(--accent)',
+                    }}>
+                      {mlabel(e.assessment_mode)} {formatPercent(e.weight)}
                     </span>
                   ))}
                 </div>
@@ -224,9 +294,46 @@ export function ExamRulesCard({
             </div>
           </div>
 
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
+              <p style={{ fontSize: '0.82rem', fontWeight: 600 }}>考试侧重点</p>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                {FOCUS_PRESETS.map((p) => (
+                  <Button
+                    key={p.key}
+                    variant={activePreset === p.key ? 'primary' : 'secondary'}
+                    size="sm"
+                    onClick={() => setDraft({ ...draft, assessment_focus: focusEntries(p.weights) })}
+                  >
+                    {p.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '8px 16px' }}>
+              {FOCUS_MODES.map((mode) => (
+                <div key={mode} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ flex: 1, fontSize: '0.85rem' }}>{mlabel(mode)}</span>
+                  <input
+                    className="input-field" type="number" min={0} max={100} step="5" style={{ width: 100 }}
+                    aria-label={`${mlabel(mode)}占比`}
+                    value={(draft.assessment_focus ?? []).find((e) => e.assessment_mode === mode)?.weight ?? 0}
+                    onChange={(e) => setFocusWeight(mode, Number(e.target.value) || 0)}
+                  />
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)' }}>%</span>
+                </div>
+              ))}
+            </div>
+            <p style={{ fontSize: '0.75rem', color: focusSum > 0 && Math.abs(focusSum - 100) > 0.5 ? 'var(--warning)' : 'var(--text-tertiary)', marginTop: '8px', lineHeight: 1.7 }}>
+              {focusSum > 0
+                ? `合计 ${formatPercent(focusSum)}（保存时自动归一到 100）。侧重点决定蓝图各题型的考查方式分布；无可直考实操单元的课程，实操占比会自动收敛为 0，出卷不受影响，题位表可逐题查看考查方式。`
+                : '均衡：不声明侧重点，蓝图按题型默认分布分配考查方式。'}
+            </p>
+          </div>
+
           <div style={{ padding: '10px 14px', borderRadius: 8, background: 'var(--info-subtle)', fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
             比例不需要手工凑满 100：保存时会自动归一到 100。题型比例决定试卷的题型分布与分值，
-            章节权重决定各章出题占比；考纲未声明的章节按 0 处理。
+            章节权重决定各章出题占比，考试侧重点决定各题型的考查方式；考纲未声明的章节按 0 处理。
           </div>
         </div>
       )}

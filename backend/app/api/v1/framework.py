@@ -188,11 +188,14 @@ class ExamRulesUpdate(BaseModel):
     total_score: float | None = None
     question_type_ratios: list[dict] = []
     chapter_weights: list[dict] = []
+    # 考试侧重点：各考查方式的权重偏好（蓝图创建时确定性折算成各题型的
+    # 考查方式分布），保存时由 normalize_exam_rules 归一到 100
+    assessment_focus: list[dict] = []
 
 
 @router.patch("/framework-versions/current/rules")
 def update_exam_rules(course_id: str, body: ExamRulesUpdate, session: Session = Depends(get_session)) -> dict:
-    """教师修改考核大纲的考试规则：题型比例与章节命题权重。"""
+    """教师修改考核大纲的考试规则：题型比例、章节命题权重与考试侧重点。"""
     repo = framework_service.DatabaseFrameworkRepository(session)
     try:
         version_id = repo.update_exam_rules({"course_id": course_id}, body.model_dump())

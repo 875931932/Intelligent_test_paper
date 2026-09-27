@@ -15,6 +15,7 @@ from app.db.schema import (
     document_parse_runs,
     exam_points,
     framework_build_runs,
+    framework_versions,
     material_versions,
     materials,
     parser_profiles,
@@ -397,4 +398,62 @@ def test_framework_dependency_lazily_builds_llm_extractor(tmp_path, monkeypatch)
         app.dependency_overrides.clear()
         if hasattr(app.state, "syllabus_extractor"):
             del app.state.syllabus_extractor
+        engine.dispose()
+
+
+def test_patch_exam_rules_round_trips_assessment_focus(tmp_path):
+    """考核规则 PATCH 接收考试侧重点：归一化落库并随 current 回显。"""
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'rules.db'}", connect_args={"check_same_thread": False}
+    )
+    event.listen(engine, "connect", lambda connection, _: connection.execute("PRAGMA foreign_keys=ON"))
+    Base.metadata.create_all(engine)
+    with Session(engine) as setup:
+        setup.add(User(id="owner-dev", display_name="Owner", role="teacher"))
+        setup.flush()
+        setup.add(Course(id="course", owner_id="owner-dev", slug="course", name="Course"))
+        setup.flush()
+        setup.execute(
+            framework_versions.insert().values(
+                id="fv-rules",
+                course_id="course",
+                version_no=1,
+                status="published",
+                payload={"anchors": [{"key": "core-exam"}], "final_exam_rules": {}},
+                published_at=datetime.now(UTC),
+            )
+        )
+        setup.commit()
+
+    def session_override():
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = session_override
+    try:
+        with TestClient(app) as client:
+            patched = client.patch(
+                "/api/v1/courses/course/framework-versions/current/rules",
+                json={
+                    "exam_form": "闭卷笔试",
+                    "question_type_ratios": [{"question_type": "single_choice", "ratio": 100}],
+                    "chapter_weights": [{"anchor_key": "core-exam", "weight": 100}],
+                    "assessment_focus": [
+                        {"assessment_mode": "practical_operation", "weight": 60},
+                        {"assessment_mode": "conceptual", "weight": 30},
+                        {"assessment_mode": "bogus_mode", "weight": 10},
+                    ],
+                },
+            )
+            assert patched.status_code == 200, patched.text
+            focus = patched.json()["exam_rules"]["assessment_focus"]
+            # 未知考查方式剔除，剩余 60:30 归一到 100
+            assert [e["assessment_mode"] for e in focus] == ["practical_operation", "conceptual"]
+            assert abs(sum(e["weight"] for e in focus) - 100) < 0.01
+
+            current = client.get("/api/v1/courses/course/framework-versions/current")
+            assert current.status_code == 200
+            assert current.json()["exam_rules"]["assessment_focus"] == focus
+    finally:
+        app.dependency_overrides.clear()
         engine.dispose()

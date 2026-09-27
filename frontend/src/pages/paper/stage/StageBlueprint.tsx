@@ -2,7 +2,7 @@ import { ChevronRight, RefreshCw, PlayCircle } from 'lucide-react';
 import { api } from '@/api/client';
 import { Button } from '@/components/ui/Button';
 import type { NameMaps } from '@/hooks/useNameMaps';
-import { qlabel, dlabel, clabel, PLAN_DIFFICULTY_OPTIONS } from '@/lib/examDisplay';
+import { qlabel, dlabel, clabel, mlabel, PLAN_DIFFICULTY_OPTIONS } from '@/lib/examDisplay';
 import { formatScore } from '@/lib/format';
 import type { ExamProject, ExamRules, PlanItem } from '@/types/api';
 import { StageHeading } from './StageHeading';
@@ -143,7 +143,7 @@ export function renderBlueprint({
             </div>
             <div className="table-wrapper">
               <table className="data-table">
-                <thead><tr><th>#</th><th>题型</th><th>分值</th><th>难度</th><th>章节</th><th>考点</th><th>认知层级</th></tr></thead>
+                <thead><tr><th>#</th><th>题型</th><th>分值</th><th>难度</th><th>考查方式</th><th>章节</th><th>考点</th><th>认知层级</th></tr></thead>
                 <tbody>
                   {planItems.map((item) => (
                     <tr key={item.item_index}>
@@ -190,6 +190,7 @@ export function renderBlueprint({
                           ))}
                         </select>
                       </td>
+                      <td style={{ whiteSpace: 'nowrap' }}>{mlabel(item.assessment_mode)}</td>
                       <td title={item.anchor_key || undefined}>{item.anchor_key ? anchorLabel(maps, item.anchor_key) : '-'}</td>
                       <td title={item.exam_point_title || item.exam_point_code || item.exam_point_id || undefined}>
                         {item.exam_point_id ? examPointLabel(maps, item.exam_point_id, item.exam_point_title) : '-'}

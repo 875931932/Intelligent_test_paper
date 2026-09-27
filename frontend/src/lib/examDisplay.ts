@@ -72,6 +72,18 @@ export const COGNITIVE_LABELS: Record<string, string> = {
   create: '创造',
 };
 
+/**
+ * 考查方式（蓝图题位的 assessment_mode / 考核规则的考试侧重点）词表。
+ * 与难度同理：裸英文一律不进表格与卡片。
+ */
+export const ASSESSMENT_MODE_LABELS: Record<string, string> = {
+  theory_recall: '理论记忆',
+  conceptual: '概念理解',
+  application: '知识应用',
+  problem_solving: '问题解决',
+  practical_operation: '实操操作',
+};
+
 /** 试卷项目状态（后端 exam_projects.status） */
 export const EXAM_PROJECT_STATUS_META: Record<string, { label: string; variant: 'default' | 'success' | 'warning' | 'error' | 'info' | 'purple' }> = {
   draft: { label: '草稿', variant: 'default' },
@@ -103,6 +115,10 @@ export function dlabel(d: string): string {
 
 export function clabel(c: string): string {
   return COGNITIVE_LABELS[c] ?? c;
+}
+
+export function mlabel(mode: string): string {
+  return ASSESSMENT_MODE_LABELS[mode] ?? mode;
 }
 
 /**

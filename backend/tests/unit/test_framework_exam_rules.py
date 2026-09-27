@@ -164,3 +164,54 @@ def test_exam_rules_of_preserves_declared_rules():
     assert [e["question_type"] for e in rules["question_type_ratios"]] == ["single_choice", "comprehensive"]
     assert abs(sum(e["ratio"] for e in rules["question_type_ratios"]) - 100) < 0.01
     assert rules["chapter_weights"][0]["anchor_key"] == "第1章"
+
+
+def test_exam_rules_of_preserves_assessment_focus():
+    """考试侧重点随考核规则回显：教师改完能在卡片上看到自己的声明。"""
+    payload = {
+        "final_exam_rules": {
+            "assessment_focus": [
+                {"assessment_mode": "practical_operation", "weight": 60},
+                {"assessment_mode": "conceptual", "weight": 40},
+            ]
+        }
+    }
+    rules = _exam_rules_of(payload)
+    focus = rules["assessment_focus"]
+    assert [e["assessment_mode"] for e in focus] == ["practical_operation", "conceptual"]
+    assert abs(sum(e["weight"] for e in focus) - 100) < 0.01
+
+
+def test_normalize_assessment_focus_filters_unknown_negative_and_normalizes():
+    """侧重点：未知考查方式剔除、负值剔除、剩余权重归一到 100。"""
+    rules = normalize_exam_rules(
+        {
+            "assessment_focus": [
+                {"assessment_mode": "practical_operation", "weight": 40},
+                {"assessment_mode": "theory_recall", "weight": 20},
+                {"assessment_mode": "主观题", "weight": 40},
+                {"assessment_mode": "conceptual", "weight": -5},
+            ]
+        },
+        anchor_keys=[],
+    )
+    focus = rules["assessment_focus"]
+    assert [e["assessment_mode"] for e in focus] == ["practical_operation", "theory_recall"]
+    assert abs(sum(e["weight"] for e in focus) - 100) < 0.01
+    assert focus[0]["weight"] > focus[1]["weight"]
+
+
+def test_normalize_assessment_focus_empty_junk_and_all_zero_mean_balanced():
+    """未声明/坏形态/全零都是"均衡"：空表即不干预，蓝图走题型默认分布。"""
+    assert normalize_exam_rules(None, anchor_keys=[])["assessment_focus"] == []
+    assert normalize_exam_rules({}, anchor_keys=[])["assessment_focus"] == []
+    assert normalize_exam_rules({"assessment_focus": "nope"}, anchor_keys=[])["assessment_focus"] == []
+    assert normalize_exam_rules(
+        {"assessment_focus": [5, {"assessment_mode": "conceptual", "weight": 0}]},
+        anchor_keys=[],
+    )["assessment_focus"] == []
+    # dict 形态同样接受（与题型比例的自由形态输入一致）
+    dict_rules = normalize_exam_rules(
+        {"assessment_focus": {"conceptual": 100}}, anchor_keys=[]
+    )
+    assert dict_rules["assessment_focus"] == [{"assessment_mode": "conceptual", "weight": 100.0}]

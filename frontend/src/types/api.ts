@@ -198,6 +198,8 @@ export interface ExamRules {
   total_score?: number | null;
   question_type_ratios: ExamRuleTypeRatio[];
   chapter_weights: ExamRuleChapterWeight[];
+  /** 考试侧重点：各考查方式权重（保存时归一到 100）；空 = 均衡（按题型默认分布） */
+  assessment_focus?: ExamRuleFocus[];
 }
 
 export interface ExamRuleTypeRatio {
@@ -207,6 +209,11 @@ export interface ExamRuleTypeRatio {
 
 export interface ExamRuleChapterWeight {
   anchor_key: string;
+  weight: number;
+}
+
+export interface ExamRuleFocus {
+  assessment_mode: AssessmentMode;
   weight: number;
 }
 
