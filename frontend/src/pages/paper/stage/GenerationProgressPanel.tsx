@@ -107,7 +107,16 @@ export function GenerationProgressPanel({
             <Button onClick={onRetry} icon={<RefreshCw size={16} />}>重新生成</Button>
           </>
         ) : taskRun.status === 'succeeded' ? (
-          <Button onClick={onOpenPaper} icon={<ArrowRight size={16} />}>查看试卷</Button>
+          <>
+            <Button
+              variant="secondary" onClick={onRetry}
+              icon={<RefreshCw size={16} />}
+              title="按当前合同重新生成，创建新版本试卷"
+            >
+              重新生成
+            </Button>
+            <Button onClick={onOpenPaper} icon={<ArrowRight size={16} />}>查看试卷</Button>
+          </>
         ) : undefined
       }
     />

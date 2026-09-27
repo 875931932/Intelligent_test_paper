@@ -1,9 +1,9 @@
-import { ArrowLeft, RefreshCw, PlayCircle } from 'lucide-react';
+import { ArrowLeft, PlayCircle } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import type { ExamProject, TaskRun } from '@/types/api';
 import { GenerationProgressPanel } from './GenerationProgressPanel';
 import { StageHeading } from './StageHeading';
-import { isInFlight, type StageKey } from './stageShared';
+import { type StageKey } from './stageShared';
 
 export function renderGenerate({
   sp, setStep, taskRun, generating, startGeneration, onOpenPaper,
@@ -15,25 +15,9 @@ export function renderGenerate({
   startGeneration: () => Promise<void>;
   onOpenPaper: () => void;
 }) {
-  // 任务在途时禁止再次发起：并发两次会各写一版试卷，且进度面板来回跳。
-  const inFlight = !!taskRun && isInFlight(taskRun.status);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-      <StageHeading
-        title="AI 生成试题"
-        right={
-          <Button
-            variant="secondary" size="sm"
-            onClick={() => { void startGeneration(); }}
-            loading={generating}
-            disabled={inFlight}
-            icon={<RefreshCw size={14} />}
-            title={inFlight ? '任务进行中，请等待完成' : '按当前合同重新生成，创建新版本试卷'}
-          >
-            重新生成
-          </Button>
-        }
-      />
+      <StageHeading title="AI 生成试题" />
       {!taskRun ? (
         <div>
           <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '14px' }}>
