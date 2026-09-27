@@ -19,4 +19,7 @@ export const frameworkApi = {
   /** 修改考核大纲的考试规则：题型比例与章节命题权重 */
   updateExamRules: (courseId: string, rules: ExamRules, token?: string): Promise<{ status: string; exam_rules: ExamRules }> =>
     request('/courses/' + courseId + '/framework-versions/current/rules', { method: 'PATCH', body: JSON.stringify(rules) }, token),
+  /** 考核规则 AI 助手：一句话要求 → 提案任务（提案回填编辑草稿，不直接落库） */
+  proposeExamRules: (courseId: string, instruction: string, token?: string): Promise<{ task_run_id: string }> =>
+    request('/courses/' + courseId + '/framework-versions/current/rules/ai-propose', { method: 'POST', body: JSON.stringify({ instruction }) }, token),
 };

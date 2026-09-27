@@ -77,6 +77,7 @@ _LEASE_SECONDS_BY_TYPE = {
     "ai_revise_item": 300,
     "ai_create_item": 300,
     "review_paper_version": 300,
+    "propose_exam_rules": 300,
 }
 
 
@@ -249,3 +250,18 @@ def _handle_review_paper_version(context: TaskContext) -> dict:
 
 
 register_task_handler("review_paper_version", _handle_review_paper_version)
+
+
+def _handle_propose_exam_rules(context: TaskContext) -> dict:
+    """执行考核规则提案：一句话 → 结构化提案，只写 task_runs 不碰框架数据。
+
+    提案由前端回填考核规则卡的编辑草稿，教师点「保存」才走既有 PATCH rules
+    端点落库——AI 只产提案不绕教师确认流。
+    """
+    from app.services.exam_rules_ai_service import execute_propose_task
+
+    context.report_progress(stage="proposing", progress=10)
+    return execute_propose_task(context.session, payload=dict(context.payload))
+
+
+register_task_handler("propose_exam_rules", _handle_propose_exam_rules)

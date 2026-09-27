@@ -609,6 +609,19 @@ export interface PaperReviewResult {
   validated: boolean;
 }
 
+/**
+ * 考核规则 AI 助手提案结果（task_runs.result）：只回填考核规则卡的编辑草稿，
+ * 落库由教师点「保存」走既有 PATCH rules——AI 只产提案不绕教师确认流。
+ */
+export interface ExamRulesProposalResult {
+  course_id: string;
+  instruction: string;
+  /** 已归一化的规则提案（与 ExamRules 同形态，可直接填入编辑草稿） */
+  proposal: ExamRules;
+  /** 面向教师的一两句说明，不落库 */
+  explanation: string;
+}
+
 export interface TaskRun {
   id: string;
   course_id: string;

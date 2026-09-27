@@ -15,7 +15,7 @@ from app.config import settings
 from app.db.session import get_session
 from app.db.session import get_session_factory
 from app.domain.framework.models import FrameworkConfirmation, SyllabusExtractor
-from app.services import course_service, framework_service
+from app.services import course_service, exam_rules_ai_service, framework_service
 from app.services.model_call_service import DatabaseModelCallRecorder
 from app.workflows.framework_graph import build_framework_graph
 
@@ -203,3 +203,65 @@ def update_exam_rules(course_id: str, body: ExamRulesUpdate, session: Session = 
         raise _not_found()
     current = framework_service.get_current_framework(session, course_id=course_id)
     return {"status": "ok", "framework_version_id": version_id, "exam_rules": current["exam_rules"]}
+
+
+class ExamRulesProposeRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    instruction: str = ""
+
+
+@router.post(
+    "/framework-versions/current/rules/ai-propose",
+    response_model=dict,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def propose_exam_rules(
+    course_id: str,
+    body: ExamRulesProposeRequest | None = None,
+    session: Session = Depends(get_session),
+) -> dict:
+    """考核规则 AI 助手：一句话要求 → 规则提案任务（202 + task_run_id）。
+
+    提案只回填考核规则卡的**编辑草稿**，落库仍由教师点「保存」走既有 PATCH
+    rules 端点——AI 只产提案不绕确认流。端点只写 task_runs，经 transactional
+    outbox 投递给 Celery，LLM 调用不进请求线程。
+    """
+    req = body or ExamRulesProposeRequest()
+    instruction = str(req.instruction or "").strip()
+
+    if not exam_rules_ai_service.llm_configured():
+        raise HTTPException(status_code=503, detail="LLM model is not configured")
+
+    try:
+        task_id = exam_rules_ai_service.enqueue_propose(
+            session,
+            course_id=course_id,
+            instruction=instruction,
+        )
+        # 显式 commit：outbox 派发会用另一个事务/连接读取事件，任务行必须先落地
+        session.commit()
+    except exam_rules_ai_service.ExamRulesAIError as exc:
+        session.rollback()
+        msg = str(exc)
+        if "命题框架" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=422, detail=msg)
+
+    # 与 ai-review 同款：真实任务经 transactional outbox 投递给 Celery；
+    # 投递暂时失败时事件保持 pending，任务不会丢失，后续 dispatcher 可重试。
+    from app.infrastructure.tasks.celery_app import CeleryPublisher
+    from app.infrastructure.tasks.outbox import dispatch_pending_events
+
+    try:
+        dispatch_pending_events(
+            session,
+            CeleryPublisher(),
+            course_id=course_id,
+            limit=5,
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+
+    return {"task_run_id": task_id}

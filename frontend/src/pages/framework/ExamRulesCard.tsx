@@ -1,12 +1,16 @@
-import { useState } from 'react';
-import { Check, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Check, Pencil, Plus, Sparkles, Trash2, X } from 'lucide-react';
 import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
+import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
 import { QUESTION_TYPE_OPTIONS, qlabel, mlabel } from '@/lib/examDisplay';
 import { formatPercent, friendlyId } from '@/lib/format';
-import type { ExamRuleFocus, ExamRules } from '@/types/api';
+import type { ExamRuleFocus, ExamRules, ExamRulesProposalResult, TaskRun } from '@/types/api';
+
+/** 任务终态（与后端 task_runs 状态机一致） */
+const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
 
 const EMPTY_RULES: ExamRules = {
   exam_form: '',
@@ -69,8 +73,13 @@ export function ExamRulesCard({
   anchors: Array<{ key: string; title: string }>;
   onSaved: () => void;
 }) {
+  const token = useAuthStore((s) => s.token);
   const addToast = useToastStore((s) => s.addToast);
   const [editing, setEditing] = useState(false);
+  // AI 助手：一句话要求 → 提案任务 → 轮询回填编辑草稿（不直接落库）
+  const [aiInstruction, setAiInstruction] = useState('');
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiTaskRunId, setAiTaskRunId] = useState<string | null>(null);
   // 初始态也补齐数组：不能假设接口一定返回完整形态（旧框架的规则是空 dict）
   const [draft, setDraft] = useState<ExamRules>(() => ({
     ...EMPTY_RULES,
@@ -110,6 +119,52 @@ export function ExamRulesCard({
     else next.push({ assessment_mode: mode as ExamRuleFocus['assessment_mode'], weight });
     // 全部归零 = 均衡：清空声明，蓝图回退题型默认分布
     setDraft({ ...draft, assessment_focus: next.filter((e) => Number(e.weight) > 0) });
+  };
+
+  // 轮询提案任务（与 PaperReviewPanel 同款：依赖只取 id，终态自停）
+  useEffect(() => {
+    if (!aiTaskRunId) return;
+    const timer = setInterval(async () => {
+      try {
+        const tr: TaskRun = await api.examProjects.getTaskRun(courseId, aiTaskRunId, token ?? undefined);
+        if (!TERMINAL.has(tr.status)) return;
+        clearInterval(timer);
+        setAiTaskRunId(null);
+        setAiBusy(false);
+        if (tr.status === 'succeeded' && tr.result) {
+          const res = tr.result as unknown as ExamRulesProposalResult;
+          // 提案只回填编辑草稿：教师核对/修改后点「保存」才走既有 PATCH 落库
+          setDraft((prev) => ({ ...prev, ...res.proposal }));
+          addToast(
+            res.explanation ? `已填入 AI 提案：${res.explanation}` : '已填入 AI 提案，请核对后保存',
+            'success',
+          );
+        } else if (tr.status === 'failed') {
+          addToast('AI 提案失败: ' + (tr.error_message || '未知错误'), 'error');
+        }
+      } catch {
+        /* 瞬时轮询错误忽略，下一轮重试 */
+      }
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [aiTaskRunId, courseId, token, addToast]);
+
+  const aiRunning = aiBusy || !!aiTaskRunId;
+
+  const handlePropose = async () => {
+    const instruction = aiInstruction.trim();
+    if (!instruction) {
+      addToast('先写一句话描述考核要求，如：闭卷90分钟，选择题40%，第2章多考', 'error');
+      return;
+    }
+    setAiBusy(true);
+    try {
+      const res = await api.framework.proposeExamRules(courseId, instruction, token ?? undefined);
+      setAiTaskRunId(res.task_run_id);
+    } catch (e) {
+      setAiBusy(false);
+      addToast('发起 AI 提案失败: ' + getErrorMessage(e), 'error');
+    }
   };
 
   const handleSave = async () => {
@@ -209,6 +264,27 @@ export function ExamRulesCard({
         )
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
+          <div style={{
+            display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap',
+            padding: '10px 14px', borderRadius: 10,
+            background: 'var(--accent-subtle)', border: '1px dashed rgba(0, 113, 227, 0.35)',
+          }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', fontWeight: 600, color: 'var(--accent)', whiteSpace: 'nowrap' }}>
+              <Sparkles size={15} /> AI 助手
+            </span>
+            <input
+              className="input-field" style={{ flex: 1, minWidth: 220 }}
+              value={aiInstruction}
+              onChange={(e) => setAiInstruction(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void handlePropose(); }}
+              placeholder="一句话描述考核安排，如：闭卷90分钟，选择题40%，第2章多考，偏理解"
+              aria-label="考核要求（一句话）"
+              disabled={aiRunning}
+            />
+            <Button size="sm" variant="secondary" loading={aiRunning} onClick={() => void handlePropose()} icon={<Sparkles size={14} />}>
+              {aiRunning ? '生成中…' : '生成提案'}
+            </Button>
+          </div>
           <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
             <FieldLabel label="考试形式">
               <input className="input-field" style={{ width: 140 }} value={draft.exam_form ?? ''} onChange={(e) => setDraft({ ...draft, exam_form: e.target.value })} placeholder="如 闭卷笔试" />
