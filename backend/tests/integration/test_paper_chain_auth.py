@@ -90,7 +90,6 @@ EXAM_PROJECT_ENDPOINTS = [
     ("POST", f"{C}/exam-projects/p1/contracts/allocate", {}),
     ("PATCH", f"{C}/exam-projects/p1/contracts/revise", {}),
     ("POST", f"{C}/exam-projects/p1/contracts/confirm", {}),
-    ("POST", f"{C}/exam-projects/p1/contract-slots/1/explain", {}),
     ("GET", f"{C}/exam-projects/p1/contracts/current", None),
     ("POST", f"{C}/exam-projects/p1/generate", {}),
     ("GET", f"{C}/exam-projects/task-runs/tr1", None),

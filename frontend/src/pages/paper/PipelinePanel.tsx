@@ -126,9 +126,6 @@ export default function PipelinePanel({
   const [bpCreating, setBpCreating] = useState(false);
   const [contractConfirming, setContractConfirming] = useState(false);
   const [contractAllocating, setContractAllocating] = useState(false);
-  // 正在看 AI 解释的槽位题位号（null = 关闭）。renderContract 是普通函数调用
-  // 不能自带 hook，状态统一放在面板组件这一层。
-  const [explainItem, setExplainItem] = useState<number | null>(null);
   // 「分配方案」默认随机一版：每次新建/刷新项目时不再固定回到第 1 版，
   // 否则每套卷子都从同一套搭配起步。历史种子由 hydrate 覆盖回填。
   const [contractVariant, setContractVariant] = useState(
@@ -406,7 +403,6 @@ export default function PipelinePanel({
         sp, courseId, setStep: setCurrentStage, contractVariant, setContractVariant,
         contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming,
         contractAllocating, setContractAllocating, setTaskRun, addToast, maps, planItems, onProjectChanged,
-        explainItem, setExplainItem,
       })}
       {currentStage === 'generate' && renderGenerate({
         sp, setStep: setCurrentStage, taskRun, generating, startGeneration,

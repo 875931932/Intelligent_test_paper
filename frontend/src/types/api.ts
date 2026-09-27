@@ -570,27 +570,6 @@ export interface AiCreateResult {
   attempts: number;
 }
 
-/** 合同槽位单条调整建议：只引导教师走既有合同修订/换方案重跑两条落地路径 */
-export interface ContractExplainSuggestion {
-  concern: string;
-  suggestion: string;
-  /** 指向的槽位题位号（与 plan_items.item_index 同源，1 起）；不指向具体题位时为 null */
-  target_item_index: number | null;
-}
-
-/** 合同槽位 AI 解释（task_runs.result 载荷；纯只读，不产生任何写路径） */
-export interface ContractExplainResult {
-  project_id: string;
-  item_index: number;
-  instruction: string;
-  explanation: string;
-  suggestions: ContractExplainSuggestion[];
-  /** 对教师追问的直接回答；无追问为空串 */
-  instruction_response: string;
-  /** 收口校验是否通过；false 时内容仅作参考 */
-  validated: boolean;
-}
-
 /** 整卷 AI 质量评审单个维度结论（dimension 固定 5 类枚举，模型可只给其中若干类） */
 export interface PaperReviewSection {
   dimension: '难度分布' | '题面表述' | '答案与解析一致性' | '覆盖与配额' | '风险题';

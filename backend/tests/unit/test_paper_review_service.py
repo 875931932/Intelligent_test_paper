@@ -1,7 +1,7 @@
 """整卷 AI 质量评审服务单元测试。
 
-镜像 tests/unit/test_contract_explain_service.py 的组织方式，试卷链路播种照抄
-tests/unit/test_ai_create_service.py 的已验证 fixture。覆盖：上下文装配（题目
+镜像 tests/unit/test_ai_create_service.py 的组织方式，试卷链路播种照抄
+同一 fixture。覆盖：上下文装配（题目
 全量 / needs_review 清单 / 合同终检 checks / 蓝图配额、缺卷与空卷拒绝、finalized
 放行、终检降级）、prompt 装配（真实数据进 payload + 「禁止学生答卷评分」与
 「带 item_index」硬规则）、结果规整与校验收口、带反馈的一次纠错重试、任务入队

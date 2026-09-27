@@ -76,7 +76,6 @@ _LEASE_SECONDS_BY_TYPE = {
     "generation_run": 1800,
     "ai_revise_item": 300,
     "ai_create_item": 300,
-    "explain_contract_slot": 300,
     "review_paper_version": 300,
 }
 
@@ -235,21 +234,6 @@ def _handle_ai_create_item(context: TaskContext) -> dict:
 
 
 register_task_handler("ai_create_item", _handle_ai_create_item)
-
-
-def _handle_explain_contract_slot(context: TaskContext) -> dict:
-    """执行合同槽位 AI 解释：只读重算分配 + 模型解读，不写任何业务表。
-
-    落地调整由教师在前端走既有 contracts/revise（slot_revisions）与
-    contracts/confirm 端点完成。
-    """
-    from app.services.contract_explain_service import execute_explain_task
-
-    context.report_progress(stage="explaining", progress=10)
-    return execute_explain_task(context.session, payload=dict(context.payload))
-
-
-register_task_handler("explain_contract_slot", _handle_explain_contract_slot)
 
 
 def _handle_review_paper_version(context: TaskContext) -> dict:

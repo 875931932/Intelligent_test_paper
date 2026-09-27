@@ -11,7 +11,7 @@
 generation_service 的既有函数拿 checks，不把它的逻辑抄进 prompt 让模型自己算；
 快照缺失时如实降级为「终检不可用」，不伪造结果。
 
-结构镜像 contract_explain_service（状态门禁 / prompt 纯函数 / 规整 / 校验收口 /
+结构镜像 ai_revise_service 的既定套路（状态门禁 / prompt 纯函数 / 规整 / 校验收口 /
 重试一次 / 幂等入队）。定稿（finalized）试卷照样可评审——报告是只读的，
 这正是它的价值。
 """

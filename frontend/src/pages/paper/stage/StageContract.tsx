@@ -1,10 +1,9 @@
-import { ArrowLeft, RefreshCw, Check, PlayCircle, Sparkles } from 'lucide-react';
+import { ArrowLeft, RefreshCw, Check, PlayCircle } from 'lucide-react';
 import { api } from '@/api/client';
-import { Button, Badge, FloatingPanel } from '@/components/ui';
+import { Button, Badge } from '@/components/ui';
 import type { NameMaps } from '@/hooks/useNameMaps';
 import { qlabel, dlabel } from '@/lib/examDisplay';
 import { formatScore } from '@/lib/format';
-import { ContractExplainPanel } from '../ContractExplainPanel';
 import type { ContractSnapshot } from '@/api/domains/examProjects';
 import type { ExamProject, PlanItem, TaskRun } from '@/types/api';
 import { StageHeading } from './StageHeading';
@@ -14,7 +13,6 @@ export function renderContract({
   sp, courseId, setStep, contractVariant, setContractVariant,
   contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming,
   contractAllocating, setContractAllocating, setTaskRun, addToast, maps, planItems, onProjectChanged,
-  explainItem, setExplainItem,
 }: {
   sp: ExamProject; courseId: string; setStep: (s: StageKey) => void;
   contractVariant: number; setContractVariant: (n: number) => void;
@@ -28,8 +26,6 @@ export function renderContract({
   planItems: PlanItem[];
   /** 确认合同会推进项目状态，父级据此刷新页头徽章 */
   onProjectChanged: () => void;
-  /** AI 解释面板：当前打开的槽位题位号（null = 关闭） */
-  explainItem: number | null; setExplainItem: (i: number | null) => void;
 }) {
   // 无蓝图时合同无从分配（后端要读蓝图题位），先拦一道，别让教师点出 404。
   if (!sp.active_blueprint_version_id && !contractSnapshot) {
@@ -56,8 +52,6 @@ export function renderContract({
         allocation_seed: variant - 1,
       });
       setContractSnapshot(res.contract_snapshot);
-      // 换了方案，旧解释对应旧分配：一并收起，避免"解释与表格对不上"
-      setExplainItem(null);
       addToast(`合同已分配（方案第 ${variant} 版）`, 'success');
     } catch (e) {
       addToast('分配失败: ' + (e as Error).message, 'error');
@@ -172,27 +166,9 @@ export function renderContract({
             </ul>
           </div>
         )}
-        {/* AI 解释：只读建议，锚定悬浮在被点行的下方（不占表格上方空间） */}
-        {explainItem !== null && (
-          <FloatingPanel
-            title={<>AI 解释 · 题位 {explainItem} <Badge variant="purple">只读建议</Badge></>}
-            pillLabel={`AI 解释 · 题位 ${explainItem}`}
-            anchorSelector={`[data-contract-slot="${explainItem}"]`}
-            onClose={() => setExplainItem(null)}
-          >
-            <ContractExplainPanel
-              key={explainItem}
-              courseId={courseId}
-              projectId={sp.id}
-              itemIndex={explainItem}
-              allocationSeed={contractVariant - 1}
-              blueprintVersionId={sp.active_blueprint_version_id}
-            />
-          </FloatingPanel>
-        )}
         <div className="table-wrapper">
           <table className="data-table">
-            <thead><tr><th>#</th><th>题型</th><th>分值</th><th>难度</th><th>考点</th><th>知识卡</th><th>操作</th></tr></thead>
+            <thead><tr><th>#</th><th>题型</th><th>分值</th><th>难度</th><th>考点</th><th>知识卡</th></tr></thead>
             <tbody>
               {contractSnapshot.slots.map((s) => (
                 <tr key={s.item_index} data-contract-slot={s.item_index}>
@@ -203,16 +179,6 @@ export function renderContract({
                   <td>{dlabel(s.difficulty)}</td>
                   <td title={s.exam_point_title || s.exam_point_id || undefined}>{examPointLabel(maps, s.exam_point_id, s.exam_point_title)}</td>
                   <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={s.card_id ? (s.card_name || maps.cards[s.card_id] || s.card_id) : undefined}>{cardLabel(maps, s.card_id, s.card_name)}</td>
-                  <td>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => setExplainItem(s.item_index)}
-                      icon={<Sparkles size={14} />}
-                    >
-                      AI 解释
-                    </Button>
-                  </td>
                 </tr>
               ))}
             </tbody>
