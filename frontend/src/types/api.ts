@@ -654,6 +654,28 @@ export interface BlueprintSuggestResult {
   total_score: number;
 }
 
+/** 框架评审报告中的一条发现（只读，task_runs.result.findings 元素） */
+export interface FrameworkReviewFinding {
+  severity: 'info' | 'warning' | 'critical';
+  area: 'coverage' | 'weight' | 'question_type' | 'cognitive' | 'rules' | 'conflicts' | 'other';
+  message: string;
+  suggestion: string;
+}
+
+/**
+ * 框架候选 AI 评审报告（task_runs.result，纯只读）。
+ * verdict 只是给教师的参考意见——确认/拒绝与冲突裁决仍走既有确认流。
+ */
+export interface FrameworkReviewResult {
+  course_id: string;
+  framework_version_id: string;
+  framework_status: string;
+  instruction: string;
+  verdict: 'ready' | 'revise_first';
+  summary: string;
+  findings: FrameworkReviewFinding[];
+}
+
 export interface TaskRun {
   id: string;
   course_id: string;

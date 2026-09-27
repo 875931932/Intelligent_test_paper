@@ -15,7 +15,7 @@ from app.config import settings
 from app.db.session import get_session
 from app.db.session import get_session_factory
 from app.domain.framework.models import FrameworkConfirmation, SyllabusExtractor
-from app.services import course_service, exam_rules_ai_service, framework_service
+from app.services import course_service, exam_rules_ai_service, framework_review_ai_service, framework_service
 from app.services.model_call_service import DatabaseModelCallRecorder
 from app.workflows.framework_graph import build_framework_graph
 
@@ -249,6 +249,68 @@ def propose_exam_rules(
         raise HTTPException(status_code=422, detail=msg)
 
     # 与 ai-review 同款：真实任务经 transactional outbox 投递给 Celery；
+    # 投递暂时失败时事件保持 pending，任务不会丢失，后续 dispatcher 可重试。
+    from app.infrastructure.tasks.celery_app import CeleryPublisher
+    from app.infrastructure.tasks.outbox import dispatch_pending_events
+
+    try:
+        dispatch_pending_events(
+            session,
+            CeleryPublisher(),
+            course_id=course_id,
+            limit=5,
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+
+    return {"task_run_id": task_id}
+
+
+class FrameworkReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    instruction: str = ""
+
+
+@router.post(
+    "/framework-versions/current/ai-review",
+    response_model=dict,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def review_framework_candidate(
+    course_id: str,
+    body: FrameworkReviewRequest | None = None,
+    session: Session = Depends(get_session),
+) -> dict:
+    """框架候选 AI 评审（202 + task_run_id）：只建任务写 task_runs。
+
+    评审报告（verdict/summary/findings）纯只读展示，教师照常走既有确认/拒绝
+    流程——AI 不改框架、不代替裁决冲突；LLM 调用经 transactional outbox 进
+    Celery，不进请求线程。候选优先（教师正在决定发不发布），否则最新已发布版。
+    """
+    req = body or FrameworkReviewRequest()
+    instruction = str(req.instruction or "").strip()
+
+    if not framework_review_ai_service.llm_configured():
+        raise HTTPException(status_code=503, detail="LLM model is not configured")
+
+    try:
+        task_id = framework_review_ai_service.enqueue_review(
+            session,
+            course_id=course_id,
+            instruction=instruction,
+        )
+        # 显式 commit：outbox 派发会用另一个事务/连接读取事件，任务行必须先落地
+        session.commit()
+    except framework_review_ai_service.FrameworkReviewError as exc:
+        session.rollback()
+        msg = str(exc)
+        if "不存在" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=422, detail=msg)
+
+    # 与 ai-propose 同款：真实任务经 transactional outbox 投递给 Celery；
     # 投递暂时失败时事件保持 pending，任务不会丢失，后续 dispatcher 可重试。
     from app.infrastructure.tasks.celery_app import CeleryPublisher
     from app.infrastructure.tasks.outbox import dispatch_pending_events

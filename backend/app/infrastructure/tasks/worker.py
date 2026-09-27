@@ -79,6 +79,7 @@ _LEASE_SECONDS_BY_TYPE = {
     "review_paper_version": 300,
     "propose_exam_rules": 300,
     "suggest_blueprint_adjustments": 300,
+    "review_framework_candidate": 300,
 }
 
 
@@ -281,3 +282,17 @@ def _handle_suggest_blueprint_adjustments(context: TaskContext) -> dict:
 
 
 register_task_handler("suggest_blueprint_adjustments", _handle_suggest_blueprint_adjustments)
+
+
+def _handle_review_framework_candidate(context: TaskContext) -> dict:
+    """执行框架候选 AI 评审：只读报告，只写 task_runs 不碰框架/冲突数据。
+
+    报告仅供教师参考，确认/拒绝仍走既有确认流；冲突裁决不被 AI 代劳。
+    """
+    from app.services.framework_review_ai_service import execute_review_task
+
+    context.report_progress(stage="reviewing", progress=10)
+    return execute_review_task(context.session, payload=dict(context.payload))
+
+
+register_task_handler("review_framework_candidate", _handle_review_framework_candidate)

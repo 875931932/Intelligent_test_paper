@@ -9,6 +9,7 @@ import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
 import { Modal, Badge, ProgressPanel, SkeletonForm } from '@/components/ui';
 import { ExamRulesCard } from './ExamRulesCard';
+import { FrameworkReviewPanel } from './FrameworkReviewPanel';
 import type { FrameworkCandidate, CurrentFrameworkResponse, AssessmentAnchor, FrameworkExamPoint } from '@/types/api';
 
 type BuildState = 'idle' | 'building' | 'candidate' | 'done';
@@ -590,6 +591,9 @@ function CandidateView({ courseId, candidate, rejecting, onReject, onOpenConfirm
       />
 
       <FrameworkBreakdown anchors={anchors} points={points} />
+
+      {/* AI 评审（只读报告）：放在确认按钮之前，教师读完报告再决定确认/拒绝 */}
+      <FrameworkReviewPanel courseId={courseId} />
 
       {/* Actions: 固定在视口底部，内容较多时无需滚到页面最下方 */}
       <div style={{
