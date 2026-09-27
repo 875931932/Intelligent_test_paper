@@ -77,7 +77,6 @@ export function Sidebar({ onLogout }: Props) {
           alignItems: 'center',
           justifyContent: collapsed ? 'center' : 'space-between',
           padding: collapsed ? '0 10px' : '0 14px 0 16px',
-          borderBottom: HAIRLINE,
           flexShrink: 0,
         }}
       >
@@ -124,7 +123,6 @@ export function Sidebar({ onLogout }: Props) {
         <div
           style={{
             padding: '10px 10px 0',
-            borderBottom: HAIRLINE,
             flexShrink: 0,
           }}
         >
