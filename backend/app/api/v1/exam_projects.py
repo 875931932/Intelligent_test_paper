@@ -17,7 +17,7 @@ from app.db.schema import (
 from app.api.v1.auth import get_current_user
 from app.db.session import get_session, get_session_factory
 from app.config import settings
-from app.services import exam_project_service
+from app.services import blueprint_suggest_service, exam_project_service
 from app.services.blueprint_persistence_service import (
     BlueprintPersistenceError,
     BlueprintValidationError,
@@ -264,6 +264,73 @@ def patch_plan_item(
             # 已确认/被取代的蓝图冻结：与合同已拷贝的难度/分值保持一致，只能新建版本
             raise HTTPException(status_code=409, detail=msg)
         raise HTTPException(status_code=422, detail=msg)
+
+
+class BlueprintSuggestRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    instruction: str = ""
+
+
+@router.post(
+    "/{project_id}/blueprints/current/ai-suggest",
+    response_model=dict,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def suggest_blueprint_adjustments(
+    course_id: str,
+    project_id: str,
+    body: BlueprintSuggestRequest | None = None,
+    session: Session = Depends(get_session),
+) -> dict:
+    """蓝图题位 AI 调整建议（202 + task_run_id）：只建任务写 task_runs。
+
+    建议由前端展示，教师逐条/批量点「应用」走既有 PATCH plan-items 落库——
+    AI 只产提案不直接改题位；LLM 调用经 transactional outbox 进 Celery，不进
+    请求线程。上下文（题位/差异对照/考核规则）由 worker 执行时再取最新。
+    """
+    _get_project_or_404(session, course_id=course_id, project_id=project_id)
+    req = body or BlueprintSuggestRequest()
+    instruction = str(req.instruction or "").strip()
+
+    if not blueprint_suggest_service.llm_configured():
+        raise HTTPException(status_code=503, detail="LLM model is not configured")
+
+    try:
+        task_id = blueprint_suggest_service.enqueue_suggest(
+            session,
+            course_id=course_id,
+            project_id=project_id,
+            instruction=instruction,
+        )
+        # 显式 commit：outbox 派发会用另一个事务/连接读取事件，任务行必须先落地
+        session.commit()
+    except blueprint_suggest_service.BlueprintSuggestError as exc:
+        session.rollback()
+        msg = str(exc)
+        if "不存在" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        if "不可原地修改" in msg:
+            raise HTTPException(status_code=409, detail=msg)
+        raise HTTPException(status_code=422, detail=msg)
+
+    # 与 ai-review 同款：真实任务经 transactional outbox 投递给 Celery；
+    # 投递暂时失败时事件保持 pending，任务不会丢失，后续 dispatcher 可重试。
+    from app.infrastructure.tasks.celery_app import CeleryPublisher
+    from app.infrastructure.tasks.outbox import dispatch_pending_events
+
+    try:
+        dispatch_pending_events(
+            session,
+            CeleryPublisher(),
+            course_id=course_id,
+            limit=5,
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+
+    return {"task_run_id": task_id}
 
 
 @router.post("/{project_id}/blueprints/current/confirm", response_model=dict)

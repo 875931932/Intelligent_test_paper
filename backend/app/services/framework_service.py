@@ -21,7 +21,11 @@ from app.db.schema import (
     materials,
 )
 from app.domain.framework.exam_points import ExamPoint
-from app.domain.framework.exam_rules import normalize_exam_rules
+from app.domain.framework.exam_rules import (
+    DEFAULT_TYPE_RULES,
+    canonical_question_type,
+    normalize_exam_rules,
+)
 from app.domain.framework.models import FrameworkCandidate, FrameworkConfirmation
 from app.services.course_service import get_course
 
@@ -486,6 +490,29 @@ def _exam_rules_of(payload) -> dict:
     if isinstance(payload, dict) and isinstance(payload.get("final_exam_rules"), dict):
         return normalize_exam_rules(payload["final_exam_rules"])
     return normalize_exam_rules(None)
+
+
+def allowed_question_types(
+    session: Session, *, course_id: str, framework_version_id: str
+) -> list[str]:
+    """该框架版本已确认考点允许的题型并集（英文枚举、去重保序）；空则回退默认题型。
+
+    考核规则 AI 助手与蓝图题位调整建议共用：提案给不了该课程根本出不了的题型，
+    否则要到蓝图/合同阶段才暴露不可行。所有查询带 course_id 过滤。
+    """
+    rows = session.execute(
+        select(exam_points.c.allowed_question_types).where(
+            exam_points.c.course_id == course_id,
+            exam_points.c.framework_version_id == framework_version_id,
+        )
+    ).all()
+    allowed: list[str] = []
+    for row in rows:
+        for raw_type in row._mapping["allowed_question_types"] or []:
+            canonical = canonical_question_type(raw_type)
+            if canonical and canonical not in allowed:
+                allowed.append(canonical)
+    return allowed or sorted(DEFAULT_TYPE_RULES.keys())
 
 
 def _ready_blocks(session: Session, course_id: str, material_version_id: str, expected_type: str) -> list[str]:

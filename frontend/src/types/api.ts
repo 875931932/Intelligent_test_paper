@@ -622,6 +622,38 @@ export interface ExamRulesProposalResult {
   explanation: string;
 }
 
+/** 单题位可改字段（与后端 PATCH plan-items 的 allowed 同集合） */
+export interface PlanItemChanges {
+  score?: number;
+  difficulty?: string;
+  cognitive_level?: string;
+  question_type?: string;
+  exam_point_id?: string;
+  card_id?: string;
+}
+
+/**
+ * 蓝图题位调整建议中的一条提案（task_runs.result.suggestions 元素）。
+ * 教师逐条/批量点「应用」后才走既有 PATCH plan-items 落库——AI 不直接改题位。
+ */
+export interface BlueprintSuggestion {
+  item_index: number;
+  field: keyof PlanItemChanges;
+  value: string | number;
+  /** 面向教师的调整理由（依据后端算好的确定性统计） */
+  reason: string;
+}
+
+/** 蓝图题位 AI 调整建议结果（task_runs.result） */
+export interface BlueprintSuggestResult {
+  course_id: string;
+  project_id: string;
+  instruction: string;
+  summary: string;
+  suggestions: BlueprintSuggestion[];
+  total_score: number;
+}
+
 export interface TaskRun {
   id: string;
   course_id: string;

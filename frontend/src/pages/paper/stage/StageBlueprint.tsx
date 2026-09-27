@@ -5,6 +5,7 @@ import type { NameMaps } from '@/hooks/useNameMaps';
 import { qlabel, dlabel, clabel, mlabel, PLAN_DIFFICULTY_OPTIONS } from '@/lib/examDisplay';
 import { formatScore } from '@/lib/format';
 import type { ExamProject, ExamRules, PlanItem } from '@/types/api';
+import { BlueprintSuggestPanel } from './BlueprintSuggestPanel';
 import { StageHeading } from './StageHeading';
 import { examPointLabel, anchorLabel, type StageKey, type ToastFn } from './stageShared';
 
@@ -141,6 +142,14 @@ export function renderBlueprint({
                 </div>
               </div>
             </div>
+            <BlueprintSuggestPanel
+              courseId={courseId}
+              projectId={sp.id}
+              planItems={planItems}
+              reload={() => loadPlanItems(sp)}
+              maps={maps}
+              addToast={addToast}
+            />
             <div className="table-wrapper">
               <table className="data-table">
                 <thead><tr><th>#</th><th>题型</th><th>分值</th><th>难度</th><th>考查方式</th><th>章节</th><th>考点</th><th>认知层级</th></tr></thead>

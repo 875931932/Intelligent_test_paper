@@ -24,18 +24,18 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.schema import exam_points, task_runs
+from app.db.schema import task_runs
 from app.domain.blueprint.models import ASSESSMENT_MODES
-from app.domain.framework.exam_rules import (
-    DEFAULT_TYPE_RULES,
-    canonical_question_type,
-    normalize_exam_rules,
-)
+from app.domain.framework.exam_rules import normalize_exam_rules
 from app.domain.model_calls import ModelCallContext
 from app.infrastructure.tasks.models import TERMINAL_TASK_STATUSES, create_task_run
 # 复用既有判定与错误基类来源（模块级 import 优于复制第二份）
 from app.services.ai_revise_service import llm_configured
-from app.services.framework_service import FrameworkNotFoundError, get_current_framework
+from app.services.framework_service import (
+    FrameworkNotFoundError,
+    allowed_question_types,
+    get_current_framework,
+)
 
 TASK_TYPE = "propose_exam_rules"
 _INPUT_VERSION = "exam_rules_propose_v1"
@@ -81,26 +81,6 @@ class ExamRulesAIError(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _allowed_question_types(session: Session, *, course_id: str, framework_version_id: str) -> list[str]:
-    """课程已确认考点允许的题型并集（英文枚举、去重保序）；读不到回退默认题型。
-
-    提案给不了该课程根本出不了的题型，否则蓝图/合同阶段才暴露不可行。
-    """
-    rows = session.execute(
-        select(exam_points.c.allowed_question_types).where(
-            exam_points.c.course_id == course_id,
-            exam_points.c.framework_version_id == framework_version_id,
-        )
-    ).all()
-    allowed: list[str] = []
-    for row in rows:
-        for raw_type in row._mapping["allowed_question_types"] or []:
-            canonical = canonical_question_type(raw_type)
-            if canonical and canonical not in allowed:
-                allowed.append(canonical)
-    return allowed or sorted(DEFAULT_TYPE_RULES.keys())
-
-
 def load_propose_context(session: Session, *, course_id: str) -> dict:
     """装配提案上下文：当前考核规则 + 章节锚点 + 可用题型 + 考查方式枚举。
 
@@ -124,7 +104,7 @@ def load_propose_context(session: Session, *, course_id: str) -> dict:
         "current_rules": current.get("exam_rules") or {},
         "anchors": anchors,
         "anchor_keys": [a["key"] for a in anchors],
-        "allowed_question_types": _allowed_question_types(
+        "allowed_question_types": allowed_question_types(
             session, course_id=course_id, framework_version_id=version_id
         ),
         "assessment_modes": list(ASSESSMENT_MODES),

@@ -1,5 +1,5 @@
 import { request } from '../http';
-import type { ExamProject, PlanItem, TaskRun, ContractSlot, ContractConflict, ContractAuditSummary } from '../../types/api';
+import type { ExamProject, PlanItem, PlanItemChanges, TaskRun, ContractSlot, ContractConflict, ContractAuditSummary } from '../../types/api';
 
 export interface ContractSnapshot {
   slots: ContractSlot[];
@@ -48,12 +48,18 @@ export const examProjectsApi = {
   updatePlanItem: (
     courseId: string,
     planItemId: string,
-    changes: { score?: number; difficulty?: string; cognitive_level?: string; question_type?: string },
+    changes: PlanItemChanges,
     token?: string,
   ): Promise<PlanItem> =>
     request('/courses/' + courseId + '/exam-projects/plan-items/' + planItemId, {
       method: 'PATCH',
       body: JSON.stringify(changes),
+    }, token),
+  /** 蓝图题位 AI 调整建议：一句话（可空）→ 提案任务；建议由面板展示，教师确认后逐条走 updatePlanItem */
+  suggestBlueprintAdjustments: (courseId: string, projectId: string, instruction: string, token?: string): Promise<{ task_run_id: string }> =>
+    request('/courses/' + courseId + '/exam-projects/' + projectId + '/blueprints/current/ai-suggest', {
+      method: 'POST',
+      body: JSON.stringify({ instruction }),
     }, token),
   confirmBlueprint: (courseId: string, projectId: string, body?: Record<string, unknown>, token?: string): Promise<Record<string, unknown>> =>
     request('/courses/' + courseId + '/exam-projects/' + projectId + '/blueprints/current/confirm', { method: 'POST', body: body ? JSON.stringify(body) : undefined }, token),

@@ -78,6 +78,7 @@ _LEASE_SECONDS_BY_TYPE = {
     "ai_create_item": 300,
     "review_paper_version": 300,
     "propose_exam_rules": 300,
+    "suggest_blueprint_adjustments": 300,
 }
 
 
@@ -265,3 +266,18 @@ def _handle_propose_exam_rules(context: TaskContext) -> dict:
 
 
 register_task_handler("propose_exam_rules", _handle_propose_exam_rules)
+
+
+def _handle_suggest_blueprint_adjustments(context: TaskContext) -> dict:
+    """执行蓝图题位调整建议：逐题提案，只写 task_runs 不碰蓝图数据。
+
+    建议由前端展示，教师逐条确认后走既有 PATCH plan-items 落库——AI 只产
+    提案不直接改题位。
+    """
+    from app.services.blueprint_suggest_service import execute_suggest_task
+
+    context.report_progress(stage="suggesting", progress=10)
+    return execute_suggest_task(context.session, payload=dict(context.payload))
+
+
+register_task_handler("suggest_blueprint_adjustments", _handle_suggest_blueprint_adjustments)
