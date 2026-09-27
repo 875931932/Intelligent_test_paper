@@ -55,7 +55,7 @@ def env():
         engine.dispose()
 
 
-# (method, path, json body)：覆盖 paper_versions 全部 15 个端点 + exam_projects 全部 16 个
+# (method, path, json body)：覆盖 paper_versions / exam_projects 全部端点（读/改/定稿/导出）
 C = "/api/v1/courses/c1"
 PAPER_ENDPOINTS = [
     ("GET", f"{C}/exam-projects/p1/paper-versions/current", None),
@@ -76,6 +76,8 @@ PAPER_ENDPOINTS = [
     # 同一端点的 docx 变体（可编辑 Word），查询参数不同但鉴权同规则
     ("GET", f"{C}/exam-projects/p1/paper-versions/pv1/export/student?format=docx", None),
     ("GET", f"{C}/exam-projects/p1/paper-versions/pv1/export/answer-card?format=docx", None),
+    # 一键打包（全部导出产物 → zip）
+    ("GET", f"{C}/exam-projects/p1/paper-versions/pv1/export/bundle", None),
 ]
 EXAM_PROJECT_ENDPOINTS = [
     ("GET", f"{C}/exam-projects", None),

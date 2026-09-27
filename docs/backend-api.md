@@ -701,6 +701,24 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
 
 ---
 
+### 9.10 一键打包下载（全部导出产物 → ZIP）
+`GET /api/v1/courses/{course_id}/exam-projects/{project_id}/paper-versions/{pv_id}/export/bundle`
+需 `Authorization: Bearer <token>`；`project_id` 仅作路径占位，版本定位同其它导出（`pv_id + course_id`）。
+
+- **实现**：`app/services/paper_export_bundle.py::bundle_paper_exports`——包内六份与逐个导出端点
+  **同源渲染**（复用 §9.6–§9.9 的 `export_*` 函数，不复制渲染逻辑），`zipfile` 标准库内存打包
+  （无新依赖）。纯同步 CPU 渲染，不涉及 LLM/外部系统，故不走 Celery。
+- **包内清单**（文件名带版本号 `{n}`，便于教师区分多版本导出）：
+  `考试卷_v{n}.docx` / `学生卷_v{n}.html` / `答题卡_v{n}.docx` / `答题卡_v{n}.html` /
+  `答卷_含答案_v{n}.html` / `answer_detail_v{n}.json`。
+- **响应**：`application/zip`，`Content-Disposition: attachment; filename="paper-bundle-v{n}.zip"`
+  （头用 ASCII 命名，下载名由前端命名为中文 `试卷包_v{n}.zip`）。
+- **错误**：版本不存在/跨课程访问 → 404（与其它导出端点同口径，`PaperVersionError` 映射）。
+- **前端**：档案卡导出区「一键打包」按钮（`PaperProfile` → `PaperPanel.handleBundle` →
+  `api.paperVersions.fetchBundle`），打包期间按钮 loading。
+
+---
+
 ## 10. 数据模型汇总（复用类型）
 
 | 类型 | 说明 | 关键字段 |

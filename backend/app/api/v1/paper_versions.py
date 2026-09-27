@@ -15,6 +15,7 @@ from app.services.ai_create_service import AiCreateConflict, AiCreateError
 from app.services.ai_revise_service import AiReviseConflict, AiReviseError
 from app.services.answer_card_docx import export_answer_card_docx
 from app.services.exam_paper_docx import export_exam_paper_docx
+from app.services.paper_export_bundle import bundle_paper_exports
 from app.services.paper_review_service import PaperReviewError
 from app.services.paper_version_service import (
     Conflict,
@@ -525,3 +526,23 @@ def export_answer_card(
             headers={"Content-Disposition": 'attachment; filename="answer-card.docx"'},
         )
     return HTMLResponse(content=data)
+
+
+@router.get("/exam-projects/{project_id}/paper-versions/{pv_id}/export/bundle")
+def export_bundle(
+    course_id: str,
+    project_id: str,
+    pv_id: str,
+    session: Session = Depends(get_session),
+):
+    """一键打包下载：全部导出产物（考试卷/学生卷/答题卡 docx+html、
+    答卷 html、答案细则 json）打成一个 zip。纯同步渲染，不涉及 LLM/外部系统。"""
+    try:
+        data, filename = bundle_paper_exports(session, pv_id, course_id=course_id)
+    except PaperVersionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return Response(
+        content=data,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

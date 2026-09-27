@@ -494,6 +494,7 @@ app.include_router(paper_versions_router)    # /api/v1/courses/{course_id}/paper
 | GET | `.../export/student` | 学生卷 HTML（可打印） |
 | GET | `.../export/answer-key` | 答卷 HTML（含答案，可打印） |
 | GET | `.../export/answer-card` | 答题卡 HTML（可打印） |
+| GET | `.../export/bundle` | 一键打包下载：六份导出产物（docx/html/JSON 同源渲染）→ ZIP（`paper_export_bundle.py`） |
 
 #### Blueprints / Generation / Health
 
@@ -530,6 +531,7 @@ app.include_router(paper_versions_router)    # /api/v1/courses/{course_id}/paper
 | [material_service.py](backend/app/services/material_service.py) | 材料管理（上传 / 版本 / 哈希） |
 | [exam_project_service.py](backend/app/services/exam_project_service.py) | 考试项目管理（含级联删除） |
 | [paper_version_service.py](backend/app/services/paper_version_service.py) | 试卷版本管理 + 四份导出渲染 |
+| [paper_export_bundle.py](backend/app/services/paper_export_bundle.py) | 一键打包：六份导出产物同源渲染 → 内存 ZIP |
 | [ai_revise_service.py](backend/app/services/ai_revise_service.py) | 单题 AI 改题提案（diff → 教师确认落库） |
 | [ai_create_service.py](backend/app/services/ai_create_service.py) | AI 整题生成提案（回填 → 教师确认落库） |
 | [exam_rules_ai_service.py](backend/app/services/exam_rules_ai_service.py) | 考核规则 AI 提案（回填编辑草稿 → 教师保存落库） |
@@ -1047,7 +1049,7 @@ app/
 │   ├── knowledge.py       → workflows.organization_graph, services.knowledge_publish_service, adapters.model.*（抽取器装配）
 │   ├── materials.py       → services.material_service, parse_service, adapters.storage.*
 │   ├── exam_projects.py   → services.exam_project_service, contract_execution_service, blueprint_suggest_service, generation_runner_service
-│   └── paper_versions.py  → services.paper_version_service, ai_revise_service, ai_create_service, paper_review_service
+│   └── paper_versions.py  → services.paper_version_service, ai_revise_service, ai_create_service, paper_review_service, paper_export_bundle
 │
 ├── workflows/
 │   ├── framework_graph.py                → domain.framework.*, adapters.model.*

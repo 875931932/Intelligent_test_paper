@@ -1,6 +1,6 @@
 import {
   Check, ClipboardList, Eye, FileJson, FileSearch, FileText, KeySquare,
-  RefreshCw, RotateCcw,
+  Package, RefreshCw, RotateCcw,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
@@ -14,12 +14,14 @@ import { type ExportKind, normalizeAnswer } from './questionShared';
 // ─── 试卷档案卡 ───
 
 export function PaperProfile({
-  pv, project, examPointCount, onExport, onPreview, onFinalize, onRevert, onRegenerate, onReview,
+  pv, project, examPointCount, onExport, onBundle, bundleBusy, onPreview, onFinalize, onRevert, onRegenerate, onReview,
 }: {
   pv: PaperVersion;
   project?: ExamProject;
   examPointCount: number;
   onExport: (kind: ExportKind) => void;
+  onBundle: () => void;
+  bundleBusy?: boolean;
   onPreview: () => void;
   onFinalize: () => void;
   onRevert: () => void;
@@ -92,6 +94,14 @@ export function PaperProfile({
           <Button variant="secondary" size="sm" onClick={() => onExport('card')} icon={<ClipboardList size={14} />}>答题卡</Button>
           <Button variant="secondary" size="sm" onClick={() => onExport('answer')} icon={<KeySquare size={14} />}>答卷</Button>
           <Button variant="secondary" size="sm" onClick={() => onExport('json')} icon={<FileJson size={14} />}>答案细则</Button>
+          {/* 一键打包：上面四个导出入口的 zip 合集；两份 docx 同步渲染较重，故带 loading */}
+          <Button
+            variant="primary" size="sm" onClick={onBundle} loading={bundleBusy}
+            icon={<Package size={14} />}
+            title="一键打包全部导出产物（考试卷/学生卷/答题卡 docx+html、答卷、答案细则）为一个 zip"
+          >
+            一键打包
+          </Button>
           <Button variant="secondary" size="sm" onClick={onPreview} icon={<Eye size={14} />}>整体预览</Button>
           {/* 只读评审对定稿卷同样可用：不按 readonly/finalized 收起 */}
           <Button variant="secondary" size="sm" onClick={onReview} icon={<FileSearch size={14} />} title="AI 对整份试卷稿出一份只读质量评审报告（不含学生答卷评分）">

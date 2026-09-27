@@ -88,4 +88,21 @@ export const paperVersionsApi = {
     }
     return { blob, filename: 'answer_detail_v' + versionNo + '.json' };
   },
+  /**
+   * 一键打包：全部导出产物（考试卷/学生卷/答题卡 docx+html、答卷 html、答案细则 json）
+   * 打成一个 zip 下载。后端文件名 paper-bundle-v{n}.zip（ASCII 头），下载名由前端
+   * 命名为中文「试卷包_v{n}.zip」——版本号由调用方从已加载的 pv 取。
+   */
+  fetchBundle: async (
+    courseId: string,
+    projectId: string,
+    pvId: string,
+    versionNo: number,
+    token?: string,
+  ): Promise<PaperExportFile> => {
+    const path = '/courses/' + courseId + '/exam-projects/' + projectId +
+      '/paper-versions/' + pvId + '/export/bundle';
+    const blob = await requestBlob(path, {}, token);
+    return { blob, filename: '试卷包_v' + versionNo + '.zip' };
+  },
 };

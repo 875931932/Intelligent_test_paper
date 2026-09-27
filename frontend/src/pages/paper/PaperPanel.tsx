@@ -329,6 +329,8 @@ export default function PaperPanel({
     };
   }, [previewOpen, previewKind, project?.id, pv.id, courseId, token, addToast]);
 
+  const [bundleBusy, setBundleBusy] = useState(false);
+
   const handleExport = async (kind: ExportKind) => {
     const pid = project?.id ?? '';
     if (!pid) return;
@@ -349,6 +351,30 @@ export default function PaperPanel({
       setTimeout(() => URL.revokeObjectURL(url), 10_000);
     } catch (e) {
       addToast('导出失败: ' + getErrorMessage(e), 'error');
+    }
+  };
+
+  // 一键打包：zip 含六份导出产物，后端同步渲染两份 docx 较慢，期间按钮转 loading
+  const handleBundle = async () => {
+    const pid = project?.id ?? '';
+    if (!pid) return;
+    setBundleBusy(true);
+    try {
+      const { blob, filename } = await api.paperVersions.fetchBundle(
+        courseId, pid, pv.id, pv.version_no, token ?? undefined,
+      );
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 10_000);
+    } catch (e) {
+      addToast('打包下载失败: ' + getErrorMessage(e), 'error');
+    } finally {
+      setBundleBusy(false);
     }
   };
 
@@ -479,6 +505,8 @@ export default function PaperPanel({
         project={project}
         examPointCount={new Set(questions.map((q) => q.exam_point_id).filter(Boolean)).size}
         onExport={handleExport}
+        onBundle={handleBundle}
+        bundleBusy={bundleBusy}
         onPreview={() => setPreviewOpen(true)}
         onFinalize={handleFinalizeClick}
         onRevert={handleRevert}
