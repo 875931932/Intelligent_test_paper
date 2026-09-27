@@ -392,10 +392,19 @@ LLM 未配置 503；项目不存在/不在课程 404；蓝图非 draft（已确�
   认知/章节分布、考试规则、允许题型、已知考点/知识卡集合）作事实数据进 prompt——比例与
   总分约束在代码里校验：**score 类建议的分值增减合计必须为 0**（调分只许挪动不许改总分），
   未过带 `previous_validation_error` 纠错 1 次，仍不过如实报错。
+- **整卷难度目标（2026-09-28 反馈「我要求整体调整，只给了 3 道」）**：教师指令里的难度比例
+  （「按5简单3中等2难」「50%简单30%中等20%难」「难度分布按5:3:2」）由后端**确定性换算**为
+  `difficulty_target = { ratio, target_counts, current_counts, gap }`（目标题数按题位总数 ×
+  比例取整、最大余数法配平；冒号式要求比例紧邻难度语境，章节比例不误触；解析不到则为 null
+  不设门禁）随 payload 进 prompt——模型照 `gap` 点题位、不自己算比例；第三条**达标门禁**：
+  模拟应用全部 difficulty 建议后的各档题数必须**恰好等于** `target_counts`，否则打回带反馈
+  纠错 1 次——「清单必须给全、不许只回示范条目」由代码判定，不靠模型自觉。
 - 归一收口：题号不在册丢弃；词表 coerce（难度 `easy→low` / `hard→high` 别名、中文题型名
-  canonical 到英文枚举）；`exam_point_id` / `card_id` 限定已知集合；去重、去 no-op、去空理由。
+  canonical 到英文枚举）；`exam_point_id` / `card_id` 限定已知集合；去重、去 no-op、去空理由；
+  每条附 `from_value`（**提案时原值快照**）——教师应用后题位已是新值，面板仍显示
+  「原值 → 新值」，不漂移成「易→易」。
 - 结果存 `task_runs.result`：`{ course_id, project_id, instruction, summary,
-  suggestions:[{ item_index, field, value, reason }], total_score }`，其中 `field` ∈
+  suggestions:[{ item_index, field, value, from_value, reason }], total_score }`，其中 `field` ∈
   §8.7 的允许 key（`assessment_mode` 不可由 AI 改——由 §4.8 侧重点确定性折算）。
   用 §8.14 轮询，`succeeded` 后取 `result`。
 - **应用走既有端点**：前端 `BlueprintSuggestPanel` 逐条/全部「应用」= 对每条建议调 §8.7

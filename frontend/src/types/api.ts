@@ -640,6 +640,8 @@ export interface BlueprintSuggestion {
   item_index: number;
   field: keyof PlanItemChanges;
   value: string | number;
+  /** 提案时题位原值快照——教师应用后题位已是新值，面板仍能显示「原值 → 新值」 */
+  from_value?: string | number | null;
   /** 面向教师的调整理由（依据后端算好的确定性统计） */
   reason: string;
 }

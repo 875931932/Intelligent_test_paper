@@ -66,6 +66,36 @@ function targetLabel(s: BlueprintSuggestion, maps: NameMaps): string {
 
 const keyOf = (s: BlueprintSuggestion) => `${s.item_index}:${s.field}`;
 
+/** 提案时原值文案：优先用后端 from_value 快照（应用后不漂移），缺失时退回当前值 */
+function fromLabel(s: BlueprintSuggestion, item: PlanItem | undefined, maps: NameMaps): string {
+  if (s.from_value === undefined || s.from_value === null || s.from_value === '') {
+    return currentLabel(item, s.field, maps);
+  }
+  const value = String(s.from_value);
+  switch (s.field) {
+    case 'score': return `${formatScore(Number(value))} 分`;
+    case 'difficulty': return dlabel(value);
+    case 'cognitive_level': return clabel(value);
+    case 'question_type': return qlabel(value);
+    case 'exam_point_id': return examPointLabel(maps, value);
+    case 'card_id': return cardLabel(maps, value);
+    default: return value;
+  }
+}
+
+/** 建议值已等于题位当前值（应用过或教师已手动改到位）→ 视为已应用 */
+function matchesCurrent(s: BlueprintSuggestion, item: PlanItem | undefined): boolean {
+  if (!item) return false;
+  if (s.field === 'score') return Math.abs(Number(item.score) - Number(s.value)) < 0.001;
+  const current =
+    s.field === 'card_id' ? item.knowledge_card_id
+    : s.field === 'exam_point_id' ? item.exam_point_id
+    : s.field === 'difficulty' ? item.difficulty
+    : s.field === 'cognitive_level' ? item.cognitive_level
+    : item.question_type;
+  return String(current ?? '') === String(s.value);
+}
+
 /**
  * 蓝图题位 AI 调整建议面板：一句话（可空）→ 建议任务 → 轮询 → 建议清单。
  * 教师逐条/批量点「应用」走既有 PATCH plan-items（0.5 步进、总分合理性、
@@ -207,7 +237,7 @@ export function BlueprintSuggestPanel({
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') void handleGenerate(); }}
-          placeholder="可留空做常规检查；也可写：难题调多一点、第3章分值调高"
+          placeholder="可留空做常规检查；也可写：难度按5简单3中等2难分、第3章分值调高"
           aria-label="调整要求（一句话，可空）"
           disabled={running}
         />
@@ -236,7 +266,7 @@ export function BlueprintSuggestPanel({
           )}
           {result.suggestions.map((s) => {
             const item = planItems.find((p) => p.item_index === s.item_index);
-            const isApplied = applied.has(keyOf(s));
+            const isApplied = applied.has(keyOf(s)) || matchesCurrent(s, item);
             return (
               <div
                 key={keyOf(s)}
@@ -250,7 +280,7 @@ export function BlueprintSuggestPanel({
               >
                 <span style={{ fontSize: '0.78rem', fontWeight: 700 }}>#{s.item_index}</span>
                 <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-                  {FIELD_LABELS[s.field]}：{currentLabel(item, s.field, maps)}
+                  {FIELD_LABELS[s.field]}：{fromLabel(s, item, maps)}
                   <span style={{ margin: '0 6px', color: 'var(--accent)' }}>→</span>
                   <strong>{targetLabel(s, maps)}</strong>
                 </span>

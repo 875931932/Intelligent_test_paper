@@ -10,7 +10,9 @@ worker 调 ``execute_suggest_task`` 把确定性上下文（题位全量、题�
 
 红线：本模块只写 task_runs——建议永远不直接改题位；题型分值差异/难度分布
 对照由后端确定性算好作为「事实数据」给模型解读，不把比例约束检查塞进 prompt
-让模型自己算。调分必须成对（增减合计 0）由代码校验，不靠模型自觉。
+让模型自己算。调分必须成对（增减合计 0）由代码校验，不靠模型自觉；教师指令
+里的难度比例（如「按5简单3中等2难」）也由本模块确定性换算成目标分布与缺口，
+「整卷清单必须给全、应用后恰好达标」同样由代码门禁判定，不靠模型自觉。
 
 结构镜像 paper_review_service 的既定套路（上下文装配 / prompt 纯函数 / 归一 /
 校验收口 / 带反馈纠错一次 / 幂等入队 / worker 入口）。
@@ -19,6 +21,7 @@ worker 调 ``execute_suggest_task`` 把确定性上下文（题位全量、题�
 from __future__ import annotations
 
 import hashlib
+import re
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -63,6 +66,20 @@ _DIFFICULTY_ALIASES = {
     "中": "medium", "中等": "medium",
 }
 
+# 教师指令里的难度比例写法：「按5简单3中等2难」「50%简单30%中等20%难」与
+# 「5:3:2」（冒号式要求比例紧邻难度语境，避免把章节比例误当难度）
+_RATIO_WORDS = re.compile(
+    r"(\d+)[\s%％]*(?:简单|容易|易)"
+    r"[\s\S]{0,6}?"
+    r"(\d+)[\s%％]*(?:中等|中难度|中)"
+    r"[\s\S]{0,6}?"
+    r"(\d+)[\s%％]*(?:困难|高难度|难)"
+)
+_RATIO_COLON = re.compile(
+    r"(\d+)[\s%％]*[::][\s%％]*(\d+)[\s%％]*[::][\s%％]*(\d+)"
+)
+_RATIO_HINT = re.compile(r"难度|难题|简单|中等|容易")
+
 # 认知层级词表（与蓝图引擎同值域）
 _COGNITIVE_LEVELS = ("remember", "understand", "apply", "analyze", "evaluate", "create")
 
@@ -82,6 +99,8 @@ _SYSTEM_PROMPT = """你是高校命题教师的试卷蓝图题位调整助手。
 4. 值与题位当前值相同的建议不要给（无操作建议会被丢弃）；cognitive_level 要与题型命题常识相符（客观题一般不建议 analyze/evaluate/create）。
 5. payload.type_diff / difficulty_dist / cognitive_dist / chapter_dist 是后端算好的事实，直接引用，不要自己重算比例。
 6. 每条建议给 reason（一两句，说明依据哪项统计、为什么改）；summary 是两三句面向教师的总评。蓝图无需调整时返回空 suggestions 并在 summary 里说明。
+7. payload.difficulty_target 非空时：那是后端按教师指令换算好的难度目标——target_counts 是各档应有的题数，gap 是还差的题数（正数=还要调入该档几道，负数=还要调出几道）。此时必须给出**完整清单**：按缺口把每一道需要动的题位全部列出，直到你的全部 difficulty 建议套用后各档题数恰好等于 target_counts；只给几条示范会因清单不全被打回重试。
+8. 教师 instruction 是针对整卷的整体性要求（比例/分布/全卷统一标准）时，suggestions 必须覆盖该要求涉及的全部需调整题位，禁止只给代表性样本。
 
 只返回严格 JSON 对象：
 {"summary": "两三句总评", "suggestions": [{"item_index": 5, "field": "difficulty", "value": "high", "reason": "..."}]}
@@ -222,6 +241,57 @@ def _chapter_dist(items: list[dict], declared: dict, total: float) -> list[dict]
     return out
 
 
+def _difficulty_target(instruction: str, items: list[dict]) -> dict | None:
+    """教师指令的难度比例 → 目标分布（确定性换算，解析不到返回 None）。
+
+    支持「难度按5简单3中等2难」「50%简单30%中等20%难」「难度分布按5:3:2」等
+    写法；目标题数按题位总数 × 比例取整、最大余数法配平。比例换算在代码里做
+    ——payload 只带算好的 target_counts/gap 作事实，模型照缺口点题位，达标与否
+    由 validate_suggestions 门禁判定，不进 prompt 让模型自己算比例。
+    """
+    text = str(instruction or "")
+    weights: tuple[int, int, int] | None = None
+    match = _RATIO_COLON.search(text)
+    if match and _RATIO_HINT.search(
+        text[max(0, match.start() - 8) : match.end() + 8]
+    ):
+        weights = tuple(int(match.group(i)) for i in (1, 2, 3))
+    if weights is None:
+        match = _RATIO_WORDS.search(text)
+        if match:
+            weights = tuple(int(match.group(i)) for i in (1, 2, 3))
+    if weights is None or sum(weights) <= 0:
+        return None
+    # 难度字段有词表外的值（历史脏数据）时不做达标门禁——宁可不判也不误杀
+    if not items or any(
+        str(item.get("difficulty") or "") not in _DIFFICULTY_VOCAB
+        for item in items
+    ):
+        return None
+
+    n = len(items)
+    exact = [n * w / sum(weights) for w in weights]
+    base = [int(x) for x in exact]
+    for i in sorted(
+        range(3), key=lambda i: (-(exact[i] - base[i]), i)
+    )[: n - sum(base)]:
+        base[i] += 1
+    target_counts = dict(zip(_DIFFICULTY_VOCAB, base))
+
+    current_counts = {k: 0 for k in _DIFFICULTY_VOCAB}
+    for item in items:
+        current_counts[str(item["difficulty"])] += 1
+    return {
+        "ratio": list(weights),
+        "target_counts": target_counts,
+        "current_counts": current_counts,
+        # 正数 = 还需调入该档几道，负数 = 还需调出几道
+        "gap": {
+            k: target_counts[k] - current_counts[k] for k in _DIFFICULTY_VOCAB
+        },
+    }
+
+
 def _slim_item(item: dict) -> dict:
     """题位瘦身入 prompt：只给可读字段，不给任务/库内部无关字段。"""
     return {
@@ -318,6 +388,8 @@ def build_suggest_prompt(
         "allowed_question_types": context.get("allowed_question_types") or [],
         "known_exam_point_ids": context.get("known_exam_point_ids") or [],
         "known_card_ids": context.get("known_card_ids") or [],
+        # 教师指令的难度目标（后端换算，可空）：给模型照 gap 点题位，达标判定在代码
+        "difficulty_target": context.get("difficulty_target"),
     }
     if previous_error:
         payload["previous_validation_error"] = previous_error
@@ -371,7 +443,8 @@ def _is_noop(item: dict, field: str, value) -> bool:
 
 def normalize_suggestions(raw, context: dict) -> dict:
     """把模型返回收敛为可信的建议清单：题号在册、字段在词表、值域合法、
-    去重、丢弃无操作建议；summary 取原样字符串。"""
+    去重、丢弃无操作建议；summary 取原样字符串。每条附 from_value（提案时
+    原值快照）——教师应用后题位已是新值，面板仍能显示「原值 → 新值」。"""
     if not isinstance(raw, dict):
         raise BlueprintSuggestError("模型未返回 JSON 对象")
 
@@ -408,8 +481,20 @@ def normalize_suggestions(raw, context: dict) -> dict:
         if (idx, field) in seen:
             continue
         seen.add((idx, field))
+        current = known[idx]
+        from_value = (
+            round(float(current.get("score") or 0), 2)
+            if field == "score"
+            else str(current.get(_CURRENT_FIELD.get(field, field)) or "")
+        )
         out.append(
-            {"item_index": idx, "field": field, "value": value, "reason": reason}
+            {
+                "item_index": idx,
+                "field": field,
+                "value": value,
+                "from_value": from_value,
+                "reason": reason,
+            }
         )
     return {"summary": summary, "suggestions": out}
 
@@ -417,8 +502,10 @@ def normalize_suggestions(raw, context: dict) -> dict:
 def validate_suggestions(result: dict, context: dict) -> dict:
     """对建议跑数据安全门禁，返回 {passed, code, message}。
 
-    两条门禁：总评必须存在（教师要靠它决定看不看清单）；score 类建议的分值
-    增减合计必须为 0——调分成对由代码校验，全卷总分不变不靠模型自觉。
+    三条门禁：总评必须存在（教师要靠它决定看不看清单）；score 类建议的分值
+    增减合计必须为 0——调分成对由代码校验，全卷总分不变不靠模型自觉；有
+    difficulty_target 时，模拟应用全部 difficulty 建议后的各档题数必须恰好
+    等于目标——「整卷清单给全」由代码判定，防止只回几条示范性调整。
     """
     summary = result.get("summary") or ""
     if len(summary) < _MIN_SUMMARY_LEN:
@@ -440,6 +527,38 @@ def validate_suggestions(result: dict, context: dict) -> dict:
             "code": "score_deltas",
             "message": f"score 类建议的分值增减合计为 {round(delta, 2)} 分不为 0——调分必须成对，全卷总分不变",
         }
+
+    target = context.get("difficulty_target")
+    if target:
+        counts = {k: 0 for k in _DIFFICULTY_VOCAB}
+        for item in context["current_by_index"].values():
+            key = str(item.get("difficulty") or "")
+            if key in counts:
+                counts[key] += 1
+        for entry in result.get("suggestions") or []:
+            if entry["field"] != "difficulty":
+                continue
+            item = context["current_by_index"][entry["item_index"]]
+            old = str(item.get("difficulty") or "")
+            if old in counts:
+                counts[old] -= 1
+            counts[str(entry["value"])] += 1
+        want = target["target_counts"]
+        if counts != want:
+            gaps = {
+                k: want[k] - counts[k]
+                for k in _DIFFICULTY_VOCAB
+                if want[k] != counts[k]
+            }
+            return {
+                "passed": False,
+                "code": "difficulty_target",
+                "message": (
+                    f"这些建议全部应用后难度分布为 {counts}，未达到目标 {want}"
+                    f"（各档仍差 {gaps}）——按 difficulty_target.gap 把缺口"
+                    "对应的题位全部列出，不要只给示范条目"
+                ),
+            }
     return {"passed": True, "code": "ok", "message": "通过建议结构校验"}
 
 
@@ -463,6 +582,10 @@ def run_suggest(
     """
     context = load_suggest_context(
         session, course_id=course_id, project_id=project_id
+    )
+    # 教师指令里的难度比例确定性换算成目标分布（解析不到为 None，不设门禁）
+    context["difficulty_target"] = _difficulty_target(
+        instruction, context["items"]
     )
     call_context = ModelCallContext(course_id=course_id, stage=TASK_TYPE)
 

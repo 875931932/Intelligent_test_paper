@@ -5,7 +5,8 @@
 题型分值期望对照、难度/认知/章节分布、项目缺失/蓝图已确认/无题位拒绝）、
 prompt 装配（真实数据进 payload + JSON schema 硬规则 + 纠错反馈字段）、建议
 归一（题号在册/字段在词表/值域别名归一/中文题型名归一/去重/丢无操作/丢空
-理由）、校验收口（总评长度 + 调分成对总分不变）、带反馈的一次纠错重试与
+理由 + from_value 原值快照）、校验收口（总评长度 + 调分成对总分不变 + 难度
+目标达标门禁）、教师指令难度比例的目标换算、带反馈的一次纠错重试与
 如实报错、任务入队幂等与状态门禁、worker 入口。LLM 用同接口桩注入。
 """
 from __future__ import annotations
@@ -314,6 +315,126 @@ def test_validate_suggestions_gates(session):
     # 空清单是合法结果（蓝图无需调整），总评说明即可
     result = {"summary": "蓝图结构与比例均合理，无需调整任何题位。", "suggestions": []}
     assert validate_suggestions(result, context)["passed"] is True
+
+
+# ─── 难度目标换算与整卷清单门禁 ───
+
+
+def test_difficulty_target_parses_word_ratio():
+    # 「按5简单3中等2难」→ 8 题按最大余数法配平为 4/2/2，gap 由代码算好
+    items = [{"item_index": i, "difficulty": "medium"} for i in range(1, 9)]
+    target = blueprint_suggest_service._difficulty_target(
+        "难度按5简单3中等2难的比例来分", items
+    )
+    assert target["ratio"] == [5, 3, 2]
+    assert target["target_counts"] == {"low": 4, "medium": 2, "high": 2}
+    assert target["current_counts"] == {"low": 0, "medium": 8, "high": 0}
+    assert target["gap"] == {"low": 4, "medium": -6, "high": 2}
+
+
+def test_difficulty_target_parses_colon_ratio_in_difficulty_context():
+    items = [{"item_index": i, "difficulty": "low"} for i in range(1, 11)]
+    target = blueprint_suggest_service._difficulty_target(
+        "难度分布按 5:3:2 来分", items
+    )
+    assert target["target_counts"] == {"low": 5, "medium": 3, "high": 2}
+
+
+def test_difficulty_target_ignores_ambiguous_or_non_difficulty_text():
+    items = [{"item_index": 1, "difficulty": "medium"}]
+    # 冒号比例不在难度语境（章节比例不误触）、无比例、空指令都不产出目标
+    assert blueprint_suggest_service._difficulty_target(
+        "章节权重按5:3:2分配", items
+    ) is None
+    assert blueprint_suggest_service._difficulty_target("难题调多一点", items) is None
+    assert blueprint_suggest_service._difficulty_target("", items) is None
+
+
+def test_normalize_suggestions_snapshots_from_value(session):
+    # 提案时原值必须快照：教师应用后面板仍显示「原值 → 新值」，不漂移成「易→易」
+    context = load_suggest_context(session, course_id="c1", project_id="proj1")
+    raw = {
+        "summary": "提案原值快照后面板应用前后都能显示真实的调整起点。",
+        "suggestions": [
+            {"item_index": 1, "field": "difficulty", "value": "high", "reason": "调难"},
+            {"item_index": 1, "field": "score", "value": 7.5, "reason": "加分"},
+        ],
+    }
+    result = normalize_suggestions(raw, context)
+    by_key = {(s["item_index"], s["field"]): s for s in result["suggestions"]}
+    assert by_key[(1, "difficulty")]["from_value"] == "low"
+    assert by_key[(1, "score")]["from_value"] == 6.0
+
+
+def test_validate_suggestions_gates_difficulty_target():
+    context = {
+        "current_by_index": {
+            1: {"difficulty": "low", "score": 6.0},
+            2: {"difficulty": "medium", "score": 4.0},
+        },
+        "difficulty_target": {
+            "ratio": [1, 0, 0],
+            "target_counts": {"low": 2, "medium": 0, "high": 0},
+            "current_counts": {"low": 1, "medium": 1, "high": 0},
+            "gap": {"low": 1, "medium": -1, "high": 0},
+        },
+    }
+    long_summary = "整体按目标比例铺满低难度，两道题全部调到低难度后才算达标。"
+
+    # 清单不全（只回总评不给调整）→ 门禁打回，消息给出现状、目标与缺口
+    validation = validate_suggestions(
+        {"summary": long_summary, "suggestions": []}, context
+    )
+    assert validation["passed"] is False
+    assert validation["code"] == "difficulty_target"
+    assert "未达到目标" in validation["message"] and "gap" in validation["message"]
+
+    # 补全缺口（题位2 调到 low）→ 模拟应用后恰好达标
+    validation = validate_suggestions(
+        {
+            "summary": long_summary,
+            "suggestions": [
+                {"item_index": 2, "field": "difficulty", "value": "low",
+                 "reason": "补缺口"},
+            ],
+        },
+        context,
+    )
+    assert validation["passed"] is True
+
+
+def test_run_suggest_completes_whole_paper_target_with_retry(session):
+    # 整体比例指令端到端：首版只回示范条目（清单不全）→ 达标门禁打回带反馈，
+    # 二版按 gap 补全才过——「我要求整体调整，不能只给几条」由代码兜底
+    first = {
+        "summary": "当前难度分布不均，先示范性调整其中一道以接近目标比例。",
+        "suggestions": [
+            {"item_index": 1, "field": "difficulty", "value": "high",
+             "reason": "示范性调整"},
+        ],
+    }
+    second = {
+        "summary": "按整体目标重排：题位1 由低调整为中等，两道中等即达到目标分布。",
+        "suggestions": [
+            {"item_index": 1, "field": "difficulty", "value": "medium",
+             "reason": "补足中等缺口"},
+        ],
+    }
+    client = StubClient([first, second])
+    result = run_suggest(
+        session, course_id="c1", project_id="proj1",
+        instruction="难度按0简单10中等0难的比例来分", client=client,
+    )
+    assert len(client.calls) == 2
+    # 比例换算成目标分布随 payload 进 prompt（代码算好，模型不自己算）
+    target = client.calls[0]["payload"]["difficulty_target"]
+    assert target["target_counts"] == {"low": 0, "medium": 2, "high": 0}
+    assert target["gap"] == {"low": -1, "medium": 1, "high": 0}
+    # 首版不达标 → 带 previous_validation_error 纠错一次
+    assert "previous_validation_error" in client.calls[1]["payload"]
+    assert [(s["item_index"], s["value"]) for s in result["suggestions"]] == [
+        (1, "medium")
+    ]
 
 
 # ─── 建议执行（纠错重试） ───
