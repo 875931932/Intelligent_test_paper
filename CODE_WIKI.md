@@ -140,9 +140,10 @@ f:\比赛项目\阅卷出题功能/
 
 **试卷页签**：`paper_versions.py` 提供逐题编辑、增删、调序、定稿 / 撤销，以及四份导出
 （学生卷 HTML、答卷 HTML、答题卡 HTML、答案细则 JSON——schema 自 `1.1.0` 起逐题带
-`rubric` 评分细则）。另有 **AI 助手四入口**（单题改题 / 整题生成 / 合同槽位解释 /
-整卷评审）：AI 只产出提案或只读报告（202 异步 + `task_runs` 轮询），落库一律经教师
-确认走既有端点，不绕确认流（接口细节见 `docs/backend-api.md` §9.3e–h）。
+`rubric` 评分细则）。另有 **AI 助手落点**（考核规则提案 / 蓝图题位调整建议 /
+框架候选评审 / 单题改题 / 整题生成 / 整卷评审）：AI 只产出提案或只读报告（202 异步 +
+`task_runs` 轮询），落库一律经教师
+确认走既有端点，不绕确认流（接口细节见 `docs/backend-api.md` §4.9、§4.10、§8.7b、§9.3e–g）。
 
 ---
 
@@ -436,7 +437,9 @@ app.include_router(paper_versions_router)    # /api/v1/courses/{course_id}/paper
 | POST | `/api/v1/courses/{course_id}/framework-runs/{run_id}/confirm` | 教师确认并发布框架 |
 | POST | `/api/v1/courses/{course_id}/framework-runs/{run_id}/reject` | 教师拒绝框架 |
 | GET | `/api/v1/courses/{course_id}/framework-versions/current` | 获取当前框架（含 `exam_rules`） |
-| PATCH | `/api/v1/courses/{course_id}/framework-versions/current/rules` | 修改考核规则（题型比例 / 章节权重） |
+| PATCH | `/api/v1/courses/{course_id}/framework-versions/current/rules` | 修改考核规则（题型比例 / 章节权重 / 考试侧重点） |
+| POST | `/api/v1/courses/{course_id}/framework-versions/current/rules/ai-propose` | 考核规则 AI 助手提案（202，回填编辑草稿） |
+| POST | `/api/v1/courses/{course_id}/framework-versions/current/ai-review` | 框架候选 AI 评审报告（202，只读） |
 
 #### Knowledge [backend/app/api/v1/knowledge.py](backend/app/api/v1/knowledge.py)
 
@@ -467,7 +470,8 @@ app.include_router(paper_versions_router)    # /api/v1/courses/{course_id}/paper
 | PATCH | `.../contracts/revise` | 修订合同（仅预览不落库） |
 | POST | `.../contracts/confirm` | 确认合同 |
 | GET | `.../contracts/current` | 当前已确认合同快照 |
-| POST | `.../contract-slots/{item_index}/explain` | 合同槽位 AI 解释与调整建议（202 只读） |
+| PATCH | `.../plan-items/{plan_item_id}` | 修改题位（分值 / 题型 / 难度 / 认知 / 考点 / 知识卡） |
+| POST | `.../{project_id}/blueprints/current/ai-suggest` | 蓝图题位 AI 调整建议（202，教师逐条应用） |
 | POST | `.../generate` | 启动生成任务（Celery） |
 | GET | `.../task-runs/{task_run_id}` | 查询生成/AI 提案任务进度 |
 
@@ -528,7 +532,9 @@ app.include_router(paper_versions_router)    # /api/v1/courses/{course_id}/paper
 | [paper_version_service.py](backend/app/services/paper_version_service.py) | 试卷版本管理 + 四份导出渲染 |
 | [ai_revise_service.py](backend/app/services/ai_revise_service.py) | 单题 AI 改题提案（diff → 教师确认落库） |
 | [ai_create_service.py](backend/app/services/ai_create_service.py) | AI 整题生成提案（回填 → 教师确认落库） |
-| [contract_explain_service.py](backend/app/services/contract_explain_service.py) | 合同槽位 AI 解释与调整建议（只读异步） |
+| [exam_rules_ai_service.py](backend/app/services/exam_rules_ai_service.py) | 考核规则 AI 提案（回填编辑草稿 → 教师保存落库） |
+| [blueprint_suggest_service.py](backend/app/services/blueprint_suggest_service.py) | 蓝图题位 AI 调整建议（确定性统计对照 → 教师逐条应用） |
+| [framework_review_ai_service.py](backend/app/services/framework_review_ai_service.py) | 框架候选 AI 评审报告（只读异步） |
 | [paper_review_service.py](backend/app/services/paper_review_service.py) | 整卷 AI 质量评审报告（只读异步） |
 | [model_call_service.py](backend/app/services/model_call_service.py) | 模型调用记录 |
 | [staging_retrieval_service.py](backend/app/services/staging_retrieval_service.py) | 暂存区检索 |
@@ -811,7 +817,7 @@ frontend/src/
 │   ├── course-space/             # /courses 课程选择
 │   ├── dashboard/                # /courses/:courseId 课程概览
 │   ├── materials/                # 资料库（按四区归档上传）
-│   ├── framework/                # 命题框架 + ExamRulesCard（考核规则）
+│   ├── framework/                # 命题框架 + ExamRulesCard（规则）+ FrameworkReviewPanel（AI 评审）
 │   ├── knowledge/                # 知识目录（树形/图谱双视图）
 │   └── paper/                    # 「试卷」模块
 │       ├── index.tsx             # 项目列表 + 项目详情（双页签外壳）
@@ -819,7 +825,7 @@ frontend/src/
 │       ├── PaperPanel.tsx        # 试卷页签：双栏阅读器 + 题目编辑器
 │       ├── AiRevisePanel.tsx     # 单题 AI 改题（提案 → diff → 确认）
 │       ├── AiCreatePanel.tsx     # AI 生成整道新题（提案回填表单）
-│       ├── ContractExplainPanel.tsx  # 合同槽位 AI 解释与调整建议
+│       ├── stage/BlueprintSuggestPanel.tsx  # 蓝图题位 AI 调整建议（逐条应用）
 │       └── PaperReviewPanel.tsx  # 整卷 AI 质量评审（只读报告）
 ├── stores/                       # zustand：auth / course / toast
 ├── styles/                       # design-tokens.css global.css App.css
@@ -873,21 +879,26 @@ frontend/src/
 
 **文件**：[frontend/src/pages/framework/ExamRulesCard.tsx](frontend/src/pages/framework/ExamRulesCard.tsx)
 
-**职责**：展示考核大纲抽取出的考试形式、题型比例与章节命题权重，并支持教师修改后保存
-（PATCH `/framework-versions/current/rules`）。蓝图按这里的比例推导题型分布。
+**职责**：展示考核大纲抽取出的考试形式、题型比例、章节命题权重与考试侧重点（五项
+`assessment_mode` 权重，空 = 均衡），并支持教师修改后保存（PATCH
+`/framework-versions/current/rules`）。蓝图按这里的比例推导题型分布、按侧重点确定性
+折算题位考查方式；编辑态附「AI 助手」一句话生成规则提案——回填编辑草稿，教师核对后
+点保存才生效。
 
 #### AI 助手面板（提案 → 教师确认，不绕确认流）
 
 | 面板 | 文件 | 对应端点 |
 |------|------|----------|
+| ExamRulesCard AI 助手（规则提案） | [pages/framework/ExamRulesCard.tsx](frontend/src/pages/framework/ExamRulesCard.tsx) | `POST .../framework-versions/current/rules/ai-propose` |
+| FrameworkReviewPanel 框架评审（只读） | [pages/framework/FrameworkReviewPanel.tsx](frontend/src/pages/framework/FrameworkReviewPanel.tsx) | `POST .../framework-versions/current/ai-review` |
+| BlueprintSuggestPanel 蓝图调整建议 | [pages/paper/stage/BlueprintSuggestPanel.tsx](frontend/src/pages/paper/stage/BlueprintSuggestPanel.tsx) | `POST .../blueprints/current/ai-suggest` |
 | AiRevisePanel 单题改题 | [pages/paper/AiRevisePanel.tsx](frontend/src/pages/paper/AiRevisePanel.tsx) | `POST .../items/{i}/ai-revise` |
 | AiCreatePanel 整题生成 | [pages/paper/AiCreatePanel.tsx](frontend/src/pages/paper/AiCreatePanel.tsx) | `POST .../items/ai-generate` |
-| ContractExplainPanel 槽位解释 | [pages/paper/ContractExplainPanel.tsx](frontend/src/pages/paper/ContractExplainPanel.tsx) | `POST .../contract-slots/{i}/explain` |
 | PaperReviewPanel 整卷评审 | [pages/paper/PaperReviewPanel.tsx](frontend/src/pages/paper/PaperReviewPanel.tsx) | `POST .../ai-review` |
 
 提案/报告均为异步任务（202 + `task-runs` 轮询，终态自停）；AI 只产出提案、diff 或
 只读报告，**落库一律经教师确认走既有 PATCH/POST 端点**（改题可逐字段撤销，撤销=
-把应用前旧值 PATCH 回去）。接口契约见 `docs/backend-api.md` §9.3e–h。
+把应用前旧值 PATCH 回去）。接口契约见 `docs/backend-api.md` §4.9、§4.10、§8.7b、§9.3e–g。
 
 #### API 客户端
 
@@ -1032,10 +1043,10 @@ app/
 ├── api/v1/
 │   ├── auth.py            → services.auth_service
 │   ├── courses.py         → services.course_service
-│   ├── framework.py       → workflows.framework_graph, services.framework_service, adapters.model.*
+│   ├── framework.py       → workflows.framework_graph, services.framework_service, exam_rules_ai_service, framework_review_ai_service, adapters.model.*
 │   ├── knowledge.py       → workflows.organization_graph, services.knowledge_publish_service, adapters.model.*（抽取器装配）
 │   ├── materials.py       → services.material_service, parse_service, adapters.storage.*
-│   ├── exam_projects.py   → services.exam_project_service, contract_execution_service, contract_explain_service, generation_runner_service
+│   ├── exam_projects.py   → services.exam_project_service, contract_execution_service, blueprint_suggest_service, generation_runner_service
 │   └── paper_versions.py  → services.paper_version_service, ai_revise_service, ai_create_service, paper_review_service
 │
 ├── workflows/
@@ -1080,13 +1091,13 @@ src/
 │   └── 依赖: api/http, api/domains/*
 │
 ├── pages/paper/
-│   ├── index.tsx           → PipelinePanel, PaperPanel, AiRevise/AiCreate/ContractExplain/PaperReview 面板
+│   ├── index.tsx           → PipelinePanel, PaperPanel, AiRevise/AiCreate/PaperReview 面板
 │   ├── PipelinePanel.tsx   → hooks/useNameMaps, lib/examDisplay, components/ui
 │   ├── PaperPanel.tsx      → hooks/useNameMaps, lib/examDisplay, components/ui
-│   └── Ai* / ContractExplain / PaperReview 面板 → api/client, components/ui（提案轮询）
+│   └── Ai* / PaperReview 面板 → api/client, components/ui（提案轮询）
 │
 ├── pages/framework/
-│   ├── index.tsx           → ExamRulesCard, components/ui
+│   ├── index.tsx           → ExamRulesCard, FrameworkReviewPanel, components/ui
 │   └── ExamRulesCard.tsx   → api/client, lib/examDisplay
 │
 ├── pages/{dashboard,materials,knowledge} → api/client, components/ui, stores/*

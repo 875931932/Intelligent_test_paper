@@ -1,7 +1,7 @@
 # AI 期末试卷命题系统 · 交接文档
 
-> 更新日期：2026-09-25
-> 状态：引擎层 + 教师工作台 + 试卷模块（含 AI 助手四入口）均已交付；出卷全链路可在浏览器端走通
+> 更新日期：2026-09-27
+> 状态：引擎层 + 教师工作台 + 试卷模块（含考试侧重点与 3 处新 AI 落点：考核规则助手 / 蓝图题位建议 / 框架候选评审）均已交付；出卷全链路可在浏览器端走通
 > 产品基线：`docs/superpowers/specs/2026-08-12-ai-final-exam-paper-design.md`（v2.3，务必先读）
 > 链路设计：`docs/superpowers/specs/2026-08-17-contract-first-generation-design.md`（合同优先生成）
 > 接口权威清单：`docs/backend-api.md`；代码全景：`CODE_WIKI.md`；模型调优：`docs/LLM_TUNING.md`
@@ -232,7 +232,9 @@ backend\app\
 │   ├─ knowledge_tree_service.py     知识树校验（证据落地/同考点准入）
 │   ├─ ai_revise_service.py          单题 AI 改题提案（diff→教师确认才落库）
 │   ├─ ai_create_service.py          AI 整题生成提案（回填→教师确认）
-│   ├─ contract_explain_service.py   合同槽位 AI 解释与调整建议（只读异步）
+│   ├─ exam_rules_ai_service.py      考核规则 AI 提案（回填编辑草稿→教师保存）
+│   ├─ blueprint_suggest_service.py  蓝图题位 AI 调整建议（统计对照→教师逐条应用）
+│   ├─ framework_review_ai_service.py 框架候选 AI 评审报告（只读异步）
 │   └─ paper_review_service.py       整卷 AI 质量评审报告（只读异步）
 ├─ workflows\
 │   ├─ generation_graph.py  ★生成图：批并行→校验→重试→换原子→终检
@@ -254,8 +256,8 @@ backend\scripts\
 
 frontend\src\
 ├─ pages\paper\             ★「试卷」模块：index(外壳) / PipelinePanel(流水线) / PaperPanel(阅读器)
-│                            + AiRevise(改题) / AiCreate(出题) / ContractExplain(槽位解释) / PaperReview(整卷评审) 面板
-├─ pages\framework\         命题框架 + ExamRulesCard（考核规则查看/修改）
+│                            + AiRevise(改题) / AiCreate(出题) / PaperReview(整卷评审) / stage\BlueprintSuggestPanel(蓝图建议) 面板
+├─ pages\framework\         命题框架 + ExamRulesCard（规则查看/修改 + AI 助手提案）+ FrameworkReviewPanel（AI 评审）
 ├─ pages\{dashboard,materials,knowledge}\  概览 / 资料库 / 知识目录
 ├─ components\layout\       Layout + Sidebar（悬浮岛侧栏）
 ├── hooks\useNameMaps.ts    id → 中文名映射
@@ -273,9 +275,14 @@ frontend\src\
 - ✅ 考点比例严格等于考纲权重、原子不重复（唯一+互斥构造性保证）、语义簇分散、答案不互泄
 - ✅ 教师工作台七个页面路由全部接通真实 API（登录/课程空间/概览/资料库/命题框架/知识目录/试卷）
 - ✅ 「试卷」模块：出卷流水线（蓝图→合同→生成）+ 试卷双栏阅读器（查看/编辑/调序/增删/定稿）
-- ✅ **试卷 AI 助手四入口**（2026-09，提案式、不绕确认流）：单题改题（提案→diff→确认/撤销）、
-  AI 整题生成（回填表单）、合同槽位解释与调整建议、整卷质量评审（`docs/backend-api.md` §9.3e–h）
-- ✅ 考核规则全链路：提取 → 归一化 → 持久化 → 查看/修改 → 蓝图消费（题型比例与章节权重）
+- ✅ **AI 助手落点重构**（2026-09，提案式、不绕确认流）：移除合同槽位解释；新增考核规则
+  AI 助手（一句话提案→回填编辑草稿→教师保存）、蓝图题位 AI 调整建议（后端确定性统计对照
+  →教师逐条「应用」走既有 PATCH）、框架候选 AI 评审（确认发布前的只读报告）；原有单题改题
+  （提案→diff→确认/撤销）、AI 整题生成（回填表单）、整卷质量评审保留（`docs/backend-api.md`
+  §4.9、§4.10、§8.7b、§9.3e–g）
+- ✅ 考核规则全链路：提取 → 归一化 → 持久化 → 查看/修改（含考试侧重点 `assessment_focus`
+  五项权重，预设+微调）→ 蓝图消费（题型比例、章节权重与侧重点**确定性**折算题位考查方式
+  分布，无实操可考单元两层收敛、出卷不失败）
 - ✅ 四份导出按高校卷面模板渲染：学生卷 / 答卷（信息头 + 题次表 + 装订线 + 答案速查表）/
   答题卡 / 答案细则 JSON（schema 1.1.0 起逐题带 `rubric`，生成→编辑→导出全链路贯通）；
   另有试卷整体预览与综合题分问排版

@@ -10,7 +10,7 @@ React 19 + TypeScript + Vite + Zustand 的教师工作台。页面结构、路�
 npm install            # 依赖安装（锁文件 package-lock.json，禁止 pnpm/yarn）
 npm run dev            # 开发服务器 :5173，/api 已代理到 127.0.0.1:8000
 npm run build          # 门禁①：tsc 类型检查 + 产物构建（0 error 才能提交）
-npm run lint           # 门禁②：oxlint（当前基线 8 warning，不得增加）
+npm run lint           # 门禁②：oxlint（当前基线 10 warning，不得增加）
 ```
 
 ⚠️ **本项目前端没有单测框架**（无 jest/vitest），质量门禁就是 `npm run build` +
@@ -24,7 +24,7 @@ src/
 ├── pages/             # 7 个页面模块（auth / course-space / dashboard / materials /
 │                      #  framework / knowledge / paper）
 │   └── paper/         # 「试卷」模块：流水线 + 阅读器 + AI 助手面板
-│                      #  （AiRevise 改题 / AiCreate 出题 / ContractExplain 槽位解释 / PaperReview 整卷评审）
+│                      #  （AiRevise 改题 / AiCreate 出题 / PaperReview 整卷评审 / BlueprintSuggest 蓝图建议）
 ├── api/               # HTTP 层：http.ts（统一 request/鉴权/错误）+ domains/*（按业务域）
 │                      #  ⚠️ 组件内禁止散落 fetch，一律走这里
 ├── components/        # layout/（Layout + 悬浮岛 Sidebar）+ ui/（Badge Button Card …）

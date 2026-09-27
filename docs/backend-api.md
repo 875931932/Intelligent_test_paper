@@ -177,22 +177,75 @@
 { "exam_rules": {
     "exam_form": "闭卷笔试", "duration_minutes": 90, "total_score": 100,
     "question_type_ratios": [ {"question_type":"single_choice","ratio":20} ],
-    "chapter_weights": [ {"anchor_key":"第1章 …","weight":5} ] } }
+    "chapter_weights": [ {"anchor_key":"第1章 …","weight":5} ],
+    "assessment_focus": [ {"assessment_mode":"conceptual","weight":60} ] } }
 ```
 
 > `payload` 里持久化的字段名是 `final_exam_rules`，对外统一暴露为 `exam_rules`。
 > 旧框架（本次改动前构建的）该字段是空 dict，接口会补齐成完整形态再返回。
+> `assessment_focus` 为空数组 = 均衡（蓝图按题型默认分布）。
 
 ### 4.8 修改考核规则
 `PATCH /api/v1/courses/{course_id}/framework-versions/current/rules`
-body 同 `exam_rules` 结构（`question_type_ratios` / `chapter_weights` 等）。
+body 同 `exam_rules` 结构（`question_type_ratios` / `chapter_weights` /
+`assessment_focus` 考试侧重点等）。
 → 200 `{ "status":"ok", "framework_version_id":"uuid", "exam_rules":{...} }`
 
 归一化规则：题型名映射到英文枚举（"选择题"→`single_choice`）、剔除未知项、比例归一到 100、
 未声明的章节锚点补 0；考纲完全没有章节权重表时返回空列表，由消费方回退到考点权重。
+`assessment_focus` 是教师声明的**考试侧重点**：五项 `assessment_mode`
+（`theory_recall` / `conceptual` / `application` / `problem_solving` /
+`practical_operation`）的 `%` 权重，归一到 100、零值剔除、空数组 = 均衡。
 
 **消费**：蓝图在未下发 `type_rules` 时按 `question_type_ratios` 推导题型分布（题数折算后
 定点修正，保证总分精确 100）；创建蓝图时 `chapter_weights` 优先取 `chapter_weights`。
+`assessment_focus` 由蓝图构造**确定性**折算为题位 `assessment_mode` 分布（按权重分配，
+两层收敛兜底：无实操可考单元时先降级到邻近考查方式、再按可考性归并）——权重异常/无可考
+单元只会让分布收敛，不会让出卷失败。
+
+### 4.9 考核规则 AI 助手（提案，需教师保存）
+`POST /api/v1/courses/{course_id}/framework-versions/current/rules/ai-propose`
+body：`{ "instruction":"闭卷笔试90分钟，选择题40%，第3章多考一些，侧重实操" }`
+（`instruction` 必填非空）→ **202** `{ "task_run_id":"uuid" }`。
+LLM 未配置 503；无命题框架 404（detail 含「命题框架」）；空要求 422。
+
+- **只产提案，不写规则**：worker（`task_type=propose_exam_rules`，租约 300s）把当前
+  `exam_rules`、允许题型、章节锚点作事实数据喂给模型（比例/难度等约束检查在代码里，不
+  进 prompt 让模型自觉遵守）；提案整包过既有 `normalize_exam_rules` 归一（英文枚举、
+  比例与侧重点归一 100、锚点按已知过滤），模型未提及的字段照抄当前规则，防止清空教师已有设置。
+- 校验收口：`ratios_empty`（题型比例为空）、`fields_lost`（提案清空教师已有的章节权重 /
+  考试形式 / 时长 / 总分）——未过带 `previous_validation_error` 纠错 1 次，仍不过如实报错。
+- 结果存 `task_runs.result`：`{ course_id, instruction, proposal:{ exam_form,
+  duration_minutes, total_score, question_type_ratios, chapter_weights,
+  assessment_focus }, explanation }`；用 §8.14 `GET /exam-projects/task-runs/{id}` 轮询，
+  `succeeded` 后前端把 proposal 回填考核规则卡**编辑草稿**，教师核对/修改后点「保存」走
+  §4.8 PATCH 落库——AI 提案不直接生效。
+- 幂等：同课同要求的**在途**任务复用同一 `task_run_id`；已到终态换新键重新提案。
+- 键 = `sha256(f"propose:{course_id}:{instruction}")[:24]`。
+
+### 4.10 框架候选 AI 评审（只读报告，异步）
+`POST /api/v1/courses/{course_id}/framework-versions/current/ai-review`
+body 可选 `{ "instruction":"重点看权重与覆盖" }`（可空 = 常规评审）
+→ **202** `{ "task_run_id":"uuid" }`。LLM 未配置 503；无命题框架 404；其它业务错误 422。
+
+- **纯只读、零写路径**：worker（`task_type=review_framework_candidate`，租约 300s）只建
+  `task_runs`，不碰框架/冲突任何表。目标版本**候选优先**（教师正决定发不发布，与 §4.7 的
+  published 优先相反），无候选则取最新已发布版。
+- **确定性 grounding，模型只解读不重算**：锚点/考点瘦身、考试规则归一、待裁决冲突读表的
+  当前状态（不是 payload 快照），覆盖/权重/认知分层统计（`anchor_count`、`point_count`、
+  `points_per_anchor`、`anchor_weight_sum`、`cognitive_coverage`、允许题型并集）由后端算好
+  作为事实数据进 prompt。
+- 结果存 `task_runs.result`：`{ course_id, framework_version_id, framework_status,
+  instruction, verdict:"ready|revise_first", summary, findings:[{severity:
+  "info|warning|critical", area:"coverage|weight|question_type|cognitive|rules|conflicts|
+  other", message, suggestion}] }`。归一收口：verdict/severity 别名归一、未知 area 归
+  `other`、短 message 丢弃、去重、限 12 条；校验 verdict 词表 + `summary` ≥10 字，未过带
+  `previous_validation_error` 纠错 1 次，仍不过如实报错。
+- 用 §8.14 轮询取 `result`；前端 `FrameworkReviewPanel` 把报告展示在**确认按钮之前**，
+  verdict 只是给教师的参考意见——确认/拒绝与冲突裁决仍走既有 §4.5 / §4.6 确认流。
+- 幂等：同课同版本同要求的**在途**任务复用同一 `task_run_id`；已到终态换新键。
+- 键 = `sha256(f"review:{course_id}:{framework_version_id}:{instruction}")[:24]`（含版本
+  id：重建框架后即使要求相同也拿到针对新候选的评审）。
 
 ---
 
@@ -327,6 +380,29 @@ PlanItem（`list_plan_items` 响应，8.6 同构）：
 允许 key ∈ `score|question_type|difficulty|cognitive_level|exam_point_id|card_id`；其它 key 422。
 题位必须属于路径上的 `{course_id}`，跨课程 id 按不存在处理（404），不会读写到别课程的题位。
 仅 `draft` 蓝图可原地修改：已确认（confirmed/superseded）蓝图返回 **409**（冻结纪律——其难度/分值已被合同槽位拷贝，只能新建蓝图版本）。
+
+### 8.7b 蓝图题位 AI 调整建议（提案，需教师逐条应用）
+`POST /api/v1/courses/{course_id}/exam-projects/{project_id}/blueprints/current/ai-suggest`
+body 可选 `{ "instruction":"难度整体压低一点" }`（可空 = 常规建议）
+→ **202** `{ "task_run_id":"uuid" }`。
+LLM 未配置 503；项目不存在/不在课程 404；蓝图非 draft（已确认不可原地修改）409；蓝图无题位 422。
+
+- **只产建议，不改题位**：worker（`task_type=suggest_blueprint_adjustments`，租约 300s）
+  把题位全量 + 后端算好的**确定性对照**（题型分值期望差 = 规则比例×总分 vs 实际、难度/
+  认知/章节分布、考试规则、允许题型、已知考点/知识卡集合）作事实数据进 prompt——比例与
+  总分约束在代码里校验：**score 类建议的分值增减合计必须为 0**（调分只许挪动不许改总分），
+  未过带 `previous_validation_error` 纠错 1 次，仍不过如实报错。
+- 归一收口：题号不在册丢弃；词表 coerce（难度 `easy→low` / `hard→high` 别名、中文题型名
+  canonical 到英文枚举）；`exam_point_id` / `card_id` 限定已知集合；去重、去 no-op、去空理由。
+- 结果存 `task_runs.result`：`{ course_id, project_id, instruction, summary,
+  suggestions:[{ item_index, field, value, reason }], total_score }`，其中 `field` ∈
+  §8.7 的允许 key（`assessment_mode` 不可由 AI 改——由 §4.8 侧重点确定性折算）。
+  用 §8.14 轮询，`succeeded` 后取 `result`。
+- **应用走既有端点**：前端 `BlueprintSuggestPanel` 逐条/全部「应用」= 对每条建议调 §8.7
+  `PATCH plan-items/{id}`（分值 0.5 步进、draft 冻结、课程隔离等服务端校验原样生效），
+  AI 不直接写题位。
+- 幂等：同课同项目同要求的**在途**任务复用同一 `task_run_id`；已到终态换新键。
+- 键 = `sha256(f"suggest:{course_id}:{project_id}:{instruction}")[:24]`。
 
 ### 8.8 确认蓝图
 `POST /api/v1/courses/{course_id}/exam-projects/{project_id}/blueprints/current/confirm`
@@ -506,27 +582,7 @@ body：`{ "instruction":"出一道单选题，考查进程与线程的区别" }`
 - 幂等：同卷同指令的**在途**任务复用同一 `task_run_id`；已到终态则换新键真正重新生成。
 - 键 = `sha256(f"ai-create:{paper_version_id}:{instruction}")[:24]`。
 
-### 9.3g 合同槽位 AI 解释与调整建议（只读，异步）
-`POST /api/v1/courses/{course_id}/exam-projects/{project_id}/contract-slots/{item_index}/explain`
-body 可选 `{ "allocation_seed":0, "blueprint_version_id":"uuid", "instruction":"为什么不是另一个原子？" }`
-（均缺省可用；`instruction` 可为空串 = 标准解释）→ **202** `{ "task_run_id":"uuid" }`。
-LLM 未配置 503；项目不存在/不在课程 404；项目尚无蓝图 409；`item_index` 不在槽位内或 body
-含未知键/`instruction` 非字符串 422。
-
-- **纯只读、零写路径**：端点只建 `task_runs`（`task_type=explain_contract_slot`，租约 300s），
-  不碰合同/蓝图任何表；上下文用 `allocate_with_fallback` 同路只读重算（与 §9.2 revise 预览同源），
-  把槽位字段、知识卡、蓝图题位计划、章节权重、其余槽位概览喂给模型——prompt 不让模型重做分配，
-  解释必须落在确定性算法的真实输出上（红线：比例/难度/去重不进 prompt）。
-- 建议只引导两条既有落地路径：①合同修订（先 §9.2 `PATCH contracts/revise` 预览、再
-  `POST contracts/confirm` 落库）；②换分配方案（`allocation_seed`）或调整蓝图后重新分配——
-  不建议教师手改分值/难度去凑比例。`target_item_index` 不在已知槽位号的一律归 `null`。
-- 结果存 `task_runs.result`：`{ project_id, item_index, instruction, explanation, suggestions:
-  [{concern, suggestion, target_item_index}], instruction_response, validated }`；用 §8 的
-  `GET /exam-projects/task-runs/{id}` 轮询，`succeeded` 后取 `result`。
-- 幂等：同槽位同方案同追问的**在途**任务复用同一 `task_run_id`；已到终态则换新键重新生成。
-- 键 = `sha256(f"explain:{project_id}:{item_index}:{seed}:{instruction}")[:24]`。
-
-### 9.3h 整卷 AI 质量评审（只读报告，异步）
+### 9.3g 整卷 AI 质量评审（只读报告，异步）
 `POST /api/v1/courses/{course_id}/paper-versions/{pv_id}/ai-review`
 body 可选 `{ "instruction":"重点关注难度分布" }`（教师指定关注点；可空 = 标准评审）
 → **202** `{ "task_run_id":"uuid" }`。LLM 未配置 503；试卷不存在/不在课程 404；试卷无题目
