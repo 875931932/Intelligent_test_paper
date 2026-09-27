@@ -579,7 +579,7 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract
 3. 检测配额不足冲突
 4. 按考点聚类原子（`cluster_pool_atoms`）
 5. 贪心分配原子到题位（`assign_atoms_to_items`）
-6. 生成综合题原型轮换字段
+6. 生成综合题原型轮换字段（默认池按 allocation_seed 确定性洗牌 + 起点平移；教师白名单保持偏好序）
 7. 计算禁用上下文（同考点兄弟题位互斥）
 8. 生成审计摘要
 

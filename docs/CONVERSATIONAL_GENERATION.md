@@ -48,7 +48,7 @@
 - `contract_execution_service.allocate_with_fallback(...)`：阈值 0.6 → 0.5 → 0.45 回退，
   DB 全量构建只做一次，每轮回退仅 `model_copy` 替换 `centrality_threshold`。
 - `_collect_used_atom_texts`：取该课程最近 10 份合同的原子做**跨卷避重**（窗口即"重复度"旋钮）。
-- `_comprehensive_archetype_pool`：综合题原型白名单由 `type_rules.comprehensive.archetypes` 控制。
+- `_comprehensive_archetype_pool`：综合题原型白名单由 `type_rules.comprehensive.archetypes` 控制（偏好序原样保留）；未指定或全非法时回退默认池，默认池按 `allocation_seed` 确定性洗牌（`_shuffled_default_pool`）。
 
 **锚点 3 · 题位计划**
 - `PUT .../plan-items`（§8.6），confirm 之前改动都会被重跑校验兜住。

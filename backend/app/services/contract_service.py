@@ -1,6 +1,8 @@
 """试卷合同分配器：配额→门槛→聚类→簇轮转→互斥→结构轮换，纯确定性零模型。"""
 from __future__ import annotations
 
+from hashlib import sha256
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.blueprint.models import BlueprintPlan, BlueprintRequest, PlanItem, UnitCoverage
@@ -34,20 +36,39 @@ _COGNITIVE_SEQUENCES = [
 ]
 
 
+def _shuffled_default_pool(seed: int | None) -> list[str]:
+    """默认原型池按种子确定性洗牌。
+
+    固定序下轮换起点只做平移：每张卷的综合题序列永远是同一条循环序的
+    切片（第 1 道必为池首原型、第 2 道必为池次…），默认序太可预测。
+    按 sha256(f"{seed}:{name}") 排序洗牌后整条序列逐卷不同；排序键取自
+    哈希，同种子跨平台/版本复现同序。seed=None 保持原固定序，仍满足
+    「确定性分配」契约。教师显式指定的池不走这里（偏好序原样保留）。
+    """
+    if seed is None:
+        return list(_ARCHETYPE_ROTATION)
+    return sorted(
+        _ARCHETYPE_ROTATION,
+        key=lambda name: sha256(f"{seed}:{name}".encode("utf-8")).hexdigest(),
+    )
+
+
 def _comprehensive_archetype_pool(request: ContractRequest) -> list[str]:
     """综合题原型池：教师经 type_rules.comprehensive.archetypes 显式控制。
 
     教师可传原型白名单（顺序即偏好序），适合按学科裁剪——非编程课程可
     排除 code_completion_scenario，文科可只留 case_analysis 等。未指定
-    或全部非法时回退完整原型池（通用机制，不绑定具体课程）。
+    或全部非法时回退默认原型池（通用机制，不绑定具体课程）；默认池按
+    allocation_seed 确定性洗牌（见 _shuffled_default_pool）。
     """
 
     rule = request.blueprint.type_rules.get("comprehensive") or {}
     requested = rule.get("archetypes")
-    if not isinstance(requested, list) or not requested:
-        return list(_ARCHETYPE_ROTATION)
-    pool = [name for name in requested if name in ARCHETYPE_CONTRACTS]
-    return pool or list(_ARCHETYPE_ROTATION)
+    if isinstance(requested, list) and requested:
+        pool = [name for name in requested if name in ARCHETYPE_CONTRACTS]
+        if pool:
+            return pool
+    return _shuffled_default_pool(request.allocation_seed)
 
 
 class ContractRequest(BaseModel):
@@ -73,9 +94,10 @@ class ContractRequest(BaseModel):
 def _comprehensive_fields(nth: int, pool: list[str]) -> dict:
     """第 nth 道综合题的结构轮换字段。
 
-    pool 是原型轮换池（教师可裁剪）；轮换起点由 allocation_seed 扰动
-    （seed=None 时起点 0 保持确定性），同种子复现、异种子换原型序列，
-    避免每张卷的综合题永远是固定的前几种原型。
+    pool 是原型轮换池（教师可裁剪；默认池已经 _shuffled_default_pool 按
+    种子洗牌）；轮换起点再由 allocation_seed 平移（seed=None 时起点 0）。
+    洗牌与平移同种子一致，同种子复现、异种子整条序列不同——避免每张卷的
+    综合题序列是可预测的固定循环序切片。
     """
     archetype = pool[nth % len(pool)]
     contract = ARCHETYPE_CONTRACTS[archetype]

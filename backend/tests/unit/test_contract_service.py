@@ -159,6 +159,42 @@ def test_invalid_archetype_pool_falls_back_to_full_rotation():
     assert len(contract.slots) == 4
 
 
+def test_default_pool_is_shuffled_by_seed():
+    # 默认池洗牌：固定序下第 1 道综合题永远是池首原型（默认序太可预测）。
+    # 按种子 sha256 排序洗牌：整条序列逐卷不同，同种子复现，seed=None 保持原固定序。
+    from app.services.contract_service import _ARCHETYPE_ROTATION, _shuffled_default_pool
+
+    assert _shuffled_default_pool(None) == list(_ARCHETYPE_ROTATION)
+    shuffled = _shuffled_default_pool(0)
+    assert sorted(shuffled) == sorted(_ARCHETYPE_ROTATION)  # 仍是全量 8 原型的置换
+    assert shuffled == _shuffled_default_pool(0)            # 同种子复现同序
+    assert shuffled != list(_ARCHETYPE_ROTATION)            # 首个真实种子即打破默认序
+    assert shuffled != _shuffled_default_pool(1)            # 异种子整条排列不同
+
+
+def test_teacher_pool_order_survives_seed_shuffle():
+    # 教师白名单是偏好序，不参与洗牌：同一种子下顺序原样保留
+    request = _comprehensive_request(
+        _comp_rules(archetypes=["case_analysis", "solution_design", "critique_correction"]),
+        seed=7,
+    )
+    contract = allocate_paper_contract(request)
+    assert {s.comprehensive_archetype for s in contract.slots} <= {
+        "case_analysis", "solution_design", "critique_correction",
+    }
+
+
+def test_first_comprehensive_archetype_varies_across_seeds():
+    # 用户可感知的接线：第 1 道综合题不再被钉死在池首（code_completion_scenario）
+    firsts = {
+        seed: allocate_paper_contract(
+            _comprehensive_request(_comp_rules(), seed=seed)
+        ).slots[0].comprehensive_archetype
+        for seed in (0, 1, 2, 3)
+    }
+    assert len(set(firsts.values())) > 1
+
+
 def test_avoid_atoms_steers_allocation_to_fresh_atoms():
     # 历史避重（服务层贯通）：把上一轮已用原子（coverage_atom 原文）作为
     # avoid_atoms 传入，新一轮应改挑没用过的原子——软避重生效，同时不丢题、

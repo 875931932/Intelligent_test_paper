@@ -191,7 +191,10 @@ MinerU 解析 → 双大纲框架确认 → 知识目录发布 → 蓝图/合同
 - **难度关键词豁免**：低难度题干含"比较/分析"等词，若该词同时出现在合同原子原文中→是被考查
   术语本身，不拦截（`generation_service.py validate_generated_question(atom_text=...)`）
 - **综合题原型池教师可控**：`type_rules.comprehensive.archetypes` 白名单（文科可只留
-  case_analysis 等），轮换起点受 allocation_seed 扰动；非法名过滤、空池回退全池
+  case_analysis 等），顺序即偏好序、不参与洗牌；未指定或全非法时回退默认池，
+  默认池按 allocation_seed **确定性洗牌**（sha256 排序，`_shuffled_default_pool`）+
+  轮换起点平移——同种子复现，异种子整条序列不同（2026-09-27 反馈「默认序太可预测」前，
+  固定序下每张卷第 1 道综合题永远是池首原型）；非法名过滤、空池回退全池
 - **原型模板去课程化**：`archetypes.py` 所有模板不预设课程领域，场景以 prompt_material 为准
 - **画像字段持久化**：knowledge_cards 表的 concept_cluster / answer_proposition / prompt_material
   三列（曾因发布时丢弃导致后端链路防重复机制静默退化——这是一个深刻教训：**改机制必须检查
