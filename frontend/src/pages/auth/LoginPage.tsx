@@ -121,7 +121,7 @@ const loginStyles = `
     justify-content: center;
     position: relative;
     overflow: hidden;
-    background: linear-gradient(135deg, #f2f2f7 0%, #e8e8ed 50%, #f0f0f5 100%);
+    background: linear-gradient(135deg, var(--bg) 0%, var(--page-bg) 55%, var(--bg) 100%);
   }
 
   .login-orbs {
@@ -185,8 +185,8 @@ const loginStyles = `
     width: 56px;
     height: 56px;
     border-radius: 16px;
-    background: rgba(0, 113, 227, 0.1);
-    color: #0071e3;
+    background: var(--accent-subtle);
+    color: var(--accent);
     margin-bottom: 16px;
   }
 

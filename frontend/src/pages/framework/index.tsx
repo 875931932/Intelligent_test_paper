@@ -410,7 +410,7 @@ export default function FrameworkPage() {
       }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <h1 style={{ fontSize: '1.75rem', fontWeight: 700, letterSpacing: '-0.03em' }}>命题框架</h1>
+            <h1 className="page-title">命题框架</h1>
             {buildState === 'done' && <Badge variant="success">已发布</Badge>}
             {buildState === 'candidate' && <Badge variant="info">待确认</Badge>}
             {buildState === 'building' && <Badge variant="warning">构建中</Badge>}

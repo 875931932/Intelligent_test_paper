@@ -98,8 +98,8 @@ const FOLDER_GROUPS: FolderMeta[] = [
     description: '教学大纲与考核大纲',
     icon: Folder,
     subFolders: [
-      { key: 'teaching_syllabus', name: '教学大纲', description: '课程教学目标与内容范围', icon: BookOpen, color: '#0071e3' },
-      { key: 'assessment_syllabus', name: '考核大纲', description: '考核方式与评分标准', icon: ClipboardCheck, color: '#34c759' },
+      { key: 'teaching_syllabus', name: '教学大纲', description: '课程教学目标与内容范围', icon: BookOpen, color: '#3b7ddd' },
+      { key: 'assessment_syllabus', name: '考核大纲', description: '考核方式与评分标准', icon: ClipboardCheck, color: '#2fae5c' },
     ],
   },
   {
@@ -108,8 +108,8 @@ const FOLDER_GROUPS: FolderMeta[] = [
     description: '教材与习题等教学资源',
     icon: FolderOpen,
     subFolders: [
-      { key: 'teaching_material', name: '教材', description: '教学用书与讲义', icon: BookMarked, color: '#af52de' },
-      { key: 'exercise', name: '习题', description: '练习与试卷', icon: FileText, color: '#ff9500' },
+      { key: 'teaching_material', name: '教材', description: '教学用书与讲义', icon: BookMarked, color: '#6e56cf' },
+      { key: 'exercise', name: '习题', description: '练习与试卷', icon: FileText, color: '#e8930c' },
     ],
   },
 ];
@@ -481,7 +481,7 @@ export default function MaterialsPage() {
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
         <div>
-          <h1 style={{ fontSize: '1.75rem', fontWeight: 700, letterSpacing: '-0.03em' }}>资料库</h1>
+          <h1 className="page-title">资料库</h1>
           <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)', marginTop: '6px' }}>
             按文件夹管理课程大纲与教学资料
           </p>
@@ -501,9 +501,9 @@ export default function MaterialsPage() {
               <button
                 key={f.key}
                 onClick={() => { setActiveFolder(f.key); setActiveSubFolder(null); }}
-                className="glass-card"
+                className="glass-card card-hover"
                 style={{
-                  padding: '24px', textAlign: 'left', background: 'none', border: '1px solid var(--glass-border)',
+                  padding: '24px', textAlign: 'left',
                   cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '18px',
                 }}
               >

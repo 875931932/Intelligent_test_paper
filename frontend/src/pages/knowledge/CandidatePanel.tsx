@@ -210,7 +210,8 @@ export function CandidatePanel({ candidate, courseId, runId, supplementOps, onSu
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       {/* 顶部操作区 */}
-      <div className="glass-card" style={{ padding: '20px', display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap' }}>
+      {/* 顶部操作区：页头级信息直接坐在画布上，不再单独占一张卡 */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '16px', flexWrap: 'wrap', paddingBottom: '4px' }}>
         <div style={{ width: 44, height: 44, borderRadius: '14px', background: 'var(--info-subtle)', color: 'var(--info)', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
           <CheckCircle2 size={24} />
         </div>
@@ -253,7 +254,7 @@ export function CandidatePanel({ candidate, courseId, runId, supplementOps, onSu
                 <div
                   key={code}
                   className="reveal-hover"
-                  style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', borderRadius: '10px', background: 'rgba(0,0,0,0.02)', flexWrap: 'wrap' }}
+                  style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', borderRadius: '10px', background: 'var(--fill)', flexWrap: 'wrap' }}
                 >
                   <div style={{ flex: '1 1 260px', minWidth: 0 }}>
                     <div style={{ fontSize: '0.875rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pointLabels.get(code) || code}</div>
@@ -359,7 +360,7 @@ export function CandidatePanel({ candidate, courseId, runId, supplementOps, onSu
                           display: 'flex', flexDirection: 'column', gap: '4px',
                           padding: '10px 12px', borderRadius: '10px', cursor: 'pointer',
                           border: selected ? '2px solid var(--accent)' : '1px solid var(--border)',
-                          background: selected ? 'var(--accent-subtle)' : (reason ? 'rgba(52,199,89,0.06)' : 'var(--surface)'),
+                          background: selected ? 'var(--accent-subtle)' : (reason ? 'var(--success-subtle)' : 'var(--surface)'),
                         }}
                       >
                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
@@ -484,7 +485,7 @@ const CandidateTreePreview = memo(function CandidateTreePreview({ topics, covera
               onClick={() => toggleTopic(topic.code)}
             >
               <span style={{ color: 'var(--text-tertiary)' }}>{isExp ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
-              <span style={{ color: '#5856d6' }}><Folder size={14} /></span>
+              <span style={{ color: 'var(--purple)' }}><Folder size={14} /></span>
               <span style={{ fontWeight: 600, fontSize: '0.875rem' }}>{topic.name || topic.code}</span>
               <span style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>({topic.code})</span>
               {topic.status !== 'active' && <Badge variant="warning">需审阅</Badge>}
@@ -525,7 +526,7 @@ const CandidateTreePreview = memo(function CandidateTreePreview({ topics, covera
                               key={card.name + ci}
                               style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', borderRadius: '8px' }}
                             >
-                              <span style={{ color: card.status === 'active' ? '#34c759' : '#ff9500' }}>
+                              <span style={{ color: card.status === 'active' ? 'var(--success)' : 'var(--warning)' }}>
                                 <Circle size={8} fill="currentColor" />
                               </span>
                               <span style={{ fontSize: '0.875rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>{card.name}</span>

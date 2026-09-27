@@ -77,7 +77,7 @@ export default function CourseSpacePage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <div style={{
             width: 38, height: 38, borderRadius: '11px',
-            background: 'linear-gradient(135deg, var(--accent), #5856d6)',
+            background: 'linear-gradient(135deg, var(--accent), var(--info))',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: 'white',
           }}>

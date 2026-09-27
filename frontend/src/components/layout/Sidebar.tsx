@@ -19,14 +19,16 @@ interface Props {
   onLogout: () => void;
 }
 
-const ISLAND_BG = 'rgba(255, 255, 255, 0.95)';
-const ISLAND_SHADOW = '0 12px 40px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04)';
-const HAIRLINE = '1px solid rgba(0, 0, 0, 0.06)';
+/* 侧栏色板全部走令牌：曾经的 Tailwind 系（#2563eb/#1f2937/#6b7280）
+   与主站令牌（学海蓝体系）两套并存，颜色统一后一律引用设计令牌 */
+const ISLAND_BG = 'var(--sidebar-glass)';
+const ISLAND_SHADOW = 'var(--shadow-2)';
+const HAIRLINE = '1px solid var(--line)';
 const RADIUS = 20;
-const TEXT_MAIN = '#1f2937';
-const TEXT_SECONDARY = '#6b7280';
-const ACCENT = '#2563eb';
-const ACCENT_BG = 'rgba(37, 99, 235, 0.08)';
+const TEXT_MAIN = 'var(--text)';
+const TEXT_SECONDARY = 'var(--text-secondary)';
+const ACCENT = 'var(--accent)';
+const ACCENT_BG = 'var(--accent-subtle)';
 
 export function Sidebar({ onLogout }: Props) {
   const { courseId } = useParams<{ courseId: string }>();
@@ -110,7 +112,7 @@ export function Sidebar({ onLogout }: Props) {
             color: TEXT_SECONDARY,
             transition: 'background 150ms ease',
           }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(0,0,0,0.04)')}
+          onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--fill)')}
           onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
         >
           {collapsed ? <PanelLeft size={18} /> : <PanelLeftClose size={18} />}
@@ -143,13 +145,13 @@ export function Sidebar({ onLogout }: Props) {
               color: ACCENT,
               transition: 'background 150ms ease',
             }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(37,99,235,0.14)')}
+            onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--accent-soft)')}
             onMouseLeave={(e) => (e.currentTarget.style.background = ACCENT_BG)}
           >
             <ArrowLeft size={18} />
             {!collapsed && (
               <div style={{ overflow: 'hidden', textAlign: 'left', minWidth: 0 }}>
-                <div style={{ fontSize: 11, color: '#3b82f6', lineHeight: 1.2 }}>
+                <div style={{ fontSize: 11, color: 'var(--accent-text)', lineHeight: 1.2 }}>
                   返回课程空间
                 </div>
                 <div
@@ -227,7 +229,7 @@ export function Sidebar({ onLogout }: Props) {
             fontWeight: 500,
             transition: 'background 150ms ease',
           }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(0,0,0,0.04)')}
+          onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--fill)')}
           onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
         >
           <LogOut size={18} />

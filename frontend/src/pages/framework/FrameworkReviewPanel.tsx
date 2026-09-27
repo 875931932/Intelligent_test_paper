@@ -124,8 +124,8 @@ export function FrameworkReviewPanel({ courseId }: { courseId: string }) {
                 display: 'inline-flex', alignItems: 'center', gap: '5px',
                 padding: '3px 10px', borderRadius: '999px',
                 fontSize: '0.78rem', fontWeight: 600,
-                background: isReady ? 'rgba(52,199,89,0.12)' : 'var(--warning-subtle)',
-                color: isReady ? 'var(--success, #34c759)' : 'var(--warning)',
+                background: isReady ? 'var(--success-subtle)' : 'var(--warning-subtle)',
+                color: isReady ? 'var(--success)' : 'var(--warning)',
               }}
             >
               {isReady ? <CheckCircle2 size={13} /> : <Wrench size={13} />}

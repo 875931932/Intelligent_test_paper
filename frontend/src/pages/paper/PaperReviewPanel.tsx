@@ -72,7 +72,7 @@ export function PaperReviewPanel({
     <div
       style={{
         padding: '16px 24px 16px 22px',
-        borderLeft: '3px solid #5856d6',
+        borderLeft: '3px solid var(--purple)',
         display: 'flex',
         flexDirection: 'column',
         gap: '12px',
@@ -100,7 +100,7 @@ export function PaperReviewPanel({
 
           {/* 总评 */}
           <p style={{ fontSize: '0.84rem', color: 'var(--text-secondary)', lineHeight: 1.7, margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-            <span style={{ fontWeight: 600, color: '#5856d6' }}>总评：</span>
+            <span style={{ fontWeight: 600, color: 'var(--purple)' }}>总评：</span>
             {toText(result.summary)}
           </p>
 

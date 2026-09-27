@@ -1,64 +1,101 @@
 /* ============================================================
-   Design System Tokens - Liquid Glass (明亮苹果风)
+   Design System Tokens — 学海蓝（Academic Deep）
+   浅冷灰画布 + 深调四色：学海蓝 / 松绿 / 琥珀 / 绯红（AI 紫为辅）
+   饱和但不刺眼；小字号文字一律用 *-ink 深值保证对比度。
+   命名承诺：旧变量名全部保留，只精修取值；新增 line/shadow/fill 三族。
    ============================================================ */
 
 :root {
-  /* ── 背景层 ── */
-  --bg: #f2f2f7;
+  /* ── 背景层（同一蓝灰家族，严禁混入暖灰） ── */
+  --bg: #e8ecf4;
   /* 主内容区页面底色（Layout 主区），sticky 条的不透明底必须与它同源 */
-  --page-bg: #f4f6f9;
+  --page-bg: #eff2f8;
   --bg-secondary: #ffffff;
-  --surface: rgba(255, 255, 255, 0.72);
+  /* 内容面板一律实底：半透明玻璃让每张卡都透出下一层，叠卡时层次糊成一片 */
+  --surface: #ffffff;
   --surface-solid: #ffffff;
-  --surface-elevated: rgba(255, 255, 255, 0.88);
-  --surface-glass: rgba(255, 255, 255, 0.48);
+  --surface-elevated: rgba(255, 255, 255, 0.96);
+  --surface-glass: rgba(255, 255, 255, 0.55);
   --glass: rgba(255, 255, 255, 0.62);
   --glass-border: rgba(255, 255, 255, 0.6);
-  --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04);
+  --glass-shadow: var(--shadow-2);
   --glass-blur: blur(20px) saturate(180%);
+
+  /* ── 发丝线（所有边框的唯一来源；行内样式也引用这里，禁止再写裸 rgba 黑） ── */
+  --line-soft: rgba(19, 26, 38, 0.05);
+  --line: rgba(19, 26, 38, 0.09);
+  --line-strong: rgba(19, 26, 38, 0.16);
+  /* 兼容行内 var(--border, …) 写法的历史引用 */
+  --border: rgba(19, 26, 38, 0.11);
+
+  /* ── 填充（浅底分组 / hover 面：同色相同透明度，替代散落的 rgba(0,0,0,x)） ── */
+  --fill: rgba(19, 32, 54, 0.04);
+  --fill-strong: rgba(19, 32, 54, 0.07);
+
+  /* ── 色相化阴影（单一光源：自上而下；蓝墨而非纯黑，压在冷灰底上不发脏） ── */
+  --shadow-1: 0 1px 2px rgba(15, 27, 50, 0.05), 0 1px 3px rgba(15, 27, 50, 0.06);
+  --shadow-2: 0 4px 14px rgba(15, 27, 50, 0.07), 0 2px 5px rgba(15, 27, 50, 0.05);
+  --shadow-3: 0 18px 44px rgba(15, 27, 50, 0.13), 0 6px 14px rgba(15, 27, 50, 0.07);
 
   /* ── 悬浮岛侧栏 ── */
   --sidebar-width: 260px;
   --sidebar-collapsed: 72px;
   --sidebar-offset: 12px;
-  --sidebar-radius: 20px;
-  --sidebar-glass: rgba(255, 255, 255, 0.76);
+  --sidebar-radius: 18px;
+  --sidebar-glass: rgba(255, 255, 255, 0.88);
   --sidebar-blur: blur(24px) saturate(1.8);
-  --sidebar-shadow: 0 4px 24px rgba(0, 0, 0, 0.06), 0 1px 4px rgba(0, 0, 0, 0.04), inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  --sidebar-shadow: var(--shadow-2);
   --topbar-height: 52px;
   /* 主内容区最大宽度（Layout 主区） */
   --content-max-width: 1400px;
 
-  /* ── 文字 ── */
-  --text: #1d1d1f;
-  --text-secondary: #6e6e73;
-  --text-tertiary: #8e8e93;
+  /* ── 文字（蓝墨中性，与画布同色相） ── */
+  --text: #131a26;
+  --text-secondary: #4c5668;
+  --text-tertiary: #7c8698;
   --text-on-accent: #ffffff;
 
-  /* ── 强调色 ── */
-  --accent: #0071e3;
-  --accent-hover: #0077ed;
-  --accent-subtle: rgba(0, 113, 227, 0.12);
-  --accent-text: #0071e3;
-  --accent-glass: rgba(0, 113, 227, 0.2);
+  /* ── 学海蓝（主色：主按钮 / 链接 / 激活态 / 蓝色分类） ── */
+  --accent: #3b7ddd;
+  --accent-hover: #2f6cc7;
+  --accent-subtle: rgba(59, 125, 221, 0.1);
+  --accent-soft: rgba(59, 125, 221, 0.17);
+  --accent-faint: rgba(59, 125, 221, 0.05);
+  --accent-text: #2a63b8;
+  --accent-glass: rgba(59, 125, 221, 0.2);
 
-  /* ── 状态色 ── */
-  --success: #34c759;
-  --success-subtle: rgba(52, 199, 89, 0.12);
-  --warning: #ff9500;
-  --warning-subtle: rgba(255, 149, 0, 0.12);
-  --error: #ff3b30;
-  --error-subtle: rgba(255, 59, 48, 0.12);
-  --info: #5ac8fa;
-  --info-subtle: rgba(90, 200, 250, 0.12);
-  --purple: #af52de;
-  --purple-subtle: rgba(175, 82, 222, 0.12);
+  /* ── 松绿（正确 / 已发布 / 已落地 / 绿色分类） ── */
+  --success: #2fae5c;
+  --success-subtle: rgba(47, 174, 92, 0.12);
+  --success-ink: #1f8b47;
+
+  /* ── 琥珀（提醒 / 需审阅 / 橙色分类） ── */
+  --warning: #e8930c;
+  --warning-subtle: rgba(232, 147, 12, 0.13);
+  --warning-ink: #a56505;
+  --warning-line: rgba(232, 147, 12, 0.35);
+
+  /* ── 绯红（错误 / 危险 / 未落地 / 红色分类） ── */
+  --error: #e5544b;
+  --error-subtle: rgba(229, 84, 75, 0.12);
+  --error-ink: #bb3a33;
+
+  /* ── 湖蓝（信息态：与主蓝拉开一档，偏青） ── */
+  --info: #1f8ab0;
+  --info-subtle: rgba(31, 138, 176, 0.12);
+  --info-ink: #156a8a;
+
+  /* ── AI 紫（辅色：AI 面板身份色。历史 #7c5cff/#5856d6/#af52de 已并轨于此） ── */
+  --purple: #6e56cf;
+  --purple-subtle: rgba(110, 86, 207, 0.12);
+  --purple-soft: rgba(110, 86, 207, 0.3);
+  --purple-ink: #5640b0;
 
   /* ── 相关性色 ── */
-  --relevance-direct: #34c759;
-  --relevance-supporting: #ff9500;
-  --relevance-background: #8e8e93;
-  --relevance-outofscope: #c7c7cc;
+  --relevance-direct: #2fae5c;
+  --relevance-supporting: #e8930c;
+  --relevance-background: #7c8698;
+  --relevance-outofscope: #c4cad4;
 
   /* ── 间距 ── */
   --space-xs: 4px;
@@ -69,20 +106,20 @@
   --space-2xl: 48px;
   --space-3xl: 64px;
 
-  /* ── 圆角 ── */
+  /* ── 圆角（容器软、内部紧、控件居中；行内裸值向这里靠拢） ── */
   --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 20px;
-  --radius-2xl: 24px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 18px;
+  --radius-2xl: 22px;
   --radius-full: 9999px;
 
   /* ── 字体 ── */
-  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
 
   /* ── 骨架屏 ── */
-  --skeleton-base: rgba(0, 0, 0, 0.06);
-  --skeleton-shine: rgba(0, 0, 0, 0.04);
+  --skeleton-base: rgba(19, 32, 54, 0.06);
+  --skeleton-shine: rgba(19, 32, 54, 0.03);
   --skeleton-radius: var(--radius-md);
 
   /* ── 动画缓动 ── */

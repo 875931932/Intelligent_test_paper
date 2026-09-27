@@ -89,8 +89,8 @@ export function ProgressPanel({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          background: 'rgba(255,59,48,0.1)',
-          color: '#ff3b30',
+          background: 'var(--error-subtle)',
+          color: 'var(--error)',
         }}>
           <AlertCircle size={22} />
         </span>
@@ -128,8 +128,8 @@ export function ProgressPanel({
           display: 'flex',
           alignItems: 'center',
           justifyContent: 'center',
-          background: 'rgba(52,199,89,0.1)',
-          color: '#34c759',
+          background: 'var(--success-subtle)',
+          color: 'var(--success)',
         }}>
           <CheckCircle2 size={22} />
         </span>
@@ -214,9 +214,9 @@ export function ProgressPanel({
         <p
           style={{
             fontSize: '0.78rem',
-            color: '#b36b00',
-            background: 'rgba(255,149,0,0.08)',
-            border: '1px solid rgba(255,149,0,0.25)',
+            color: 'var(--warning-ink)',
+            background: 'var(--warning-subtle)',
+            border: '1px solid var(--warning-line)',
             borderRadius: '8px',
             padding: '8px 14px',
             maxWidth: '520px',

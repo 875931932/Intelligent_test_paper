@@ -148,7 +148,7 @@ export function AiRevisePanel({
     <div
       style={{
         padding: '16px 24px 16px 22px',
-        borderLeft: '3px solid var(--purple, #7c5cff)',
+        borderLeft: '3px solid var(--purple)',
         display: 'flex',
         flexDirection: 'column',
         gap: '12px',
@@ -176,7 +176,7 @@ export function AiRevisePanel({
           </div>
           {result.change_summary && (
             <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.7, margin: 0 }}>
-              <span style={{ fontWeight: 600, color: 'var(--purple, #7c5cff)' }}>AI 说明：</span>
+              <span style={{ fontWeight: 600, color: 'var(--purple)' }}>AI 说明：</span>
               {result.change_summary}
             </p>
           )}
@@ -193,7 +193,7 @@ export function AiRevisePanel({
                     padding: '6px 10px', borderRadius: 6, fontSize: '0.82rem', lineHeight: 1.65,
                     background: 'var(--error-subtle, rgba(220,38,38,0.06))',
                     color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                    textDecoration: 'line-through', textDecorationColor: 'rgba(220,38,38,0.4)',
+                    textDecoration: 'line-through', textDecorationColor: 'var(--error-ink)',
                   }}>
                     {toText(result.current[k])}
                   </div>
@@ -280,8 +280,8 @@ export function AiRevisePanel({
               onClick={() => void submit(p)}
               style={{
                 padding: '3px 10px', borderRadius: 999, fontSize: '0.75rem', fontWeight: 600,
-                background: 'rgba(124,92,255,0.08)', color: 'var(--purple, #7c5cff)',
-                border: '1px solid rgba(124,92,255,0.25)', cursor: running ? 'default' : 'pointer',
+                background: 'var(--purple-subtle)', color: 'var(--purple)',
+                border: '1px solid var(--purple-soft)', cursor: running ? 'default' : 'pointer',
                 opacity: running ? 0.5 : 1,
               }}
             >

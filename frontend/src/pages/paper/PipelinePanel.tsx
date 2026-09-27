@@ -18,9 +18,9 @@ import { renderGenerate } from './stage/StageGeneration';
 const STAGE_ORDER: StageKey[] = ['blueprint', 'contract', 'generate'];
 
 const STAGE_META: Record<StageKey, { label: string; icon: ReactNode; color: string }> = {
-  blueprint: { label: '蓝图', icon: <ClipboardList size={16} />, color: '#0071e3' },
-  contract:  { label: '合同', icon: <FileText size={16} />, color: '#5856d6' },
-  generate:  { label: '生成', icon: <PlayCircle size={16} />, color: '#34c759' },
+  blueprint: { label: '蓝图', icon: <ClipboardList size={16} />, color: '#3b7ddd' },
+  contract:  { label: '合同', icon: <FileText size={16} />, color: '#6e56cf' },
+  generate:  { label: '生成', icon: <PlayCircle size={16} />, color: '#2fae5c' },
 };
 
 const STATUS_TO_STAGE: Record<string, StageKey> = {

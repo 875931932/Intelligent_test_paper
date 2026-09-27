@@ -129,7 +129,7 @@ export function renderBlueprint({
                   {typeDist.map(([t, v]) => (
                     <span key={t} style={{
                       padding: '4px 10px', borderRadius: '999px', fontSize: '0.78rem', fontWeight: 600,
-                      background: 'rgba(0,113,227,0.08)', color: '#0071e3',
+                      background: 'var(--accent-subtle)', color: 'var(--accent)',
                     }}>
                       {qlabel(t)} {formatScore(v.score)}分·{v.count}题
                     </span>

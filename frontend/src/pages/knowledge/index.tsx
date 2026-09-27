@@ -438,7 +438,7 @@ export default function KnowledgePage() {
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <h1 style={{ fontSize: '1.75rem', fontWeight: 700, letterSpacing: '-0.03em' }}>知识目录</h1>
+            <h1 className="page-title">知识目录</h1>
             {buildState === 'published' && <Badge variant="success">已发布</Badge>}
             {buildState === 'building' && <Badge variant="warning">构建中</Badge>}
             {buildState === 'candidate' && <Badge variant="info">待确认</Badge>}
@@ -465,19 +465,19 @@ export default function KnowledgePage() {
       {/* Stats */}
       {stats.totalCards > 0 && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-          <StatsBadge icon={<BookOpen size={14} />} color="#0071e3" value={stats.totalCards} label="知识卡" />
-          <StatsBadge icon={<Target size={14} />} color="#ff9500" value={stats.totalPoints} label="考点" />
-          <StatsBadge icon={<GitBranch size={14} />} color="#af52de" value={stats.totalUnits} label="考核单元" />
-          <StatsBadge icon={<CheckCircle2 size={14} />} color="#34c759" value={stats.groundedCards} label="已落地" />
+          <StatsBadge icon={<BookOpen size={14} />} color="var(--accent)" value={stats.totalCards} label="知识卡" />
+          <StatsBadge icon={<Target size={14} />} color="var(--warning)" value={stats.totalPoints} label="考点" />
+          <StatsBadge icon={<GitBranch size={14} />} color="var(--purple)" value={stats.totalUnits} label="考核单元" />
+          <StatsBadge icon={<CheckCircle2 size={14} />} color="var(--success)" value={stats.groundedCards} label="已落地" />
           {stats.ungroundedCards > 0 && (
-            <StatsBadge icon={<AlertTriangle size={14} />} color="#ff3b30" value={stats.ungroundedCards} label="未落地" />
+            <StatsBadge icon={<AlertTriangle size={14} />} color="var(--error)" value={stats.ungroundedCards} label="未落地" />
           )}
         </div>
       )}
 
       {/* Toolbar */}
       {stats.totalCards > 0 && (
-        <div className="glass-card" style={{ padding: '14px 16px', display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
           <div style={{ position: 'relative', flex: '1 1 200px', maxWidth: '320px' }}>
             <Search size={16} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-tertiary)' }} />
             <input
@@ -485,7 +485,7 @@ export default function KnowledgePage() {
               placeholder="搜索知识卡..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              style={{ width: '100%', paddingLeft: '36px', paddingRight: '12px', height: '36px', fontSize: '0.875rem', borderRadius: '10px', border: '1px solid rgba(0,0,0,0.06)', background: 'rgba(0,0,0,0.03)', outline: 'none' }}
+              style={{ width: '100%', paddingLeft: '36px', paddingRight: '12px', height: '36px', fontSize: '0.875rem', borderRadius: '10px', border: '1px solid var(--line)', background: 'var(--fill)', outline: 'none' }}
             />
           </div>
           <Select
@@ -505,7 +505,7 @@ export default function KnowledgePage() {
             style={{ width: 'auto', minWidth: '120px' }}
           />
           <div style={{ flex: 1 }} />
-          <div style={{ display: 'flex', alignItems: 'center', background: 'rgba(0,0,0,0.04)', borderRadius: '10px', padding: '3px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', background: 'var(--fill-strong)', borderRadius: '10px', padding: '3px' }}>
             <ViewToggle mode="tree" current={viewMode} onChange={setViewMode} label="树形" icon={TreePine} />
             <ViewToggle mode="graph" current={viewMode} onChange={setViewMode} label="图谱" icon={Network} />
           </div>

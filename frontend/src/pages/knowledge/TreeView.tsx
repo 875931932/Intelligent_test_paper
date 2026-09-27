@@ -41,7 +41,7 @@ export const TreeView = memo(function TreeView(props: {
               onClick={() => togglePoint(point.id)}
             >
               <span style={{ color: 'var(--text-tertiary)' }}>{isExp ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
-              <span style={{ color: '#0071e3' }}><Target size={14} /></span>
+              <span style={{ color: 'var(--accent)' }}><Target size={14} /></span>
               <span style={{ fontWeight: 600, fontSize: '0.875rem' }}>{point.title || point.code}</span>
               <span style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>({point.code})</span>
               <span style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>{formatPercent(point.weight_value)}</span>
@@ -63,7 +63,7 @@ export const TreeView = memo(function TreeView(props: {
                         <span style={{ color: 'var(--text-tertiary)' }}>{isUExp ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
                         <span style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>{unit.code}</span>
                         <span style={{ fontSize: '0.875rem', fontWeight: 500 }}>{unit.title}</span>
-                        <span style={{ fontSize: '0.8125rem', marginLeft: 'auto', color: ungrounded ? '#ff3b30' : '#34c759' }}>
+                        <span style={{ fontSize: '0.8125rem', marginLeft: 'auto', color: ungrounded ? 'var(--error)' : 'var(--success)' }}>
                           {unitCards.length}卡
                         </span>
                       </div>
@@ -75,7 +75,7 @@ export const TreeView = memo(function TreeView(props: {
                               style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', borderRadius: '8px', cursor: 'pointer', transition: 'background 0.2s' }}
                               onClick={() => onCardClick(card.id)}
                             >
-                              <span style={{ color: card.grounded ? '#34c759' : '#ff3b30' }}>
+                              <span style={{ color: card.grounded ? 'var(--success)' : 'var(--error)' }}>
                                 <Circle size={8} fill="currentColor" />
                               </span>
                               <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: '2px' }}>

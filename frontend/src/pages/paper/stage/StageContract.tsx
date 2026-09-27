@@ -148,7 +148,7 @@ export function renderContract({
         )}
         {conflicts.length > 0 && (
           <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'rgba(255,59,48,0.06)', border: '1px solid rgba(255,59,48,0.25)', fontSize: '0.8rem' }}>
-            <div style={{ fontWeight: 600, marginBottom: '6px', color: '#ff3b30' }}>合同冲突（{conflicts.length}）</div>
+            <div style={{ fontWeight: 600, marginBottom: '6px', color: 'var(--error)' }}>合同冲突（{conflicts.length}）</div>
             <ul style={{ margin: 0, paddingLeft: '18px', color: 'var(--text-secondary)' }}>
               {conflicts.map((c, i) => (
                 <li key={i}>{c.exam_point_id ? examPointLabel(maps, c.exam_point_id, c.exam_point_title) + '：' : ''}{c.message}</li>
@@ -158,7 +158,7 @@ export function renderContract({
         )}
         {backfilled.length > 0 && (
           <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'rgba(0,113,227,0.06)', border: '1px solid rgba(0,113,227,0.2)', fontSize: '0.8rem' }}>
-            <div style={{ fontWeight: 600, marginBottom: '6px', color: '#0071e3' }}>同章回补（{backfilled.length}）</div>
+            <div style={{ fontWeight: 600, marginBottom: '6px', color: 'var(--accent)' }}>同章回补（{backfilled.length}）</div>
             <ul style={{ margin: 0, paddingLeft: '18px', color: 'var(--text-secondary)' }}>
               {backfilled.map((b) => (
                 <li key={b.item_index}>第 {b.item_index} 题：{examPointLabel(maps, b.from_exam_point_id, b.from_exam_point_title)} → {examPointLabel(maps, b.to_exam_point_id, b.to_exam_point_title)}（原考点答案域容量不足，改派同章富余考点）</li>

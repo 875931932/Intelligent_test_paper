@@ -183,7 +183,7 @@ export default function PaperPage() {
       <div className="page-enter">
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
           <div>
-            <h1 style={{ fontSize: '1.75rem', fontWeight: 700, letterSpacing: '-0.03em', marginBottom: '6px' }}>试卷</h1>
+            <h1 className="page-title" style={{ marginBottom: '6px' }}>试卷</h1>
             <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)' }}>
               出卷流水线（蓝图 → 合同 → 生成）与试卷的查看、审核、导出，都在同一个项目里完成
             </p>
@@ -216,7 +216,7 @@ export default function PaperPage() {
                       width: 42, height: 42, borderRadius: '12px',
                       background: 'rgba(0,113,227,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center',
                     }}>
-                      <ClipboardList size={20} style={{ color: '#0071e3' }} />
+                      <ClipboardList size={20} style={{ color: 'var(--accent)' }} />
                     </div>
                     <div>
                       <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>{p.name}</div>
@@ -288,10 +288,12 @@ export default function PaperPage() {
         <ArrowLeft size={16} /> 返回项目列表
       </button>
 
-      <div className="glass-card" style={{ padding: '24px' }}>
+      {/* 页头（标题/状态/页签）不再套卡：面板只属于其下的内容区，
+          头上再压一张卡就成了「卡叠卡」的重复 */}
+      <div>
         <div className="card-head">
           <div>
-            <h1 style={{ fontWeight: 700, fontSize: '1.3rem', letterSpacing: '-0.02em' }}>{sp.name}</h1>
+            <h1 className="page-title">{sp.name}</h1>
             <p style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)', marginTop: '4px' }}>
               {sp.total_score ? `${sp.total_score} 分 · ${sp.item_count ?? 0} 题` : '尚未生成试卷'}
               {' · 流水线：'}{pipelineStage}
@@ -306,7 +308,7 @@ export default function PaperPage() {
         </div>
 
         {/* 页签：出卷流水线 / 试卷 */}
-        <div style={{ display: 'flex', gap: '4px', marginTop: '16px', borderBottom: '1px solid rgba(0,0,0,0.07)' }}>
+        <div style={{ display: 'flex', gap: '4px', marginTop: '16px', borderBottom: '1px solid var(--line)' }}>
           {TABS.map((t) => (
             <button
               key={t.key}

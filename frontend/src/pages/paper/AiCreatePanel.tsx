@@ -99,7 +99,7 @@ export function AiCreatePanel({
   };
 
   const rootStyle: CSSProperties = {
-    borderLeft: '3px solid var(--purple, #7c5cff)',
+    borderLeft: '3px solid var(--purple)',
     display: 'flex',
     flexDirection: 'column',
     gap: '12px',
@@ -118,7 +118,7 @@ export function AiCreatePanel({
         textAlign: 'left', color: 'var(--text)',
       }}
     >
-      <Sparkles size={16} style={{ color: 'var(--purple, #7c5cff)', flexShrink: 0 }} />
+      <Sparkles size={16} style={{ color: 'var(--purple)', flexShrink: 0 }} />
       <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>AI 生成题目</span>
       <Badge variant="purple">提案需确认</Badge>
       {running && <Spinner size="sm" />}
@@ -168,7 +168,7 @@ export function AiCreatePanel({
           </div>
           {result.change_summary && (
             <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.7, margin: 0 }}>
-              <span style={{ fontWeight: 600, color: 'var(--purple, #7c5cff)' }}>AI 说明：</span>
+              <span style={{ fontWeight: 600, color: 'var(--purple)' }}>AI 说明：</span>
               {result.change_summary}
             </p>
           )}
@@ -252,8 +252,8 @@ export function AiCreatePanel({
               onClick={() => setInstruction(preset)}
               style={{
                 padding: '3px 10px', borderRadius: 999, fontSize: '0.75rem', fontWeight: 600,
-                background: 'rgba(124,92,255,0.08)', color: 'var(--purple, #7c5cff)',
-                border: '1px solid rgba(124,92,255,0.25)', cursor: running ? 'default' : 'pointer',
+                background: 'var(--purple-subtle)', color: 'var(--purple)',
+                border: '1px solid var(--purple-soft)', cursor: running ? 'default' : 'pointer',
                 opacity: running ? 0.5 : 1,
               }}
             >

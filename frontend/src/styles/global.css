@@ -1,5 +1,5 @@
 /* ============================================================
-   Global Styles - Liquid Glass Theme
+   Global Styles — 学海蓝（Academic Deep）主题
    ============================================================ */
 
 @import './design-tokens.css';
@@ -26,32 +26,32 @@ body {
   position: relative;
 }
 
-/* ── 液态玻璃环境光斑（固定背景装饰，静态渲染） ──
-   不要给这两个光斑加动画：每帧位移会让页面上所有 backdrop-filter 毛玻璃
-   （侧边栏 + 全部 glass-card）每帧重新采样模糊，核显上直接拖垮全局帧率。
+/* ── 背景装饰：一抹学海蓝光晕 + 纸纹颗粒（均为静态渲染） ──
+   不要给它们加动画：每帧位移会让页面上所有 backdrop-filter 毛玻璃
+   （侧边栏 + 浮层）每帧重新采样模糊，核显上直接拖垮全局帧率。
    静态渐变浏览器只光栅化一次，视觉差异可忽略。 */
-body::before,
-body::after {
+body::before {
   content: '';
   position: fixed;
   z-index: 0;
   pointer-events: none;
+  width: 720px;
+  height: 720px;
+  top: -240px;
+  right: -160px;
   border-radius: 50%;
+  background: radial-gradient(circle, rgba(59, 125, 221, 0.1), transparent 70%);
   filter: blur(90px);
 }
-body::before {
-  width: 480px;
-  height: 480px;
-  top: -120px;
-  right: -80px;
-  background: radial-gradient(circle, rgba(0, 113, 227, 0.18), transparent 70%);
-}
+/* 纸纹：教育/试卷的纸质触感；0.035 只给质感不给噪点，位于 #root 之下 */
 body::after {
-  width: 420px;
-  height: 420px;
-  bottom: -140px;
-  left: -60px;
-  background: radial-gradient(circle, rgba(175, 82, 222, 0.14), transparent 70%);
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
 #root {
@@ -60,7 +60,7 @@ body::after {
 }
 
 /* ═══════════════════════════════════════════════
-   Liquid Glass Effects
+   Surfaces（面板与悬浮层）
    ═══════════════════════════════════════════════ */
 
 .glass {
@@ -72,12 +72,14 @@ body::after {
 }
 
 /* 静态容器不挂 hover 动效：上浮会暗示「可点击」，是虚假可点线索；
-   交互动效只给显式声明的 .card-hover（课程卡 / 统计卡等真可点卡） */
+   交互动效只给显式声明的 .card-hover（课程卡 / 统计卡等真可点卡）。
+   面板=实底白 + 发丝线 + 极浅阴影：半透明玻璃在叠卡时层次糊成一片，
+   深调四色需要一块干净画布衬托 */
 .glass-card {
-  background: var(--surface);
-  border: 1px solid rgba(255, 255, 255, 0.5);
+  background: var(--surface-solid);
+  border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  box-shadow: var(--glass-shadow);
+  box-shadow: var(--shadow-1);
 }
 
 /* 可点击卡片：全站唯一允许 hover 上浮的卡 */
@@ -86,8 +88,8 @@ body::after {
               box-shadow 0.3s var(--ease-out-expo);
 }
 .card-hover:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.1), 0 4px 12px rgba(0, 0, 0, 0.04);
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-2);
 }
 .card-hover:active {
   transform: translateY(0) scale(0.99);
@@ -95,21 +97,21 @@ body::after {
 
 .glass-panel {
   background: var(--surface-elevated);
-  border: 1px solid rgba(255, 255, 255, 0.5);
+  border: 1px solid var(--line);
   border-radius: var(--radius-xl);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.05), 0 1px 3px rgba(0, 0, 0, 0.04);
+  box-shadow: var(--shadow-2);
 }
 
 /* ═══════════════════════════════════════════════
-   一层玻璃：卡内分组降级 + 结构工具类（工作流 E）
+   卡内分组降级 + 结构工具类（工作流 E）
    ═══════════════════════════════════════════════ */
 
 /* 卡内从属分组：浅底 + 1px 分隔线 + 10px 圆角，无阴影无独立 hover——
    视觉降级一档表达从属关系，替代「玻璃卡里再嵌玻璃卡」 */
 .sub-section {
-  background: rgba(0, 0, 0, 0.02);
-  border: 1px solid rgba(0, 0, 0, 0.06);
-  border-radius: 10px;
+  background: var(--fill);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
 }
 /* 嵌套的可点分区（如文件夹按钮）：sub-section 本身无 hover，
    可点的必须给反馈，否则用户发现不了它能点——卡内 hover 例外口子 */
@@ -118,7 +120,7 @@ body::after {
   transition: background 0.2s var(--ease-out-expo);
 }
 .sub-section.is-clickable:hover {
-  background: rgba(0, 0, 0, 0.045);
+  background: var(--fill-strong);
 }
 
 /* 高频结构工具类：替代同款 inline style（存量 inline 不一次性改写，
@@ -171,7 +173,7 @@ body::after {
   background: var(--sidebar-glass);
   backdrop-filter: blur(10px) saturate(1.2);
   -webkit-backdrop-filter: blur(10px) saturate(1.2);
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  border: 1px solid var(--line);
   border-radius: var(--sidebar-radius);
   box-shadow: var(--sidebar-shadow);
   display: flex;
@@ -289,11 +291,11 @@ body::after {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.15);
+  background: rgba(19, 26, 38, 0.2);
   border-radius: var(--radius-full);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.25);
+  background: rgba(19, 26, 38, 0.32);
 }
 
 /* ═══════════════════════════════════════════════
@@ -303,18 +305,18 @@ body::after {
 .input-field {
   width: 100%;
   padding: 10px 14px;
-  border: 1.5px solid rgba(0, 0, 0, 0.08);
+  border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--bg-secondary);
   font-size: 0.875rem;
   color: var(--text);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
   outline: none;
 }
+/* 聚焦不位移：输入框上浮会让整行表单抖动，改为原地色环提示 */
 .input-field:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-subtle), 0 2px 8px rgba(0, 113, 227, 0.08);
-  transform: translateY(-1px);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .input-field::placeholder {
   color: var(--text-tertiary);
@@ -347,24 +349,24 @@ body::after {
 .btn-primary {
   background: var(--accent);
   color: var(--text-on-accent);
+  box-shadow: 0 1px 2px rgba(59, 125, 221, 0.28);
 }
 .btn-primary:hover:not(:disabled) {
   background: var(--accent-hover);
-  transform: translateY(-2px);
-  box-shadow: 0 4px 16px rgba(0, 113, 227, 0.3);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(59, 125, 221, 0.3);
 }
 .btn-primary:active:not(:disabled) {
   transform: translateY(0) scale(0.98);
-  box-shadow: 0 2px 8px rgba(0, 113, 227, 0.2);
+  box-shadow: 0 1px 3px rgba(59, 125, 221, 0.24);
 }
 .btn-secondary {
   background: var(--surface-solid);
   color: var(--text);
-  border: 1.5px solid rgba(0, 0, 0, 0.08);
+  border: 1px solid var(--line);
 }
 .btn-secondary:hover:not(:disabled) {
-  background: rgba(0, 0, 0, 0.04);
-  transform: translateY(-1px);
+  background: var(--fill);
 }
 .btn-secondary:active:not(:disabled) {
   transform: translateY(0) scale(0.98);
@@ -374,15 +376,15 @@ body::after {
   color: white;
 }
 .btn-danger:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 4px 16px rgba(255, 59, 48, 0.3);
+  background: var(--error-ink);
+  box-shadow: 0 4px 12px rgba(229, 84, 75, 0.3);
 }
 .btn-ghost {
   background: transparent;
   color: var(--text-secondary);
 }
 .btn-ghost:hover:not(:disabled) {
-  background: rgba(0, 0, 0, 0.05);
+  background: var(--fill-strong);
   color: var(--text);
 }
 .btn-sm {
@@ -400,39 +402,41 @@ body::after {
    Badges
    ═══════════════════════════════════════════════ */
 
+/* 状态签：6px 方圆小签（不再用胶囊），深值 *-ink 文字压在同色浅底上 */
 .badge {
   display: inline-flex;
   align-items: center;
-  padding: 3px 10px;
-  border-radius: var(--radius-full);
+  padding: 3px 9px;
+  border-radius: 6px;
   font-size: 0.75rem;
   font-weight: 500;
   line-height: 1.4;
+  letter-spacing: 0.01em;
   transition: transform 0.2s ease;
 }
 .badge-default {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--fill-strong);
   color: var(--text-secondary);
 }
 .badge-success {
   background: var(--success-subtle);
-  color: #248a3d;
+  color: var(--success-ink);
 }
 .badge-warning {
   background: var(--warning-subtle);
-  color: #b36b00;
+  color: var(--warning-ink);
 }
 .badge-error {
   background: var(--error-subtle);
-  color: #d70015;
+  color: var(--error-ink);
 }
 .badge-info {
   background: var(--info-subtle);
-  color: #006eb0;
+  color: var(--info-ink);
 }
 .badge-purple {
   background: var(--purple-subtle);
-  color: #7c3daa;
+  color: var(--purple-ink);
 }
 
 /* ═══════════════════════════════════════════════
@@ -442,7 +446,7 @@ body::after {
 .spinner {
   width: 20px;
   height: 20px;
-  border: 2.5px solid rgba(0, 0, 0, 0.08);
+  border: 2.5px solid var(--line);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
@@ -460,14 +464,14 @@ body::after {
 .progress-track {
   height: 6px;
   border-radius: var(--radius-full);
-  background: rgba(0, 0, 0, 0.08);
+  background: var(--fill-strong);
   overflow: hidden;
   position: relative;
 }
 .progress-fill {
   height: 100%;
   border-radius: var(--radius-full);
-  background: linear-gradient(90deg, var(--accent), #5ac8fa);
+  background: linear-gradient(90deg, var(--accent-hover), var(--accent));
   transition: width 0.5s var(--ease-in-out);
 }
 .progress-indeterminate {
@@ -485,7 +489,7 @@ body::after {
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.3);
+  background: rgba(19, 26, 38, 0.38);
   backdrop-filter: blur(4px);
   -webkit-backdrop-filter: blur(4px);
   display: flex;
@@ -496,11 +500,9 @@ body::after {
 }
 .modal-content {
   background: var(--surface-elevated);
-  backdrop-filter: var(--glass-blur);
-  -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  border: 1px solid var(--line);
   border-radius: var(--radius-xl);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.14), 0 8px 24px rgba(0, 0, 0, 0.06);
+  box-shadow: var(--shadow-3);
   width: 90%;
   max-width: 560px;
   max-height: 85vh;
@@ -512,7 +514,7 @@ body::after {
   align-items: center;
   justify-content: space-between;
   padding: 20px 24px 12px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  border-bottom: 1px solid var(--line-soft);
 }
 .modal-title {
   font-size: 1.0625rem;
@@ -527,7 +529,7 @@ body::after {
   justify-content: flex-end;
   gap: 10px;
   padding: 12px 24px 20px;
-  border-top: 1px solid rgba(0, 0, 0, 0.06);
+  border-top: 1px solid var(--line-soft);
 }
 
 /* ═══════════════════════════════════════════════
@@ -544,9 +546,9 @@ body::after {
   display: flex;
   flex-direction: column;
   background: var(--surface-elevated);
-  border: 1px solid rgba(255, 255, 255, 0.5);
+  border: 1px solid var(--line);
   border-radius: var(--radius-xl);
-  box-shadow: 0 16px 56px rgba(0, 0, 0, 0.18);
+  box-shadow: var(--shadow-3);
   animation: slideInUp 0.28s var(--ease-out-expo);
 }
 /* 最小化：隐藏而非卸载，子面板轮询/状态保留 */
@@ -565,7 +567,7 @@ body::after {
   align-items: center;
   gap: 6px;
   padding: 10px 10px 10px 16px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  border-bottom: 1px solid var(--line-soft);
   flex-shrink: 0;
 }
 .floating-panel-title {
@@ -575,7 +577,7 @@ body::after {
   align-items: center;
   gap: 8px;
   font-size: 0.85rem;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text);
   overflow: hidden;
   white-space: nowrap;
@@ -593,7 +595,7 @@ body::after {
   cursor: pointer;
 }
 .floating-icon-btn:hover {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--fill-strong);
   color: var(--text);
 }
 /* 内部滚动：头部/胶囊固定，内容区自滚（面板内输入条自身 sticky 底边） */
@@ -613,10 +615,10 @@ body::after {
   align-items: center;
   gap: 6px;
   padding: 10px 16px;
-  border: 1px solid rgba(255, 255, 255, 0.5);
+  border: 1px solid var(--line);
   border-radius: var(--radius-full);
   background: var(--surface-elevated);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.16);
+  box-shadow: var(--shadow-2);
   font-size: 0.8rem;
   font-weight: 600;
   color: var(--text);
@@ -675,19 +677,19 @@ body > .floating-pill:nth-of-type(2) {
   color: var(--text);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
-  border: 1px solid rgba(0, 0, 0, 0.08);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12), 0 2px 8px rgba(0, 0, 0, 0.04);
+  border: 1px solid var(--line);
+  box-shadow: var(--shadow-2);
   animation: slideInRight 0.3s var(--ease-out-expo);
   cursor: pointer;
   max-width: 420px;
 }
 .toast-success {
   background: var(--success-subtle);
-  color: #1a7f37;
+  color: var(--success-ink);
 }
 .toast-error {
   background: var(--error-subtle);
-  color: #c0271b;
+  color: var(--error-ink);
 }
 .toast-info {
   background: var(--accent-subtle);
@@ -707,25 +709,26 @@ body > .floating-pill:nth-of-type(2) {
   border-collapse: separate;
   border-spacing: 0;
   font-size: 0.875rem;
+  /* 分值 / 题号 / 计数列对齐：等宽数字是「仪器感」的底层细节 */
+  font-variant-numeric: tabular-nums;
 }
 .data-table th {
   text-align: left;
   padding: 12px 16px;
   font-weight: 600;
   font-size: 0.75rem;
-  text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--text-tertiary);
-  border-bottom: 2px solid rgba(0, 0, 0, 0.06);
-  background: rgba(0, 0, 0, 0.01);
+  border-bottom: 1px solid var(--line);
+  background: var(--fill);
 }
 .data-table td {
   padding: 12px 16px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+  border-bottom: 1px solid var(--line-soft);
   transition: background-color 0.15s ease;
 }
 .data-table tbody tr:hover td {
-  background: rgba(0, 113, 227, 0.03);
+  background: var(--accent-faint);
 }
 /* 行不做 hover 位移：表格行不是可点对象，scale 位移只会在扫读时抖动 */
 
@@ -838,6 +841,23 @@ body > .floating-pill:nth-of-type(2) {
   .btn-primary:hover:not(:disabled) {
     transform: none;
   }
+}
+
+/* ── 键盘焦点：全站统一高亮环（输入框自带色环，不重复画） ── */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.input-field:focus-visible {
+  outline: none;
+}
+
+/* ── 页头标题工具类：统一各页 h1 规格，替代行内重复声明 ── */
+.page-title {
+  font-size: 1.75rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--text);
 }
 
 /* ── 减少动画偏好 ── */

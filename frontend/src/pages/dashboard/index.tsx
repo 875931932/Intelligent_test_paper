@@ -128,7 +128,7 @@ const DashboardPage: FC = () => {
   return (
     <div className="page-enter">
       <div style={{ marginBottom: 'var(--space-xl)' }}>
-        <h1 style={{ fontSize: '1.75rem', fontWeight: 700, letterSpacing: '-0.03em', marginBottom: '6px' }}>课程概览</h1>
+        <h1 className="page-title" style={{ marginBottom: '6px' }}>课程概览</h1>
         <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)' }}>智能出卷系统 · 从课程资料到成品试卷的完整链路</p>
       </div>
 
