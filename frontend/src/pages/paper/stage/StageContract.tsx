@@ -157,7 +157,7 @@ export function renderContract({
             <div style={{ fontWeight: 600, marginBottom: '6px', color: '#ff3b30' }}>合同冲突（{conflicts.length}）</div>
             <ul style={{ margin: 0, paddingLeft: '18px', color: 'var(--text-secondary)' }}>
               {conflicts.map((c, i) => (
-                <li key={i}>{c.exam_point_id ? examPointLabel(maps, c.exam_point_id) + '：' : ''}{c.message}</li>
+                <li key={i}>{c.exam_point_id ? examPointLabel(maps, c.exam_point_id, c.exam_point_title) + '：' : ''}{c.message}</li>
               ))}
             </ul>
           </div>
@@ -167,7 +167,7 @@ export function renderContract({
             <div style={{ fontWeight: 600, marginBottom: '6px', color: '#0071e3' }}>同章回补（{backfilled.length}）</div>
             <ul style={{ margin: 0, paddingLeft: '18px', color: 'var(--text-secondary)' }}>
               {backfilled.map((b) => (
-                <li key={b.item_index}>第 {b.item_index} 题：{examPointLabel(maps, b.from_exam_point_id)} → {examPointLabel(maps, b.to_exam_point_id)}（原考点答案域容量不足，改派同章富余考点）</li>
+                <li key={b.item_index}>第 {b.item_index} 题：{examPointLabel(maps, b.from_exam_point_id, b.from_exam_point_title)} → {examPointLabel(maps, b.to_exam_point_id, b.to_exam_point_title)}（原考点答案域容量不足，改派同章富余考点）</li>
               ))}
             </ul>
           </div>
@@ -201,8 +201,8 @@ export function renderContract({
                   <td>{qlabel(s.question_type)}</td>
                   <td><strong>{formatScore(s.score)}</strong></td>
                   <td>{dlabel(s.difficulty)}</td>
-                  <td title={s.exam_point_id || undefined}>{examPointLabel(maps, s.exam_point_id)}</td>
-                  <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={s.card_id ? (maps.cards[s.card_id] || s.card_id) : undefined}>{cardLabel(maps, s.card_id)}</td>
+                  <td title={s.exam_point_title || s.exam_point_id || undefined}>{examPointLabel(maps, s.exam_point_id, s.exam_point_title)}</td>
+                  <td style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={s.card_id ? (s.card_name || maps.cards[s.card_id] || s.card_id) : undefined}>{cardLabel(maps, s.card_id, s.card_name)}</td>
                   <td>
                     <Button
                       size="sm"

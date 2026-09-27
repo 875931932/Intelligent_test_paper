@@ -1,11 +1,12 @@
 import { ChevronRight, RefreshCw, PlayCircle } from 'lucide-react';
+import { api } from '@/api/client';
 import { Button } from '@/components/ui/Button';
 import type { NameMaps } from '@/hooks/useNameMaps';
-import { qlabel, dlabel, clabel } from '@/lib/examDisplay';
+import { qlabel, dlabel, clabel, PLAN_DIFFICULTY_OPTIONS } from '@/lib/examDisplay';
 import { formatScore } from '@/lib/format';
 import type { ExamProject, ExamRules, PlanItem } from '@/types/api';
 import { StageHeading } from './StageHeading';
-import { examPointLabel, anchorLabel, type StageKey } from './stageShared';
+import { examPointLabel, anchorLabel, type StageKey, type ToastFn } from './stageShared';
 
 /**
  * 蓝图题型分布与考核规则的比例差异（按分值，容差 1 分）。
@@ -40,16 +41,41 @@ function findTypeRatioMismatch(
   return out;
 }
 
+/** 下拉必须包含当前值，否则遗留词表（历史数据）会让 select 显示成空白 */
+function planDifficultyOptions(current: string) {
+  return PLAN_DIFFICULTY_OPTIONS.some((o) => o.value === current)
+    ? PLAN_DIFFICULTY_OPTIONS
+    : [{ value: current, label: dlabel(current) }, ...PLAN_DIFFICULTY_OPTIONS];
+}
+
 export function renderBlueprint({
-  sp, setStep, bpCreating, handleCreateBlueprint, loadPlanItems, planItems, maps, examRules,
+  sp, courseId, setStep, bpCreating, handleCreateBlueprint, loadPlanItems, planItems, maps, examRules, addToast,
 }: {
-  sp: ExamProject; setStep: (s: StageKey) => void;
+  sp: ExamProject; courseId: string; setStep: (s: StageKey) => void;
   bpCreating: boolean; handleCreateBlueprint: () => Promise<void>;
   loadPlanItems: (p: ExamProject) => void; planItems: PlanItem[];
   maps: NameMaps;
   examRules: ExamRules | null;
+  addToast: ToastFn;
 }) {
   if (sp.active_blueprint_version_id) {
+    // 题位编辑（难度/分值）：后端只允许 draft 蓝图原地改（已确认 → 409），
+    // 0.5 步进与总分合理性由服务端校验；改完已分配的合同需重新分配才生效。
+    const patchItem = async (
+      item: PlanItem,
+      changes: { score?: number; difficulty?: string },
+      onFail?: () => void,
+    ) => {
+      try {
+        await api.examProjects.updatePlanItem(courseId, item.id, changes);
+        addToast('已更新题位；已分配的合同需重新分配后才会采用新值', 'success');
+      } catch (err) {
+        addToast(err instanceof Error ? err.message : '保存失败', 'error');
+        onFail?.();
+      } finally {
+        void loadPlanItems(sp);
+      }
+    };
     const totalScore = planItems.reduce((s, i) => s + (i.score || 0), 0);
     const typeAcc = new Map<string, { score: number; count: number }>();
     const chapterAcc = new Map<string, number>();
@@ -123,10 +149,51 @@ export function renderBlueprint({
                     <tr key={item.item_index}>
                       <td>{item.item_index}</td>
                       <td>{qlabel(item.question_type)}</td>
-                      <td><strong>{formatScore(item.score)}</strong></td>
-                      <td>{dlabel(item.difficulty)}</td>
+                      <td>
+                        <input
+                          type="number" step={0.5} min={0.5}
+                          aria-label={`第${item.item_index}题分值`}
+                          defaultValue={item.score}
+                          style={{
+                            width: '68px', fontSize: '0.85rem', padding: '3px 6px',
+                            borderRadius: 6, border: '1px solid var(--border, #d2d2d7)',
+                            background: 'var(--surface, #fff)', color: 'var(--text, #1d1d1f)',
+                          }}
+                          onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                          onBlur={(e) => {
+                            const el = e.currentTarget;
+                            const v = Number(el.value);
+                            if (!Number.isFinite(v) || v <= 0 || v === item.score) {
+                              el.value = String(item.score);
+                              return;
+                            }
+                            void patchItem(item, { score: v }, () => { el.value = String(item.score); });
+                          }}
+                        />
+                      </td>
+                      <td>
+                        <select
+                          aria-label={`第${item.item_index}题难度`}
+                          value={item.difficulty}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            if (v !== item.difficulty) void patchItem(item, { difficulty: v });
+                          }}
+                          style={{
+                            fontSize: '0.82rem', padding: '3px 4px',
+                            borderRadius: 6, border: '1px solid var(--border, #d2d2d7)',
+                            background: 'var(--surface, #fff)', color: 'var(--text, #1d1d1f)',
+                          }}
+                        >
+                          {planDifficultyOptions(item.difficulty).map((o) => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
+                          ))}
+                        </select>
+                      </td>
                       <td title={item.anchor_key || undefined}>{item.anchor_key ? anchorLabel(maps, item.anchor_key) : '-'}</td>
-                      <td title={item.exam_point_id || undefined}>{item.exam_point_id ? examPointLabel(maps, item.exam_point_id) : '-'}</td>
+                      <td title={item.exam_point_title || item.exam_point_code || item.exam_point_id || undefined}>
+                        {item.exam_point_id ? examPointLabel(maps, item.exam_point_id, item.exam_point_title) : '-'}
+                      </td>
                       <td>{clabel(item.cognitive_level) || '-'}</td>
                     </tr>
                   ))}

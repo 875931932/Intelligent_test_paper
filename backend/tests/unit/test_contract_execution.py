@@ -33,7 +33,10 @@ from app.services.contract_execution_service import (
     get_contract_conflicts,
     revise_and_confirm,
 )
-from app.services.exam_project_service import get_current_contract_snapshot
+from app.services.exam_project_service import (
+    enrich_contract_snapshot_for_display,
+    get_current_contract_snapshot,
+)
 
 
 def _ep(id_, course, fv, anchor, code, title, req, w, group, intent):
@@ -367,6 +370,68 @@ def test_current_contract_snapshot_exposes_allocation_seed(session):
     assert current.get("allocation_seed") == 2, (
         f"读回快照缺 allocation_seed，实际 {current.get('allocation_seed')}"
     )
+
+
+def test_current_contract_snapshot_enriches_display_names(session):
+    """读时补齐考点/知识卡展示名：目录重建后旧 id 在当前目录里查不到，
+    旧版 exam_points / knowledge_cards 行仍可按 id 取名，且不回写冻结快照。"""
+    bv_id = _setup_confirmed_blueprint(
+        session,
+        total_items=5,
+        per_score=20.0,
+        unit_card_ids={"au1": ["c1a", "c1b", "c1c"], "au2": ["c2a", "c2b", "c2c"]},
+    )
+    result = revise_and_confirm(
+        session, course_id="c1", project_id="ep1",
+        blueprint_version_id=bv_id, slot_revisions=[],
+    )
+    current = get_current_contract_snapshot(session, course_id="c1", project_id="ep1")
+    assert current is not None
+    slots = current["slots"]
+    assert slots, "前置：应先拿到非空槽位"
+    for s in slots:
+        if s.get("exam_point_id"):
+            assert s.get("exam_point_title"), f"考点名未补齐: {s.get('exam_point_id')}"
+        if s.get("card_id"):
+            assert s.get("card_name"), f"知识卡名未补齐: {s.get('card_id')}"
+    # 展示增强不得回写冻结的 generation_runs.contract_snapshot
+    raw = _run_snapshot(session, result["generation_run_id"])
+    assert "exam_point_title" not in (raw.get("slots") or [{}])[0]
+    assert "card_name" not in (raw.get("slots") or [{}])[0]
+
+
+def test_enrich_contract_snapshot_code_fallback_and_ghost_ids(session):
+    """id 精确取名；历史 code 口径在蓝图框架内兜底；幽灵 id 不臆造名字；
+    原快照 dict 分毫未动（返回的是新 dict）。"""
+    bv_id = _setup_confirmed_blueprint(session, total_items=5, per_score=20.0)
+    snap = {
+        "slots": [
+            {"item_index": 1, "exam_point_id": "au1", "card_id": "c1a"},
+            {"item_index": 2, "exam_point_id": "EP2", "card_id": "ghost-card"},
+        ],
+        "conflicts": [{"exam_point_id": "au2", "message": "示例冲突"}],
+        "audit_summary": {
+            "backfilled_points": [
+                {"item_index": 3, "from_exam_point_id": "EP1", "to_exam_point_id": "ghost-ep"},
+            ],
+        },
+        "total_score": 10,
+    }
+    out = enrich_contract_snapshot_for_display(
+        session, snap, blueprint_version_id=bv_id, course_id="c1"
+    )
+    assert out["slots"][0]["exam_point_title"] == "考点1"
+    assert out["slots"][0]["card_name"] == "卡1a"
+    # code 口径：EP2 在蓝图的框架版本内解析为考点2
+    assert out["slots"][1]["exam_point_title"] == "考点2"
+    assert "card_name" not in out["slots"][1]
+    assert out["conflicts"][0]["exam_point_title"] == "考点2"
+    b = out["audit_summary"]["backfilled_points"][0]
+    assert b["from_exam_point_title"] == "考点1"
+    assert "to_exam_point_title" not in b
+    # 原快照不动
+    assert "exam_point_title" not in snap["slots"][0]
+    assert snap["slots"][0]["card_id"] == "c1a"
 
 
 def _run_snapshot(session, run_id: str) -> dict:

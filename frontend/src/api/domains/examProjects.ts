@@ -44,6 +44,17 @@ export const examProjectsApi = {
     request('/courses/' + courseId + '/exam-projects/' + projectId + '/blueprints', { method: 'POST', body: JSON.stringify(body) }, token),
   getPlanItems: (courseId: string, projectId: string, token?: string): Promise<PlanItem[]> =>
     request('/courses/' + courseId + '/exam-projects/' + projectId + '/blueprints/current/plan-items', undefined, token),
+  /** 改单个题位（仅 draft 蓝图可改，后端对已确认蓝图返回 409） */
+  updatePlanItem: (
+    courseId: string,
+    planItemId: string,
+    changes: { score?: number; difficulty?: string; cognitive_level?: string; question_type?: string },
+    token?: string,
+  ): Promise<PlanItem> =>
+    request('/courses/' + courseId + '/exam-projects/plan-items/' + planItemId, {
+      method: 'PATCH',
+      body: JSON.stringify(changes),
+    }, token),
   confirmBlueprint: (courseId: string, projectId: string, body?: Record<string, unknown>, token?: string): Promise<Record<string, unknown>> =>
     request('/courses/' + courseId + '/exam-projects/' + projectId + '/blueprints/current/confirm', { method: 'POST', body: body ? JSON.stringify(body) : undefined }, token),
   allocateContract: (courseId: string, projectId: string, body?: { blueprint_version_id?: string; allocation_seed?: number }, token?: string): Promise<AllocateContractResponse> =>

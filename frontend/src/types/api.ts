@@ -353,21 +353,23 @@ export interface OrganizationRunResponse {
 export type AssessmentMode = 'theory_recall' | 'conceptual' | 'application' | 'problem_solving' | 'practical_operation';
 
 export interface PlanItem {
+  id: string;
   item_index: number;
   question_type: string;
   score: number;
-  anchor_key: string;
-  exam_point_id: string;
-  unit_id: string;
-  card_id: string;
   difficulty: string;
   cognitive_level: string;
   assessment_mode: AssessmentMode;
-  concept_cluster: string;
-  answer_proposition: string;
-  required_propositions: string[];
-  relation_edges: any[];
-  instance_carriers: string[];
+  exam_point_id: string | null;
+  /** 读时按蓝图自身框架版本解析的考点名/编码（目录重建后当前名字映射查不到旧 id） */
+  exam_point_title?: string | null;
+  exam_point_code?: string | null;
+  /** 章节（来自 exam_points.anchor_key，随考点行 join 返回） */
+  anchor_key?: string | null;
+  knowledge_card_id: string | null;
+  knowledge_card_name?: string | null;
+  assessment_unit_id: string;
+  assessment_unit_title?: string | null;
 }
 
 export interface ForbiddenContext {
@@ -399,6 +401,9 @@ export interface ContractSlot {
   subquestion_count_range?: [number, number] | null;
   subquestion_actions?: string[];
   answer_boundaries?: string[];
+  /** 读时补齐的展示名（不回写冻结快照）：目录重建后旧 id 在当前名字映射里查不到 */
+  exam_point_title?: string;
+  card_name?: string;
 }
 
 export interface ContractConflict {
@@ -406,6 +411,8 @@ export interface ContractConflict {
   exam_point_id: string;
   message: string;
   detail: Record<string, unknown>;
+  /** 读时补齐的考点名（同上） */
+  exam_point_title?: string;
 }
 
 export interface ExamPointProportion {
@@ -420,6 +427,9 @@ export interface BackfilledPoint {
   from_exam_point_id: string;
   to_exam_point_id: string;
   anchor_key: string;
+  /** 读时补齐的考点名（同 ContractSlot.exam_point_title） */
+  from_exam_point_title?: string;
+  to_exam_point_title?: string;
 }
 
 export interface ContractAuditSummary {

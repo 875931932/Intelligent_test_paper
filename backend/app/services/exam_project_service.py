@@ -10,10 +10,12 @@ from sqlalchemy.orm import Session
 from app.db.schema import (
     blueprint_sections,
     blueprint_versions,
+    exam_points,
     exam_projects,
     generation_attempts,
     generated_questions,
     generation_runs,
+    knowledge_cards,
     model_calls,
     outbox_events,
     paper_items,
@@ -32,6 +34,98 @@ class ExamProjectConflictError(Exception):
 
 class ExamProjectNotFoundError(Exception):
     """项目不存在。"""
+
+
+def enrich_contract_snapshot_for_display(
+    session: Session,
+    snap: dict[str, Any],
+    *,
+    blueprint_version_id: str | None,
+    course_id: str,
+) -> dict[str, Any]:
+    """为合同快照读时补齐考点/知识卡展示名，返回新 dict，原快照不动。
+
+    蓝图与合同是历史快照：目录/框架重建后旧 exam_point_id、card_id 在「当前
+    已发布目录」里查不到（前端名字映射必然落空，只能显示「未匹配」）。旧版
+    exam_points / knowledge_cards 行仍留在表里，按 id 精确取当年的名字即可；
+    历史数据曾用 code 当 exam_point_id，落空时在蓝图自己的框架版本内按 code
+    兜底（framework 内 code 唯一，不会撞名）。
+
+    展示层增强，不回写 generation_runs.contract_snapshot —— 冻结即不可变。
+    """
+    slots = [dict(s) for s in (snap.get("slots") or [])]
+    conflicts = [dict(c) for c in (snap.get("conflicts") or [])]
+    audit = dict(snap.get("audit_summary") or {})
+    backfilled = [dict(b) for b in (audit.get("backfilled_points") or [])]
+
+    ep_ids: set[str] = set()
+    for item in (*slots, *conflicts):
+        eid = item.get("exam_point_id")
+        if eid:
+            ep_ids.add(eid)
+    for b in backfilled:
+        for key in ("from_exam_point_id", "to_exam_point_id"):
+            if b.get(key):
+                ep_ids.add(b[key])
+    card_ids = {s.get("card_id") for s in slots if s.get("card_id")}
+    if not ep_ids and not card_ids:
+        return snap
+
+    ep_title: dict[str, str] = {}
+    if ep_ids:
+        rows = session.execute(
+            select(exam_points.c.id, exam_points.c.title).where(exam_points.c.id.in_(ep_ids))
+        ).all()
+        ep_title = {r._mapping["id"]: r._mapping["title"] for r in rows}
+        missing = ep_ids - set(ep_title)
+        if missing and blueprint_version_id:
+            bv_row = session.execute(
+                select(blueprint_versions.c.framework_version_id).where(
+                    blueprint_versions.c.id == blueprint_version_id,
+                    blueprint_versions.c.course_id == course_id,
+                )
+            ).one_or_none()
+            if bv_row is not None:
+                rows = session.execute(
+                    select(exam_points.c.code, exam_points.c.title).where(
+                        exam_points.c.framework_version_id == bv_row._mapping["framework_version_id"],
+                        exam_points.c.code.in_(missing),
+                    )
+                ).all()
+                ep_title.update({r._mapping["code"]: r._mapping["title"] for r in rows})
+
+    card_name: dict[str, str] = {}
+    if card_ids:
+        rows = session.execute(
+            select(knowledge_cards.c.id, knowledge_cards.c.name).where(
+                knowledge_cards.c.id.in_(card_ids)
+            )
+        ).all()
+        card_name = {r._mapping["id"]: r._mapping["name"] for r in rows}
+
+    for s in slots:
+        if s.get("exam_point_id") in ep_title:
+            s["exam_point_title"] = ep_title[s["exam_point_id"]]
+        if s.get("card_id") in card_name:
+            s["card_name"] = card_name[s["card_id"]]
+    for c in conflicts:
+        if c.get("exam_point_id") in ep_title:
+            c["exam_point_title"] = ep_title[c["exam_point_id"]]
+    for b in backfilled:
+        if b.get("from_exam_point_id") in ep_title:
+            b["from_exam_point_title"] = ep_title[b["from_exam_point_id"]]
+        if b.get("to_exam_point_id") in ep_title:
+            b["to_exam_point_title"] = ep_title[b["to_exam_point_id"]]
+
+    out = dict(snap)
+    if "slots" in out:
+        out["slots"] = slots
+    if "conflicts" in out:
+        out["conflicts"] = conflicts
+    if "audit_summary" in out:
+        audit["backfilled_points"] = backfilled
+        out["audit_summary"] = audit
+    return out
 
 
 def get_current_contract_snapshot(
@@ -99,7 +193,14 @@ def get_current_contract_snapshot(
         threshold = row.get("centrality_threshold_used")
     if threshold is not None:
         result["centrality_threshold_used"] = threshold
-    return result
+    # 展示名读时补齐：蓝图/合同可能钉在已被取代的框架目录上，当前映射解析不出
+    # 这些 id，旧版行仍可按 id 取名（不回写快照）。
+    return enrich_contract_snapshot_for_display(
+        session,
+        result,
+        blueprint_version_id=row.get("blueprint_version_id"),
+        course_id=course_id,
+    )
 
 
 def _backfill_active_blueprint(

@@ -314,7 +314,9 @@ body：`{ "exam_point_code": "string" }`
   "card_semantic_profiles":{}, "card_question_types":{} }
 ```
 响应：`{ "blueprint_version_id":"uuid", "plan":[ ...PlanItem... ] }`
-PlanItem：`{ "item_index":0,"question_type":"","score":0.0,"anchor_key":"","exam_point_id":"","unit_id":"","card_id":"","difficulty":"","cognitive_level":"","assessment_mode":"","concept_cluster":"","answer_proposition":"","required_propositions":[],"relation_edges":[],"instance_carriers":[] }`
+PlanItem（`list_plan_items` 响应，8.6 同构）：
+`{ "id":"","item_index":0,"question_type":"","score":0.0,"difficulty":"","cognitive_level":"","assessment_mode":"","exam_point_id":"","exam_point_title":"","exam_point_code":"","anchor_key":"","knowledge_card_id":"","knowledge_card_name":"","assessment_unit_id":"","assessment_unit_title":"","section_index":null }`
+其中 `exam_point_title`/`exam_point_code`/`anchor_key` 为**读时解析的展示名与章节**：蓝图常钉在已被取代的框架/目录上，当前已发布目录里查不到这些 id，后端按蓝图自身的 `framework_version_id` 从 `exam_points` 旧行取名（id 精确匹配，历史 code 口径在该框架内兜底），解析不到为 `null`。
 缺 key 422；引用不存在 404。
 
 ### 8.6 当前蓝图计划项
@@ -324,6 +326,7 @@ PlanItem：`{ "item_index":0,"question_type":"","score":0.0,"anchor_key":"","exa
 `PATCH /api/v1/courses/{course_id}/exam-projects/plan-items/{plan_item_id}`
 允许 key ∈ `score|question_type|difficulty|cognitive_level|exam_point_id|card_id`；其它 key 422。
 题位必须属于路径上的 `{course_id}`，跨课程 id 按不存在处理（404），不会读写到别课程的题位。
+仅 `draft` 蓝图可原地修改：已确认（confirmed/superseded）蓝图返回 **409**（冻结纪律——其难度/分值已被合同槽位拷贝，只能新建蓝图版本）。
 
 ### 8.8 确认蓝图
 `POST /api/v1/courses/{course_id}/exam-projects/{project_id}/blueprints/current/confirm`
@@ -335,6 +338,10 @@ body 可选 `{ "blueprint_version_id":"uuid", "allocation_seed":123 }`。响应�
 ```json
 { "used_threshold": 0.6, "conflicts_history": [["string"]], "contract_snapshot": { ...PaperContract... } }
 ```
+响应快照的 `slots[]`、`conflicts[]`、`audit_summary.backfilled_points[]` 附带读时补齐的展示名
+（`exam_point_title`、槽位另有 `card_name`，backfilled 另有 `from/to_exam_point_title`），
+按蓝图的框架/目录版本从 `exam_points`/`knowledge_cards` 旧行按 id 取名——目录重建后旧 id
+在当前已发布目录里查不到，前端名字映射必然落空。只增强响应，不回写任何落库快照。
 
 ### 8.10 修订合同（仅预览不落库）
 `PATCH /api/v1/courses/{course_id}/exam-projects/{project_id}/contracts/revise`
@@ -357,6 +364,8 @@ body：`{ "blueprint_version_id?":"uuid", "slot_revisions":[...], "allocation_se
 说明：快照持久化在 `generation_runs.contract_snapshot`，由 `exam_projects.active_generation_run_id`
 指向，与生成任务是否仍在进行无关。`total_score` 缺失时由服务端按槽位分值求和补齐；`conflicts`
 已从落库位置 `conflicts_pre_vs_post` 归一化为顶层列表。这是"退出项目再进入后合同不消失"的权威数据源。
+与 8.9 同理，`slots[]`/`conflicts[]`/`backfilled_points[]` 附带读时补齐的
+`exam_point_title`/`card_name` 等展示名（不回写冻结快照）。
 
 ### 8.13 启动异步生成
 `POST /api/v1/courses/{course_id}/exam-projects/{project_id}/generate` → **202**

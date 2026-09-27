@@ -314,3 +314,50 @@ def test_create_draft_blueprint_persists_items_with_correct_fields(session):
         assert it.get("difficulty") in {"low", "medium", "high"}
         assert it.get("cognitive_level")
         assert it.get("knowledge_card_id") in {"c1a", "c1b", "c2a", "c2b"}
+
+
+def test_list_plan_items_resolves_exam_point_name_and_anchor(session):
+    """考点名/章节按蓝图自己的框架版本解析：id 精确取名，NULL 安全。
+
+    plan_items.exam_point_id 有外键（→ exam_points.id），落库必是 id 口径；
+    code 兜底分支针对无外键的历史 JSON 快照，由
+    test_enrich_contract_snapshot_code_fallback_and_ghost_ids 覆盖。
+    """
+    bv_id, _ = create_draft_blueprint(session, **_draft_params(count=5, per=20))
+    items = list_plan_items(session, bv_id, course_id="c1")
+    assert len(items) == 5
+    # 分配时题位已按单元带上 exam_point_id，join 应全部解析出名字与章节
+    for it in items:
+        assert it["exam_point_id"] in {"au1", "au2"}
+        assert it["exam_point_title"] in {"考点1", "考点2"}
+        assert it["exam_point_code"] in {"EP1", "EP2"}
+        assert it["anchor_key"] in {"A1", "A2"}
+    assert items[0]["exam_point_title"] == "考点1"
+    assert items[0]["anchor_key"] == "A1"
+
+    # NULL 分支：清空一个题位的考点引用，字段存在但为 None（前端显示 '-'，不报错）
+    update_plan_item(session, items[0]["id"], {"exam_point_id": None}, course_id="c1")
+    refreshed = list_plan_items(session, bv_id, course_id="c1")
+    # join 不放大行数
+    assert len(refreshed) == len(items)
+    assert refreshed[0].get("exam_point_title") is None
+    assert refreshed[0].get("anchor_key") is None
+    assert refreshed[1]["exam_point_title"] in {"考点1", "考点2"}
+
+
+def test_update_plan_item_rejected_when_blueprint_not_draft(session):
+    """冻结纪律：只有 draft 蓝图可原地改；确认后只能新建版本。"""
+    bv_id, _ = create_draft_blueprint(session, **_draft_params(count=5, per=20))
+    items = list_plan_items(session, bv_id, course_id="c1")
+    pi_id = items[0]["id"]
+    # draft 阶段可改（难度/分值编辑能力的正路）
+    update_plan_item(session, pi_id, {"difficulty": "high"}, course_id="c1")
+
+    confirm_blueprint(session, course_id="c1", project_id="ep1", blueprint_version_id=bv_id)
+    with pytest.raises(BlueprintPersistenceError, match="不可原地修改"):
+        update_plan_item(session, pi_id, {"difficulty": "low"}, course_id="c1")
+    # 被拒绝后分毫未动
+    row = session.execute(
+        select(plan_items.c.difficulty).where(plan_items.c.id == pi_id)
+    ).one()
+    assert row._mapping["difficulty"] == "high"

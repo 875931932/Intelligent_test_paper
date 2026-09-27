@@ -270,6 +270,9 @@ def patch_plan_item(
         msg = str(exc)
         if "不存在" in msg:
             raise HTTPException(status_code=404, detail=msg)
+        if "不可原地修改" in msg:
+            # 已确认/被取代的蓝图冻结：与合同已拷贝的难度/分值保持一致，只能新建版本
+            raise HTTPException(status_code=409, detail=msg)
         raise HTTPException(status_code=422, detail=msg)
 
 
@@ -329,6 +332,11 @@ def allocate_contract(
         raise HTTPException(status_code=422, detail=str(exc))
 
     snap = contract.model_dump(mode="json")
+    # 展示名读时补齐：蓝图/合同可能钉在已被取代的框架目录上，前端名字映射
+    # 解析不出这些 id；旧版行按 id 取名，不回写冻结快照。
+    snap = exam_project_service.enrich_contract_snapshot_for_display(
+        session, snap, blueprint_version_id=bv_id, course_id=course_id
+    )
     return {
         "used_threshold": used_threshold,
         "conflicts_history": [list(h) for h in history],

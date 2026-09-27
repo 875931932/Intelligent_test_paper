@@ -38,13 +38,30 @@ export const QUESTION_TYPE_SECTION_LABELS: Record<string, string> = {
   essay: '论述题',
 };
 
+/**
+ * 难度显示词典。系统里并存两套词表：题目层用 easy/medium/hard（AI 出题口径），
+ * 蓝图题位用 low/medium/high（blueprint_service 词表）——dlabel 一律给中文，
+ * 不让裸英文漏进任何表格。
+ */
 export const DIFFICULTY_LABELS: Record<string, string> = {
-  easy: '易',
+  easy: '易', low: '易',
   medium: '中',
-  hard: '难',
+  hard: '难', high: '难',
 };
 
-export const DIFFICULTY_OPTIONS = Object.entries(DIFFICULTY_LABELS).map(([value, label]) => ({ value, label }));
+/** 题目难度下拉（题目词表：easy/medium/hard，QuestionEditor/问题共享逻辑依赖此值域） */
+export const DIFFICULTY_OPTIONS = [
+  { value: 'easy', label: '易' },
+  { value: 'medium', label: '中' },
+  { value: 'hard', label: '难' },
+];
+
+/** 蓝图题位难度下拉（blueprint_service 词表：low/medium/high） */
+export const PLAN_DIFFICULTY_OPTIONS = [
+  { value: 'low', label: '易' },
+  { value: 'medium', label: '中' },
+  { value: 'high', label: '难' },
+];
 
 export const COGNITIVE_LABELS: Record<string, string> = {
   remember: '记忆',

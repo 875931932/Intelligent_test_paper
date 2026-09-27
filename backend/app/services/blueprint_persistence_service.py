@@ -7,7 +7,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -336,18 +336,43 @@ def create_draft_blueprint(
 def list_plan_items(
     session: Session, blueprint_version_id: str, *, course_id: str
 ) -> list[dict]:
-    """列出某蓝图版本的全部计划项，附带单元/卡片/section元数据。"""
+    """列出某蓝图版本的全部计划项，附带单元/卡片/section 元数据。
+
+    考点名（exam_point_title）与章节（anchor_key）按蓝图**自己的**框架版本解析：
+    目录/框架重建后当前已发布目录里查不到这些 id，但旧版 exam_points 行仍留在
+    表里，按 id 精确取当年的名字；历史数据曾用 code 当 exam_point_id，故 id/code
+    双匹配（限定本蓝图框架版本，framework 内 code 唯一，不会放大行数）。
+    """
     stmt = (
         select(
             plan_items,
             assessment_units.c.title.label("assessment_unit_title"),
             knowledge_cards.c.name.label("knowledge_card_name"),
             blueprint_sections.c.section_index,
+            exam_points.c.title.label("exam_point_title"),
+            exam_points.c.code.label("exam_point_code"),
+            exam_points.c.anchor_key,
         )
         .select_from(plan_items)
         .join(assessment_units, assessment_units.c.id == plan_items.c.assessment_unit_id, isouter=True)
         .join(knowledge_cards, knowledge_cards.c.id == plan_items.c.knowledge_card_id, isouter=True)
         .join(blueprint_sections, blueprint_sections.c.id == plan_items.c.blueprint_section_id, isouter=True)
+        .join(
+            blueprint_versions,
+            blueprint_versions.c.id == plan_items.c.blueprint_version_id,
+            isouter=True,
+        )
+        .join(
+            exam_points,
+            and_(
+                exam_points.c.framework_version_id == blueprint_versions.c.framework_version_id,
+                or_(
+                    exam_points.c.id == plan_items.c.exam_point_id,
+                    exam_points.c.code == plan_items.c.exam_point_id,
+                ),
+            ),
+            isouter=True,
+        )
         .where(
             plan_items.c.blueprint_version_id == blueprint_version_id,
             plan_items.c.course_id == course_id,
@@ -388,7 +413,14 @@ def update_plan_item(
         # plan_item_id 来自路径参数：归属必须用调用方的 course_id 过滤校验，
         # 不能从行里反推 course_id（否则跨课程传 id 即可改到别的课程的题位）。
         bv_row = session.execute(
-            select(plan_items.c.blueprint_version_id)
+            select(
+                plan_items.c.blueprint_version_id,
+                blueprint_versions.c.status,
+            )
+            .join(
+                blueprint_versions,
+                blueprint_versions.c.id == plan_items.c.blueprint_version_id,
+            )
             .where(
                 plan_items.c.id == plan_item_id,
                 plan_items.c.course_id == course_id,
@@ -397,6 +429,13 @@ def update_plan_item(
         if bv_row is None:
             raise BlueprintPersistenceError(f"plan_item 不存在: {plan_item_id}")
         bv_id = bv_row._mapping["blueprint_version_id"]
+        # 冻结纪律：只有 draft 可原地改。已确认/被取代的蓝图，其难度与分值已被
+        # 合同槽位拷贝，原地改会让两层脱节——那种情况只能新建蓝图版本。
+        if bv_row._mapping["status"] != "draft":
+            raise BlueprintPersistenceError(
+                f"蓝图版本 status={bv_row._mapping['status']}，不可原地修改；"
+                "请创建新版蓝图后再调整"
+            )
 
         session.execute(
             plan_items.update()
