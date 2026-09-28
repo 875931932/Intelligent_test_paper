@@ -771,6 +771,98 @@ def test_syllabus_extractor_normalizes_percent_weight_and_drops_extra_anchor_fie
     assert "source_heading" not in result.anchors[0].model_dump()
 
 
+@pytest.mark.parametrize(
+    "requirement",
+    [
+        "能够比较全参数微调、LoRA与QLoRA的资源代价和适用条件，为给定显存与任务选择方案",
+        "能够说明参数高效微调与全参数微调在显存占用与适配场景上的差异",
+    ],
+)
+def test_assessment_policy_ignores_method_name_containing_parameter(requirement):
+    # 方法名（全参数微调/参数高效微调）里的「参数」不构成考纲要求考操作细节。
+    # 误标直考会使实验环境/安装配置类操作细节以 direct 身份进入可评分池，
+    # 生成「软件环境要求为Windows 10/11」这类琐碎题（真实事故回归）。
+    point = {
+        "code": "ch3-compare",
+        "anchor_key": "rag",
+        "title": "微调方法比较",
+        "assessment_requirement": requirement,
+        "weight_value": 100,
+        "weight_source": "assessment_syllabus",
+        "weight_group_id": "ch3-compare",
+        "cognitive_targets": ["analyze"],
+        "assessment_orientations": ["conceptual"],
+        # 模型即使填了直考，确定性规则也整体重算——顺带钉死唯一权威语义。
+        "operational_detail_policy": "directly_assessable",
+        "retrieval_intent": "微调方法的资源代价与适用条件",
+        "teaching_anchor_keys": ["rag-teaching"],
+    }
+    client = RecordingJsonClient(
+        [
+            {
+                "anchors": [
+                    {
+                        "key": "rag",
+                        "title": "RAG",
+                        "exam_weight": 100,
+                        "alignment_keys": ["rag-teaching"],
+                    }
+                ],
+                "exam_points": [point],
+                "final_exam_rules": {},
+            }
+        ]
+    )
+
+    result = LLMSyllabusExtractor(client).extract_assessment(["期末考试"])
+
+    assert (
+        result.exam_points[0].operational_detail_policy
+        is OperationalDetailPolicy.SUPPORTING_ONLY
+    )
+
+
+def test_assessment_policy_marks_explicit_parameter_requirement_directly_assessable():
+    # 反向护栏：考纲明确要求配置/操作时，规则仍须判直考（模型填 supporting_only 也会被重算）。
+    point = {
+        "code": "lora-config",
+        "anchor_key": "rag",
+        "title": "LoRA参数配置",
+        "assessment_requirement": "能够配置LoRA训练参数并完成训练启动与结果验证",
+        "weight_value": 100,
+        "weight_source": "assessment_syllabus",
+        "weight_group_id": "lora-config",
+        "cognitive_targets": ["apply"],
+        "assessment_orientations": ["practical_operation"],
+        "operational_detail_policy": "supporting_only",
+        "retrieval_intent": "LoRA训练参数配置与启动验证",
+        "teaching_anchor_keys": ["rag-teaching"],
+    }
+    client = RecordingJsonClient(
+        [
+            {
+                "anchors": [
+                    {
+                        "key": "rag",
+                        "title": "RAG",
+                        "exam_weight": 100,
+                        "alignment_keys": ["rag-teaching"],
+                    }
+                ],
+                "exam_points": [point],
+                "final_exam_rules": {},
+            }
+        ]
+    )
+
+    result = LLMSyllabusExtractor(client).extract_assessment(["期末考试"])
+
+    assert (
+        result.exam_points[0].operational_detail_policy
+        is OperationalDetailPolicy.DIRECTLY_ASSESSABLE
+    )
+
+
 def test_syllabus_extractor_still_rejects_anchor_missing_required_key():
     client = RecordingJsonClient(
         [
