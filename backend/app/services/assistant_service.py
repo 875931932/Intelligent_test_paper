@@ -56,7 +56,11 @@ from app.services import (
 from app.services.ai_revise_service import llm_configured
 # RAG 检索与语料索引（助手 v2 资料内容问答）
 from app.services.content_index_service import build_embedder, embedding_configured, ensure_embedded, load_content_chunks
-from app.services.staging_retrieval_service import RankedChunk, lexical_rank_for_question, retrieve_for_question
+from app.services.staging_retrieval_service import (
+    RankedChunk,
+    lexical_rank_for_question,
+    retrieve_multi_for_question,
+)
 
 logger = logging.getLogger("services.assistant")
 
@@ -764,13 +768,57 @@ def build_proposal_payload(tool: str, args: dict, *, context: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
+# 查询变体的确定性削词表：只削问句框架与句首泛化动词，原问题恒为首变体
+_RAG_FRAME_WORDS = (
+    "讲了什么", "说了什么", "写了什么", "做了什么", "提了什么", "讲什么",
+    "什么内容", "有哪些内容", "有什么内容", "有哪些", "有什么", "是多少",
+    "是什么", "怎么样", "为什么", "是不是", "如何", "哪些", "什么", "吗", "呢",
+    "请问", "我想知道", "告诉我", "一下",
+)
+_RAG_LEAD_VERBS = (
+    "总结", "概括", "简述", "概述", "描述", "介绍", "说明", "解释",
+    "阐述", "梳理", "分析", "列举", "列出", "翻译", "讲解", "谈谈", "讲讲", "请",
+)
+_RAG_STRIP_PUNCT = "？?。！!，,、;；:：~～\"'（）()《》[]【】 \t"
+
+
+def _rag_query_variants(question: str) -> list[str]:
+    """确定性查询改写：[原问题, 主题核心串]（核心不同且 ≥2 字才追加）。
+
+    不引入模型调用：削掉疑问框架（讲了什么/是什么/…）与句首泛化动词
+    （总结/介绍/请/…），让「教学大纲」这类主题词单独成一条向量查询——
+    原问题负责语义完整，核心串负责主题词的字面/语义直击。
+    """
+
+    core = question
+    for char in _RAG_STRIP_PUNCT:
+        core = core.replace(char, "")
+    for frame in _RAG_FRAME_WORDS:
+        core = core.replace(frame, "")
+    while True:
+        stripped = core.lstrip()
+        for verb in _RAG_LEAD_VERBS:
+            if stripped.startswith(verb):
+                stripped = stripped[len(verb):]
+                break
+        else:
+            break
+        core = stripped
+    core = core.strip("的了过是")
+    variants = [question]
+    if core and core != question and len(core) >= 2:
+        variants.append(core)
+    return variants
+
+
 def _rank_rag_chunks(question: str, chunks: list[StagingChunk]) -> tuple[str, list[RankedChunk]]:
-    """混合检索；嵌入不可用或混合无命中 → 纯词面（确定性降级，嵌入故障不断轮）。"""
+    """多查询混合检索（原问题+主题核心双变体，合并期同文折叠）；嵌入不可用
+    或混合无命中 → 纯词面（确定性降级，嵌入故障不断轮）。"""
 
     if embedding_configured() and all(chunk.embedding is not None for chunk in chunks):
         try:
-            ranked = retrieve_for_question(
-                question,
+            ranked = retrieve_multi_for_question(
+                _rag_query_variants(question),
                 chunks,
                 build_embedder(),
                 top_k=_RAG_TOP_K,

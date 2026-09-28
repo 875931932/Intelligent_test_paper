@@ -6,7 +6,7 @@ import math
 import re
 from hashlib import sha256
 from numbers import Real
-from typing import Protocol
+from typing import Callable, Protocol
 
 from pydantic import BaseModel
 
@@ -113,6 +113,34 @@ def _chunk_content_hash(chunk: StagingChunk) -> str:
     return sha256(chunk.content.encode()).hexdigest()
 
 
+def _dedup_key(text: str) -> str:
+    """同文折叠键：忽略空白与表单下划线串，跨文档模板碎片（表头/填空线）归一。"""
+
+    return re.sub(r"[\s_＿—－\-]+", "", text)
+
+
+def _merge_ranked_groups(
+    ranked_groups: list[list[RankedChunk]],
+    *,
+    top_k: int,
+    key: Callable[[RankedChunk], str],
+) -> list[RankedChunk]:
+    """多查询结果合并：按 key 归并同项取最高分，确定性排序后截断 top_k。"""
+
+    by_key: dict[str, RankedChunk] = {}
+    for ranked in ranked_groups:
+        for item in ranked:
+            k = key(item)
+            existing = by_key.get(k)
+            if existing is None or item.score > existing.score:
+                by_key[k] = item
+    merged = sorted(
+        by_key.values(),
+        key=lambda item: (-item.score, _chunk_content_hash(item.chunk), item.chunk.id),
+    )
+    return merged[:top_k]
+
+
 def retrieve_for_exam_point(
     point: ExamPoint,
     chunks: list[StagingChunk],
@@ -174,6 +202,55 @@ def retrieve_for_question(
         query_vector=query_vector,
         top_k=top_k,
         minimum_score=minimum_score,
+    )
+
+
+def retrieve_multi_for_question(
+    question_variants: list[str],
+    chunks: list[StagingChunk],
+    embedder: EmbeddingClient,
+    *,
+    top_k: int,
+    minimum_score: float,
+) -> list[RankedChunk]:
+    """多查询资料问答检索：变体一次批量嵌入，各查询独立打分后同文折叠合并。
+
+    变体为确定性改写（通常 [原问题, 去问句框架的主题串]），词面/语义各按自身
+    文本打分；合并期按归一文本折叠近重复——跨文档模板碎片（表头「教学班：____」
+    之类，同一课程里可有十几份同文副本）只保留得分最高的一份，正文块才可能
+    进 top_k。单变体直接走单查询路径（行为与既有完全一致）。
+    """
+
+    _validate_configuration(top_k=top_k, minimum_score=minimum_score)
+    if not chunks:
+        return []
+    variants = [v for v in dict.fromkeys(question_variants) if v.strip()]
+    if not variants:
+        return []
+    if len(variants) == 1:
+        return retrieve_for_question(
+            variants[0], chunks, embedder, top_k=top_k, minimum_score=minimum_score
+        )
+    try:
+        raw_vectors = embedder.embed(variants)
+    except RetrievalConfigurationError:
+        raise
+    except Exception as exc:
+        raise RetrievalConfigurationError("嵌入服务调用失败，检索已中止") from exc
+    query_vectors = _validated_vectors(raw_vectors, expected_count=len(variants))
+    ranked_groups = [
+        retrieve_for_question(
+            variant,
+            chunks,
+            embedder,
+            top_k=len(chunks),
+            minimum_score=minimum_score,
+            query_vector=vector,
+        )
+        for variant, vector in zip(variants, query_vectors)
+    ]
+    return _merge_ranked_groups(
+        ranked_groups, top_k=top_k, key=lambda item: _dedup_key(item.chunk.content)
     )
 
 
@@ -339,18 +416,6 @@ class HybridStagingRetriever:
             )
             for query_vector in query_vectors
         ]
-        by_chunk: dict[str, RankedChunk] = {}
-        for ranked in ranked_groups:
-            for item in ranked:
-                existing = by_chunk.get(item.chunk.id)
-                if existing is None or item.score > existing.score:
-                    by_chunk[item.chunk.id] = item
-        merged = sorted(
-            by_chunk.values(),
-            key=lambda item: (
-                -item.score,
-                _chunk_content_hash(item.chunk),
-                item.chunk.id,
-            ),
+        return _merge_ranked_groups(
+            ranked_groups, top_k=self.top_k, key=lambda item: item.chunk.id
         )
-        return merged[: self.top_k]

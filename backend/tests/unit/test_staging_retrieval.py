@@ -24,6 +24,7 @@ from app.services.staging_retrieval_service import (
     lexical_rank_for_question,
     retrieve_for_exam_point,
     retrieve_for_question,
+    retrieve_multi_for_question,
 )
 
 
@@ -335,6 +336,93 @@ def test_retrieve_for_question_rejects_unsafe_configuration():
         retrieve_for_question("问题", _question_chunks(), StaticEmbedder([]), top_k=0, minimum_score=0.1)
     with pytest.raises(RetrievalConfigurationError):
         lexical_rank_for_question("问题", _question_chunks(), top_k=1, minimum_score=1.5)
+
+
+def test_retrieve_multi_for_question_merges_variants_and_collapses_template_duplicates():
+    """双变体各取所长；跨文档同文模板碎片（表头/填空线）只保留得分最高的一份。"""
+    chunks = [
+        StagingChunk(
+            id="a", material_version_id="v1",
+            content="教学大纲的课程性质与地位。", embedding=[1.0, 0.0],
+        ),
+        StagingChunk(
+            id="b", material_version_id="v1",
+            content="学时分配与考核方式说明。", embedding=[0.0, 1.0],
+        ),
+        StagingChunk(
+            id="dup1", material_version_id="v1",
+            content="教学班：____________", embedding=[0.9, 0.9],
+        ),
+        StagingChunk(
+            id="dup2", material_version_id="v2",
+            content="教学班：__________", embedding=[0.9, 0.9],
+        ),
+    ]
+    embedder = StaticEmbedder([[1.0, 0.0], [0.0, 1.0]])
+
+    first = retrieve_multi_for_question(
+        ["总结教学大纲讲了什么", "教学大纲"], chunks, embedder, top_k=6, minimum_score=0.05
+    )
+    second = retrieve_multi_for_question(
+        ["总结教学大纲讲了什么", "教学大纲"], chunks, embedder, top_k=6, minimum_score=0.05
+    )
+
+    ids = [item.chunk.id for item in first]
+    # 两个变体各自的主题块都进入合并结果
+    assert {"a", "b"} <= set(ids)
+    # 归一文本相同的模板碎片只留一份（下划线长度差异被折叠），且不含重复项
+    assert len({"dup1", "dup2"} & set(ids)) == 1
+    assert len(ids) == len(set(ids)) == 3
+    # 变体一次批量嵌入（每组打分复用查询向量），两次调用完全一致
+    assert embedder.calls[0] == ["总结教学大纲讲了什么", "教学大纲"]
+    assert len(embedder.calls) == 2
+    assert [item.chunk.id for item in first] == [item.chunk.id for item in second]
+    assert all(item.score >= 0.05 for item in first)
+
+
+def test_retrieve_multi_for_question_single_variant_delegates_to_single_path():
+    """无变体可分（去重/过滤后只剩一条）→ 与既有单查询路径行为一致。"""
+    embedder = StaticEmbedder([[1.0, 0.0]])
+    multi = retrieve_multi_for_question(
+        ["监督学习有哪些任务"], _question_chunks(), embedder, top_k=2, minimum_score=0.05
+    )
+    direct = retrieve_for_question(
+        "监督学习有哪些任务", _question_chunks(), StaticEmbedder([[1.0, 0.0]]),
+        top_k=2, minimum_score=0.05,
+    )
+
+    assert [item.chunk.id for item in multi] == [item.chunk.id for item in direct]
+    assert embedder.calls == [["监督学习有哪些任务"]]
+
+
+def test_retrieve_multi_for_question_skips_blank_variants_and_empty_chunks():
+    embedder = StaticEmbedder([[1.0, 0.0]])
+
+    assert retrieve_multi_for_question(
+        ["", "   "], _question_chunks(), embedder, top_k=2, minimum_score=0.05
+    ) == []
+    assert retrieve_multi_for_question(
+        ["问题", "题"], [], embedder, top_k=2, minimum_score=0.05
+    ) == []
+    assert embedder.calls == []
+
+
+def test_retrieve_multi_for_question_wraps_embedder_failure():
+    class FailingEmbedder:
+        def embed(self, texts):
+            raise RuntimeError("network down")
+
+    with pytest.raises(RetrievalConfigurationError, match="检索已中止"):
+        retrieve_multi_for_question(
+            ["问题", "题"], _question_chunks(), FailingEmbedder(), top_k=2, minimum_score=0.1
+        )
+
+
+def test_retrieve_multi_for_question_rejects_unsafe_configuration():
+    with pytest.raises(RetrievalConfigurationError):
+        retrieve_multi_for_question(
+            ["问题", "题"], _question_chunks(), StaticEmbedder([]), top_k=0, minimum_score=0.1
+        )
 
 
 def test_lexical_rank_for_question_orders_by_overlap_without_embedder():

@@ -828,8 +828,11 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
     未解析引导先解析）；不传则限定**全课程已解析资料**（无已解析资料时带反馈重试后落确定性文案）；
   - 问题 = 教师原话（`route_intent(message=...)` 原样下传，不经模型转述）；
   - worker 内：`ensure_embedded` 自愈缺向量块（历史数据/任务失败兜底）→ `load_content_chunks`
-    装载（仅 staged 最新版本最新 ready run 的块）→ 检索：混合 `0.35 词面 + 0.65 语义`
-    （`top_k=6`、hybrid min 0.15），嵌入未配置/失败/向量缺失 → 纯词面降级（Jaccard 2/3-gram，min 0.2）；
+    装载（仅 staged 最新版本最新 ready run 的块）→ 检索：**多查询混合**——确定性改写出双变体
+    （原问题 + 去问句框架的主题核心，如「总结教学大纲讲了什么？」→「教学大纲」），一次批量嵌入，
+    各变体独立打分（混合 `0.35 词面 + 0.65 语义`，`top_k=6`、hybrid min 0.15），合并期按归一文本
+    折叠近重复（跨文档同文模板碎片只留得分最高一份，正文块才进得了 top_k；单变体退化为既有单查询）；
+    嵌入未配置/失败/向量缺失 → 纯词面降级（Jaccard 2/3-gram，min 0.2）；
   - 段2 流式用 `answer_material_content` 专用 grounding prompt（temperature 0.3，只依据片段作答，
     找不到就说找不到；拒绝话术第 6 条：全文照抄/朗读仍拒，`read_material_content` 保持在 `REFUSED_TOOLS`）；
   - 命中：`action={kind:"sources", tool, args, status:"completed", payload:{question,

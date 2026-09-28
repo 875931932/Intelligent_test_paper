@@ -512,6 +512,23 @@ def test_rag_prompt_documents_tool_and_grounding_rules():
     assert "比例/难度/去重" in rag_prompt
 
 
+def test_rag_query_variants_strip_frames_and_leading_verbs():
+    """确定性查询改写：原问题恒为首变体；削问句框架与句首泛化动词得主题核心。"""
+    assert assistant_service._rag_query_variants("总结教学大纲讲了什么？") == [
+        "总结教学大纲讲了什么？",
+        "教学大纲",
+    ]
+    assert assistant_service._rag_query_variants("请介绍混淆矩阵") == [
+        "请介绍混淆矩阵",
+        "混淆矩阵",
+    ]
+    assert assistant_service._rag_query_variants("SK3020是什么") == ["SK3020是什么", "SK3020"]
+    # 无问句框架可削 → 单变体（多查询自动退化为既有单查询行为）
+    assert assistant_service._rag_query_variants("数据归一化的方法") == ["数据归一化的方法"]
+    # 削空后不追加空串
+    assert assistant_service._rag_query_variants("总结一下") == ["总结一下"]
+
+
 def test_rag_route_targets_named_material_lexical_mode(monkeypatch):
     """点名资料：白名单通过 + ready → kind=rag，词面模式组装来源卡 payload。"""
     calls = _patch_rag(monkeypatch)
@@ -566,12 +583,13 @@ def test_rag_route_course_wide_without_material_id(monkeypatch):
 
 
 def test_rag_route_hybrid_mode_when_embeddings_present(monkeypatch):
-    """语料向量齐备 + 嵌入已配置 → 混合检索（0.35 词面 + 0.65 语义）。"""
+    """语料向量齐备 + 嵌入已配置 → 多查询混合检索（原问题+主题核心双变体批量嵌入）。"""
 
     class QueryEmbedder:
         def embed(self, texts):
-            assert texts == ["监督学习的分类与回归是什么"]
-            return [[1.0, 0.0]]
+            # 双变体契约：原问题恒为首变体，去问句框架的主题串为第二变体
+            assert texts == ["监督学习的分类与回归是什么", "监督学习的分类与回归"]
+            return [[1.0, 0.0], [1.0, 0.0]]
 
     calls = _patch_rag(monkeypatch, _rag_chunks(with_embeddings=True), configured=True)
     monkeypatch.setattr(assistant_service, "build_embedder", lambda: QueryEmbedder())
@@ -585,7 +603,7 @@ def test_rag_route_hybrid_mode_when_embeddings_present(monkeypatch):
 
     assert routed["retrieval"]["mode"] == "hybrid"
     assert routed["payload"]["mode"] == "hybrid"
-    # 语义命中 blk-1（cos=1），blk-2 语义为 0 被过滤
+    # 语义命中 blk-1（cos=1），blk-2 语义为 0 被过滤；两组同文合并后仍只有一条
     assert [s["block_id"] for s in routed["payload"]["sources"]] == ["blk-1"]
     assert calls["ensure"]  # 自愈仍先执行
 
