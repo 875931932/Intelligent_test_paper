@@ -37,7 +37,7 @@ export const TreeView = memo(function TreeView(props: {
         return (
           <div key={point.id}>
             <div
-              style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderRadius: '10px', cursor: 'pointer', transition: 'background 0.2s' }}
+              style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', transition: 'background 0.2s cubic-bezier(0, 0, 0.2, 1)' }}
               onClick={() => togglePoint(point.id)}
             >
               <span style={{ color: 'var(--text-tertiary)' }}>{isExp ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
@@ -57,7 +57,7 @@ export const TreeView = memo(function TreeView(props: {
                   return (
                     <div key={unit.unit_id}>
                       <div
-                        style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', borderRadius: '10px', cursor: 'pointer', transition: 'background 0.2s' }}
+                        style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', transition: 'background 0.2s cubic-bezier(0, 0, 0.2, 1)' }}
                         onClick={() => toggleUnit(unit.unit_id)}
                       >
                         <span style={{ color: 'var(--text-tertiary)' }}>{isUExp ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
@@ -72,7 +72,7 @@ export const TreeView = memo(function TreeView(props: {
                           {unitCards.map((card) => (
                             <div
                               key={card.id}
-                              style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', borderRadius: '8px', cursor: 'pointer', transition: 'background 0.2s' }}
+                              style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', transition: 'background 0.2s cubic-bezier(0, 0, 0.2, 1)' }}
                               onClick={() => onCardClick(card.id)}
                             >
                               <span style={{ color: card.grounded ? 'var(--success)' : 'var(--error)' }}>

@@ -56,12 +56,6 @@ export function LoginPage() {
 
   return (
     <div className="login-page">
-      <div className="login-orbs">
-        <span className="orb orb-1" />
-        <span className="orb orb-2" />
-        <span className="orb orb-3" />
-      </div>
-
       <div className="login-card glass-card animate-fade-in">
         <div className="login-header">
           <div className="login-icon">
@@ -124,46 +118,6 @@ const loginStyles = `
     background: linear-gradient(135deg, var(--bg) 0%, var(--page-bg) 55%, var(--bg) 100%);
   }
 
-  .login-orbs {
-    position: absolute;
-    inset: 0;
-    pointer-events: none;
-    overflow: hidden;
-  }
-
-  .orb {
-    position: absolute;
-    border-radius: 50%;
-    filter: blur(80px);
-    opacity: 0.45;
-    /* 静态光斑：常驻页面的无限漂移动画既分心又耗 GPU，渐变底色已足够 */
-  }
-
-  .orb-1 {
-    width: 400px;
-    height: 400px;
-    background: radial-gradient(circle, rgba(232, 168, 124, 0.16), transparent 70%);
-    top: -10%;
-    left: -5%;
-  }
-
-  .orb-2 {
-    width: 350px;
-    height: 350px;
-    background: radial-gradient(circle, rgba(133, 205, 202, 0.14), transparent 70%);
-    bottom: -10%;
-    right: -5%;
-  }
-
-  .orb-3 {
-    width: 280px;
-    height: 280px;
-    background: radial-gradient(circle, rgba(195, 141, 148, 0.12), transparent 70%);
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-  }
-
   .login-card {
     position: relative;
     z-index: 1;
@@ -191,10 +145,9 @@ const loginStyles = `
   }
 
   .login-title {
-    font-family: var(--font-serif);
     font-size: 1.75rem;
-    font-weight: 500;
-    letter-spacing: 0.02em;
+    font-weight: 600;
+    letter-spacing: -0.02em;
     color: var(--text);
     margin: 0;
   }

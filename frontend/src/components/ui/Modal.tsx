@@ -36,7 +36,7 @@ export function Modal({
           <h3 className="modal-title">{title}</h3>
           <button onClick={onClose} style={{
             background: 'none', border: 'none', cursor: 'pointer', padding: '4px',
-            borderRadius: '6px', color: 'var(--text-tertiary)', display: 'flex',
+            borderRadius: 'var(--radius-sm)', color: 'var(--text-tertiary)', display: 'flex',
           }}
             onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--fill-strong)'; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}

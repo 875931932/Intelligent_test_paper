@@ -148,7 +148,6 @@ export function AiRevisePanel({
     <div
       style={{
         padding: '16px 24px 16px 22px',
-        borderLeft: '3px solid var(--purple)',
         display: 'flex',
         flexDirection: 'column',
         gap: '12px',
@@ -185,21 +184,21 @@ export function AiRevisePanel({
           <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
             {changedKeys.map((k) => (
               <div key={k}>
-                <div style={{ fontSize: '0.75rem', fontWeight: 700, color: 'var(--text-tertiary)', marginBottom: 4 }}>
+                <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-tertiary)', marginBottom: 4 }}>
                   {FIELD_LABEL[k]}
                 </div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
                   <div style={{
-                    padding: '6px 10px', borderRadius: 6, fontSize: '0.82rem', lineHeight: 1.65,
-                    background: 'var(--error-subtle, rgba(220,38,38,0.06))',
+                    padding: '6px 10px', borderRadius: 'var(--radius-sm)', fontSize: '0.82rem', lineHeight: 1.65,
+                    background: 'var(--error-subtle)',
                     color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
                     textDecoration: 'line-through', textDecorationColor: 'var(--error-ink)',
                   }}>
                     {toText(result.current[k])}
                   </div>
                   <div style={{
-                    padding: '6px 10px', borderRadius: 6, fontSize: '0.82rem', lineHeight: 1.65,
-                    background: 'var(--success-subtle, rgba(22,163,74,0.08))',
+                    padding: '6px 10px', borderRadius: 'var(--radius-sm)', fontSize: '0.82rem', lineHeight: 1.65,
+                    background: 'var(--success-subtle)',
                     color: 'var(--text)', whiteSpace: 'pre-wrap', wordBreak: 'break-word',
                   }}>
                     {toText(result.proposal[k])}
@@ -254,8 +253,6 @@ export function AiRevisePanel({
           position: 'sticky', bottom: 12, zIndex: 5,
           padding: '12px 14px', borderRadius: 12,
           background: 'var(--surface-elevated)',
-          backdropFilter: 'var(--glass-blur)',
-          WebkitBackdropFilter: 'var(--glass-blur)',
           border: '1px solid var(--line-soft)',
           boxShadow: 'var(--shadow-3)',
         }}
@@ -267,8 +264,8 @@ export function AiRevisePanel({
           rows={2}
           disabled={running}
           style={{
-            resize: 'vertical', padding: '8px 10px', borderRadius: 8, fontSize: '0.875rem',
-            border: '1px solid var(--line-strong)', background: 'var(--surface-glass)',
+            resize: 'vertical', padding: '8px 10px', borderRadius: 12, fontSize: '0.875rem',
+            border: '1px solid var(--line)', background: 'var(--surface-sunken)',
             fontFamily: 'inherit', lineHeight: 1.6,
           }}
         />

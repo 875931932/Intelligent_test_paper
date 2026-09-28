@@ -185,7 +185,7 @@ export function ExamRulesCard({
     <div className="glass-card" style={{ padding: '18px 22px' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
         <div>
-          <h3 style={{ fontSize: '1rem', fontWeight: 700, letterSpacing: '-0.01em' }}>考核规则</h3>
+          <h3 style={{ fontSize: '1rem', fontWeight: 600, letterSpacing: '-0.01em' }}>考核规则</h3>
           <p style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', marginTop: '3px' }}>
             考纲声明的考试形式、题型比例与章节命题权重，可另设考试侧重点；蓝图按此推导试卷结构
           </p>
@@ -266,7 +266,7 @@ export function ExamRulesCard({
         <div style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
           <div style={{
             display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap',
-            padding: '10px 14px', borderRadius: 10,
+            padding: '10px 14px', borderRadius: 'var(--radius-sm)',
             background: 'var(--accent-subtle)', border: '1px dashed var(--accent-soft)',
           }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', fontWeight: 600, color: 'var(--accent)', whiteSpace: 'nowrap' }}>
@@ -301,7 +301,7 @@ export function ExamRulesCard({
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
               <p style={{ fontSize: '0.82rem', fontWeight: 600 }}>题型比例</p>
               <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                <span style={{ fontSize: '0.75rem', color: Math.abs(ratioSum - 100) < 0.5 ? 'var(--success)' : 'var(--warning)' }}>
+                <span style={{ fontSize: '0.75rem', color: Math.abs(ratioSum - 100) < 0.5 ? 'var(--success-ink)' : 'var(--warning-ink)' }}>
                   合计 {formatPercent(ratioSum)}
                 </span>
                 <Button variant="ghost" size="sm" onClick={() => setDraft({ ...draft, question_type_ratios: [...draft.question_type_ratios, { question_type: 'single_choice', ratio: 0 }] })} icon={<Plus size={14} />}>加题型</Button>
@@ -342,7 +342,7 @@ export function ExamRulesCard({
           <div>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
               <p style={{ fontSize: '0.82rem', fontWeight: 600 }}>章节命题权重</p>
-              <span style={{ fontSize: '0.75rem', color: Math.abs(chapterSum - 100) < 0.5 ? 'var(--success)' : 'var(--warning)' }}>
+              <span style={{ fontSize: '0.75rem', color: Math.abs(chapterSum - 100) < 0.5 ? 'var(--success-ink)' : 'var(--warning-ink)' }}>
                 合计 {formatPercent(chapterSum)}
               </span>
             </div>
@@ -400,14 +400,14 @@ export function ExamRulesCard({
                 </div>
               ))}
             </div>
-            <p style={{ fontSize: '0.75rem', color: focusSum > 0 && Math.abs(focusSum - 100) > 0.5 ? 'var(--warning)' : 'var(--text-tertiary)', marginTop: '8px', lineHeight: 1.7 }}>
+            <p style={{ fontSize: '0.75rem', color: focusSum > 0 && Math.abs(focusSum - 100) > 0.5 ? 'var(--warning-ink)' : 'var(--text-tertiary)', marginTop: '8px', lineHeight: 1.7 }}>
               {focusSum > 0
                 ? `合计 ${formatPercent(focusSum)}（保存时自动归一到 100）。侧重点决定蓝图各题型的考查方式分布；无可直考实操单元的课程，实操占比会自动收敛为 0，出卷不受影响，题位表可逐题查看考查方式。`
                 : '均衡：不声明侧重点，蓝图按题型默认分布分配考查方式。'}
             </p>
           </div>
 
-          <div style={{ padding: '10px 14px', borderRadius: 8, background: 'var(--info-subtle)', fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
+          <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--info-subtle)', fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
             比例不需要手工凑满 100：保存时会自动归一到 100。题型比例决定试卷的题型分布与分值，
             章节权重决定各章出题占比，考试侧重点决定各题型的考查方式；考纲未声明的章节按 0 处理。
           </div>

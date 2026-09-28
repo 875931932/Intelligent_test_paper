@@ -427,7 +427,7 @@ export default function PaperPanel({
           title="试卷整体预览"
           style={{
             display: 'block', width: '100%', height: '64vh',
-            border: '1px solid var(--line)', borderRadius: 8, background: 'var(--surface-solid)',
+            border: '1px solid var(--line)', borderRadius: 'var(--radius-sm)', background: 'var(--surface-solid)',
           }}
         />
       ) : (
@@ -435,7 +435,7 @@ export default function PaperPanel({
           style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             width: '100%', height: '64vh',
-            border: '1px solid var(--line)', borderRadius: 8,
+            border: '1px solid var(--line)', borderRadius: 'var(--radius-sm)',
             background: 'var(--surface-solid)', color: 'var(--text-tertiary)', fontSize: '0.85rem',
           }}
         >

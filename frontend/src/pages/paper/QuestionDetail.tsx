@@ -46,7 +46,7 @@ export function QuestionDetail({
   const hasMeta = !!(epText || item.cognitive_level || (flagged && item.needs_review_reason));
   const headerBadges = (
     <>
-      <span style={{ fontSize: '1.05rem', fontWeight: 700, color: 'var(--text-tertiary)' }}>{item.item_index}.</span>
+      <span style={{ fontSize: '1.05rem', fontWeight: 600, color: 'var(--text-tertiary)' }}>{item.item_index}.</span>
       <Badge variant="info">{qlabel(item.question_type)}</Badge>
       <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{formatScore(item.score)} 分</span>
       {item.difficulty && <Badge variant="default">{dlabel(item.difficulty)}</Badge>}
@@ -66,7 +66,6 @@ export function QuestionDetail({
         flex: 1, minHeight: 0, overflowY: 'auto',
         display: 'flex', flexDirection: 'column',
         padding: '24px 24px 24px 22px',
-        borderLeft: '3px solid ' + (flagged ? 'var(--warning)' : 'var(--accent-soft)'),
       }}
     >
       {/* 一行摘要徽标：阅读态作为 details 摘要（展开看考点全文/审核原因），编辑态直接平铺 */}
@@ -83,7 +82,7 @@ export function QuestionDetail({
             )}
             <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>详情 ▾</span>
           </summary>
-          <div style={{ marginTop: '8px', padding: '8px 12px', borderRadius: 8, background: 'var(--fill)', fontSize: '0.8rem', lineHeight: 1.7, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <div style={{ marginTop: '8px', padding: '8px 12px', borderRadius: 'var(--radius-sm)', background: 'var(--fill)', fontSize: '0.8rem', lineHeight: 1.7, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {epText && (
               <div title={epTitle}>
                 考点：{epText}{item.exam_point_code ? `（${item.exam_point_code}）` : ''}
@@ -104,7 +103,7 @@ export function QuestionDetail({
           {/* 编辑态也要能看到标记原因，否则教师不知道该修什么 */}
           {flagged && item.needs_review_reason && (
             <div style={{
-              marginBottom: '12px', padding: '8px 12px', borderRadius: 8, fontSize: '0.8rem', lineHeight: 1.6,
+              marginBottom: '12px', padding: '8px 12px', borderRadius: 'var(--radius-sm)', fontSize: '0.8rem', lineHeight: 1.6,
               background: 'var(--warning-subtle)', color: 'var(--text-secondary)',
             }}>
               <span style={{ fontWeight: 600, color: 'var(--warning)' }}>待审核原因：</span>{item.needs_review_reason}
@@ -141,7 +140,7 @@ export function QuestionDetail({
                 const isAns = keys.has(o.key.toUpperCase());
                 return (
                   <div key={o.key} style={{
-                    display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '8px 12px', borderRadius: 8,
+                    display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '8px 12px', borderRadius: 'var(--radius-sm)',
                     background: isAns ? 'var(--success-subtle)' : 'var(--fill)',
                     fontSize: '0.925rem', lineHeight: 1.65,
                   }}>
@@ -154,7 +153,7 @@ export function QuestionDetail({
             </div>
           ) : (
             <div style={{
-              marginTop: '14px', padding: '10px 14px', borderRadius: 8, fontSize: '0.925rem', lineHeight: 1.75,
+              marginTop: '14px', padding: '10px 14px', borderRadius: 'var(--radius-sm)', fontSize: '0.925rem', lineHeight: 1.75,
               background: answerText ? 'var(--accent-subtle)' : 'var(--warning-subtle)',
               color: answerText ? 'var(--text)' : 'var(--warning)',
               whiteSpace: 'pre-wrap', wordBreak: 'break-word',

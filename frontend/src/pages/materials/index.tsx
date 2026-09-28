@@ -393,7 +393,7 @@ export default function MaterialsPage() {
     if (filteredMaterials.length === 0) {
       return (
         <div style={{ padding: '80px 20px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', textAlign: 'center' }}>
-          <div style={{ width: 56, height: 56, borderRadius: '18px', background: 'var(--accent-subtle)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: 56, height: 56, borderRadius: 'var(--radius-lg)', background: 'var(--accent-subtle)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <FileText size={28} />
           </div>
           <h3 style={{ fontSize: '1.125rem', fontWeight: 600 }}>暂无资料</h3>
@@ -403,7 +403,7 @@ export default function MaterialsPage() {
     }
 
     return (
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '16px' }}>
+      <div className="bento bento-3">
         {filteredMaterials.map((m) => (
           // 卡内文件卡降级为 sub-section：二级视图容器卡已是唯一一层玻璃
           <div
@@ -481,9 +481,9 @@ export default function MaterialsPage() {
         </Button>
       </div>
 
-      {/* ── 根视图：两个一级文件夹 ── */}
+      {/* ── 根视图：两个一级文件夹（bento 大格） ── */}
       {activeFolder === null && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '20px' }}>
+        <div className="bento bento-2">
           {FOLDER_GROUPS.map((f) => {
             const Icon = f.icon;
             const count = f.subFolders.reduce((sum, s) => sum + countByType(s.key), 0);
@@ -525,7 +525,7 @@ export default function MaterialsPage() {
             <span style={{ color: 'var(--text-tertiary)' }}>/</span>
             <h2 style={{ fontSize: '1.15rem', fontWeight: 600 }}>{currentFolder.name}</h2>
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '16px' }}>
+          <div className="bento bento-2">
             {currentFolder.subFolders.map((s) => {
               const Icon = s.icon;
               return (
@@ -619,7 +619,7 @@ export default function MaterialsPage() {
                   key={idx}
                   style={{
                     display: 'flex', alignItems: 'center', gap: '10px', padding: '10px 12px',
-                    background: 'var(--surface-elevated)', borderRadius: '10px', border: '1px solid var(--glass-border)',
+                    background: 'var(--surface-elevated)', borderRadius: '12px', border: '1px solid var(--line)',
                   }}
                 >
                   <FileText size={18} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />

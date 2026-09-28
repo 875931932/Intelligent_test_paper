@@ -149,18 +149,18 @@ export function FrameworkReviewPanel({ courseId }: { courseId: string }) {
                   <div
                     key={i}
                     style={{
-                      padding: '10px 12px', borderRadius: '10px',
+                      padding: '10px 12px', borderRadius: 'var(--radius-sm)',
                       background: style.background, border: '1px solid var(--line-soft)',
                       display: 'flex', flexDirection: 'column', gap: '4px',
                     }}
                   >
                     <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
-                      <span style={{ fontSize: '0.7rem', fontWeight: 700, color: style.color }}>
+                      <span style={{ fontSize: '0.7rem', fontWeight: 600, color: style.color }}>
                         {style.label}
                       </span>
                       <span
                         style={{
-                          fontSize: '0.7rem', padding: '1px 7px', borderRadius: '6px',
+                          fontSize: '0.7rem', fontWeight: 500, padding: '1px 8px', borderRadius: 'var(--radius-full)',
                           background: 'var(--fill-strong)', color: 'var(--text-secondary)',
                         }}
                       >

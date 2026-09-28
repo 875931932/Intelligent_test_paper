@@ -28,7 +28,7 @@ export function QuestionIndex({
             padding: '10px 8px 6px', position: 'sticky', top: 'var(--index-toolbar-h, 0px)',
             background: 'var(--bg)', zIndex: 1,
           }}>
-            <span style={{ fontSize: '0.78rem', fontWeight: 700, color: 'var(--text-secondary)' }}>{g.label}</span>
+            <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-secondary)' }}>{g.label}</span>
             <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>{g.items.length} 题</span>
           </div>
           {g.items.map((item) => {
@@ -41,13 +41,13 @@ export function QuestionIndex({
                 onClick={() => onSelect(item.item_index)}
                 style={{
                   width: '100%', display: 'flex', alignItems: 'center', gap: '8px',
-                  padding: '8px 10px', borderRadius: 10, border: 'none', cursor: 'pointer', textAlign: 'left',
+                  padding: '8px 10px', borderRadius: 'var(--radius-sm)', border: 'none', cursor: 'pointer', textAlign: 'left',
                   background: active ? 'var(--accent-subtle)' : 'transparent',
                   transition: 'background 120ms ease',
                 }}
               >
                 <span style={{
-                  fontSize: '0.8rem', fontWeight: 700, minWidth: 22,
+                  fontSize: '0.8rem', fontWeight: 600, minWidth: 22,
                   color: active ? 'var(--accent)' : 'var(--text-tertiary)',
                 }}>
                   {item.item_index}

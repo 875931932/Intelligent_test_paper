@@ -217,7 +217,7 @@ export function ProgressPanel({
             color: 'var(--warning-ink)',
             background: 'var(--warning-subtle)',
             border: '1px solid var(--warning-line)',
-            borderRadius: '8px',
+            borderRadius: 'var(--radius-sm)',
             padding: '8px 14px',
             maxWidth: '520px',
             display: 'flex',

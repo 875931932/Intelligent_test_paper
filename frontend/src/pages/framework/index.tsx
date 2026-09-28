@@ -70,9 +70,9 @@ function SyllabusSelect({ label, value, options, onChange }: {
         onBlur={() => setTimeout(() => setOpen(false), 120)}
         style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
-          width: '100%', maxWidth: '100%', minWidth: 0, padding: '10px 12px', borderRadius: '10px',
-          background: 'var(--surface)', border: '1px solid var(--line-strong)',
-          fontSize: '0.875rem', color: selected ? 'var(--text-primary)' : 'var(--text-tertiary)',
+          width: '100%', maxWidth: '100%', minWidth: 0, padding: '10px 12px', borderRadius: 'var(--radius-sm)',
+          background: 'var(--surface-sunken)', border: '1px solid var(--line)',
+          fontSize: '0.875rem', color: selected ? 'var(--text)' : 'var(--text-tertiary)',
           cursor: 'pointer', textAlign: 'left', overflow: 'hidden',
         }}
       >
@@ -82,7 +82,7 @@ function SyllabusSelect({ label, value, options, onChange }: {
         >
           {selected ? selected.label : '选择版本'}
         </span>
-        <ChevronDown size={16} style={{ flexShrink: 0, opacity: 0.6, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }} />
+        <ChevronDown size={16} style={{ flexShrink: 0, opacity: 0.6, transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s cubic-bezier(0, 0, 0.2, 1)' }} />
       </button>
       {open &&
         createPortal(
@@ -91,8 +91,8 @@ function SyllabusSelect({ label, value, options, onChange }: {
             style={{
               position: 'fixed', top: pos ? pos.top : 0, left: pos ? pos.left : 0,
               width: pos ? pos.width : '100%', zIndex: 9999, marginTop: 0,
-              background: 'var(--surface)', border: '1px solid var(--line-strong)',
-              borderRadius: '10px', boxShadow: 'var(--shadow-3)', padding: 4,
+              background: 'var(--surface)', border: '1px solid var(--line)',
+              borderRadius: 'var(--radius-sm)', boxShadow: 'var(--shadow-3)', padding: 4,
               maxHeight: 220, overflowY: 'auto',
             }}
           >
@@ -112,9 +112,9 @@ function SyllabusSelect({ label, value, options, onChange }: {
                 }}
                 style={{
                   display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
-                  padding: '9px 10px', borderRadius: 8, cursor: o.disabled ? 'not-allowed' : 'pointer',
+                  padding: '9px 10px', borderRadius: 'var(--radius-sm)', cursor: o.disabled ? 'not-allowed' : 'pointer',
                   background: value === o.id ? 'var(--accent-subtle)' : 'transparent',
-                  color: o.disabled ? 'var(--text-tertiary)' : 'var(--text-primary)',
+                  color: o.disabled ? 'var(--text-tertiary)' : 'var(--text)',
                   fontSize: '0.8125rem', opacity: o.disabled ? 0.7 : 1,
                 }}
               >
@@ -123,8 +123,8 @@ function SyllabusSelect({ label, value, options, onChange }: {
                   <span
                     title="未解析"
                     style={{
-                      flexShrink: 0, fontSize: '0.6875rem', padding: '2px 6px', borderRadius: 6,
-                      background: 'var(--line-soft)', color: 'var(--text-tertiary)',
+                      flexShrink: 0, fontSize: '0.6875rem', padding: '2px 8px', borderRadius: 'var(--radius-sm)',
+                      background: 'var(--fill-strong)', color: 'var(--text-tertiary)',
                     }}
                   >未解析</span>
                 )}
@@ -457,7 +457,7 @@ export default function FrameworkPage() {
       {/* Idle */}
       {buildState === 'idle' && (
         <div className="glass-panel" style={{ padding: '64px 20px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
-          <div style={{ width: 56, height: 56, borderRadius: '18px', background: 'var(--purple-subtle)', color: 'var(--purple)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: 56, height: 56, borderRadius: 'var(--radius-lg)', background: 'var(--purple-subtle)', color: 'var(--purple)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Target size={28} />
           </div>
           <h3 style={{ fontSize: '1.125rem', fontWeight: 600 }}>暂无命题框架</h3>
@@ -496,7 +496,7 @@ export default function FrameworkPage() {
             />
           </div>
           {(teachingVersions.length === 0 || assessmentVersions.length === 0) && (
-            <p style={{ fontSize: '0.8125rem', color: 'var(--warning)' }}>
+            <p style={{ fontSize: '0.8125rem', color: 'var(--warning-ink)' }}>
               请先在「资料库」上传并解析教学大纲与考核大纲
             </p>
           )}
@@ -517,11 +517,11 @@ export default function FrameworkPage() {
             确认后命题框架将对外发布，并用于后续的知识目录与命题蓝图阶段。
           </p>
           {candidate && (
-            <div style={{ padding: '12px 16px', borderRadius: '10px', background: 'var(--fill)', fontSize: '0.875rem', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div style={{ padding: '12px 16px', borderRadius: 'var(--radius-sm)', background: 'var(--fill)', fontSize: '0.875rem', display: 'flex', flexDirection: 'column', gap: '6px' }}>
               <p>锚点数量: <span style={{ fontWeight: 600 }}>{(candidate.anchors || []).length}</span></p>
               <p>考点数量: <span style={{ fontWeight: 600 }}>{(candidate.exam_points || []).length}</span></p>
               {(candidate.conflicts || []).length > 0 && (
-                <p style={{ color: 'var(--warning)' }}>警告: 存在 {(candidate.conflicts || []).length} 个冲突项，将按默认方式处理</p>
+                <p style={{ color: 'var(--warning-ink)' }}>警告: 存在 {(candidate.conflicts || []).length} 个冲突项，将按默认方式处理</p>
               )}
             </div>
           )}
@@ -549,13 +549,13 @@ function CandidateView({ courseId, candidate, rejecting, onReject, onOpenConfirm
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       {blocking.length > 0 && (
-        <div className="glass-card" style={{ padding: '16px', borderLeft: '4px solid var(--warning)' }}>
-          <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '12px', color: 'var(--warning)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div className="glass-card" style={{ padding: '16px' }}>
+          <h3 style={{ fontSize: '1rem', fontWeight: 600, marginBottom: '12px', color: 'var(--warning-ink)', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <AlertTriangle size={16} /> 需处理的冲突（{blocking.length}）
           </h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {blocking.map((c, i) => (
-              <div key={i} style={{ padding: '10px 12px', borderRadius: '10px', background: 'var(--warning-subtle)', fontSize: '0.875rem' }}>
+              <div key={i} style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', background: 'var(--warning-subtle)', fontSize: '0.875rem' }}>
                 <p style={{ fontWeight: 500 }}>{c.message}</p>
               </div>
             ))}
@@ -564,13 +564,13 @@ function CandidateView({ courseId, candidate, rejecting, onReject, onOpenConfirm
       )}
 
       {advisory.length > 0 && (
-        <details className="glass-card" style={{ padding: '16px', borderLeft: '4px solid var(--info)' }}>
-          <summary style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--info)', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', listStyle: 'none' }}>
+        <details className="glass-card" style={{ padding: '16px' }}>
+          <summary style={{ fontSize: '1rem', fontWeight: 600, color: 'var(--info-ink)', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', listStyle: 'none' }}>
             <span>参考提示（{advisory.length}）· 以考核大纲为准，无需处理</span>
           </summary>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '12px' }}>
             {advisory.map((c, i) => (
-              <div key={i} style={{ padding: '10px 12px', borderRadius: '10px', background: 'var(--info-subtle)', fontSize: '0.875rem' }}>
+              <div key={i} style={{ padding: '10px 12px', borderRadius: 'var(--radius-sm)', background: 'var(--info-subtle)', fontSize: '0.875rem' }}>
                 <p>{c.message}</p>
               </div>
             ))}
@@ -598,10 +598,9 @@ function CandidateView({ courseId, candidate, rejecting, onReject, onOpenConfirm
         position: 'sticky', bottom: 0, zIndex: 20,
         display: 'flex', justifyContent: 'flex-end', gap: '8px',
         padding: '12px 16px',
-        background: 'var(--sidebar-glass)',
-        backdropFilter: 'var(--glass-blur)', WebkitBackdropFilter: 'var(--glass-blur)',
+        background: 'var(--surface-solid)',
         border: '1px solid var(--line)',
-        borderRadius: '14px',
+        borderRadius: 'var(--radius-lg)',
         boxShadow: 'var(--shadow-2)',
       }}>
         <Button variant="secondary" icon={<X size={16} />} loading={rejecting} onClick={onReject}>

@@ -99,7 +99,6 @@ export function AiCreatePanel({
   };
 
   const rootStyle: CSSProperties = {
-    borderLeft: '3px solid var(--purple)',
     display: 'flex',
     flexDirection: 'column',
     gap: '12px',
@@ -119,7 +118,7 @@ export function AiCreatePanel({
       }}
     >
       <Sparkles size={16} style={{ color: 'var(--purple)', flexShrink: 0 }} />
-      <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>AI 生成题目</span>
+      <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>AI 生成题目</span>
       <Badge variant="purple">提案需确认</Badge>
       {running && <Spinner size="sm" />}
       {collapsed && result && <Badge variant="success">已生成提案</Badge>}
@@ -177,8 +176,8 @@ export function AiCreatePanel({
           <div
             style={{
               display: 'flex', flexDirection: 'column', gap: '8px',
-              padding: '10px 12px', borderRadius: 8,
-              background: 'var(--success-subtle, rgba(22,163,74,0.08))',
+              padding: '10px 12px', borderRadius: 'var(--radius-sm)',
+              background: 'var(--success-subtle)',
               fontSize: '0.85rem', lineHeight: 1.7, color: 'var(--text-secondary)',
             }}
           >
@@ -226,8 +225,6 @@ export function AiCreatePanel({
           position: 'sticky', bottom: 12, zIndex: 5,
           padding: '12px 14px', borderRadius: 12,
           background: 'var(--surface-elevated)',
-          backdropFilter: 'var(--glass-blur)',
-          WebkitBackdropFilter: 'var(--glass-blur)',
           border: '1px solid var(--line-soft)',
           boxShadow: 'var(--shadow-3)',
         }}
@@ -239,8 +236,8 @@ export function AiCreatePanel({
           rows={2}
           disabled={running}
           style={{
-            resize: 'vertical', padding: '8px 10px', borderRadius: 8, fontSize: '0.875rem',
-            border: '1px solid var(--line-strong)', background: 'var(--surface-glass)',
+            resize: 'vertical', padding: '8px 10px', borderRadius: 12, fontSize: '0.875rem',
+            border: '1px solid var(--line)', background: 'var(--surface-sunken)',
             fontFamily: 'inherit', lineHeight: 1.6,
           }}
         />

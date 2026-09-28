@@ -285,9 +285,9 @@ function ResultBody({
 const muted: CSSProperties = { fontSize: '0.82rem', color: 'var(--text-secondary)', margin: '4px 0' };
 
 const cardBox: CSSProperties = {
-  borderRadius: 10,
-  border: '1px solid var(--border, #d2d2d7)',
-  background: 'var(--surface, #fff)',
+  borderRadius: 'var(--radius-sm)',
+  border: '1px solid var(--line)',
+  background: 'var(--surface-solid)',
   padding: '10px 12px',
   marginTop: 6,
   display: 'flex',
@@ -377,7 +377,7 @@ function SourcesCard({
           return (
             <div
               key={s.block_id}
-              style={{ borderLeft: '3px solid var(--accent-soft)', paddingLeft: 8 }}
+              style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', background: 'var(--fill)' }}
             >
               <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
                 {i + 1}. {loc || '资料片段'}
@@ -713,8 +713,8 @@ const AssistantPage: FC = () => {
                   maxWidth: '88%',
                   borderRadius: '14px 14px 14px 4px',
                   padding: '8px 12px',
-                  background: 'var(--surface, #fff)',
-                  border: '1px solid var(--border, #d2d2d7)',
+                  background: 'var(--surface-solid)',
+                  border: '1px solid var(--line)',
                   fontSize: '0.875rem',
                   lineHeight: 1.65,
                   color: 'var(--text)',
@@ -762,8 +762,8 @@ const AssistantPage: FC = () => {
                 maxWidth: '88%',
                 borderRadius: '14px 14px 14px 4px',
                 padding: '8px 12px',
-                background: 'var(--surface, #fff)',
-                border: '1px solid var(--border, #d2d2d7)',
+                background: 'var(--surface-solid)',
+                border: '1px solid var(--line)',
                 fontSize: '0.875rem',
                 lineHeight: 1.65,
                 color: 'var(--text)',

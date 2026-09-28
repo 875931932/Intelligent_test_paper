@@ -254,7 +254,7 @@ export function CandidatePanel({ candidate, courseId, runId, supplementOps, onSu
                 <div
                   key={code}
                   className="reveal-hover"
-                  style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', borderRadius: '10px', background: 'var(--fill)', flexWrap: 'wrap' }}
+                  style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '8px 12px', borderRadius: 'var(--radius-sm)', background: 'var(--fill)', flexWrap: 'wrap' }}
                 >
                   <div style={{ flex: '1 1 260px', minWidth: 0 }}>
                     <div style={{ fontSize: '0.875rem', fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pointLabels.get(code) || code}</div>
@@ -358,7 +358,7 @@ export function CandidatePanel({ candidate, courseId, runId, supplementOps, onSu
                         onClick={() => setSuppChunk(opt.id)}
                         style={{
                           display: 'flex', flexDirection: 'column', gap: '4px',
-                          padding: '10px 12px', borderRadius: '10px', cursor: 'pointer',
+                          padding: '10px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer',
                           border: selected ? '2px solid var(--accent)' : '1px solid var(--border)',
                           background: selected ? 'var(--accent-subtle)' : (reason ? 'var(--success-subtle)' : 'var(--surface)'),
                         }}
@@ -380,7 +380,7 @@ export function CandidatePanel({ candidate, courseId, runId, supplementOps, onSu
                   })}
                 </div>
                 {suppPreview && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px', borderRadius: '10px', background: 'var(--fill)' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px', borderRadius: 'var(--radius-sm)', background: 'var(--fill)' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                       <Badge variant={suppPreview.relevance_class === 'supporting' ? 'info' : 'warning'}>
                         {suppPreview.relevance_class === 'supporting' ? '支持证据' : '背景证据'}
@@ -481,7 +481,7 @@ const CandidateTreePreview = memo(function CandidateTreePreview({ topics, covera
         return (
           <div key={topic.code}>
             <div
-              style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderRadius: '10px', cursor: 'pointer', background: 'var(--fill)' }}
+              style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', background: 'var(--fill)' }}
               onClick={() => toggleTopic(topic.code)}
             >
               <span style={{ color: 'var(--text-tertiary)' }}>{isExp ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>
@@ -500,7 +500,7 @@ const CandidateTreePreview = memo(function CandidateTreePreview({ topics, covera
                   return (
                     <div key={unitKey}>
                       <div
-                        style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', borderRadius: '10px', cursor: 'pointer' }}
+                        style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px', borderRadius: 'var(--radius-sm)', cursor: 'pointer' }}
                         onClick={() => toggleUnit(unitKey)}
                       >
                         <span style={{ color: 'var(--text-tertiary)' }}>{isUExp ? <ChevronDown size={14} /> : <ChevronRight size={14} />}</span>
@@ -524,7 +524,7 @@ const CandidateTreePreview = memo(function CandidateTreePreview({ topics, covera
                           {(unit.cards || []).map((card, ci) => (
                             <div
                               key={card.name + ci}
-                              style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', borderRadius: '8px' }}
+                              style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', borderRadius: 'var(--radius-sm)' }}
                             >
                               <span style={{ color: card.status === 'active' ? 'var(--success)' : 'var(--warning)' }}>
                                 <Circle size={8} fill="currentColor" />

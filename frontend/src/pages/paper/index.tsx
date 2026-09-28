@@ -193,22 +193,22 @@ export default function PaperPage() {
 
         {projects.length === 0 ? (
           <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '72px 24px', gap: '16px' }}>
-            <div style={{ width: 60, height: 60, borderRadius: '18px', background: 'var(--accent-subtle)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ width: 60, height: 60, borderRadius: 'var(--radius-lg)', background: 'var(--accent-subtle)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <ClipboardList size={30} />
             </div>
             <h3 style={{ fontWeight: 600, fontSize: '1.05rem' }}>暂无试卷项目</h3>
             <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>点击「新建项目」开始您的第一次出卷</p>
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <div className="bento bento-2">
             {projects.map((p) => {
               const sm = EXAM_PROJECT_STATUS_META[p.status] ?? { label: p.status, variant: 'default' as const };
               const psm = p.paper_version_status ? (PAPER_STATUS_META[p.paper_version_status] ?? null) : null;
               return (
                 <div
                   key={p.id}
-                  className="glass-card"
-                  style={{ padding: '16px 24px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}
+                  className="glass-card card-hover"
+                  style={{ padding: '16px 20px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px' }}
                   onClick={() => openProject(p)}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
@@ -234,7 +234,7 @@ export default function PaperPage() {
                       title="删除项目"
                       style={{
                         background: 'none', border: 'none', cursor: 'pointer', padding: '6px',
-                        borderRadius: 8, color: 'var(--text-tertiary)', display: 'flex',
+                        borderRadius: 'var(--radius-sm)', color: 'var(--text-tertiary)', display: 'flex',
                       }}
                       onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--error-subtle)'; e.currentTarget.style.color = 'var(--error)'; }}
                       onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; e.currentTarget.style.color = 'var(--text-tertiary)'; }}

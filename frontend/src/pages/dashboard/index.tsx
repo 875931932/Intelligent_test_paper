@@ -132,7 +132,50 @@ const DashboardPage: FC = () => {
         <p className="page-subtitle">智能出卷系统 · 从课程资料到成品试卷的完整链路</p>
       </div>
 
-      <div className="card-grid">
+      {/* 统计瓦片行：1x1 小卡放数字指标，渐变卡强调核心指标（白字深底） */}
+      <div className="bento">
+        <div className="glass-card" style={{ padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>课程资料</span>
+            <FolderOpen size={16} style={{ color: 'var(--text-tertiary)' }} />
+          </div>
+          <div style={{ fontSize: '1.75rem', fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1.1 }}>
+            {materialStats.total} <span style={{ fontSize: '0.875rem', fontWeight: 400, color: 'var(--text-tertiary)' }}>份</span>
+          </div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>已解析 {materialStats.parsed} · 未解析 {materialStats.unparsed}</div>
+        </div>
+        <div style={{
+          padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: '6px',
+          borderRadius: 'var(--radius-lg)', background: 'linear-gradient(135deg, #2563eb, #0891b2)',
+          boxShadow: 'var(--shadow-1)', color: '#ffffff',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: '0.75rem', opacity: 0.85 }}>考核点</span>
+            <ClipboardList size={16} style={{ opacity: 0.85 }} />
+          </div>
+          <div style={{ fontSize: '1.75rem', fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1.1 }}>{examPointCount}</div>
+          <div style={{ fontSize: '0.75rem', opacity: 0.85 }}>{isFrameworkPublished ? '框架已发布' : '框架待构建'}</div>
+        </div>
+        <div className="glass-card" style={{ padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>知识卡</span>
+            <Network size={16} style={{ color: 'var(--text-tertiary)' }} />
+          </div>
+          <div style={{ fontSize: '1.75rem', fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1.1 }}>{knowledgeCardCount}</div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>{evidenceCount} 条关联关系</div>
+        </div>
+        <div className="glass-card" style={{ padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>试卷项目</span>
+            <FileQuestion size={16} style={{ color: 'var(--text-tertiary)' }} />
+          </div>
+          <div style={{ fontSize: '1.75rem', fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1.1 }}>{examProjects.length}</div>
+          <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>最近 {recentProjects.length} 个进行中</div>
+        </div>
+      </div>
+
+      {/* 模块瓦片：大卡 2x2 放主入口，宽卡 2x1 放次级模块，全宽卡放项目动态 */}
+      <div className="bento">
         {/* 1. 资料库 */}
         <div
           role="button"
@@ -144,10 +187,10 @@ const DashboardPage: FC = () => {
               handleCardNavigate(`/courses/${activeCourseId}/materials`);
             }
           }}
-          style={{ cursor: 'pointer' }}
-          className="stagger-item"
+          style={{ cursor: 'pointer', display: 'flex' }}
+          className="stagger-item bento-col-2 bento-row-2"
         >
-          <Card className="card-hover">
+          <Card className="card-hover" style={{ flex: 1 }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px', marginBottom: '16px' }}>
               <div style={{
                 width: 44, height: 44, borderRadius: '14px',
@@ -158,7 +201,7 @@ const DashboardPage: FC = () => {
                 <FolderOpen size={22} />
               </div>
               <div>
-                <h3 style={{ fontSize: '1.05rem', fontWeight: 600, marginBottom: '4px' }}>资料库</h3>
+                <h3 className="card-title" style={{ marginBottom: '4px' }}>资料库</h3>
                 <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>管理课程教学资料</p>
               </div>
             </div>
@@ -191,10 +234,10 @@ const DashboardPage: FC = () => {
               handleCardNavigate(`/courses/${activeCourseId}/framework`);
             }
           }}
-          style={{ cursor: 'pointer' }}
-          className="stagger-item"
+          style={{ cursor: 'pointer', display: 'flex' }}
+          className="stagger-item bento-col-2"
         >
-          <Card className="card-hover">
+          <Card className="card-hover" style={{ flex: 1 }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px', marginBottom: '16px' }}>
               <div style={{
                 width: 44, height: 44, borderRadius: '14px',
@@ -205,7 +248,7 @@ const DashboardPage: FC = () => {
                 <ClipboardList size={22} />
               </div>
               <div>
-                <h3 style={{ fontSize: '1.05rem', fontWeight: 600, marginBottom: '4px' }}>命题框架</h3>
+                <h3 className="card-title" style={{ marginBottom: '4px' }}>命题框架</h3>
                 <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>构建试卷命题框架</p>
               </div>
             </div>
@@ -240,10 +283,10 @@ const DashboardPage: FC = () => {
               handleCardNavigate(`/courses/${activeCourseId}/knowledge`);
             }
           }}
-          style={{ cursor: 'pointer' }}
-          className="stagger-item"
+          style={{ cursor: 'pointer', display: 'flex' }}
+          className="stagger-item bento-col-2"
         >
-          <Card className="card-hover">
+          <Card className="card-hover" style={{ flex: 1 }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px', marginBottom: '16px' }}>
               <div style={{
                 width: 44, height: 44, borderRadius: '14px',
@@ -254,7 +297,7 @@ const DashboardPage: FC = () => {
                 <Network size={22} />
               </div>
               <div>
-                <h3 style={{ fontSize: '1.05rem', fontWeight: 600, marginBottom: '4px' }}>知识目录</h3>
+                <h3 className="card-title" style={{ marginBottom: '4px' }}>知识目录</h3>
                 <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>结构化知识卡片管理</p>
               </div>
             </div>
@@ -286,10 +329,10 @@ const DashboardPage: FC = () => {
               handleCardNavigate(`/courses/${activeCourseId}/paper`);
             }
           }}
-          style={{ cursor: 'pointer' }}
-          className="stagger-item"
+          style={{ cursor: 'pointer', display: 'flex' }}
+          className="stagger-item bento-col-4"
         >
-          <Card className="card-hover">
+          <Card className="card-hover" style={{ flex: 1 }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px', marginBottom: '16px' }}>
               <div style={{
                 width: 44, height: 44, borderRadius: '14px',
@@ -300,32 +343,29 @@ const DashboardPage: FC = () => {
                 <FileQuestion size={22} />
               </div>
               <div>
-                <h3 style={{ fontSize: '1.05rem', fontWeight: 600, marginBottom: '4px' }}>试卷项目</h3>
+                <h3 className="card-title" style={{ marginBottom: '4px' }}>试卷项目</h3>
                 <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>创建和管理试卷项目</p>
               </div>
             </div>
-            <div style={{ marginBottom: '12px' }}>
+            <div style={{ marginBottom: '12px', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
               {recentProjects.length === 0 ? (
                 <p style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>暂无试卷项目</p>
               ) : (
                 recentProjects.map((project) => (
-                  <div
+                  <span
                     key={project.id}
+                    title={project.status}
                     style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'space-between',
-                      padding: '6px 0',
-                      borderBottom: '1px solid var(--fill)',
+                      display: 'inline-flex', alignItems: 'center', gap: '8px',
+                      padding: '6px 12px', borderRadius: 'var(--radius-sm)',
+                      background: 'var(--fill)', fontSize: '0.8125rem',
                     }}
                   >
-                    <span style={{ fontSize: '0.8125rem' }}>{project.name}</span>
-                    <span title={project.status}>
-                      <Badge variant={EXAM_PROJECT_STATUS_META[project.status]?.variant ?? 'default'}>
-                        {EXAM_PROJECT_STATUS_META[project.status]?.label ?? '未知状态'}
-                      </Badge>
-                    </span>
-                  </div>
+                    {project.name}
+                    <Badge variant={EXAM_PROJECT_STATUS_META[project.status]?.variant ?? 'default'}>
+                      {EXAM_PROJECT_STATUS_META[project.status]?.label ?? '未知状态'}
+                    </Badge>
+                  </span>
                 ))
               )}
             </div>

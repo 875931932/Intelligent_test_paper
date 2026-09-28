@@ -1,16 +1,17 @@
-import type { ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 
 interface Props {
   title?: string;
   subtitle?: string;
   className?: string;
+  style?: CSSProperties;
   actions?: ReactNode;
   children: ReactNode;
 }
 
-export function Card({ title, subtitle, className = '', actions, children }: Props) {
+export function Card({ title, subtitle, className = '', style, actions, children }: Props) {
   return (
-    <div className={`glass-card ${className}`.trim()} style={{ padding: '24px' }}>
+    <div className={`glass-card ${className}`.trim()} style={{ padding: '24px', ...style }}>
       {(title || actions) && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: subtitle ? '4px' : '0' }}>
           <div>

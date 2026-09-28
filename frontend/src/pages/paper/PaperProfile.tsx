@@ -51,7 +51,7 @@ export function PaperProfile({
     <div className="glass-card" style={{ padding: '24px' }}>
       <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
         <div style={{ minWidth: 104 }}>
-          <div style={{ fontSize: '2rem', fontWeight: 700, lineHeight: 1, letterSpacing: '-0.03em' }}>{pv.total_score}</div>
+          <div style={{ fontSize: '2rem', fontWeight: 600, lineHeight: 1, letterSpacing: '-0.03em' }}>{pv.total_score}</div>
           <div style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', marginTop: 5 }}>
             总分 · {questions.length} 题 · v{pv.version_no}
           </div>

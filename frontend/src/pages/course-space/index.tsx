@@ -71,27 +71,26 @@ export default function CourseSpacePage() {
       <header style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         padding: '16px 32px', borderBottom: '1px solid var(--line-soft)',
-        backdropFilter: 'var(--glass-blur)', WebkitBackdropFilter: 'var(--glass-blur)',
-        position: 'sticky', top: 0, zIndex: 10, background: 'var(--sidebar-glass)',
+        position: 'sticky', top: 0, zIndex: 10, background: 'var(--surface-solid)',
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <div style={{
-            width: 38, height: 38, borderRadius: '11px',
-            background: 'linear-gradient(135deg, var(--accent), var(--info))',
+            width: 38, height: 38, borderRadius: '12px',
+            background: 'var(--accent)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: 'white',
           }}>
             <BookOpen size={20} />
           </div>
           <div>
-            <div style={{ fontSize: '1rem', fontWeight: 700, lineHeight: 1.2 }}>智能出卷</div>
+            <div style={{ fontSize: '1rem', fontWeight: 600, lineHeight: 1.2 }}>智能出卷</div>
             <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)' }}>AI Exam System</div>
           </div>
         </div>
         <button onClick={logout} title="退出登录" style={{
           display: 'flex', alignItems: 'center', gap: '6px',
           background: 'none', border: 'none', cursor: 'pointer',
-          padding: '8px 12px', borderRadius: '10px',
+          padding: '8px 12px', borderRadius: 'var(--radius-sm)',
           color: 'var(--text-secondary)', fontSize: '0.8125rem',
         }}
           onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--fill-strong)'; }}
@@ -113,13 +112,11 @@ export default function CourseSpacePage() {
             <p className="page-subtitle">选择一门课程开始命题工作，或创建新课程</p>
           </div>
 
-          <div style={{
-            display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))', gap: '20px',
-          }}>
+          <div className="bento bento-3">
             {loading ? (
               // 直接铺进父网格：形状与真实课程卡一致，加载完不跳变
               Array.from({ length: 4 }).map((_, i) => (
-                <div key={i} className="skeleton skeleton-card" />
+                <div key={i} className="skeleton skeleton-card" style={{ minHeight: '200px' }} />
               ))
             ) : (
               <>
@@ -165,15 +162,15 @@ export default function CourseSpacePage() {
             <button
               onClick={() => { setNewName(''); setCreateOpen(true); }}
               style={{
-                minHeight: '180px', borderRadius: 'var(--radius-lg)',
-                border: '1.5px dashed var(--accent-soft)', background: 'var(--accent-faint)',
+                minHeight: '200px', borderRadius: 'var(--radius-lg)',
+                border: '1.5px dashed var(--line-strong)', background: 'var(--fill)',
                 cursor: 'pointer', display: 'flex', flexDirection: 'column',
                 alignItems: 'center', justifyContent: 'center', gap: '10px',
-                color: 'var(--accent)', fontSize: '0.875rem', fontWeight: 500,
-                transition: 'all 0.2s ease',
+                color: 'var(--text-secondary)', fontSize: '0.875rem', fontWeight: 500,
+                transition: 'transform 0.2s cubic-bezier(0, 0, 0.2, 1), box-shadow 0.2s cubic-bezier(0, 0, 0.2, 1), background 0.2s cubic-bezier(0, 0, 0.2, 1)',
               }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--accent-soft)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--accent-faint)'; }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--fill-strong)'; e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = 'var(--shadow-hover)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--fill)'; e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none'; }}
             >
               <div style={{
                 width: 44, height: 44, borderRadius: '14px',

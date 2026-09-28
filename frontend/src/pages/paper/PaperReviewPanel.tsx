@@ -72,7 +72,6 @@ export function PaperReviewPanel({
     <div
       style={{
         padding: '16px 24px 16px 22px',
-        borderLeft: '3px solid var(--purple)',
         display: 'flex',
         flexDirection: 'column',
         gap: '12px',
@@ -110,14 +109,13 @@ export function PaperReviewPanel({
               <div
                 key={i}
                 style={{
-                  padding: '10px 12px', borderRadius: 8,
-                  borderLeft: s.severity === 'warn' ? '3px solid var(--warning)' : '3px solid var(--line-strong)',
-                  background: 'var(--surface-glass)',
+                  padding: '10px 12px', borderRadius: 'var(--radius-sm)',
+                  background: 'var(--surface-sunken)',
                   display: 'flex', flexDirection: 'column', gap: '6px',
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                  <span style={{ fontWeight: 700, fontSize: '0.8rem' }}>{s.dimension}</span>
+                  <span style={{ fontWeight: 600, fontSize: '0.8rem' }}>{s.dimension}</span>
                   {s.severity === 'warn'
                     ? <Badge variant="warning">需处理</Badge>
                     : <Badge variant="info">提示</Badge>}
@@ -166,8 +164,6 @@ export function PaperReviewPanel({
           position: 'sticky', bottom: 12, zIndex: 5,
           padding: '12px 14px', borderRadius: 12,
           background: 'var(--surface-elevated)',
-          backdropFilter: 'var(--glass-blur)',
-          WebkitBackdropFilter: 'var(--glass-blur)',
           border: '1px solid var(--line-soft)',
           boxShadow: 'var(--shadow-3)',
         }}
@@ -179,8 +175,8 @@ export function PaperReviewPanel({
           rows={2}
           disabled={running}
           style={{
-            resize: 'vertical', padding: '8px 10px', borderRadius: 8, fontSize: '0.875rem',
-            border: '1px solid var(--line-strong)', background: 'var(--surface-glass)',
+            resize: 'vertical', padding: '8px 10px', borderRadius: 12, fontSize: '0.875rem',
+            border: '1px solid var(--line)', background: 'var(--surface-sunken)',
             fontFamily: 'inherit', lineHeight: 1.6,
           }}
         />

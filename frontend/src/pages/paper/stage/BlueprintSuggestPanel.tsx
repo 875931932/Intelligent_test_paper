@@ -300,7 +300,7 @@ export function BlueprintSuggestPanel({
 
   return (
     <div style={{
-      borderRadius: 10, padding: '12px 14px',
+      borderRadius: 'var(--radius-sm)', padding: '12px 14px',
       background: 'var(--accent-subtle)', border: '1px dashed var(--accent-soft)',
       display: 'flex', flexDirection: 'column', gap: '10px',
     }}>
@@ -339,8 +339,8 @@ export function BlueprintSuggestPanel({
           onClick={() => setCollapsed(false)}
           style={{
             display: 'flex', alignItems: 'center', gap: '8px', width: '100%',
-            padding: '7px 10px', borderRadius: 8, cursor: 'pointer', textAlign: 'left',
-            background: 'var(--surface, #fff)', border: '1px solid var(--border, #d2d2d7)',
+            padding: '7px 10px', borderRadius: 'var(--radius-sm)', cursor: 'pointer', textAlign: 'left',
+            background: 'var(--surface-solid)', border: '1px solid var(--line)',
             fontSize: '0.78rem', color: 'var(--text-secondary)',
           }}
         >
@@ -381,13 +381,13 @@ export function BlueprintSuggestPanel({
                 key={keyOf(s)}
                 style={{
                   display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap',
-                  padding: '8px 10px', borderRadius: 8,
-                  background: isApplied ? 'var(--fill)' : 'var(--surface, #fff)',
-                  border: '1px solid var(--border, #d2d2d7)',
+                  padding: '8px 10px', borderRadius: 'var(--radius-sm)',
+                  background: isApplied ? 'var(--fill)' : 'var(--surface-solid)',
+                  border: '1px solid var(--line)',
                   opacity: isApplied ? 0.65 : 1,
                 }}
               >
-                <span style={{ fontSize: '0.78rem', fontWeight: 700 }}>#{s.item_index}</span>
+                <span style={{ fontSize: '0.78rem', fontWeight: 600 }}>#{s.item_index}</span>
                 <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
                   {FIELD_LABELS[s.field]}：{fromLabel(s, item, maps)}
                   <span style={{ margin: '0 6px', color: 'var(--accent)' }}>→</span>

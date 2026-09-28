@@ -20,10 +20,10 @@ interface Props {
   onLogout: () => void;
 }
 
-/* 侧栏色板全部走令牌：曾经的 Tailwind 系（#2563eb/#1f2937/#6b7280）
-   与主站令牌（学海蓝体系）两套并存，颜色统一后一律引用设计令牌 */
-const ISLAND_BG = 'var(--sidebar-glass)';
-const ISLAND_SHADOW = 'var(--shadow-2)';
+/* 侧栏色板全部走令牌：bento 实底白面板（禁玻璃态），曾经的 Tailwind 系
+   与旧主题色板已全部并入设计令牌 */
+const ISLAND_BG = 'var(--sidebar-bg)';
+const ISLAND_SHADOW = 'var(--shadow-1)';
 const HAIRLINE = '1px solid var(--line)';
 const RADIUS = 20;
 const TEXT_MAIN = 'var(--text)';
@@ -64,11 +64,9 @@ export function Sidebar({ onLogout }: Props) {
         border: HAIRLINE,
         borderRadius: RADIUS,
         boxShadow: ISLAND_SHADOW,
-        backdropFilter: 'blur(12px)',
-        WebkitBackdropFilter: 'blur(12px)',
         zIndex: 100,
         overflow: 'hidden',
-        transition: 'width 220ms cubic-bezier(0.4, 0, 0.2, 1)',
+        transition: 'width 0.25s cubic-bezier(0, 0, 0.2, 1)',
       }}
     >
       {/* Header */}
@@ -88,7 +86,7 @@ export function Sidebar({ onLogout }: Props) {
             alignItems: 'center',
             gap: 8,
             color: TEXT_MAIN,
-            fontWeight: 700,
+            fontWeight: 600,
             fontSize: 16,
             whiteSpace: 'nowrap',
           }}
@@ -104,14 +102,14 @@ export function Sidebar({ onLogout }: Props) {
             width: 28,
             height: 28,
             border: 'none',
-            borderRadius: 8,
+            borderRadius: 'var(--radius-sm)',
             background: 'transparent',
             cursor: 'pointer',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
             color: TEXT_SECONDARY,
-            transition: 'background 150ms ease',
+            transition: 'background 0.2s cubic-bezier(0, 0, 0.2, 1)',
           }}
           onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--fill)')}
           onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
@@ -143,7 +141,7 @@ export function Sidebar({ onLogout }: Props) {
               background: ACCENT_BG,
               cursor: 'pointer',
               color: ACCENT,
-              transition: 'background 150ms ease',
+              transition: 'background 0.2s cubic-bezier(0, 0, 0.2, 1)',
             }}
             onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--accent-soft)')}
             onMouseLeave={(e) => (e.currentTarget.style.background = ACCENT_BG)}
@@ -194,7 +192,7 @@ export function Sidebar({ onLogout }: Props) {
               textDecoration: 'none',
               fontSize: 14,
               fontWeight: isActive ? 600 : 500,
-              transition: 'all 150ms ease',
+              transition: 'all 0.2s cubic-bezier(0, 0, 0.2, 1)',
             })}
           >
             <Icon size={18} />
@@ -227,7 +225,7 @@ export function Sidebar({ onLogout }: Props) {
             cursor: 'pointer',
             fontSize: 14,
             fontWeight: 500,
-            transition: 'background 150ms ease',
+            transition: 'background 0.2s cubic-bezier(0, 0, 0.2, 1)',
           }}
           onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--fill)')}
           onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}

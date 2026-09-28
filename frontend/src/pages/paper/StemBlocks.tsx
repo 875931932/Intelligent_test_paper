@@ -99,7 +99,7 @@ export function StemBlocks({ text }: { text: string }) {
                 lineHeight: 1.6,
                 background: 'var(--fill)',
                 border: '1px solid var(--line)',
-                borderRadius: 8,
+                borderRadius: 'var(--radius-sm)',
                 padding: '10px 12px',
                 margin: '8px 0',
                 whiteSpace: 'pre-wrap',

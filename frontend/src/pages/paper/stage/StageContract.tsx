@@ -139,7 +139,7 @@ export function renderContract({
           </p>
         </div>
         {deficit > 0 && (
-          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'var(--warning-subtle)', border: '1px solid var(--warning-line)', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+          <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--warning-subtle)', border: '1px solid var(--warning-line)', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
             蓝图计划 <strong>{plannedScore}</strong> 分，实际分配 <strong>{actualScore}</strong> 分，缺 <strong>{deficit}</strong> 分。
             {backfilled.length > 0
               ? ' 部分题位已按同章回补改派到富余考点；仍有缺口说明同章内答案域容量不足，请补充知识卡或调整蓝图。'
@@ -147,7 +147,7 @@ export function renderContract({
           </div>
         )}
         {conflicts.length > 0 && (
-          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'var(--error-subtle)', border: '1px solid var(--error-line)', fontSize: '0.8rem' }}>
+          <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--error-subtle)', border: '1px solid var(--error-line)', fontSize: '0.8rem' }}>
             <div style={{ fontWeight: 600, marginBottom: '6px', color: 'var(--error)' }}>合同冲突（{conflicts.length}）</div>
             <ul style={{ margin: 0, paddingLeft: '18px', color: 'var(--text-secondary)' }}>
               {conflicts.map((c, i) => (
@@ -157,7 +157,7 @@ export function renderContract({
           </div>
         )}
         {backfilled.length > 0 && (
-          <div style={{ padding: '10px 14px', borderRadius: '8px', background: 'var(--accent-subtle)', border: '1px solid var(--accent-soft)', fontSize: '0.8rem' }}>
+          <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--accent-subtle)', border: '1px solid var(--accent-soft)', fontSize: '0.8rem' }}>
             <div style={{ fontWeight: 600, marginBottom: '6px', color: 'var(--accent)' }}>同章回补（{backfilled.length}）</div>
             <ul style={{ margin: 0, paddingLeft: '18px', color: 'var(--text-secondary)' }}>
               {backfilled.map((b) => (

@@ -97,7 +97,7 @@ export function renderBlueprint({
         />
         {mismatch.length > 0 && (
           <div style={{
-            padding: '12px 14px', borderRadius: 10, fontSize: '0.8rem', lineHeight: 1.7,
+            padding: '12px 14px', borderRadius: 'var(--radius-sm)', fontSize: '0.8rem', lineHeight: 1.7,
             background: 'var(--warning-subtle)', border: '1px solid var(--warning-line)',
           }}>
             <div style={{ fontWeight: 600, color: 'var(--warning)', marginBottom: '4px' }}>
@@ -121,7 +121,7 @@ export function renderBlueprint({
           <div>
             <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap', alignItems: 'flex-start', marginBottom: '16px' }}>
               <div style={{ minWidth: '120px' }}>
-                <div style={{ fontSize: '1.7rem', fontWeight: 700, lineHeight: 1 }}>{formatScore(totalScore)}</div>
+                <div style={{ fontSize: '1.7rem', fontWeight: 600, lineHeight: 1 }}>{formatScore(totalScore)}</div>
                 <div style={{ fontSize: '0.78rem', color: 'var(--text-tertiary)', marginTop: '4px' }}>总分 · {planItems.length} 题</div>
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', flex: 1, minWidth: '220px' }}>
@@ -165,8 +165,8 @@ export function renderBlueprint({
                           defaultValue={item.score}
                           style={{
                             width: '68px', fontSize: '0.85rem', padding: '3px 6px',
-                            borderRadius: 6, border: '1px solid var(--border, #d2d2d7)',
-                            background: 'var(--surface, #fff)', color: 'var(--text, #1d1d1f)',
+                            borderRadius: 'var(--radius-sm)', border: '1px solid var(--line)',
+                            background: 'var(--surface-solid)', color: 'var(--text)',
                           }}
                           onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
                           onBlur={(e) => {
@@ -190,8 +190,8 @@ export function renderBlueprint({
                           }}
                           style={{
                             fontSize: '0.82rem', padding: '3px 4px',
-                            borderRadius: 6, border: '1px solid var(--border, #d2d2d7)',
-                            background: 'var(--surface, #fff)', color: 'var(--text, #1d1d1f)',
+                            borderRadius: 'var(--radius-sm)', border: '1px solid var(--line)',
+                            background: 'var(--surface-solid)', color: 'var(--text)',
                           }}
                         >
                           {planDifficultyOptions(item.difficulty).map((o) => (
