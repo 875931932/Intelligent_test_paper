@@ -321,6 +321,10 @@ def test_build_prompt_grounded_in_real_data(session):
     assert "绕过" in system
     for dimension in ("难度分布", "题面表述", "答案与解析一致性", "覆盖与配额", "风险题"):
         assert dimension in system
+    # 答案唯一性（填空题歧义）检查：课程无关，只凭题干与通用常识判定
+    assert "答案唯一性" in system
+    assert "惯例值" in system
+    assert "不得依赖教材原文" in system
     assert "previous_validation_error" not in payload
 
 

@@ -849,11 +849,10 @@ class LLMGateway:
                 "每题的 forbidden_atoms 与 forbidden_answer_cores 是该题不得使用的内容，"
                 "不得出现在它的题干、选项、答案或解析中。"
                 "优先使用 preferred_terms 中的常用术语；除符号、缩写或必要消歧外不要使用括号解释。"
-                "填空题题干恰好 1 个空（连续下划线表示），空内答案简短唯一。"
-                "综合题逐项执行已分配的原型、材料形式、认知序列与分问范围："
-                "code_completion_scenario 先给工程场景说明再给代码框架，"
-                "关键处挖 ____________(编号)__________ 空（4至6处），分问固定为补全代码与问题分析，"
-                "代码与参数只能来自给定材料。若有 teacher_revision_instruction，只针对其涉及的题目局部改写。"
+                "每题的 question_template 与 output_schema 是该题的题型/原型格式定义"
+                "（填空的空数与空位、选项结构、综合题的原型材料与分问范围都以其为准），逐题严格照办；"
+                "本提示不重复任何题型格式规则。"
+                "若有 teacher_revision_instruction，只针对其涉及的题目局部改写。"
             ),
             response_validator=validate_batch,
         )

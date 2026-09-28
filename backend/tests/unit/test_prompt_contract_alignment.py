@@ -1,9 +1,13 @@
 """提示词/校验器一致性：题型任务卡、答案形态、禁用上下文下发。"""
 import pytest
 
+from app.adapters.model.llm_gateway import LLMGateway
 from app.domain.generation.batching import QuestionBatch
 from app.domain.generation.contract import ContractSlot, ForbiddenContext
 from app.schemas.generation import (
+    BatchGenerationPayload,
+    BatchQuestionSpec,
+    _comprehensive_template_and_schema,
     _template_and_schema_for,
     compile_batch_generation_payload,
 )
@@ -101,3 +105,53 @@ def test_answer_boundary_empty_answer_still_fails():
     assert _answer_hits_boundary({"answer": "", "options": ["甲", "乙"]}, "边界") is False
     # 无边界时不做答案域校验
     assert _answer_hits_boundary({"answer": "", "options": []}, "") is True
+
+
+def test_gateway_prompt_delegates_question_type_formats_to_task_card():
+    """批次提示词不得写死题型/原型格式：格式只从任务卡下发。
+
+    双源必漂移（改档案不改提示词），且 code_completion 专属格式写死在批次
+    提示词里会污染其他原型批次——这正是"生成链路过拟合当前学科题风"的形态。
+    """
+    captured = {}
+
+    class _Client:
+        def request_json(self, *, system_prompt, payload, temperature,
+                         call_context=None, response_validator=None):
+            captured["system_prompt"] = system_prompt
+            result = {"questions": [{"item_index": 1}]}
+            if response_validator:
+                response_validator(result)
+            return result
+
+    payload = BatchGenerationPayload(
+        batch_id="B01",
+        exam_point_ids=["EP1"],
+        questions=[
+            BatchQuestionSpec(
+                item_index=1, question_type="fill_blank", score=2, difficulty="medium",
+                cognitive_level="understand", coverage_atom="原子", answer_boundary="边界",
+                question_template="任务卡模板", output_schema={},
+            )
+        ],
+        batch_instruction="指令",
+        output_schema={"type": "array"},
+    )
+    gateway = LLMGateway(api_key="k", json_client=_Client())
+    gateway.generate_batch(payload)
+
+    system_prompt = captured["system_prompt"]
+    # 原三处硬编码格式残余
+    assert "恰好 1 个空" not in system_prompt
+    assert "code_completion_scenario" not in system_prompt
+    assert "__________(编号)__________" not in system_prompt
+    # 指引模型到任务卡里找格式定义
+    assert "question_template" in system_prompt
+
+
+def test_comprehensive_extra_format_rule_follows_archetype():
+    """原型专属格式只注入该原型的模板，不外溢到其他原型。"""
+    cc_template, _ = _comprehensive_template_and_schema("code_completion_scenario", [2, 2])
+    assert "挖空格式要求" in cc_template
+    case_template, _ = _comprehensive_template_and_schema("case_analysis", [2, 3])
+    assert "挖空格式要求" not in case_template

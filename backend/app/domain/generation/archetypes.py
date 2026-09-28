@@ -45,6 +45,9 @@ class ArchetypeContract(BaseModel):
     material_forms: frozenset[MaterialForm] = Field(min_length=1)
     question_template: str = Field(min_length=1)
     structure_requirements: tuple[str, ...] = Field(min_length=1)
+    # 原型专属的补充格式规则（可选）：只描述该原型特有的呈现格式，随任务卡
+    # 下发给模型；批次提示词不得重复这些规则（格式单一来源，见 question_formats 模块）。
+    extra_format_rule: str | None = None
 
 
 ARCHETYPE_CONTRACTS: dict[ComprehensiveArchetype, ArchetypeContract] = {
@@ -66,6 +69,12 @@ ARCHETYPE_CONTRACTS: dict[ComprehensiveArchetype, ArchetypeContract] = {
             "框架保持完整可读，挖空处为关键方法名、参数值或配置项",
             "分问（1）为补全内容，分问（2）为结合场景的原因分析与改进",
             "挖空处答案唯一且可从课程材料直接判定",
+        ),
+        extra_format_rule=(
+            "挖空格式要求：每处空写成 ____________(编号)__________ 的形式并按 (1)(2)(3) 顺延编号，"
+            "共 4 至 6 处；代码其余部分保持完整、缩进清晰；"
+            "分问（1）的 prompt 写'请在不改变整体结构的前提下补全代码'，answer 逐空给出编号与答案值；"
+            "分问（2）围绕该场景的一个真实运行或优化问题，answer 给出原因分析和改进方向。"
         ),
     ),
     "case_analysis": ArchetypeContract(

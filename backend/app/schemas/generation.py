@@ -5,83 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.domain.blueprint.models import AssessmentMode
 from app.domain.generation.archetypes import ARCHETYPE_CONTRACTS, ComprehensiveArchetype, MaterialForm
 from app.domain.generation.batching import QuestionBatch
-
-_QUESTION_TEMPLATES = {
-    "single_choice": (
-        "给出一个明确问题和四个互斥选项。"
-        "题干必须自包含——不依赖题外资料即可理解。"
-        "四个选项应围绕同一维度展开（如同一概念的不同定义、同一问题的不同方案），"
-        "干扰项应有 plausible 的迷惑性但不能有明显错误。"
-        "正确答案必须唯一且无歧义。"
-        "选项长度应大致均衡，避免正确答案因长度异常而被猜出。"
-    ),
-    "true_false": (
-        "给出一个可判定真伪的陈述句。"
-        "陈述必须明确到可以简单判断'对/错'的程度，不能含糊或有争议。"
-        "避免使用'总是'、'从不'等绝对化词汇（除非确实绝对正确）。"
-        "错误陈述的错误点应隐蔽但明确，不应是显而易见的常识性错误。"
-    ),
-    "fill_blank": (
-        "给出一个只考查术语、定义、条件或核心结论的理论填空题。"
-        "答案必须简短、唯一，不设计实际场景、开放分析或多步骤应用。"
-        "题干中恰好包含 1 个空，用连续下划线（不少于 4 个下划线字符）表示。"
-        "严禁出现 2 个及以上的空。"
-        "空的位置应放在句末或句中关键位置，不应放在句首。"
-    ),
-    "short_answer": (
-        "要求学生解释原理、比较方法或解决问题，并给出评分点。"
-        "题干应明确问题的范围和期望的回答深度。"
-        "答案应为2-5句话的核心要点，rubric 应列出关键的评分要素。"
-        "explanation 应解释为什么正确答案是正确的，以及常见错误。"
-    ),
-    "multiple_choice": (
-        "给出一个明确问题和四个互斥选项。"
-        "其中**有两个或以上**选项是正确的，其余为干扰项。"
-        "题干必须自包含——不依赖题外资料即可理解。"
-        "各选项应围绕同一维度展开，干扰项需 plausible 但不能有歧义地正确或错误。"
-        "选项长度应大致均衡，避免正确项因长度规律被猜出。"
-        "答案给出全部正确项的字母组合（如 AB）。"
-    ),
-    "essay": (
-        "给出一个需要系统论述的开放性问题。"
-        "题干应明确论述范围、立场或任务，使学生知道要论证什么。"
-        "答案给出核心论点与依据的要点化表述，rubric 列出评分要素。"
-        "explanation 说明评分要点与常见失分点。"
-    ),
-}
-
-_QUESTION_SCHEMAS = {
-    "single_choice": {
-        "stem": "string — 自包含的题干，不依赖外部资料",
-        "options": "array[4] — 四个互斥选项，按同一维度排列，长度均衡",
-        "answer": "string — 唯一正确答案（写选项字母如 B，或与某一选项完全一致的原文）",
-    },
-    "true_false": {
-        "stem": "string — 可明确判定真伪的陈述句",
-        "answer": "boolean — true 或 false",
-    },
-    "fill_blank": {
-        "stem": "string — 恰好含 1 处连续下划线空（不少于4个_），空在句中或句末",
-        "answer": "string — 简短唯一的术语、数值或短语",
-    },
-    "short_answer": {
-        "stem": "string — 明确问题和期望回答深度",
-        "answer": "string — 2-5句话的核心要点",
-        "explanation": "string — 解释答案正确性和常见错误",
-        "rubric": "array — 评分要素列表",
-    },
-    "multiple_choice": {
-        "stem": "string — 自包含的题干，不依赖外部资料",
-        "options": "array[4] — 四个互斥选项，按同一维度排列，长度均衡",
-        "answer": "string — 全部正确项的字母组合（如 AB），至少两个",
-    },
-    "essay": {
-        "stem": "string — 明确论述范围与任务的开放性问题",
-        "answer": "string — 核心论点与依据的要点化表述",
-        "explanation": "string — 评分要点与常见失分点",
-        "rubric": "array — 评分要素列表",
-    },
-}
+from app.domain.generation.question_formats import QUESTION_SCHEMAS, QUESTION_TEMPLATES
 
 # 题型任务卡与生成校验的对应关系。这里显式列出而不是让调用方散着判断：
 # 多选题校验要求"两个及以上正确项"、单选题要求"唯一"，二者都依赖选项集合。
@@ -92,19 +16,13 @@ def _comprehensive_template_and_schema(
     archetype: ComprehensiveArchetype | None,
     subquestion_count_range: list[int] | None,
 ) -> tuple[str, dict]:
-    """综合题模板拼装：原型模板 + 结构要求（+ 挖空规则）与分问数量约束的 schema。"""
+    """综合题模板拼装：原型模板 + 结构要求（+ 原型专属格式规则）与分问数量约束的 schema。"""
     if archetype is None:
         raise ValueError("comprehensive directive requires an archetype contract")
     contract = ARCHETYPE_CONTRACTS[archetype]
     question_template = contract.question_template + " 结构要求：" + "；".join(contract.structure_requirements)
-    if archetype == "code_completion_scenario":
-        code_blank_rule = (
-            " 挖空格式要求：每处空写成 ____________(编号)__________ 的形式并按 (1)(2)(3) 顺延编号，"
-            "共 4 至 6 处；代码其余部分保持完整、缩进清晰；"
-            "分问（1）的 prompt 写‘请在不改变整体结构的前提下补全代码’，answer 逐空给出编号与答案值；"
-            "分问（2）围绕该场景的一个真实运行或优化问题，answer 给出原因分析和改进方向。"
-        )
-        question_template += code_blank_rule
+    if contract.extra_format_rule:
+        question_template += " " + contract.extra_format_rule
     output_schema = {
         "type": "object",
         "required": ["stem", "subquestions", "answer", "explanation", "rubric"],
@@ -188,11 +106,11 @@ def _template_and_schema_for(question_type: str):
     if question_type == "comprehensive":
         raise ValueError("comprehensive 需由调用方传入原型与分问范围")
     try:
-        return _QUESTION_TEMPLATES[question_type], _QUESTION_SCHEMAS[question_type]
+        return QUESTION_TEMPLATES[question_type], QUESTION_SCHEMAS[question_type]
     except KeyError:
         raise ValueError(
             f"题型 {question_type!r} 没有任务卡：蓝图/合同层应在上游过滤，"
-            f"当前支持 {sorted(_QUESTION_TEMPLATES)}"
+            f"当前支持 {sorted(QUESTION_TEMPLATES)}"
         ) from None
 
 
