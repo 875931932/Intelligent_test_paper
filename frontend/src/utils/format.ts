@@ -29,3 +29,15 @@ export const MATERIAL_TYPE_COLORS: Record<string, string> = {
   teaching_material: 'badge-purple',
   exercise: 'badge-warning',
 };
+
+/** document_parse_runs 状态 → 中文文案（资料库列表与 AI 助手结果卡共用） */
+export const PARSE_STATUS_LABELS: Record<string, string> = {
+  queued: '排队中',
+  submitted: '解析中',
+  waiting_file: '解析中',
+  pending: '等待中',
+  running: '解析中',
+  converting: '转换中',
+  ready: '已完成',
+  failed: '失败',
+};

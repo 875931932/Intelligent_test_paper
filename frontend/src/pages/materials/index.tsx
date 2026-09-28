@@ -10,6 +10,7 @@ import { useCourseStore } from '@/stores/course';
 import { useToastStore } from '@/stores/toast';
 import { Button, Modal, Badge, SkeletonCardGrid } from '@/components/ui';
 import { computeSha256 } from '@/lib/sha256';
+import { PARSE_STATUS_LABELS } from '@/utils/format';
 import type { MaterialResponse } from '@/types/api';
 
 type FolderKey = 'syllabus' | 'materials';
@@ -36,6 +37,8 @@ interface UploadItem {
   type: string;
 }
 
+// 资料页文案沿用本页历史用词（teaching_material 显示「教材」），与 utils/format
+// 的共享版仅在该词条上有差异，故不整体替换
 const MATERIAL_TYPE_LABELS: Record<string, string> = {
   teaching_syllabus: '教学大纲',
   assessment_syllabus: '考核大纲',
@@ -48,17 +51,6 @@ const MATERIAL_TYPE_VARIANTS: Record<string, string> = {
   assessment_syllabus: 'success',
   teaching_material: 'default',
   exercise: 'warning',
-};
-
-const PARSE_STATUS_LABELS: Record<string, string> = {
-  queued: '排队中',
-  submitted: '解析中',
-  waiting_file: '解析中',
-  pending: '等待中',
-  running: '解析中',
-  converting: '转换中',
-  ready: '已完成',
-  failed: '失败',
 };
 
 const PARSE_STATUS_VARIANTS: Record<string, string> = {

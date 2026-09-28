@@ -80,6 +80,8 @@ _LEASE_SECONDS_BY_TYPE = {
     "propose_exam_rules": 300,
     "suggest_blueprint_adjustments": 300,
     "review_framework_candidate": 300,
+    # 助手一轮 = 意图解析 + 可选流式正文（两次模型调用），按短任务上限算
+    "assistant_turn": 300,
 }
 
 
@@ -296,3 +298,18 @@ def _handle_review_framework_candidate(context: TaskContext) -> dict:
 
 
 register_task_handler("review_framework_candidate", _handle_review_framework_candidate)
+
+
+def _handle_assistant_turn(context: TaskContext) -> dict:
+    """执行一轮助手对话：意图解析 → 确定性路由 → 结果/提案卡 + 流式正文。
+
+    只写 assistant_messages（与 task_runs）；写操作的执行由前端确认后调既有
+    业务 API，本 handler 不碰任何业务表——AI 只产提案不绕教师确认流。
+    """
+    from app.services.assistant_service import execute_turn_task
+
+    context.report_progress(stage="thinking", progress=10)
+    return execute_turn_task(context.session, payload=dict(context.payload))
+
+
+register_task_handler("assistant_turn", _handle_assistant_turn)

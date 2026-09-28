@@ -473,16 +473,18 @@ class LLMJsonClient:
         )
         raise LLMGatewayError(last_error.error_code, str(last_error), details=details) from last_error
 
-    def _post(
+    def _build_body(
         self,
         system_prompt: str,
         canonical_prompt: str,
         temperature: float,
+        *,
+        stream: bool = False,
         tool: dict[str, Any] | None = None,
         max_tokens: int | None = None,
         reasoning_effort: str | None = None,
         response_schema: dict[str, Any] | None = None,
-    ) -> httpx.Response:
+    ) -> dict[str, Any]:
         # 供应商参数按“型号档案”下发（见 model_profiles.py）：思考控制风格、
         # tool_choice 门控、json_schema 能力均以档案为准；未收录型号按 base_url
         # 回退通用 OpenAI 兼容档，历史行为不变。档案同时负责把 reasoning_effort
@@ -498,7 +500,11 @@ class LLMJsonClient:
         }
         if max_tokens is not None:
             json_body["max_tokens"] = max_tokens
-        if tool is not None:
+        if stream:
+            # 流式正文走自由文本：response_format 会把输出锁死成 JSON，而打字机
+            # 回调的是人读的对话正文，两者互斥；工具/schema 调用不参与流式路径。
+            json_body["stream"] = True
+        elif tool is not None:
             json_body["tools"] = [{"type": "function", "function": tool}]
             if profile.supports_tool_choice:
                 json_body["tool_choice"] = "required"
@@ -524,6 +530,27 @@ class LLMJsonClient:
                 json_body["reasoning_effort"] = effort
         elif self.disable_thinking:
             json_body["thinking"] = {"type": "disabled"}
+        return json_body
+
+    def _post(
+        self,
+        system_prompt: str,
+        canonical_prompt: str,
+        temperature: float,
+        tool: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+        response_schema: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        json_body = self._build_body(
+            system_prompt,
+            canonical_prompt,
+            temperature,
+            tool=tool,
+            max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
+            response_schema=response_schema,
+        )
         request = {
             "headers": {
                 "Authorization": f"Bearer {self.api_key}",
@@ -538,6 +565,167 @@ class LLMJsonClient:
         if self.client is not None:
             return self.client.post(f"{self.base_url}/chat/completions", **request)
         return httpx.post(f"{self.base_url}/chat/completions", **request)
+
+    def stream_text(
+        self,
+        *,
+        system_prompt: str,
+        payload: Any,
+        temperature: float,
+        on_delta: Callable[[str], None] | None = None,
+        call_context: ModelCallContext | None = None,
+        max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+    ) -> str:
+        """流式正文生成：自由文本经 SSE 增量回调，返回拼装后的全文。
+
+        与 ``request_json`` 的分工：结构化意图解析等必须拿到 JSON 的调用走
+        ``request_json``（带重试与缓存）；对话正文这类需要打字机效果的输出走
+        本方法。**失败不重试**——delta 已回调给调用方，重试会造成重复文本，
+        调用方（助手轮次）以任务失败收口。观测（model_calls）照常记录。
+        """
+        prompt = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else dict(payload)
+        canonical_prompt = json.dumps(prompt, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        prompt_hash = hashlib.sha256(f"{system_prompt}\n{canonical_prompt}".encode()).hexdigest()
+        json_body = self._build_body(
+            system_prompt,
+            canonical_prompt,
+            temperature,
+            stream=True,
+            max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
+        )
+        request = {
+            "headers": {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            "json": json_body,
+            "timeout": httpx.Timeout(self.timeout, connect=15.0),
+        }
+        started = time.perf_counter()
+        parts: list[str] = []
+        request_id: str | None = None
+        final_http_status: int | None = None
+        last_error: LLMModelError | None = None
+        try:
+            with _LLM_SEMAPHORE:
+                if self.client is not None:
+                    stream_cm = self.client.stream(
+                        "POST", f"{self.base_url}/chat/completions", **request
+                    )
+                else:
+                    stream_cm = httpx.stream(
+                        "POST", f"{self.base_url}/chat/completions", **request
+                    )
+                with stream_cm as response:
+                    request_id = response.headers.get("x-request-id")
+                    final_http_status = response.status_code
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if not line or not line.startswith("data:"):
+                            continue
+                        data = line[5:].strip()
+                        if data == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data)
+                        except ValueError:
+                            continue
+                        if not isinstance(chunk, dict):
+                            continue
+                        request_id = request_id or _optional_text(chunk.get("id"))
+                        choices = chunk.get("choices")
+                        if not isinstance(choices, list) or not choices:
+                            continue
+                        first = choices[0] if isinstance(choices[0], dict) else {}
+                        delta = first.get("delta")
+                        text = delta.get("content") if isinstance(delta, dict) else None
+                        if isinstance(text, str) and text:
+                            parts.append(text)
+                            if on_delta is not None:
+                                on_delta(text)
+        except httpx.HTTPStatusError as exc:
+            hint = _HTTP_STATUS_HINTS.get(exc.response.status_code)
+            message = f"LLM request failed with HTTP status {exc.response.status_code}"
+            if hint:
+                message = f"{message}（{hint}）"
+            body_tag = None
+            try:
+                body_tag = _http_body_error_tag(exc.response.text or "")
+            except Exception:
+                body_tag = None
+            last_error = LLMModelError(
+                "llm_http_error",
+                message,
+                details={"http_status": exc.response.status_code, "error_tag": body_tag},
+            )
+        except httpx.HTTPError:
+            last_error = LLMModelError("llm_transport_error", "LLM request failed")
+
+        duration_ms = round((time.perf_counter() - started) * 1000)
+        if last_error is not None:
+            self._record(
+                context=call_context,
+                status="failed",
+                prompt_hash=prompt_hash,
+                input_tokens=None,
+                output_tokens=None,
+                duration_ms=duration_ms,
+                error=last_error,
+                request_id=request_id,
+                details={
+                    "stream": True,
+                    "final_http_status": final_http_status,
+                    "error_code": last_error.error_code,
+                },
+            )
+            raise LLMGatewayError(
+                last_error.error_code, str(last_error), details={"stream": True}
+            ) from last_error
+
+        text = "".join(parts)
+        if not text.strip():
+            empty = LLMModelError("model_empty_response", "model returned no text in stream")
+            self._record(
+                context=call_context,
+                status="failed",
+                prompt_hash=prompt_hash,
+                input_tokens=None,
+                output_tokens=None,
+                duration_ms=duration_ms,
+                error=empty,
+                request_id=request_id,
+                details={"stream": True, "final_http_status": final_http_status},
+            )
+            raise LLMGatewayError(
+                empty.error_code, str(empty), details={"stream": True}
+            ) from empty
+
+        self._record(
+            context=call_context,
+            status="succeeded",
+            prompt_hash=prompt_hash,
+            input_tokens=None,
+            output_tokens=None,
+            duration_ms=duration_ms,
+            error=None,
+            request_id=request_id,
+            details={
+                "stream": True,
+                "final_http_status": final_http_status,
+                "delta_count": len(parts),
+            },
+        )
+        logger.info(
+            "模型流式调用成功 stage=%s model=%s request_id=%s duration_ms=%d deltas=%d",
+            _stage_of(call_context),
+            self.model,
+            request_id,
+            duration_ms,
+            len(parts),
+        )
+        return text
 
     def _record(
         self,

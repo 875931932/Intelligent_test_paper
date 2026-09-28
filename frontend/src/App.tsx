@@ -10,6 +10,7 @@ import Materials from '@/pages/materials';
 import Framework from '@/pages/framework';
 import Knowledge from '@/pages/knowledge';
 import PaperPage from '@/pages/paper';
+import AssistantPage from '@/pages/assistant';
 import { LoginPage } from '@/pages/auth/LoginPage';
 
 function AppShell() {
@@ -48,6 +49,8 @@ export default function App() {
         <Route path="knowledge" element={<Knowledge />} />
         {/* 出卷流水线与试卷查看/审核/导出已合并为同一个「试卷」页面 */}
         <Route path="paper" element={<PaperPage />} />
+        {/* AI 助手对话页：问答/查询流式回复，写操作提案卡确认制 */}
+        <Route path="assistant" element={<AssistantPage />} />
         <Route path="exam-projects" element={<Navigate to="../paper" replace />} />
         <Route path="paper-center" element={<Navigate to="../paper" replace />} />
       </Route>

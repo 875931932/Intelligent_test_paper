@@ -662,6 +662,26 @@ Index("ix_task_runs_course_status_type", task_runs.c.course_id, task_runs.c.stat
 Index("ix_task_runs_course_lease", task_runs.c.course_id, task_runs.c.status, task_runs.c.lease_expires_at)
 Index("ix_task_runs_course_poll", task_runs.c.course_id, task_runs.c.status, task_runs.c.next_poll_at)
 
+# 课程内 AI 助手对话时间线：一轮 = 一个 task_run（assistant_turn），用户消息在
+# 入队时写、助手消息在 worker 完成时写；提案执行状态回写只动 action JSON。
+assistant_messages = _course_table(
+    "assistant_messages",
+    Column("task_run_id", String(64), ForeignKey("task_runs.id"), nullable=False),
+    Column("role", String(20), nullable=False),
+    Column("content", Text, nullable=False, default="", server_default=""),
+    Column("action", JSON, nullable=False, default=dict, server_default="{}"),
+    Column("stream_status", String(20), nullable=False, default="complete", server_default="complete"),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    constraints=(
+        CheckConstraint("role IN ('user', 'assistant', 'system')", name="ck_assistant_messages_role"),
+        CheckConstraint(
+            "stream_status IN ('streaming', 'complete', 'failed')",
+            name="ck_assistant_messages_stream_status",
+        ),
+    ),
+)
+Index("ix_assistant_messages_course_created", assistant_messages.c.course_id, assistant_messages.c.created_at)
+
 outbox_events = _course_table(
     "outbox_events",
     Column("task_run_id", String(64), ForeignKey("task_runs.id"), nullable=False),

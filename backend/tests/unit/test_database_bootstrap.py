@@ -25,7 +25,7 @@ EXPECTED_CORE_TABLES = {
     "assessment_units", "knowledge_cards", "knowledge_evidence_links", "index_versions",
     "index_memberships", "exam_projects", "blueprint_versions", "blueprint_sections", "plan_items",
     "generation_runs", "generation_attempts", "generated_questions", "quality_checks", "paper_versions",
-    "paper_items", "model_calls", "task_runs", "outbox_events",
+    "paper_items", "model_calls", "task_runs", "outbox_events", "assistant_messages",
 }
 
 

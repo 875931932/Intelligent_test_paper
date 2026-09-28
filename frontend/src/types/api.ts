@@ -694,3 +694,134 @@ export interface TaskRun {
   updated_at: string;
   completed_at?: string;
 }
+
+// ---------------------------------------------------------------------------
+// AI 助手对话（/courses/:courseId/assistant：消息恢复 / 提案卡回写 / SSE）
+// ---------------------------------------------------------------------------
+
+export type AssistantRole = 'user' | 'assistant';
+/** 段2 流式降级时为 failed（内容仍是完整回复，仅打字机效果缺失） */
+export type AssistantStreamStatus = 'complete' | 'failed';
+/** 提案卡单向迁移：proposed → executed | dismissed（后端 _PROPOSAL_TRANSITIONS 同集合） */
+export type AssistantProposalStatus = 'executed' | 'dismissed';
+
+/** 只读工具（确定性查询 → 结果卡；与后端 execute_read_tool 同集合） */
+export type AssistantReadTool =
+  | 'course_overview'
+  | 'list_materials'
+  | 'framework_status'
+  | 'blueprint_status'
+  | 'contract_status'
+  | 'paper_status'
+  | 'list_exam_projects';
+
+/** 提案工具（组装提案卡 → 教师确认后由前端调既有业务 API；与后端白名单同集合） */
+export type AssistantProposalTool =
+  | 'create_course'
+  | 'update_course'
+  | 'start_parse'
+  | 'enqueue_blueprint_suggest'
+  | 'confirm_contract';
+
+export interface AssistantMaterialRow {
+  id: string;
+  name: string;
+  type: string;
+  status: string;
+  parse_status: string | null;
+}
+
+export interface AssistantFrameworkSummary {
+  version_no: number;
+  status: string;
+  exam_rules: {
+    exam_form: string | null;
+    duration_minutes: number | null;
+    total_score: number | null;
+    question_type_ratios: ExamRuleTypeRatio[];
+  };
+}
+
+export interface AssistantBlueprintSummary {
+  blueprint_version_id: string;
+  version_no: number;
+  status: string;
+  confirmed: boolean;
+  item_count: number;
+  by_type: Record<string, { count: number; score: number; difficulty: Record<string, number> }>;
+}
+
+export interface AssistantContractSummary {
+  exists: boolean;
+  confirmed: boolean;
+  slot_count?: number | null;
+}
+
+export interface AssistantPaperSummary {
+  exists: boolean;
+  paper_version_id?: string;
+  version_no?: number;
+  status?: string;
+  needs_review_count?: number;
+}
+
+export interface AssistantProjectRow {
+  id: string;
+  name: string;
+  status: string;
+  blueprint?: AssistantBlueprintSummary | null;
+  contract?: AssistantContractSummary;
+  paper?: AssistantPaperSummary;
+}
+
+/**
+ * 卡片载荷（action.payload）：结果卡与提案卡共用一张可选字段表，渲染按
+ * action.tool 取用对应字段（后端 build_proposal_payload / execute_read_tool 产出）。
+ */
+export interface AssistantActionPayload {
+  // 提案
+  body?: Record<string, unknown>;
+  course_id?: string;
+  material_id?: string;
+  material_name?: string;
+  project_id?: string;
+  project_name?: string;
+  // 结果卡
+  course_name?: string;
+  materials?: AssistantMaterialRow[] | { count: number; parse_status: Record<string, number> };
+  framework?: AssistantFrameworkSummary | null;
+  catalog?: { version_no: number; status: string } | null;
+  projects?: AssistantProjectRow[];
+}
+
+export interface AssistantAction {
+  kind?: 'result' | 'proposal';
+  tool?: string;
+  args?: Record<string, unknown>;
+  /** result=completed；proposal=proposed|executed|dismissed */
+  status?: string;
+  receipt?: string;
+  payload?: AssistantActionPayload;
+}
+
+export interface AssistantMessage {
+  id: string;
+  task_run_id: string;
+  role: AssistantRole;
+  content: string;
+  action: AssistantAction;
+  stream_status: AssistantStreamStatus;
+  created_at: string | null;
+}
+
+/** POST assistant/turns 的 202 响应 */
+export interface AssistantTurnCreated {
+  task_run_id: string;
+  user_message_id: string;
+}
+
+/** PATCH assistant/messages/{id} 请求：只回写卡片状态，不执行任何业务 */
+export interface AssistantActionPatch {
+  action_status: AssistantProposalStatus;
+  receipt?: string;
+}

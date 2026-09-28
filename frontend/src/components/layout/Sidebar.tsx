@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { NavLink, useParams, useNavigate } from 'react-router-dom';
 import {
   BookOpen,
+  Bot,
   LayoutDashboard,
   FolderOpen,
   FlaskConical,
@@ -46,6 +47,7 @@ export function Sidebar({ onLogout }: Props) {
     { to: `${base}/framework`, icon: FlaskConical, label: '命题框架' },
     { to: `${base}/knowledge`, icon: FolderTree, label: '知识目录' },
     { to: `${base}/paper`, icon: FileQuestion, label: '试卷' },
+    { to: `${base}/assistant`, icon: Bot, label: 'AI 助手' },
   ];
 
   return (

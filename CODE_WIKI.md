@@ -107,7 +107,7 @@ f:\比赛项目\阅卷出题功能/
 │               │     │               │     │               │
 │ • Framework   │     │ • 课程隔离     │     │ • 文档解析     │
 │   Graph       │     │ • 多租户      │     │ • LLM 推理    │
-│ • Generation  │     │ • 37 张表      │     │ • Embedding   │
+│ • Generation  │     │ • 38 张表      │     │ • Embedding   │
 │   Graph       │     │ • 外键约束    │     │ • 对象存储     │
 │ • Knowledge   │     │               │     │               │
 │   Catalog     │     │               │     │               │

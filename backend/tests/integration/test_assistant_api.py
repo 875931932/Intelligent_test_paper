@@ -1,0 +1,414 @@
+"""AI 助手对话端点集成测试（HTTP 层 + 任务落库 + worker 端到端 + SSE 兜底）。
+
+镜像 tests/integration/test_blueprint_suggest_api.py 的环境模式（SQLite 内存库 +
+dependency_overrides + 真实登录）。LLM 客户端与事件通道在测试里打桩，保证不发
+真实模型请求、不连 Redis；worker 端到端用 execute_task 走完整 claim→handler→
+complete 链路。SSE 端点在无 Redis 时按任务终态 DB 兜底（首轮 probe 收尾）。
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, event, select, update
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.config import settings
+from app.db.schema import (
+    Base,
+    Course,
+    User,
+    assistant_messages,
+    materials,
+    task_runs,
+)
+from app.db.session import get_session
+from app.main import app
+from app.services import assistant_service
+from app.services.auth_service import hash_password
+
+PATH = "/api/v1/courses/{cid}/assistant"
+
+
+class StubClient:
+    """LLMJsonClient 同接口桩：意图固定为 list_materials 查询 + 流式固定文本。"""
+
+    def __init__(self, intent=None):
+        self.intent = intent or {"reply": "资料清单见下表：", "action": {"tool": "list_materials", "args": {}}}
+        self.calls: list[dict] = []
+        self.stream_calls: list[dict] = []
+
+    def request_json(self, *, system_prompt, payload, temperature, call_context, **kwargs):
+        self.calls.append({"system_prompt": system_prompt, "payload": payload})
+        return self.intent
+
+    def stream_text(self, *, system_prompt, payload, temperature, on_delta, call_context, **kwargs):
+        self.stream_calls.append({"system_prompt": system_prompt, "payload": payload})
+        if on_delta is not None:
+            on_delta("流式回答")
+        return "流式回答"
+
+
+@pytest.fixture
+def env(monkeypatch):
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    event.listen(engine, "connect", lambda c, _: c.execute("PRAGMA foreign_keys=ON"))
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    with factory() as session:
+        session.add(
+            User(
+                id="admin",
+                username="admin",
+                password_hash=hash_password("123456"),
+                display_name="Admin",
+                role="admin",
+            )
+        )
+        session.flush()
+        session.add(
+            Course(id="c1", owner_id="admin", slug="cs101", name="CS101"),
+        )
+        session.add(
+            Course(id="c2", owner_id="admin", slug="other", name="Other"),
+        )
+        session.flush()
+        session.execute(
+            materials.insert().values(
+                id="m1", course_id="c1", logical_name="教学大纲",
+                material_type="teaching_syllabus", status="staged",
+            )
+        )
+        session.commit()
+
+    def session_override():
+        with factory() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = session_override
+
+    # outbox 派发打桩：记录调用，避免构造/连接 Celery 与 Redis
+    dispatched: list[str] = []
+
+    def fake_dispatch(session, publisher, *, course_id=None, limit=0):  # noqa: A002
+        dispatched.append(str(course_id))
+
+    monkeypatch.setattr(
+        "app.infrastructure.tasks.outbox.dispatch_pending_events", fake_dispatch
+    )
+    monkeypatch.setattr(
+        "app.infrastructure.tasks.celery_app.CeleryPublisher", lambda: object()
+    )
+    monkeypatch.setattr(assistant_service, "llm_configured", lambda: True)
+    # 全局兜底：任何 get_session_factory 调用（SSE probe、失败消息独立会话）
+    # 都必须落在测试库上，杜绝误连真实库（该函数返回 sessionmaker）
+    monkeypatch.setattr("app.db.session.get_session_factory", lambda: factory)
+    # SSE 测试不连真 Redis（无通道 → DB 兜底首轮 probe 收尾，亚秒返回）
+    monkeypatch.setattr(settings, "redis_url", "")
+
+    try:
+        runner = TestClient(app)
+        login = runner.post(
+            "/api/v1/auth/login", json={"username": "admin", "password": "123456"}
+        )
+        assert login.status_code == 200, login.text
+        auth = TestClient(app, headers={"Authorization": "Bearer " + login.json()["token"]})
+        yield auth, factory, dispatched
+    finally:
+        app.dependency_overrides.clear()
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+def _turn(auth, *, course="c1", message="看下资料"):
+    resp = auth.post(f"{PATH.format(cid=course)}/turns", json={"message": message})
+    assert resp.status_code == 202, resp.text
+    return resp.json()
+
+
+def test_turn_202_creates_task_and_user_message(env):
+    auth, factory, dispatched = env
+
+    result = _turn(auth, message="第一条消息")
+    task_id = result["task_run_id"]
+    assert result["user_message_id"]
+
+    with factory() as session:
+        row = session.execute(
+            select(
+                task_runs.c.task_type, task_runs.c.status, task_runs.c.payload
+            ).where(task_runs.c.id == task_id, task_runs.c.course_id == "c1")
+        ).one()
+        user_msg = session.execute(
+            select(assistant_messages.c.role, assistant_messages.c.content).where(
+                assistant_messages.c.id == result["user_message_id"]
+            )
+        ).one()
+
+    assert row.task_type == "assistant_turn"
+    assert row.status == "queued"
+    assert row.payload["message"] == "第一条消息"
+    assert row.payload["task_run_id"] == task_id
+    assert user_msg.role == "user"
+    assert user_msg.content == "第一条消息"
+    # outbox 派发必须发生且带 course_id（事务性投递，失败会保持 pending）
+    assert dispatched == ["c1"]
+
+    # 同文本的在途请求复用同一任务（双击不重复烧模型）
+    again = _turn(auth, message="第一条消息")
+    assert again["task_run_id"] == task_id
+
+
+def test_turn_422_blank_and_404_unknown_course(env):
+    auth, _factory, dispatched = env
+
+    resp = auth.post(f"{PATH.format(cid='c1')}/turns", json={"message": "   "})
+    assert resp.status_code == 422, resp.text
+    resp = auth.post(f"{PATH.format(cid='c1')}/turns", json={})
+    assert resp.status_code == 422, resp.text
+
+    resp = auth.post(f"{PATH.format(cid='ghost')}/turns", json={"message": "hi"})
+    assert resp.status_code == 404, resp.text
+    assert dispatched == []  # 422/404 在建任务之前，不应产生任何派发
+
+
+def test_turn_503_when_llm_unconfigured(env, monkeypatch):
+    auth, _factory, dispatched = env
+    monkeypatch.setattr(assistant_service, "llm_configured", lambda: False)
+    resp = auth.post(f"{PATH.format(cid='c1')}/turns", json={"message": "hi"})
+    assert resp.status_code == 503
+    assert dispatched == []
+
+
+def test_messages_restore_is_course_scoped(env):
+    auth, factory, _dispatched = env
+
+    _turn(auth, message="c1 的问题")
+    # 他课消息：直插，不得出现在本课时间线
+    with factory() as session:
+        session.execute(
+            task_runs.insert().values(
+                id="t-other", course_id="c2", task_type="assistant_turn",
+                input_version="assistant_turn_v1", idempotency_key="k-other",
+                payload={"course_id": "c2"},
+            )
+        )
+        session.execute(
+            assistant_messages.insert().values(
+                id="msg-other", course_id="c2", task_run_id="t-other",
+                role="user", content="他课消息", action={}, stream_status="complete",
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
+
+    views = auth.get(f"{PATH.format(cid='c1')}/messages").json()
+    assert [v["content"] for v in views] == ["c1 的问题"]
+    assert all(v["role"] == "user" for v in views)
+
+    other = auth.get(f"{PATH.format(cid='c2')}/messages").json()
+    assert [v["content"] for v in other] == ["他课消息"]
+
+
+def test_patch_proposal_status_flow(env):
+    auth, factory, _dispatched = env
+
+    with factory() as session:
+        session.execute(
+            task_runs.insert().values(
+                id="t-prop", course_id="c1", task_type="assistant_turn",
+                input_version="assistant_turn_v1", idempotency_key="k-prop",
+                payload={"course_id": "c1"},
+            )
+        )
+        session.execute(
+            assistant_messages.insert().values(
+                id="msg1", course_id="c1", task_run_id="t-prop",
+                role="assistant", content="提案：",
+                action={"kind": "proposal", "tool": "create_course", "args": {},
+                        "payload": {"body": {"name": "X"}}, "status": "proposed"},
+                stream_status="complete",
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        # 普通对话消息（非提案）：不可回写
+        session.execute(
+            assistant_messages.insert().values(
+                id="msg2", course_id="c1", task_run_id="t-prop",
+                role="assistant", content="普通回复", action={}, stream_status="complete",
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
+
+    # 回写执行回执（只记账，不执行业务）
+    resp = auth.patch(
+        f"{PATH.format(cid='c1')}/messages/msg1",
+        json={"action_status": "executed", "receipt": "已创建课程X"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["action"]["status"] == "executed"
+    assert resp.json()["action"]["receipt"] == "已创建课程X"
+
+    # 单向迁移：executed 后不能再改 → 409
+    resp = auth.patch(
+        f"{PATH.format(cid='c1')}/messages/msg1", json={"action_status": "dismissed"}
+    )
+    assert resp.status_code == 409
+
+    # 非法状态值 → 422
+    resp = auth.patch(
+        f"{PATH.format(cid='c1')}/messages/msg1", json={"action_status": "proposed"}
+    )
+    assert resp.status_code == 422
+
+    # 非提案消息 → 409
+    resp = auth.patch(
+        f"{PATH.format(cid='c1')}/messages/msg2", json={"action_status": "executed"}
+    )
+    assert resp.status_code == 409
+
+    # 课程隔离：他课回写 → 404
+    resp = auth.patch(
+        f"{PATH.format(cid='c2')}/messages/msg1", json={"action_status": "executed"}
+    )
+    assert resp.status_code == 404
+
+    # 未知消息 → 404
+    resp = auth.patch(
+        f"{PATH.format(cid='c1')}/messages/ghost", json={"action_status": "executed"}
+    )
+    assert resp.status_code == 404
+
+
+def test_worker_end_to_end_persists_assistant_reply(env, monkeypatch):
+    """端到端：turn 入队 → execute_task 完整链路（claim→handler→complete）→ 恢复。"""
+    auth, factory, _dispatched = env
+    result = _turn(auth, message="看下资料")
+    task_id = result["task_run_id"]
+
+    stub = StubClient()
+    monkeypatch.setattr(assistant_service, "build_client", lambda: stub)
+    monkeypatch.setattr(
+        assistant_service, "build_event_sink", assistant_service.MemoryTurnEventSink
+    )
+    from app.infrastructure.tasks import worker
+
+    monkeypatch.setattr(worker, "get_session_factory", lambda: factory)
+
+    handled = worker.execute_task(task_id, worker_id="test-worker")
+    assert handled is True
+
+    with factory() as session:
+        row = session.execute(
+            select(
+                task_runs.c.status, task_runs.c.result, task_runs.c.error_message
+            ).where(task_runs.c.id == task_id)
+        ).one()
+
+    assert row.status == "succeeded", row.error_message
+    assert stub.calls, "段1意图解析必须执行"
+
+    views = auth.get(f"{PATH.format(cid='c1')}/messages").json()
+    roles = [v["role"] for v in views]
+    assert roles == ["user", "assistant"]
+    assistant = views[-1]
+    assert assistant["action"]["kind"] == "result"
+    assert assistant["action"]["status"] == "completed"
+    # 结果卡带真实资料数据（上下文装配进查询，非模型编造）
+    assert [m["name"] for m in assistant["action"]["payload"]["materials"]] == ["教学大纲"]
+    assert assistant["stream_status"] == "complete"
+    assert row.result["message_id"] == assistant["id"]
+
+
+def test_worker_failure_persists_failed_message(env, monkeypatch):
+    """段1 模型抛错 → 任务 failed + 失败消息可见（刷新不丢）。"""
+    auth, factory, _dispatched = env
+    result = _turn(auth, message="你好")
+    task_id = result["task_run_id"]
+
+    class ExplodingClient:
+        def request_json(self, **kwargs):
+            raise RuntimeError("gateway exploded")
+
+    monkeypatch.setattr(assistant_service, "build_client", lambda: ExplodingClient())
+    monkeypatch.setattr(
+        assistant_service, "build_event_sink", assistant_service.MemoryTurnEventSink
+    )
+    from app.infrastructure.tasks import worker
+
+    monkeypatch.setattr(worker, "get_session_factory", lambda: factory)
+
+    # handler 抛错不让测试中断：worker 自己组装 failed 状态
+    worker.execute_task(task_id, worker_id="test-worker")
+
+    with factory() as session:
+        row = session.execute(
+            select(task_runs.c.status, task_runs.c.error_message).where(
+                task_runs.c.id == task_id
+            )
+        ).one()
+    assert row.status == "failed"
+    assert "task handler failed" in (row.error_message or "")
+
+    views = auth.get(f"{PATH.format(cid='c1')}/messages").json()
+    failed = views[-1]
+    assert failed["role"] == "assistant"
+    assert failed["stream_status"] == "failed"
+    assert "gateway exploded" in failed["content"]
+
+
+def test_stream_endpoint_db_fallback_done(env, monkeypatch):
+    """无 Redis 时 SSE 按任务终态 DB 兜底：succeeded → done 后收尾。"""
+    auth, factory, _dispatched = env
+    result = _turn(auth, message="看下资料")
+    task_id = result["task_run_id"]
+
+    with factory() as session:
+        session.execute(
+            update(task_runs)
+            .where(task_runs.c.id == task_id)
+            .values(status="succeeded")
+        )
+        session.commit()
+
+    resp = auth.get(f"{PATH.format(cid='c1')}/turns/{task_id}/stream")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    assert "event: done" in resp.text
+    assert task_id in resp.text
+
+
+def test_stream_endpoint_failed_falls_back_to_error(env):
+    auth, factory, _dispatched = env
+    result = _turn(auth, message="看下资料")
+    task_id = result["task_run_id"]
+
+    with factory() as session:
+        session.execute(
+            update(task_runs)
+            .where(task_runs.c.id == task_id)
+            .values(status="failed", error_message="LLM boom")
+        )
+        session.commit()
+
+    resp = auth.get(f"{PATH.format(cid='c1')}/turns/{task_id}/stream")
+    assert resp.status_code == 200
+    assert "event: error" in resp.text
+    assert "LLM boom" in resp.text
+
+
+def test_stream_endpoint_404_unknown_or_cross_course(env):
+    auth, factory, _dispatched = env
+    task_id = _turn(auth, message="归属测试")["task_run_id"]
+
+    # 未知任务
+    assert auth.get(f"{PATH.format(cid='c1')}/turns/ghost/stream").status_code == 404
+    # 他课任务挂在本课路径下 → 404（course_id 归属校验）
+    assert (
+        auth.get(f"{PATH.format(cid='c2')}/turns/{task_id}/stream").status_code == 404
+    )

@@ -750,7 +750,65 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
 
 ---
 
-## 10. 数据模型汇总（复用类型）
+## 10. AI 助手 Assistant（对话页）
+
+> 来源 `app/api/v1/assistant.py`。前缀 `/api/v1/courses/{course_id}/assistant`
+> ⚠️ **鉴权**：本节全部端点需 `Authorization: Bearer <token>`（router 级依赖，与 §8 同款）。
+> 红线：**SSE 端点零 LLM**——意图解析与生成全部在 Celery worker（`assistant_turn`，
+> transactional outbox 派发）；只读查询出确定性结果卡，写操作只产提案卡，执行由前端
+> 确认后调既有业务 API（§2 / §3.5 / §8.7b / §8.11），助手没有第二套写路径。
+
+### 10.1 入一轮对话（202）
+
+`POST /api/v1/courses/{course_id}/assistant/turns`
+
+- 请求：`{ "message": "..." }`（必填，去空格后 ≤ 2000 字）
+- 响应 202：`{ "task_run_id", "user_message_id" }`
+- 行为：写 `assistant_messages(user)` + `task_runs(assistant_turn, queued)` + outbox 派发；
+  同课程**在途**同文本任务复用同一 `task_run_id`（双击不重复烧模型），终态后同文本换新键。
+- 状态码：503 `LLM model is not configured`；404 课程不存在；422 空消息/超长。
+
+### 10.2 SSE 事件流
+
+`GET .../assistant/turns/{task_run_id}/stream?last_id=0`
+
+- `text/event-stream`；事件：`delta {text}` / `card {kind,tool,payload}` /
+  `done {message_id,task_run_id}` / `error {message}`，另有心跳注释行 `: ping`。
+- 每帧带 `id:`（Redis 流条目 id）——断线重连带 `?last_id=<最后收到的 id>` 从该条目后续读，
+  不重放已收增量；前端用 `fetch` + `ReadableStream`（`EventSource` 带不了 Authorization）。
+- 只读转发 Redis Stream（`assistant:turn:{task_run_id}`，MAXLEN ~5000 / TTL 600s）；
+  通道不可用时按 `task_runs` 终态 DB 兜底（首轮 + 每 8 轮 probe 推 done/error）。
+  跨课程/未知任务 404。**端点不调用模型**。
+
+### 10.3 历史恢复
+
+`GET .../assistant/messages` →
+`[{ id, task_run_id, role, content, action, stream_status, created_at }]`
+
+按 `created_at` 时间序（≤200 条）。挂载拉取 + `done` 后刷新，前端以它为权威；
+末条为 `user` 即视为上一轮在途 → 重连 §10.2 续读。
+
+### 10.4 提案卡状态回写（只记账）
+
+`PATCH .../assistant/messages/{message_id}`
+
+- 请求：`{ "action_status": "executed" | "dismissed", "receipt": "..." }`
+- 仅 `proposed → executed/dismissed` 单向迁移；**不执行任何业务**——提案的真正执行由
+  前端在教师确认后调既有业务 API，成功后才回写状态。
+- 状态码：404 不存在/跨课程；422 非法状态值；409 非提案卡或已非 proposed。
+
+### 10.5 数据与工具
+
+- 新表 `assistant_messages`（`app/db/schema.py`，`python -m app.db.init_db` 幂等迁移）：
+  `task_run_id` FK + `role` + `content` + `action`(JSON) + `stream_status`，全部带 `course_id`。
+- 只读工具（结果卡）：`course_overview` / `list_materials` / `framework_status` /
+  `blueprint_status` / `contract_status` / `paper_status` / `list_exam_projects`；
+- 提案工具（确认后调用）：`create_course` → §2、`update_course` → §2、`start_parse` → §3.5、
+  `enqueue_blueprint_suggest` → §8.7b、`confirm_contract` → §8.11。
+  模型回传的 id 必须命中段1 上下文白名单，非法带反馈重试一次；比例/难度/去重规则
+  不进任何助手 prompt（助手职责不涉及）。
+
+## 11. 数据模型汇总（复用类型）
 
 | 类型 | 说明 | 关键字段 |
 |------|------|----------|
@@ -762,7 +820,7 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
 | `FrameworkConfirmation` | 框架确认 | `anchors, exam_points, conflict_resolutions, teacher_exclusions` |
 | `KnowledgeTreeConfirmation` | 知识树确认 | `operations, reviewed_topic_codes, reviewed_exam_point_codes, teacher_exclusions` |
 
-## 11. 状态码约定
+## 12. 状态码约定
 
 | 码 | 含义 |
 |----|------|
