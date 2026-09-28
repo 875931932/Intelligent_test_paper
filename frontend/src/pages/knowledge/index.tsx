@@ -433,9 +433,9 @@ export default function KnowledgePage() {
   }
 
   return (
-    <div className="page-enter" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+    <div className="page-enter page-stack">
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
+      <div className="page-header">
         <div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <h1 className="page-title">知识目录</h1>
@@ -443,7 +443,7 @@ export default function KnowledgePage() {
             {buildState === 'building' && <Badge variant="warning">构建中</Badge>}
             {buildState === 'candidate' && <Badge variant="info">待确认</Badge>}
           </div>
-          <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)', marginTop: '6px' }}>
+          <p className="page-subtitle">
             {stats.totalCards > 0
               ? stats.totalCards + ' 张知识卡 · ' + stats.totalUnits + ' 个考核单元 · ' + stats.totalPoints + ' 个考点'
               : '结构化知识网络，驱动命题流程'}

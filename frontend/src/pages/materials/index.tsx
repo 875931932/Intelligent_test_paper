@@ -477,14 +477,12 @@ export default function MaterialsPage() {
   };
 
   return (
-    <div className="page-enter" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+    <div className="page-enter page-stack">
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: '16px', flexWrap: 'wrap' }}>
+      <div className="page-header">
         <div>
           <h1 className="page-title">资料库</h1>
-          <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)', marginTop: '6px' }}>
-            按文件夹管理课程大纲与教学资料
-          </p>
+          <p className="page-subtitle">按文件夹管理课程大纲与教学资料</p>
         </div>
         <Button onClick={openUpload} icon={<Upload size={16} />}>
           上传资料

@@ -384,7 +384,7 @@ export default function FrameworkPage() {
 
   if (loading) {
     return (
-      <div className="page-enter" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+      <div className="page-enter page-stack">
         {/* 骨架屏贴合「考核规则卡 + 大纲卡片」布局，避免加载完布局跳变 */}
         <div className="glass-card" style={{ padding: '24px' }}>
           <SkeletonForm fields={3} />
@@ -397,14 +397,12 @@ export default function FrameworkPage() {
   }
 
   return (
-    <div className="page-enter" style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
+    <div className="page-enter page-stack">
       {/* Header */}
       {/* Header：顶部操作 sticky，长内容滚动时「构建新框架」不丢失。
           padding-top 只在初始态加 6px 内白，卡底边与下方 gap 不动（负 margin 会让
           sticky 卡在滚动口顶部露出缝隙，故不做负边距补偿） */}
-      <div style={{
-        display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between',
-        gap: '16px', flexWrap: 'wrap',
+      <div className="page-header" style={{
         position: 'sticky', top: 0, zIndex: 'var(--z-sticky)',
         background: 'var(--page-bg)', paddingTop: '6px',
       }}>
@@ -415,7 +413,7 @@ export default function FrameworkPage() {
             {buildState === 'candidate' && <Badge variant="info">待确认</Badge>}
             {buildState === 'building' && <Badge variant="warning">构建中</Badge>}
           </div>
-          <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)', marginTop: '6px' }}>
+          <p className="page-subtitle">
             根据教学大纲与考核大纲生成的课程命题规范
           </p>
         </div>

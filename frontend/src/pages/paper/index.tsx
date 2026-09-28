@@ -180,11 +180,11 @@ export default function PaperPage() {
   // ── 项目列表 ──
   if (!activeProject) {
     return (
-      <div className="page-enter">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '24px' }}>
+      <div className="page-enter page-stack">
+        <div className="page-header">
           <div>
-            <h1 className="page-title" style={{ marginBottom: '6px' }}>试卷</h1>
-            <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)' }}>
+            <h1 className="page-title">试卷</h1>
+            <p className="page-subtitle">
               出卷流水线（蓝图 → 合同 → 生成）与试卷的查看、审核、导出，都在同一个项目里完成
             </p>
           </div>
@@ -276,7 +276,7 @@ export default function PaperPage() {
   const pipelineStage = sp.status === 'generating' ? '生成中' : statusMeta.label;
 
   return (
-    <div className="page-enter" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+    <div className="page-enter page-stack">
       <button
         onClick={() => { setActiveProject(null); setSearchParams({}, { replace: true }); }}
         style={{
@@ -294,7 +294,7 @@ export default function PaperPage() {
         <div className="card-head">
           <div>
             <h1 className="page-title">{sp.name}</h1>
-            <p style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+            <p className="page-subtitle">
               {sp.total_score ? `${sp.total_score} 分 · ${sp.item_count ?? 0} 题` : '尚未生成试卷'}
               {' · 流水线：'}{pipelineStage}
             </p>

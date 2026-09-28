@@ -77,8 +77,8 @@ const DashboardPage: FC = () => {
   // ── 加载中 ──
   if (loading) {
     return (
-      <div className="page-enter">
-        <div style={{ marginBottom: 'var(--space-xl)' }}>
+      <div className="page-enter page-stack">
+        <div>
           <div className="skeleton skeleton-title" style={{ width: '200px' }} />
           <div className="skeleton skeleton-text" style={{ width: '320px', marginTop: '8px' }} />
         </div>
@@ -126,10 +126,10 @@ const DashboardPage: FC = () => {
 
   // ── 渲染 ──
   return (
-    <div className="page-enter">
-      <div style={{ marginBottom: 'var(--space-xl)' }}>
-        <h1 className="page-title" style={{ marginBottom: '6px' }}>课程概览</h1>
-        <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)' }}>智能出卷系统 · 从课程资料到成品试卷的完整链路</p>
+    <div className="page-enter page-stack">
+      <div>
+        <h1 className="page-title">课程概览</h1>
+        <p className="page-subtitle">智能出卷系统 · 从课程资料到成品试卷的完整链路</p>
       </div>
 
       <div className="card-grid">

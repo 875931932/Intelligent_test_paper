@@ -107,10 +107,10 @@ export default function CourseSpacePage() {
         flex: 1, width: '100%', maxWidth: '1200px', margin: '0 auto',
         padding: '48px 32px',
       }}>
-        <div className="page-enter">
-          <div style={{ marginBottom: '32px' }}>
-            <h1 style={{ fontSize: '2rem', fontWeight: 700, letterSpacing: '-0.03em', marginBottom: '8px' }}>课程空间</h1>
-            <p style={{ fontSize: '0.9375rem', color: 'var(--text-secondary)' }}>选择一门课程开始命题工作，或创建新课程</p>
+        <div className="page-enter page-stack">
+          <div>
+            <h1 className="page-title">课程空间</h1>
+            <p className="page-subtitle">选择一门课程开始命题工作，或创建新课程</p>
           </div>
 
           <div style={{

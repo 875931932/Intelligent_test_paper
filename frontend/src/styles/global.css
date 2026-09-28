@@ -853,11 +853,32 @@ body > .floating-pill:nth-of-type(2) {
 }
 
 /* ── 页头标题工具类：统一各页 h1 规格，替代行内重复声明 ── */
+/* ── 页面排版节奏（页头/副题/纵向堆叠）——与 Layout 的 --space-lg 同源 ── */
 .page-title {
   font-size: 1.75rem;
   font-weight: 700;
   letter-spacing: -0.01em;
   color: var(--text);
+  margin-bottom: 6px;
+}
+
+.page-subtitle {
+  font-size: 0.9375rem;
+  color: var(--text-secondary);
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.page-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-lg);
 }
 
 /* ── 减少动画偏好 ── */
