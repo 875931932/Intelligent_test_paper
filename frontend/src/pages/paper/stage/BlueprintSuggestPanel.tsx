@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Check, ChevronUp, Sparkles, Wand2 } from 'lucide-react';
 import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
@@ -66,6 +66,9 @@ function targetLabel(s: BlueprintSuggestion, maps: NameMaps): string {
 
 const keyOf = (s: BlueprintSuggestion) => `${s.item_index}:${s.field}`;
 
+/** 「已应用」判定里「没有额外 key」的占位集合（模块级常量，避免每次渲染新建） */
+const EMPTY_KEYS = new Set<string>();
+
 /** 提案时原值文案：优先用后端 from_value 快照（应用后不漂移），缺失时退回当前值 */
 function fromLabel(s: BlueprintSuggestion, item: PlanItem | undefined, maps: NameMaps): string {
   if (s.from_value === undefined || s.from_value === null || s.from_value === '') {
@@ -123,6 +126,15 @@ export function BlueprintSuggestPanel({
 
   const running = busy || !!taskRunId;
 
+  // 恢复用 refs：planItems 不进 effect 依赖（每次 apply/reload 重触发会清掉
+  // 刚点上的「已应用」标记），改为每次同步到 ref 读最新值
+  const planItemsRef = useRef(planItems);
+  useEffect(() => { planItemsRef.current = planItems; }, [planItems]);
+  /** 每个项目只恢复一次（token 刷新重跑 effect 时不再发请求） */
+  const restoredForRef = useRef<string | null>(null);
+  /** 教师已在本面板发起新建议——慢一步返回的恢复结果不得覆盖新任务 */
+  const startedRef = useRef(false);
+
   // 轮询建议任务（与 PaperReviewPanel 同款：依赖只取 id，终态自停）
   useEffect(() => {
     if (!taskRunId) return;
@@ -154,8 +166,49 @@ export function BlueprintSuggestPanel({
     return () => clearInterval(timer);
   }, [taskRunId, courseId, token, addToast]);
 
+  // 挂载时从 task_runs 恢复最近一次建议（权威在后端，只存组件内存会刷新即丢——
+  // 教师误以为「应用了没保存」）。在途任务续上既有轮询跑完照常出清单；成功任务
+  // 恢复清单与折叠态；失败/取消/无历史一律静默，面板保持新发起的空状态。
+  useEffect(() => {
+    if (!projectId || restoredForRef.current === projectId) return;
+    restoredForRef.current = projectId;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await api.examProjects.getLatestSuggest(courseId, projectId, token ?? undefined);
+        const tr = res.task_run;
+        if (cancelled || startedRef.current || !tr) return;
+        if (!isTerminal(tr.status)) {
+          // 在途 → 交给上面的轮询，跑完照常出清单/报错
+          setTaskRunId(tr.id);
+          setBusy(true);
+          setInstruction((prev) => prev || String(tr.payload?.instruction ?? ''));
+          return;
+        }
+        if (tr.status !== 'succeeded' || !tr.result) return;
+        const out = tr.result as unknown as BlueprintSuggestResult;
+        setResult(out);
+        setInstruction((prev) => prev || out.instruction);
+        // 全部建议值都已等于题位当前值（上次已应用过）→ 恢复即折叠，不抢视线
+        const items = planItemsRef.current;
+        if (
+          out.suggestions.length > 0
+          && out.suggestions.every((s) =>
+            matchesCurrent(s, items.find((p) => p.item_index === s.item_index)),
+          )
+        ) {
+          setCollapsed(true);
+        }
+      } catch {
+        /* 无历史/瞬时错误 → 静默跳过恢复，不打扰教师 */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [courseId, projectId, token]);
+
   const handleGenerate = async () => {
     setBusy(true);
+    startedRef.current = true;
     try {
       const res = await api.examProjects.suggestBlueprintAdjustments(
         courseId, projectId, instruction.trim(), token ?? undefined,
@@ -182,24 +235,25 @@ export function BlueprintSuggestPanel({
     }
   };
 
-  const pending = result ? result.suggestions.filter((s) => !applied.has(keyOf(s))) : [];
+  /**
+   * 已应用的统一口径：本会话点过应用、或题位当前值已等于建议值。
+   * 恢复历史建议时 `applied` 必然为空，全靠「值已相等」兜住——否则刷新后会把
+   * 已落地条目误报成待办，点「全部应用」又对同一题位重复 PATCH。
+   */
+  const isAppliedTo = (s: BlueprintSuggestion, extra: Set<string> = EMPTY_KEYS): boolean =>
+    extra.has(keyOf(s))
+    || applied.has(keyOf(s))
+    || matchesCurrent(s, planItems.find((p) => p.item_index === s.item_index));
 
-  /** 已落地条数（本会话点过应用的、或当前值已等于建议值的） */
-  const appliedCount = result
-    ? result.suggestions.filter(
-        (s) => applied.has(keyOf(s))
-          || matchesCurrent(s, planItems.find((p) => p.item_index === s.item_index)),
-      ).length
-    : 0;
+  /** 待办清单：尚未落地的建议 */
+  const pending = result ? result.suggestions.filter((s) => !isAppliedTo(s)) : [];
+
+  /** 已落地条数 */
+  const appliedCount = result ? result.suggestions.filter((s) => isAppliedTo(s)).length : 0;
 
   /** 全部建议是否都已落地——应用完自动折叠的判定（部分失败不收起） */
   const allSatisfied = (extra: Set<string>): boolean =>
-    !!result
-    && result.suggestions.every(
-      (s) => extra.has(keyOf(s))
-        || applied.has(keyOf(s))
-        || matchesCurrent(s, planItems.find((p) => p.item_index === s.item_index)),
-    );
+    !!result && result.suggestions.every((s) => isAppliedTo(s, extra));
 
   const handleApplyOne = async (s: BlueprintSuggestion) => {
     const key = keyOf(s);
@@ -321,7 +375,7 @@ export function BlueprintSuggestPanel({
           )}
           {result.suggestions.map((s) => {
             const item = planItems.find((p) => p.item_index === s.item_index);
-            const isApplied = applied.has(keyOf(s)) || matchesCurrent(s, item);
+            const isApplied = isAppliedTo(s);
             return (
               <div
                 key={keyOf(s)}

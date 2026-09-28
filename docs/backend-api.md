@@ -415,6 +415,19 @@ LLM 未配置 503；项目不存在/不在课程 404；蓝图非 draft（已确�
 - 幂等：同课同项目同要求的**在途**任务复用同一 `task_run_id`；已到终态换新键。
 - 键 = `sha256(f"suggest:{course_id}:{project_id}:{instruction}")[:24]`。
 
+**读回（恢复）**：`GET .../blueprints/current/ai-suggest/latest` → **200**
+`{ "task_run": {...§8.14 形状...} | null }`。
+`task_run: null` = 当前蓝图版本下尚无建议历史（或已因蓝图重建作废）——「没有历史」是首次
+访问的常态，按 200 而非 404 返回，前端静默跳过恢复。返回本项目**最近一次**建议任务：
+- 只认当前蓝图版本创建之后的任务：蓝图重建只追加新版本，旧建议针对旧题位快照，恢复
+  出来会把过期提案盖到新题位上，按 `created_at` 丢弃（比较在 Python 侧做——SQLite 的
+  `func.now()` 存储无微秒，同秒字符串比较会误排除）。
+- 在途任务原样返回（前端续 §8.14 轮询跑完照常出清单）；`succeeded` 返回 `result`
+  （面板恢复清单与已应用状态，全部已落地则恢复即折叠）；failed/cancelled 前端静默忽略。
+- 蓝图已确认（冻结）**仍可读回**——只读恢复不吃 draft 门禁，留作改动审计。
+- 项目不存在/不在课程 404；课程隔离由 `course_id` 过滤兜底，项目过滤按
+  `payload.project_id` 在 Python 侧做。
+
 ### 8.8 确认蓝图
 `POST /api/v1/courses/{course_id}/exam-projects/{project_id}/blueprints/current/confirm`
 body 可选 `{ "blueprint_version_id": "uuid" }`。返回确认结果。

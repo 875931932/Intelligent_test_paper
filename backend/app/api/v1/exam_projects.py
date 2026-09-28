@@ -333,6 +333,46 @@ def suggest_blueprint_adjustments(
     return {"task_run_id": task_id}
 
 
+def _task_run_view(d: dict) -> dict:
+    """task_runs 行 → 对外读回视图（GET task-runs/{id} 与 ai-suggest/latest 共用）。"""
+    return {
+        "id": d.get("id"),
+        "course_id": d.get("course_id"),
+        "task_type": d.get("task_type"),
+        "status": d.get("status"),
+        "stage": d.get("stage"),
+        "progress": d.get("progress"),
+        "attempt": d.get("attempt"),
+        "payload": d.get("payload"),
+        "result": d.get("result"),
+        "error_code": d.get("error_code"),
+        "error_message": d.get("error_message"),
+        "created_at": d.get("created_at"),
+        "updated_at": d.get("updated_at"),
+        "completed_at": d.get("completed_at"),
+    }
+
+
+@router.get("/{project_id}/blueprints/current/ai-suggest/latest", response_model=dict)
+def get_latest_suggest_run(
+    course_id: str,
+    project_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    """读回最近一次建议任务（刷新/切页后恢复建议清单与已应用状态，只读）。
+
+    建议结果此前只存组件内存，刷新即丢、教师误以为「应用了没保存」——task_runs
+    才是权威数据源。`task_run` 为 null = 当前蓝图版本下尚无建议历史（或已因蓝图
+    重建作废）：「没有历史」是首次访问的常态，按 200 返回而非 404，前端静默跳过
+    恢复即可。在途任务原样返回，前端续轮询跑完照常出清单。
+    """
+    _get_project_or_404(session, course_id=course_id, project_id=project_id)
+    row = blueprint_suggest_service.latest_suggest_run(
+        session, course_id=course_id, project_id=project_id
+    )
+    return {"task_run": None if row is None else _task_run_view(row)}
+
+
 @router.post("/{project_id}/blueprints/current/confirm", response_model=dict)
 def confirm_current_blueprint(
     course_id: str,
@@ -595,20 +635,4 @@ def get_task_run(
     ).one_or_none()
     if row is None:
         raise HTTPException(status_code=404, detail="task run not found")
-    d = dict(row._mapping)
-    return {
-        "id": d.get("id"),
-        "course_id": d.get("course_id"),
-        "task_type": d.get("task_type"),
-        "status": d.get("status"),
-        "stage": d.get("stage"),
-        "progress": d.get("progress"),
-        "attempt": d.get("attempt"),
-        "payload": d.get("payload"),
-        "result": d.get("result"),
-        "error_code": d.get("error_code"),
-        "error_message": d.get("error_message"),
-        "created_at": d.get("created_at"),
-        "updated_at": d.get("updated_at"),
-        "completed_at": d.get("completed_at"),
-    }
+    return _task_run_view(dict(row._mapping))

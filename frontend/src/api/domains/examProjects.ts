@@ -61,6 +61,9 @@ export const examProjectsApi = {
       method: 'POST',
       body: JSON.stringify({ instruction }),
     }, token),
+  /** 读回最近一次建议任务（面板挂载时恢复清单/已应用状态）；`task_run` 为 null = 尚无历史 */
+  getLatestSuggest: (courseId: string, projectId: string, token?: string): Promise<{ task_run: TaskRun | null }> =>
+    request('/courses/' + courseId + '/exam-projects/' + projectId + '/blueprints/current/ai-suggest/latest', undefined, token),
   confirmBlueprint: (courseId: string, projectId: string, body?: Record<string, unknown>, token?: string): Promise<Record<string, unknown>> =>
     request('/courses/' + courseId + '/exam-projects/' + projectId + '/blueprints/current/confirm', { method: 'POST', body: body ? JSON.stringify(body) : undefined }, token),
   allocateContract: (courseId: string, projectId: string, body?: { blueprint_version_id?: string; allocation_seed?: number }, token?: string): Promise<AllocateContractResponse> =>

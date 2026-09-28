@@ -7,6 +7,8 @@ dependency_overrides + 真实登录 + 直插蓝图链路）。LLM 配置与 outb
 """
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, select, update
@@ -246,3 +248,154 @@ def test_suggest_409_confirmed_blueprint(env):
     resp = auth.post(SUGGEST_PATH.format(cid=cid), json={"instruction": "难题调多一点"})
     assert resp.status_code == 409, resp.text
     assert "不可原地修改" in resp.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# GET .../ai-suggest/latest：刷新/切页后从 task_runs 恢复建议清单
+# ---------------------------------------------------------------------------
+
+LATEST_PATH = "/api/v1/courses/{cid}/exam-projects/proj1/blueprints/current/ai-suggest/latest"
+
+
+def _mark_succeeded(factory, task_id: str, result: dict) -> None:
+    with factory() as session:
+        session.execute(
+            update(task_runs)
+            .where(task_runs.c.id == task_id)
+            .values(status="succeeded", result=result)
+        )
+        session.commit()
+
+
+def _backdate(factory, task_id: str, when: datetime) -> None:
+    """显式回拨任务创建时间：SQLite 时间戳秒级精度，同秒并列会让排序不确定。"""
+    with factory() as session:
+        session.execute(
+            update(task_runs).where(task_runs.c.id == task_id).values(created_at=when)
+        )
+        session.commit()
+
+
+def test_latest_suggest_null_before_first_run(env):
+    auth, factory, _dispatched = env
+    cid = _create_course(env, name="读回空历史", slug="bp-latest-empty")
+    _seed_blueprint(factory, cid)
+    resp = auth.get(LATEST_PATH.format(cid=cid))
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"task_run": None}  # 首次访问没有历史是常态，不是错误
+
+
+def test_latest_suggest_restores_result_after_refresh(env):
+    """刷新后读回：在途任务带 instruction 原样返回，成功任务把 result 还给面板。"""
+    auth, factory, _dispatched = env
+    cid = _create_course(env, name="读回建议", slug="bp-latest-restore")
+    _seed_blueprint(factory, cid)
+    task_id = auth.post(
+        SUGGEST_PATH.format(cid=cid), json={"instruction": "难度按5简单3中等2难分"}
+    ).json()["task_run_id"]
+
+    tr = auth.get(LATEST_PATH.format(cid=cid)).json()["task_run"]
+    assert tr["id"] == task_id
+    assert tr["status"] == "queued"  # 在途 → 前端据此续上轮询
+    assert tr["payload"]["instruction"] == "难度按5简单3中等2难分"
+
+    result = {
+        "course_id": cid,
+        "project_id": "proj1",
+        "instruction": "难度按5简单3中等2难分",
+        "summary": "共1条调整建议",
+        "suggestions": [
+            {
+                "item_index": 2,
+                "field": "difficulty",
+                "value": "high",
+                "from_value": "medium",
+                "reason": "难题仅0道，按5:3:2应有",
+            }
+        ],
+        "total_score": 10.0,
+    }
+    _mark_succeeded(factory, task_id, result)
+
+    tr = auth.get(LATEST_PATH.format(cid=cid)).json()["task_run"]
+    assert tr["status"] == "succeeded"
+    assert tr["result"] == result
+
+
+def test_latest_suggest_returns_newest_and_drops_stale_runs(env):
+    """两次建议取最新；早于当前蓝图版本的旧建议（蓝图重建后）不恢复。"""
+    auth, factory, _dispatched = env
+    cid = _create_course(env, name="读回取新", slug="bp-latest-newest")
+    _seed_blueprint(factory, cid)
+    first = auth.post(
+        SUGGEST_PATH.format(cid=cid), json={"instruction": "先来一版"}
+    ).json()["task_run_id"]
+    second = auth.post(
+        SUGGEST_PATH.format(cid=cid), json={"instruction": "再来一版"}
+    ).json()["task_run_id"]
+    _backdate(factory, first, datetime(2000, 1, 1))
+
+    tr = auth.get(LATEST_PATH.format(cid=cid)).json()["task_run"]
+    assert tr["id"] == second
+
+    # 蓝图重建只追加新版本：旧建议针对旧题位快照，恢复出来会盖到新题位上
+    _backdate(factory, second, datetime(2000, 1, 2))
+    assert auth.get(LATEST_PATH.format(cid=cid)).json()["task_run"] is None
+
+
+def test_latest_suggest_is_course_and_project_scoped(env):
+    """课程隔离是多租户底线：他课/他项目的建议任务不得读回到本项目面板。"""
+    auth, factory, _dispatched = env
+    cid = _create_course(env, name="读回隔离本课", slug="bp-latest-iso")
+    other_cid = _create_course(env, name="读回隔离他课", slug="bp-latest-iso-other")
+    _seed_blueprint(factory, cid)
+    with factory() as session:
+        # 他课任务：payload.project_id 与本项目同名，只靠 course_id 兜住
+        session.execute(task_runs.insert().values(
+            id="run-other-course", course_id=other_cid,
+            task_type=blueprint_suggest_service.TASK_TYPE,
+            input_version="blueprint_suggest_v1", idempotency_key="iso-key-1",
+            status="succeeded",
+            payload={"course_id": other_cid, "project_id": "proj1", "instruction": "x"},
+        ))
+        # 本课他项目任务：新于蓝图版本，靠 payload.project_id 过滤
+        session.execute(task_runs.insert().values(
+            id="run-other-project", course_id=cid,
+            task_type=blueprint_suggest_service.TASK_TYPE,
+            input_version="blueprint_suggest_v1", idempotency_key="iso-key-2",
+            status="succeeded",
+            payload={"course_id": cid, "project_id": "projX", "instruction": "y"},
+        ))
+        session.commit()
+
+    assert auth.get(LATEST_PATH.format(cid=cid)).json()["task_run"] is None
+
+
+def test_latest_suggest_readable_after_confirm(env):
+    """蓝图确认（冻结）后仍可读回建议清单：只读恢复不吃草稿门禁，留作改动审计。"""
+    auth, factory, _dispatched = env
+    cid = _create_course(env, name="读回确认后", slug="bp-latest-confirmed")
+    _seed_blueprint(factory, cid)
+    task_id = auth.post(
+        SUGGEST_PATH.format(cid=cid), json={"instruction": "难题调多一点"}
+    ).json()["task_run_id"]
+    _mark_succeeded(factory, task_id, {"summary": "ok", "suggestions": []})
+    with factory() as session:
+        session.execute(
+            update(blueprint_versions)
+            .where(blueprint_versions.c.id == "bv1", blueprint_versions.c.course_id == cid)
+            .values(status="confirmed")
+        )
+        session.commit()
+
+    tr = auth.get(LATEST_PATH.format(cid=cid)).json()["task_run"]
+    assert tr is not None and tr["id"] == task_id
+
+
+def test_latest_suggest_404_unknown_project(env):
+    auth, _factory, _dispatched = env
+    cid = _create_course(env, name="读回404", slug="bp-latest-404")
+    resp = auth.get(
+        f"/api/v1/courses/{cid}/exam-projects/nope/blueprints/current/ai-suggest/latest"
+    )
+    assert resp.status_code == 404, resp.text

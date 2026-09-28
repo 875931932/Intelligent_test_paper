@@ -116,11 +116,15 @@ class BlueprintSuggestError(Exception):
 # ---------------------------------------------------------------------------
 
 
-def _resolve_blueprint_version(session: Session, *, course_id: str, project_id: str) -> dict:
+def _resolve_blueprint_version(
+    session: Session, *, course_id: str, project_id: str, require_draft: bool = True
+) -> dict:
     """定位蓝图版本并做状态门禁（镜像 router 的 active → 最新 fallback 解析）。
 
     草稿才可调整：已确认蓝图受冻结纪律保护，PATCH 会 409，入队时就提前拒绝
     （错误文案与 PATCH 的"不可原地修改"同词，API 层可映射同一状态码）。
+    ``require_draft=False`` 供只读路径（读回最近一次建议）复用同一套解析而不吃
+    草稿门禁——读历史记录不该因蓝图已确认就报错。
     """
     proj = session.execute(
         select(exam_projects.c.active_blueprint_version_id).where(
@@ -154,7 +158,7 @@ def _resolve_blueprint_version(session: Session, *, course_id: str, project_id: 
     ).mappings().one_or_none()
     if bv is None:
         raise BlueprintSuggestError("蓝图版本不存在")
-    if bv["status"] != "draft":
+    if require_draft and bv["status"] != "draft":
         raise BlueprintSuggestError(
             f"蓝图版本 status={bv['status']}，不可原地修改；请创建新版蓝图后再调整"
         )
@@ -712,3 +716,50 @@ def enqueue_suggest(
             "instruction": instruction,
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# 读回（刷新/切页后恢复面板）
+# ---------------------------------------------------------------------------
+
+
+def latest_suggest_run(
+    session: Session, *, course_id: str, project_id: str
+) -> dict | None:
+    """读回本项目当前蓝图版本下最近一次建议任务的 task_runs 行，无则 None。
+
+    只读，不产生任何提案或写入。刷新页面后建议清单与「已应用」状态不能只存组件
+    内存——权威数据源是 task_runs，面板挂载时据此恢复（在途任务续轮询、成功任务
+    恢复清单）。范围限定当前蓝图版本创建之后的任务：蓝图重建只追加新版本，旧建议
+    针对旧题位快照，恢复出来会把过期提案盖到新题位上，按 created_at 直接丢弃。
+
+    项目过滤按 payload.project_id 在 Python 侧做（与 exam_project_service 归并
+    生成任务同款写法，规避 SQLite/PG 的 JSON 路径方言差异）；行按时间倒序取，
+    本项目第一条即最近一次，若它已早于当前版本则更早的必然也过期，直接断定无可
+    恢复项。项目/蓝图不存在按业务异常上抛（API 层映射 404），无任务返回 None。
+    """
+    try:
+        bv = _resolve_blueprint_version(
+            session, course_id=course_id, project_id=project_id, require_draft=False
+        )
+    except BlueprintSuggestError:
+        # 尚未生成蓝图 → 不可能有建议历史，等价于"无可恢复项"
+        return None
+    bv_created = bv.get("created_at")
+    rows = session.execute(
+        select(task_runs)
+        .where(
+            task_runs.c.course_id == course_id,
+            task_runs.c.task_type == TASK_TYPE,
+        )
+        .order_by(task_runs.c.created_at.desc())
+    ).mappings().all()
+    for row in rows:
+        payload = row.get("payload") or {}
+        if payload.get("project_id") != project_id:
+            continue
+        created = row.get("created_at")
+        if bv_created and created and created < bv_created:
+            break  # 倒序：本项目最近一条已早于当前蓝图版本，更早的都是旧版建议
+        return dict(row)
+    return None
