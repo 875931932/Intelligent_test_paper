@@ -394,11 +394,18 @@ LLM 未配置 503；项目不存在/不在课程 404；蓝图非 draft（已确�
   未过带 `previous_validation_error` 纠错 1 次，仍不过如实报错。
 - **整卷难度目标（2026-09-28 反馈「我要求整体调整，只给了 3 道」）**：教师指令里的难度比例
   （「按5简单3中等2难」「50%简单30%中等20%难」「难度分布按5:3:2」）由后端**确定性换算**为
-  `difficulty_target = { ratio, target_counts, current_counts, gap }`（目标题数按题位总数 ×
+  `difficulty_target = { ratio, scope, target_counts, current_counts, gap }`（目标题数按题位数 ×
   比例取整、最大余数法配平；冒号式要求比例紧邻难度语境，章节比例不误触；解析不到则为 null
   不设门禁）随 payload 进 prompt——模型照 `gap` 点题位、不自己算比例；第三条**达标门禁**：
   模拟应用全部 difficulty 建议后的各档题数必须**恰好等于** `target_counts`，否则打回带反馈
   纠错 1 次——「清单必须给全、不许只回示范条目」由代码判定，不靠模型自觉。
+- **逐题型难度目标（2026-09-28 反馈「每个题型按5:3:2 却答全卷匹配」）**：指令带
+  「每个题型/各题型/按题型」等范围词时粒度切到逐题型（`scope="question_type"`，范围词仅在
+  难度比例已解析时生效）：`by_type = { 题型: { count, target_counts, current_counts, gap } }`
+  按题型分组各自最大余数法配平，顶层 `target_counts` = **各题型之和**（两层目标数学一致，
+  门禁不打架）。门禁逐题型分别判定：**全卷 counts 恰好等于顶层目标也照打回**（实测反例——
+  全卷 21:13:8 恰为 5:3:2，判断题却 18 易 1 中 1 难），空清单/「无需调整」在目标未达成时同样
+  打回带反馈；此时只准调 difficulty、改 question_type 会打回（题型占比不在该指令范围内）。
 - 归一收口：题号不在册丢弃；词表 coerce（难度 `easy→low` / `hard→high` 别名、中文题型名
   canonical 到英文枚举）；`exam_point_id` / `card_id` 限定已知集合；去重、去 no-op、去空理由；
   每条附 `from_value`（**提案时原值快照**）——教师应用后题位已是新值，面板仍显示

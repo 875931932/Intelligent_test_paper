@@ -80,6 +80,13 @@ _RATIO_COLON = re.compile(
 )
 _RATIO_HINT = re.compile(r"难度|难题|简单|中等|容易")
 
+# 「每个题型/各题型/按题型」= 比例要**逐题型**分别达标（仅在难度比例已解析出时
+# 生效，_difficulty_target 据此切换粒度）——否则维持整卷换算。教师写「每个题型」
+# 却被整卷凑平糊弄（全卷恰好 5:3:2、各题型全错）是实测反馈过的缺口。
+_TYPE_SCOPE = re.compile(
+    r"每个题型|各题型|每种题型|每类题型|每个类型|各类型|按题型|逐题型|分题型|题型分别"
+)
+
 # 认知层级词表（与蓝图引擎同值域）
 _COGNITIVE_LEVELS = ("remember", "understand", "apply", "analyze", "evaluate", "create")
 
@@ -99,7 +106,7 @@ _SYSTEM_PROMPT = """你是高校命题教师的试卷蓝图题位调整助手。
 4. 值与题位当前值相同的建议不要给（无操作建议会被丢弃）；cognitive_level 要与题型命题常识相符（客观题一般不建议 analyze/evaluate/create）。
 5. payload.type_diff / difficulty_dist / cognitive_dist / chapter_dist 是后端算好的事实，直接引用，不要自己重算比例。
 6. 每条建议给 reason（一两句，说明依据哪项统计、为什么改）；summary 是两三句面向教师的总评。蓝图无需调整时返回空 suggestions 并在 summary 里说明。
-7. payload.difficulty_target 非空时：那是后端按教师指令换算好的难度目标——target_counts 是各档应有的题数，gap 是还差的题数（正数=还要调入该档几道，负数=还要调出几道）。此时必须给出**完整清单**：按缺口把每一道需要动的题位全部列出，直到你的全部 difficulty 建议套用后各档题数恰好等于 target_counts；只给几条示范会因清单不全被打回重试。
+7. payload.difficulty_target 非空时：那是后端按教师指令换算好的难度目标——target_counts 是各档应有的题数，gap 是还差的题数（正数=还要调入该档几道，负数=还要调出几道）。scope=="question_type" 表示教师要求「每个题型」分别达标：by_type 给出每个题型自己的 count/target_counts/current_counts/gap，必须让**每个题型各自**恰好达标（顶层 target_counts 是各题型之和，全卷同时自然满足），此时只准调 difficulty、不准改 question_type。无论哪种 scope，都必须给出**完整清单**：按缺口把每一道需要动的题位全部列出，直到你的全部 difficulty 建议套用后目标恰好达成；只给几条示范、或回复「无需调整」，都会因未达标被打回重试。
 8. 教师 instruction 是针对整卷的整体性要求（比例/分布/全卷统一标准）时，suggestions 必须覆盖该要求涉及的全部需调整题位，禁止只给代表性样本。
 
 只返回严格 JSON 对象：
@@ -245,13 +252,28 @@ def _chapter_dist(items: list[dict], declared: dict, total: float) -> list[dict]
     return out
 
 
+def _max_remainder_counts(n: int, weights: tuple[int, int, int]) -> dict[str, int]:
+    """n 道题按 weights 最大余数法配平成 low/medium/high 三档题数。"""
+    exact = [n * w / sum(weights) for w in weights]
+    base = [int(x) for x in exact]
+    for i in sorted(
+        range(3), key=lambda i: (-(exact[i] - base[i]), i)
+    )[: n - sum(base)]:
+        base[i] += 1
+    return dict(zip(_DIFFICULTY_VOCAB, base))
+
+
 def _difficulty_target(instruction: str, items: list[dict]) -> dict | None:
     """教师指令的难度比例 → 目标分布（确定性换算，解析不到返回 None）。
 
     支持「难度按5简单3中等2难」「50%简单30%中等20%难」「难度分布按5:3:2」等
-    写法；目标题数按题位总数 × 比例取整、最大余数法配平。比例换算在代码里做
+    写法；目标题数按题位数 × 比例取整、最大余数法配平。比例换算在代码里做
     ——payload 只带算好的 target_counts/gap 作事实，模型照缺口点题位，达标与否
     由 validate_suggestions 门禁判定，不进 prompt 让模型自己算比例。
+
+    指令带「每个题型/各题型/按题型」时粒度切到逐题型（scope=question_type）：
+    by_type 给每个题型各自的 target/gap；顶层 target_counts 取**各题型之和**而非
+    整卷再配平一次，保证全卷与逐题型两层目标数学一致、门禁不互相打架。
     """
     text = str(instruction or "")
     weights: tuple[int, int, int] | None = None
@@ -273,20 +295,51 @@ def _difficulty_target(instruction: str, items: list[dict]) -> dict | None:
     ):
         return None
 
-    n = len(items)
-    exact = [n * w / sum(weights) for w in weights]
-    base = [int(x) for x in exact]
-    for i in sorted(
-        range(3), key=lambda i: (-(exact[i] - base[i]), i)
-    )[: n - sum(base)]:
-        base[i] += 1
-    target_counts = dict(zip(_DIFFICULTY_VOCAB, base))
+    def _current(group: list[dict]) -> dict[str, int]:
+        counts = {k: 0 for k in _DIFFICULTY_VOCAB}
+        for item in group:
+            counts[str(item["difficulty"])] += 1
+        return counts
 
-    current_counts = {k: 0 for k in _DIFFICULTY_VOCAB}
-    for item in items:
-        current_counts[str(item["difficulty"])] += 1
+    if _TYPE_SCOPE.search(text):
+        groups: dict[str, list[dict]] = {}
+        for item in items:
+            groups.setdefault(str(item.get("question_type") or ""), []).append(item)
+        by_type: dict[str, dict] = {}
+        for qtype, group in groups.items():
+            target_counts = _max_remainder_counts(len(group), weights)
+            current_counts = _current(group)
+            by_type[qtype] = {
+                "count": len(group),
+                "target_counts": target_counts,
+                "current_counts": current_counts,
+                # 正数 = 该题型还需调入该档几道，负数 = 还需调出几道
+                "gap": {
+                    k: target_counts[k] - current_counts[k]
+                    for k in _DIFFICULTY_VOCAB
+                },
+            }
+        target_counts = {
+            k: sum(entry["target_counts"][k] for entry in by_type.values())
+            for k in _DIFFICULTY_VOCAB
+        }
+        current_counts = _current(items)
+        return {
+            "ratio": list(weights),
+            "scope": "question_type",
+            "target_counts": target_counts,
+            "current_counts": current_counts,
+            "gap": {
+                k: target_counts[k] - current_counts[k] for k in _DIFFICULTY_VOCAB
+            },
+            "by_type": by_type,
+        }
+
+    target_counts = _max_remainder_counts(len(items), weights)
+    current_counts = _current(items)
     return {
         "ratio": list(weights),
+        "scope": "paper",
         "target_counts": target_counts,
         "current_counts": current_counts,
         # 正数 = 还需调入该档几道，负数 = 还需调出几道
@@ -503,13 +556,21 @@ def normalize_suggestions(raw, context: dict) -> dict:
     return {"summary": summary, "suggestions": out}
 
 
+def _fmt_counts(counts: dict) -> str:
+    """{low, medium, high} → 「易/中/难」计数文案（门禁反馈用）。"""
+    return "/".join(str(counts.get(k, 0)) for k in _DIFFICULTY_VOCAB)
+
+
 def validate_suggestions(result: dict, context: dict) -> dict:
     """对建议跑数据安全门禁，返回 {passed, code, message}。
 
-    三条门禁：总评必须存在（教师要靠它决定看不看清单）；score 类建议的分值
-    增减合计必须为 0——调分成对由代码校验，全卷总分不变不靠模型自觉；有
+    门禁：总评必须存在（教师要靠它决定看不看清单）；score 类建议的分值增减
+    合计必须为 0——调分成对由代码校验，全卷总分不变不靠模型自觉；有
     difficulty_target 时，模拟应用全部 difficulty 建议后的各档题数必须恰好
-    等于目标——「整卷清单给全」由代码判定，防止只回几条示范性调整。
+    等于目标——「清单给全」由代码判定，防止只回几条示范性调整，也防止模型
+    一句「无需调整」糊弄过去（目标没达成，空清单同样打回）。scope 是
+    question_type 时逐题型分别达标，且只准动 difficulty：题型占比不在该指令
+    范围内，改了 question_type 会让逐题型目标失去意义，直接打回。
     """
     summary = result.get("summary") or ""
     if len(summary) < _MIN_SUMMARY_LEN:
@@ -534,35 +595,76 @@ def validate_suggestions(result: dict, context: dict) -> dict:
 
     target = context.get("difficulty_target")
     if target:
-        counts = {k: 0 for k in _DIFFICULTY_VOCAB}
-        for item in context["current_by_index"].values():
-            key = str(item.get("difficulty") or "")
-            if key in counts:
-                counts[key] += 1
+        # 模拟应用后的最终状态（difficulty 建议直接覆盖原值）
+        final_diff = {
+            idx: str(item.get("difficulty") or "")
+            for idx, item in context["current_by_index"].items()
+        }
         for entry in result.get("suggestions") or []:
-            if entry["field"] != "difficulty":
-                continue
-            item = context["current_by_index"][entry["item_index"]]
-            old = str(item.get("difficulty") or "")
-            if old in counts:
-                counts[old] -= 1
-            counts[str(entry["value"])] += 1
-        want = target["target_counts"]
-        if counts != want:
-            gaps = {
-                k: want[k] - counts[k]
-                for k in _DIFFICULTY_VOCAB
-                if want[k] != counts[k]
-            }
-            return {
-                "passed": False,
-                "code": "difficulty_target",
-                "message": (
-                    f"这些建议全部应用后难度分布为 {counts}，未达到目标 {want}"
-                    f"（各档仍差 {gaps}）——按 difficulty_target.gap 把缺口"
-                    "对应的题位全部列出，不要只给示范条目"
-                ),
-            }
+            if entry["field"] == "difficulty":
+                final_diff[entry["item_index"]] = str(entry["value"])
+
+        if target.get("by_type"):
+            moves = [
+                entry["item_index"]
+                for entry in result.get("suggestions") or []
+                if entry["field"] == "question_type"
+            ]
+            if moves:
+                return {
+                    "passed": False,
+                    "code": "difficulty_target",
+                    "message": (
+                        f"逐题型难度目标下只准调整 difficulty，题位 {moves} 被建议改了 "
+                        "question_type——题型占比不在本次要求内，改动会让 by_type 的"
+                        "题型分组失效，撤掉这些题型改动"
+                    ),
+                }
+            # 按题型分组统计模拟应用后的分布（题型分组未被改动 = 当前分组）
+            per_type = {q: {k: 0 for k in _DIFFICULTY_VOCAB} for q in target["by_type"]}
+            for idx, item in context["current_by_index"].items():
+                q = str(item.get("question_type") or "")
+                diff = final_diff.get(idx, "")
+                if q in per_type and diff in per_type[q]:
+                    per_type[q][diff] += 1
+            off = [
+                f"{q} 现{_fmt_counts(per_type[q])} → 目标"
+                f"{_fmt_counts(target['by_type'][q]['target_counts'])}"
+                for q in target["by_type"]
+                if per_type[q] != target["by_type"][q]["target_counts"]
+            ]
+            if off:
+                return {
+                    "passed": False,
+                    "code": "difficulty_target",
+                    "message": (
+                        "按题型难度目标仍未达标（易/中/难计数）：" + "；".join(off)
+                        + "——按 difficulty_target.by_type 里各题型的 gap 补齐缺口，"
+                        "把每个题型需要动的题位全部列出，不要只给示范条目，"
+                        "更不要回复「无需调整」"
+                    ),
+                }
+        else:
+            counts = {k: 0 for k in _DIFFICULTY_VOCAB}
+            for diff in final_diff.values():
+                if diff in counts:
+                    counts[diff] += 1
+            want = target["target_counts"]
+            if counts != want:
+                gaps = {
+                    k: want[k] - counts[k]
+                    for k in _DIFFICULTY_VOCAB
+                    if want[k] != counts[k]
+                }
+                return {
+                    "passed": False,
+                    "code": "difficulty_target",
+                    "message": (
+                        f"这些建议全部应用后难度分布为 {counts}，未达到目标 {want}"
+                        f"（各档仍差 {gaps}）——按 difficulty_target.gap 把缺口"
+                        "对应的题位全部列出，不要只给示范条目"
+                    ),
+                }
     return {"passed": True, "code": "ok", "message": "通过建议结构校验"}
 
 

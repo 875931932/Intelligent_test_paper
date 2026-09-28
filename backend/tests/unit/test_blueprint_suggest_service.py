@@ -350,6 +350,43 @@ def test_difficulty_target_ignores_ambiguous_or_non_difficulty_text():
     assert blueprint_suggest_service._difficulty_target("", items) is None
 
 
+def test_difficulty_target_per_type_scope():
+    # 「每个题型」→ 逐题型分别配平；顶层 target_counts = 各题型之和（整卷再算
+    # 一次会与逐题型目标打架，取和保证两层门禁数学一致）
+    items = (
+        [
+            {"item_index": i, "question_type": "single_choice", "difficulty": "high"}
+            for i in range(1, 7)
+        ]
+        + [
+            {"item_index": i, "question_type": "true_false", "difficulty": "low"}
+            for i in range(7, 17)
+        ]
+    )
+    target = blueprint_suggest_service._difficulty_target(
+        "每个题型难度按5简单3中等2难的比例来分", items
+    )
+    assert target["scope"] == "question_type"
+    assert target["ratio"] == [5, 3, 2]
+    sc = target["by_type"]["single_choice"]
+    assert sc["count"] == 6
+    assert sc["target_counts"] == {"low": 3, "medium": 2, "high": 1}  # 6 题最大余数法
+    assert sc["current_counts"] == {"low": 0, "medium": 0, "high": 6}
+    assert sc["gap"] == {"low": 3, "medium": 2, "high": -5}
+    assert target["by_type"]["true_false"]["target_counts"] == {
+        "low": 5, "medium": 3, "high": 2,
+    }
+    assert target["target_counts"] == {"low": 8, "medium": 5, "high": 3}
+    assert target["gap"] == {"low": -2, "medium": 5, "high": -3}
+
+    # 没有范围词时维持整卷换算
+    paper = blueprint_suggest_service._difficulty_target(
+        "难度按5简单3中等2难的比例来分", items
+    )
+    assert paper["scope"] == "paper"
+    assert "by_type" not in paper
+
+
 def test_normalize_suggestions_snapshots_from_value(session):
     # 提案时原值必须快照：教师应用后面板仍显示「原值 → 新值」，不漂移成「易→易」
     context = load_suggest_context(session, course_id="c1", project_id="proj1")
@@ -403,6 +440,79 @@ def test_validate_suggestions_gates_difficulty_target():
     assert validation["passed"] is True
 
 
+def test_validate_suggestions_gates_per_type_target():
+    # 两个题型各 2 题，逐题型目标都是 1 易 1 中；当前单选全易、判断全中——
+    # 全卷恰好 2 易 2 中（顶层 counts == target_counts），逐题型却各自全错
+    context = {
+        "current_by_index": {
+            1: {"difficulty": "low", "question_type": "single_choice", "score": 2.0},
+            2: {"difficulty": "low", "question_type": "single_choice", "score": 2.0},
+            3: {"difficulty": "medium", "question_type": "true_false", "score": 1.0},
+            4: {"difficulty": "medium", "question_type": "true_false", "score": 1.0},
+        },
+        "difficulty_target": {
+            "ratio": [5, 3, 2],
+            "scope": "question_type",
+            "target_counts": {"low": 2, "medium": 2, "high": 0},
+            "current_counts": {"low": 2, "medium": 2, "high": 0},
+            "gap": {"low": 0, "medium": 0, "high": 0},
+            "by_type": {
+                "single_choice": {
+                    "count": 2,
+                    "target_counts": {"low": 1, "medium": 1, "high": 0},
+                    "current_counts": {"low": 2, "medium": 0, "high": 0},
+                    "gap": {"low": -1, "medium": 1, "high": 0},
+                },
+                "true_false": {
+                    "count": 2,
+                    "target_counts": {"low": 1, "medium": 1, "high": 0},
+                    "current_counts": {"low": 0, "medium": 2, "high": 0},
+                    "gap": {"low": 1, "medium": -1, "high": 0},
+                },
+            },
+        },
+    }
+    long_summary = "逐题型核对后两个题型的简单与中等配比互有缺口，补齐后每个题型各自达标。"
+
+    # 整卷 counts 已等于顶层目标也不放行——逐题型必须各自达标（实测场景的缩影）
+    validation = validate_suggestions(
+        {"summary": long_summary, "suggestions": []}, context
+    )
+    assert validation["passed"] is False
+    assert validation["code"] == "difficulty_target"
+    assert "by_type" in validation["message"]
+    assert "single_choice" in validation["message"] and "true_false" in validation["message"]
+
+    # 靠改 question_type 凑分布 → 打回（题型占比不在该指令范围内）
+    validation = validate_suggestions(
+        {
+            "summary": long_summary,
+            "suggestions": [
+                {"item_index": 1, "field": "question_type", "value": "true_false",
+                 "reason": "挪题凑分布"},
+            ],
+        },
+        context,
+    )
+    assert validation["passed"] is False
+    assert "question_type" in validation["message"]
+
+    # 每个题型各补一条 → 逐题型恰好达标
+    validation = validate_suggestions(
+        {
+            "summary": long_summary,
+            "suggestions": [
+                {"item_index": 2, "field": "difficulty", "value": "medium",
+                 "reason": "单选调出一道易补中等"},
+                {"item_index": 3, "field": "difficulty", "value": "low",
+                 "reason": "判断调入一道易"},
+            ],
+        },
+        context,
+    )
+    assert validation["passed"] is True
+
+
 def test_run_suggest_completes_whole_paper_target_with_retry(session):
     # 整体比例指令端到端：首版只回示范条目（清单不全）→ 达标门禁打回带反馈，
     # 二版按 gap 补全才过——「我要求整体调整，不能只给几条」由代码兜底
@@ -434,6 +544,44 @@ def test_run_suggest_completes_whole_paper_target_with_retry(session):
     assert "previous_validation_error" in client.calls[1]["payload"]
     assert [(s["item_index"], s["value"]) for s in result["suggestions"]] == [
         (1, "medium")
+    ]
+
+
+def test_run_suggest_rejects_no_adjustment_under_per_type_target(session):
+    """实测场景：教师问「每个题型按5:3:2」，模型答「完全匹配无需调整」必须被打回。
+
+    fixture 两个题型各 1 题（单选 low、简答 medium），逐题型目标都是 1 易 0 中
+    0 难——简答那道不改就永远不达标；全卷 1 易 1 中 的现状也骗不过逐题型门禁。
+    """
+    first = {
+        "summary": "经核查，当前试卷蓝图在难度比例上完全匹配，无调整必要。",
+        "suggestions": [],
+    }
+    second = {
+        "summary": "逐题型核对后简答题难度与目标不符，调整为简单档后每个题型各自达标。",
+        "suggestions": [
+            {"item_index": 2, "field": "difficulty", "value": "low",
+             "reason": "简答题单题型目标为简单档"},
+        ],
+    }
+    client = StubClient([first, second])
+    result = run_suggest(
+        session, course_id="c1", project_id="proj1",
+        instruction="每个题型难度按5简单3中等2难的比例来分", client=client,
+    )
+    assert len(client.calls) == 2
+    target = client.calls[0]["payload"]["difficulty_target"]
+    assert target["scope"] == "question_type"
+    assert target["by_type"]["single_choice"]["target_counts"] == {
+        "low": 1, "medium": 0, "high": 0,
+    }
+    assert target["by_type"]["short_answer"]["target_counts"] == {
+        "low": 1, "medium": 0, "high": 0,
+    }
+    # 「无需调整」没骗过门禁：带反馈纠错一次，补齐简答题难度才放行
+    assert "previous_validation_error" in client.calls[1]["payload"]
+    assert [(s["item_index"], s["value"]) for s in result["suggestions"]] == [
+        (2, "low")
     ]
 
 
