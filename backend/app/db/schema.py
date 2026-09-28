@@ -615,6 +615,26 @@ paper_items = _course_table(
 )
 
 # Model observability and durable task dispatch
+# 资料库「试卷」文件夹：一份可再编辑的试卷快照（独立副本）。
+# 刻意**不设外键指回 paper_versions**——源卷会被「每个项目只留最近 3 份」的
+# 保留策略物理删除，归档必须在源卷消失后继续可看、可编辑、可下载。
+paper_archives = _course_table(
+    "paper_archives",
+    Column("exam_project_id", String(64), ForeignKey("exam_projects.id"), nullable=False),
+    # 溯源用：记录来自哪一版，源卷被删后此列只是历史线索，不参与外键
+    Column("source_paper_version_id", String(64)),
+    Column("source_version_no", Integer),
+    Column("name", String(255), nullable=False),
+    Column("item_count", Integer, nullable=False, default=0, server_default="0"),
+    Column("total_score", Float, nullable=False, default=0.0, server_default="0"),
+    # 快照 = get_paper_version 的完整解析结果（题目已合并 teacher_override）
+    Column("snapshot", JSON, nullable=False, default=dict, server_default="{}"),
+    Column("created_by", String(64), ForeignKey("users.id")),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+)
+Index("ix_paper_archives_course_project", paper_archives.c.course_id, paper_archives.c.exam_project_id)
+
 model_calls = _course_table(
     "model_calls",
     Column("generation_attempt_id", String(64), ForeignKey("generation_attempts.id")),
@@ -812,6 +832,7 @@ for _child, _column, _parent in (
     ("paper_versions", "generation_run_id", "generation_runs"),
     ("paper_items", "paper_version_id", "paper_versions"),
     ("paper_items", "generated_question_id", "generated_questions"),
+    ("paper_archives", "exam_project_id", "exam_projects"),
     ("model_calls", "generation_attempt_id", "generation_attempts"),
     ("model_calls", "framework_build_run_id", "framework_build_runs"),
     ("model_calls", "organization_run_id", "organization_runs"),

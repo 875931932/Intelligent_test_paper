@@ -18,6 +18,7 @@ from app.api.v1.knowledge import router as knowledge_router
 from app.api.v1.materials import router as materials_router
 from app.api.v1.exam_projects import router as exam_projects_router
 from app.api.v1.paper_versions import router as paper_versions_router
+from app.api.v1.paper_archives import router as paper_archives_router
 from app.api.v1.assistant import router as assistant_router
 
 logging.basicConfig(
@@ -93,6 +94,7 @@ app.include_router(framework_router)
 app.include_router(knowledge_router)
 app.include_router(exam_projects_router)
 app.include_router(paper_versions_router)
+app.include_router(paper_archives_router)
 app.include_router(assistant_router)
 
 

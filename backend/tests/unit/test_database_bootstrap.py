@@ -26,7 +26,7 @@ EXPECTED_CORE_TABLES = {
     "assessment_units", "knowledge_cards", "knowledge_evidence_links", "index_versions",
     "index_memberships", "exam_projects", "blueprint_versions", "blueprint_sections", "plan_items",
     "generation_runs", "generation_attempts", "generated_questions", "quality_checks", "paper_versions",
-    "paper_items", "model_calls", "task_runs", "outbox_events", "assistant_sessions",
+    "paper_items", "paper_archives", "model_calls", "task_runs", "outbox_events", "assistant_sessions",
     "assistant_messages",
 }
 
@@ -341,6 +341,8 @@ def test_course_scoped_parent_relationships_use_composite_foreign_keys():
         "generated_questions": "generation_runs",
         "quality_checks": "generated_questions",
         "paper_items": "paper_versions",
+        # 归档快照挂在项目上，跨课复合外键与试卷链路同口径（课程隔离底线）
+        "paper_archives": "exam_projects",
         "outbox_events": "task_runs",
     }
     for child_name, parent_name in required_parent_links.items():

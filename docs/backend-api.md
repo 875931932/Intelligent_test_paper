@@ -124,6 +124,33 @@ transactional outbox 派发，见 §10.5）——嵌入只在 worker 执行，�
 ### 3.8 删除资料
 `DELETE /api/v1/courses/{course_id}/materials/{material_id}` → **204**（无 body）
 
+### 3.9 「试卷」文件夹（试卷归档，资料库第三分区）
+> 来源 `app/api/v1/paper_archives.py`（服务层 `app/services/paper_archive_service.py`）。
+> 归档是**独立副本**：存 `get_paper_version` 的解析快照，与 `paper_versions` **无外键牵连**，
+> 因此不受 §9.1b「每项目只留最近 3 份」的保留策略影响——源卷被物理删除后归档仍可看/编辑/下载。
+> 资料库页该分区**不接解析与索引**（无 material_type，不入 `material_index` 任务）。
+
+`POST /api/v1/courses/{course_id}/exam-projects/{project_id}/paper-archives` → **201**
+body：`{ "source_paper_version_id":"uuid|null", "name":"string|null" }`
+：不给 `source` 存项目当前卷（§9.1 解析规则），不给 `name` 用「`{项目名} v{version_no}`」。
+源卷不属于该项目 422；项目不存在 404。
+
+`GET /api/v1/courses/{course_id}/paper-archives` → **200**（新 → 旧）
+```json
+[ { "id":"uuid","exam_project_id":"uuid","project_name":"期末卷",
+    "source_paper_version_id":"uuid|null","source_version_no":1,
+    "name":"期末卷 v1","item_count":20,"total_score":100.0,
+    "created_by":"uuid|null","created_at":"ISO8601","updated_at":"ISO8601" } ]
+```
+列表**不带** `snapshot`/`questions`（避免整卷载荷），详情才带。
+
+`GET /api/v1/courses/{course_id}/paper-archives/{archive_id}` → 200
+：档案字段 + `snapshot`（`{version_no, status, total_score, questions}`）+ 顶层 `questions`
+（与 §9.1 同构的逐题数组，已合并 `teacher_override`，供预览/编辑/导出直接消费）。
+
+`DELETE /api/v1/courses/{course_id}/paper-archives/{archive_id}` → **204**（真删，非软删）；
+不存在 404。课程隔离：跨课程按 404 处理（`where course_id=…` 过滤）。
+
 ---
 
 ## 4. 命题框架 Framework
@@ -538,6 +565,24 @@ body 可选 `{ "mock_graph": false }`；生产必须配置 LLM，否则 503。�
 - `subquestions` 为综合题分问数组（`{prompt, score, answer, ...}`，各问分值之和等于本题总分），非综合题为 `[]`；
   学生卷/答卷的分问排版依赖它（答题卡按范本只给整页空白大框、不分问），历史遗留题若缺失则按空数组降级。
 
+### 9.1b 试卷历史（读取即执行「只留最近 3 份」）
+`GET /api/v1/courses/{course_id}/exam-projects/{project_id}/paper-versions` → **200**（新 → 旧，≤3 条）
+```json
+[ { "id":"uuid","version_no":4,"status":"candidate","item_count":20,
+    "is_current":true,"created_at":"ISO8601",
+    "confirmed_at":"ISO8601?","finalized_at":"ISO8601?" } ]
+```
+
+- **保留策略** `PAPER_VERSION_HISTORY_LIMIT = 3`：超出的最旧版本**物理删除**，不是置状态、不是软删。
+  两处触发：① 生成新卷时在 `create_paper_version_from_generation` 内**同事务**修剪（删除失败整次生成回滚）；
+  ② 本端点读取时修剪（清掉规则落地前的存量超量卷）。
+- **删除深度**（按外键自底向上）：`model_calls`（`details.response` 存着完整题面，不删等于旧卷还在库里）
+  → `quality_checks` → `paper_items` → `generated_questions` → `paper_versions`。
+  `generation_runs` / `generation_attempts` **保留**：只有状态与耗时，不含题面，删掉会让运行日志引用悬空。
+- **两条豁免**：被删卷的 `generated_questions` 若仍被**保留卷**的 `paper_items` 挂着则不删；
+  当前卷指针若指向将删卷，先改指最新保留卷（绝不留悬空外键）。
+- `is_current` 按 `exam_projects.active_paper_version_id` 标记。
+
 ### 9.2 待审核项
 `GET /api/v1/courses/{course_id}/paper-versions/{pv_id}/needs-review` → 200
 query 可选过滤：`item_index_min` / `item_index_max` / `question_type`
@@ -653,6 +698,12 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
 
 ### 9.5 回退到候选
 `POST /api/v1/courses/{course_id}/paper-versions/{pv_id}/revert`
+
+### 9.5b 切换当前卷（历史 → 当前）
+`POST /api/v1/courses/{course_id}/exam-projects/{project_id}/paper-versions/{pv_id}/activate` → 200（返回完整试卷，与 §9.1 同构）
+
+只改 `exam_projects.active_paper_version_id` 指针，**不动版本本身**。切到已定稿旧卷仍是 `finalized`
+（冻结即不可变）：要继续编辑须先走 §9.5 撤销定稿。版本不存在或不属于该项目 → 404。
 
 ### 9.6 导出：答案细则 JSON
 `GET /api/v1/courses/{course_id}/exam-projects/{project_id}/paper-versions/{pv_id}/export/json`
