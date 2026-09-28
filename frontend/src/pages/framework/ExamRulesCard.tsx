@@ -246,10 +246,15 @@ export function ExamRulesCard({
             {(rules?.chapter_weights?.length ?? 0) > 0 && (
               <div>
                 <p style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-tertiary)', marginBottom: '6px' }}>章节命题权重</p>
-                <div style={{ display: 'flex', gap: '6px 16px', flexWrap: 'wrap', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+                {/* 网格两端对齐：章名左、百分比右，百分比在各列形成整齐的列
+                    （旧版自由换行流，长短不一百分比重心散乱） */}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '6px 16px', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
                   {(rules?.chapter_weights ?? []).map((c) => (
-                    <span key={c.anchor_key}>
-                      {anchors.find((a) => a.key === c.anchor_key)?.title || friendlyId(c.anchor_key, '未匹配范围')}：<strong style={{ color: 'var(--text)' }}>{formatPercent(c.weight)}</strong>
+                    <span key={c.anchor_key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: '8px', minWidth: 0 }}>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {anchors.find((a) => a.key === c.anchor_key)?.title || friendlyId(c.anchor_key, '未匹配范围')}
+                      </span>
+                      <strong style={{ color: 'var(--text)', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>{formatPercent(c.weight)}</strong>
                     </span>
                   ))}
                 </div>

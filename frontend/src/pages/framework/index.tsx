@@ -616,10 +616,17 @@ function CandidateView({ courseId, candidate, rejecting, onReject, onOpenConfirm
 
 // 考点表格（同一章节/未归类共用一个渲染）。
 // 权重按章节（考核范围）分配，考点不显示权重。
+// 列宽必须固定：每章一张表，若列宽随内容浮动，跨卡的编号/名称/认知三列
+// 会相互错位成锯齿；tableLayout fixed + colgroup 让所有章的表严格同构。
 function PointsTable({ points }: { points: FrameworkExamPoint[] }) {
   return (
     <div style={{ overflowX: 'auto' }}>
-      <table className="data-table">
+      <table className="data-table" style={{ tableLayout: 'fixed' }}>
+        <colgroup>
+          <col style={{ width: '104px' }} />
+          <col />
+          <col style={{ width: '168px' }} />
+        </colgroup>
         <thead>
           <tr>
             <th>编号</th>
@@ -630,7 +637,7 @@ function PointsTable({ points }: { points: FrameworkExamPoint[] }) {
         <tbody>
           {points.map((pt) => (
             <tr key={pt.id}>
-              <td style={{ fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>{pt.code}</td>
+              <td style={{ fontSize: '0.8125rem' }}>{pt.code}</td>
               <td style={{ fontWeight: 500, fontSize: '0.875rem' }}>{pt.title}</td>
               <td style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
                 {(pt.cognitive_targets || []).join('、') || '-'}
