@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from uuid import uuid4
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
@@ -141,6 +142,84 @@ def _migrate_content_block_columns(engine: Engine) -> None:
             conn.execute(text("ALTER TABLE content_blocks ADD COLUMN embedding_model VARCHAR(64)"))
 
 
+def _backfill_assistant_sessions(conn: Connection) -> None:
+    """为 session_id IS NULL 的历史消息逐课程建会话并回填（空库天然无行）。"""
+
+    courses = conn.execute(
+        text(
+            "SELECT course_id, MIN(created_at), MAX(created_at) "
+            "FROM assistant_messages WHERE session_id IS NULL GROUP BY course_id"
+        )
+    ).fetchall()
+    for course_id, first_at, last_at in courses:
+        sample = conn.execute(
+            text(
+                "SELECT content FROM assistant_messages "
+                "WHERE course_id = :cid AND session_id IS NULL AND role = 'user' "
+                "ORDER BY created_at ASC, id ASC LIMIT 1"
+            ),
+            {"cid": course_id},
+        ).scalar_one_or_none()
+        title = str(sample or "").replace("\n", " ").strip()[:24] or "历史会话"
+        session_id = uuid4().hex
+        conn.execute(
+            text(
+                "INSERT INTO assistant_sessions (id, course_id, title, created_at, updated_at) "
+                "VALUES (:id, :cid, :title, :first_at, :last_at)"
+            ),
+            {"id": session_id, "cid": course_id, "title": title, "first_at": first_at, "last_at": last_at},
+        )
+        conn.execute(
+            text(
+                "UPDATE assistant_messages SET session_id = :sid "
+                "WHERE course_id = :cid AND session_id IS NULL"
+            ),
+            {"sid": session_id, "cid": course_id},
+        )
+
+
+def _migrate_assistant_session(engine: Engine) -> None:
+    """助手 v3 多会话：补 session_id 列 + 索引 + 回填历史会话 + CHECK 加 stopped。
+
+    - 列/索引/回填双方言幂等（create_all 不 ALTER 已存在表；回填只处理
+      session_id IS NULL 的历史行）。
+    - CHECK 约束：PostgreSQL 用 DROP IF EXISTS + ADD（先例 _migrate_evidence_link_fk）；
+      SQLite 不能原地改约束 → 跳过（测试与 CI 全为新建库、create_all 自带新 CHECK；
+      开发库为 PostgreSQL）。老 SQLite 库如需续用需重建，文档已注明。
+    """
+
+    try:
+        insp = inspect(engine)
+        if not insp.has_table("assistant_messages"):
+            return
+        existing = {c["name"] for c in insp.get_columns("assistant_messages")}
+        has_sessions = insp.has_table("assistant_sessions")
+    except Exception:
+        # 迁移是尽力而为的幂等维护：无法内省（bootstrap 单测的 mock engine）时不阻断启动。
+        return
+    with engine.begin() as conn:
+        if "session_id" not in existing:
+            conn.execute(text("ALTER TABLE assistant_messages ADD COLUMN session_id VARCHAR(64)"))
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_assistant_messages_course_session "
+                "ON assistant_messages (course_id, session_id, created_at)"
+            )
+        )
+        if has_sessions:
+            _backfill_assistant_sessions(conn)
+        if engine.dialect.name == "postgresql":
+            conn.execute(
+                text("ALTER TABLE assistant_messages DROP CONSTRAINT IF EXISTS ck_assistant_messages_stream_status")
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE assistant_messages ADD CONSTRAINT ck_assistant_messages_stream_status "
+                    "CHECK (stream_status IN ('streaming', 'complete', 'failed', 'stopped'))"
+                )
+            )
+
+
 def _migrate_evidence_link_score(engine: Engine) -> None:
     """Idempotently add retrieval_score column to exam_point_evidence_links.
 
@@ -272,6 +351,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
                 _migrate_evidence_link_score(engine)
                 _migrate_knowledge_link_role(engine)
                 _migrate_content_block_columns(engine)
+                _migrate_assistant_session(engine)
                 if seed:
                     _seed_dev_data(conn)
         else:
@@ -284,6 +364,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             _migrate_evidence_link_score(engine)
             _migrate_knowledge_link_role(engine)
             _migrate_content_block_columns(engine)
+            _migrate_assistant_session(engine)
             if seed:
                 _seed_dev_data(engine)
     finally:

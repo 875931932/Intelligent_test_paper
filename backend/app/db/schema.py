@@ -667,25 +667,44 @@ Index("ix_task_runs_course_status_type", task_runs.c.course_id, task_runs.c.stat
 Index("ix_task_runs_course_lease", task_runs.c.course_id, task_runs.c.status, task_runs.c.lease_expires_at)
 Index("ix_task_runs_course_poll", task_runs.c.course_id, task_runs.c.status, task_runs.c.next_poll_at)
 
+# 课程内 AI 助手会话：一条会话 = 一条独立时间线（v3 多会话）。标题默认「新会话」，
+# 首条用户消息自动改题；updated_at 在消息插入与改名时 bump（列表按最近活跃排序）。
+# 不设 title 唯一约束（会话允许重名，避免无谓 409）。
+assistant_sessions = _course_table(
+    "assistant_sessions",
+    Column("title", String(80), nullable=False, default="新会话", server_default="新会话"),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+)
+
 # 课程内 AI 助手对话时间线：一轮 = 一个 task_run（assistant_turn），用户消息在
 # 入队时写、助手消息在 worker 完成时写；提案执行状态回写只动 action JSON。
+# session_id：应用层恒写（历史任务 payload 缺失时允许 NULL，见 init_db 迁移注释）。
 assistant_messages = _course_table(
     "assistant_messages",
     Column("task_run_id", String(64), ForeignKey("task_runs.id"), nullable=False),
+    Column("session_id", String(64), ForeignKey("assistant_sessions.id"), nullable=True),
     Column("role", String(20), nullable=False),
     Column("content", Text, nullable=False, default="", server_default=""),
     Column("action", JSON, nullable=False, default=dict, server_default="{}"),
+    # stopped（v3）：教师停止生成——已落库的部分正文 + 「已停止」徽标
     Column("stream_status", String(20), nullable=False, default="complete", server_default="complete"),
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
     constraints=(
         CheckConstraint("role IN ('user', 'assistant', 'system')", name="ck_assistant_messages_role"),
         CheckConstraint(
-            "stream_status IN ('streaming', 'complete', 'failed')",
+            "stream_status IN ('streaming', 'complete', 'failed', 'stopped')",
             name="ck_assistant_messages_stream_status",
         ),
     ),
 )
 Index("ix_assistant_messages_course_created", assistant_messages.c.course_id, assistant_messages.c.created_at)
+Index(
+    "ix_assistant_messages_course_session",
+    assistant_messages.c.course_id,
+    assistant_messages.c.session_id,
+    assistant_messages.c.created_at,
+)
 
 outbox_events = _course_table(
     "outbox_events",

@@ -1,18 +1,25 @@
 import { create } from 'zustand';
 import { api } from '@/api/client';
-import type { AssistantMessage, AssistantProposalStatus } from '@/types/api';
+import type { AssistantMessage, AssistantProposalStatus, AssistantSession } from '@/types/api';
 import { useToastStore } from './toast';
 
 /**
- * AI 助手对话状态（一域一 store）：消息时间线 + 在途轮次的流式状态。
+ * AI 助手对话状态（一域一 store）：会话列表 + 消息时间线 + 在途轮次的流式状态。
  *
  * 恢复语义对齐 BlueprintSuggestPanel 的防重复模式（restoredForRef/startedRef）：
- * 挂载只拉一次历史；末条是 user 消息即视为上一轮仍在途，重连 SSE 续读；
+ * 挂载只拉一次会话与历史；末条是 user 消息即视为上一轮仍在途，重连 SSE 续读；
  * 页面卸载只关流不丢状态，回来后续读（任务在 worker 里照常跑完落库）。
+ *
+ * v3 多会话：一条会话 = 一条时间线与记忆边界。单在途约束——同一时刻只有一轮
+ * 在流式（sending 全局禁用发送），切会话只关流不取消、切回续读（streamSessionId 归属）。
  */
 interface AssistantState {
   /** 当前课程作用域；切课整体重置（消息/卡片全部带 course_id 隔离） */
   courseId: string | null;
+  /** 会话列表（按最近活跃倒序，v3 多会话） */
+  sessions: AssistantSession[];
+  /** 当前会话（null = 该课程尚无会话）；按课程持久化在 localStorage */
+  activeSessionId: string | null;
   messages: AssistantMessage[];
   /** 历史是否已恢复（防重复拉取） */
   restored: boolean;
@@ -20,21 +27,35 @@ interface AssistantState {
   /** 在途轮次：POST turns 后到 done/error 收口前为 true（输入框据此禁用） */
   sending: boolean;
   streamTaskId: string | null;
+  /** 在途轮次归属的会话（切会话关流、切回续读的判据） */
+  streamSessionId: string | null;
   /** 打字机累积文本（done 刷新拿到落库消息后清空） */
   streamText: string;
   /** 流过程提示（正在思考 / 生成卡片 / 连接中断等待） */
   streamHint: string | null;
+  /** 已收口轮次 id（防「只剩提问」的会话在每次进入时反复重连，内存态即可） */
+  settledTaskIds: string[];
 
-  /** 切课重置（关流、清时间线） */
+  /** 切课重置（关流、清时间线与会话态） */
   reset: (courseId: string) => void;
-  /** 挂载恢复：拉历史；若末条为 user（轮次在途）则重连 SSE 续读 */
+  /** 挂载恢复：拉会话与历史；末条为 user（轮次在途）则重连 SSE 续读 */
   restore: (courseId: string) => Promise<void>;
-  /** 以服务端 GET messages 为权威刷新时间线 */
+  /** 以服务端 GET messages 为权威刷新当前会话时间线 */
   refresh: () => Promise<void>;
-  /** 发新一轮：POST turns → 立即开 SSE 收流 */
+  /** 发新一轮：无会话先建 → POST turns → 立即开 SSE 收流 */
   send: (message: string) => Promise<void>;
   /** 页面卸载：关流（在途任务照常落库，重进时 restore 续读） */
   stop: () => void;
+  /** 停止生成（v3）：POST cancel 取消任务 → 关流 → 刷新见「已停止」部分正文 */
+  cancelTurn: () => Promise<void>;
+  /** 新建会话并置为当前（空时间线） */
+  createSession: (title?: string) => Promise<AssistantSession | null>;
+  /** 切换会话：关当前流（任务照跑）→ 拉该会话消息 → 在途则续读 */
+  switchSession: (sessionId: string) => Promise<void>;
+  /** 重命名会话（失败抛错，由页面提示） */
+  renameSession: (sessionId: string, title: string) => Promise<void>;
+  /** 删除会话及消息（在途 409 由页面提示先停止；删的是当前会话则切到最近会话） */
+  deleteSession: (sessionId: string) => Promise<void>;
   /** 提案卡状态回写（只记账，执行走既有业务 API，由页面先行调用） */
   patchProposal: (
     messageId: string,
@@ -62,16 +83,77 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
   };
 
   const clearTurnState = () =>
-    set({ sending: false, streamTaskId: null, streamText: '', streamHint: null });
+    set({
+      sending: false,
+      streamTaskId: null,
+      streamSessionId: null,
+      streamText: '',
+      streamHint: null,
+    });
+
+  // 当前会话按课程持久化（切课/刷新后回到上次所在会话；隐私模式不可用则退化为内存态）
+  const storageKey = (courseId: string) => `assistant:${courseId}:session`;
+  const persistActive = (courseId: string, sid: string | null) => {
+    try {
+      if (sid) window.localStorage.setItem(storageKey(courseId), sid);
+      else window.localStorage.removeItem(storageKey(courseId));
+    } catch {
+      /* localStorage 不可用：仅内存态 */
+    }
+  };
+  const readPersisted = (courseId: string): string | null => {
+    try {
+      return window.localStorage.getItem(storageKey(courseId));
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * 进入某会话后接上它的在途流（restore 与 switchSession 共用）：
+   * - 本端在途（sending 且归属本会话）→ 续读（重挂载/切回时流已关，幂等先关旧再开新）；
+   * - 本端无在途 → 末条 user 且未收口过 → 恢复该轮（换设备/刷新后的在途轮次）。
+   *   settledTaskIds 跳过「只剩提问」的已收口轮次（如停止于产出前），避免反复重连。
+   */
+  const attachSessionStream = (messages: AssistantMessage[]) => {
+    const s = get();
+    const courseId = s.courseId;
+    const sid = s.activeSessionId;
+    if (!courseId || !sid) return;
+    if (s.sending) {
+      // 流式通道是全局的（在途轮次可能属于别的会话）：只在通道断开时续上
+      // （页面重挂载时 stop() 关过流），页面按 streamSessionId 归属决定是否
+      // 显示流式区。开着就不重开——让 done 持续可达，否则收口丢失、sending 卡死。
+      if (s.streamTaskId && !closeStream) openStream(courseId, s.streamTaskId);
+      return; // 在途（含 POST 未返回的瞬态）：不抢流，输入保持禁用（单在途约束）
+    }
+    const last = messages[messages.length - 1];
+    if (last && last.role === 'user' && !s.settledTaskIds.includes(last.task_run_id)) {
+      set({
+        sending: true,
+        streamTaskId: last.task_run_id,
+        streamSessionId: sid,
+        streamText: '',
+        streamHint: '正在思考…',
+      });
+      openStream(courseId, last.task_run_id);
+    }
+  };
 
   /** done/error 收口：先拉权威消息再清流式状态（先落库后发 done，后端已保序） */
   const finishTurn = async () => {
     stopStream();
     stopPolling();
+    // 记账已收口轮次：末条只剩 user 的轮次（停止于产出前）不再被重连
+    const settled = get().streamTaskId;
+    if (settled) {
+      set((s) => ({ settledTaskIds: [...s.settledTaskIds.slice(-49), settled] }));
+    }
     const courseId = get().courseId;
     try {
       if (courseId) {
-        const messages = await api.assistant.listMessages(courseId);
+        const sid = get().activeSessionId;
+        const messages = sid ? await api.assistant.listMessages(courseId, sid) : [];
         set({ messages, restored: true });
       }
     } catch {
@@ -165,55 +247,62 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
 
   return {
     courseId: null,
+    sessions: [],
+    activeSessionId: null,
     messages: [],
     restored: false,
     restoring: false,
     sending: false,
     streamTaskId: null,
+    streamSessionId: null,
     streamText: '',
     streamHint: null,
+    settledTaskIds: [],
 
     reset: (courseId) => {
       stopStream();
       stopPolling();
       set({
         courseId,
+        sessions: [],
+        activeSessionId: null,
         messages: [],
         restored: false,
         restoring: false,
         sending: false,
         streamTaskId: null,
+        streamSessionId: null,
         streamText: '',
         streamHint: null,
+        settledTaskIds: [],
       });
     },
 
     restore: async (courseId) => {
       if (get().courseId !== courseId) get().reset(courseId);
 
-      // 页面重挂载：在途流已随卸载关闭，重新接上续读（幂等，先关旧再开新）
-      const taskRunId = get().streamTaskId;
-      if (get().sending && taskRunId && !closeStream) {
-        openStream(courseId, taskRunId);
+      // 防重复拉取（restoredForRef 同款：check 与置位同一同步块，无竞态）。
+      // 已恢复过的重挂载只负责续上本会话在途流。
+      if (get().restored || get().restoring) {
+        const s = get();
+        if (s.sending && s.streamTaskId && s.courseId) {
+          attachSessionStream(s.messages);
+        }
+        return;
       }
-
-      // 防重复拉取（restoredForRef 同款：check 与置位同一同步块，无竞态）
-      if (get().restored || get().restoring) return;
       set({ restoring: true });
       try {
-        const messages = await api.assistant.listMessages(courseId);
+        const sessions = await api.assistant.listSessions(courseId);
+        const persisted = readPersisted(courseId);
+        const active =
+          persisted && sessions.some((x) => x.id === persisted)
+            ? persisted
+            : (sessions[0]?.id ?? null);
+        set({ sessions, activeSessionId: active });
+        if (active) persistActive(courseId, active);
+        const messages = active ? await api.assistant.listMessages(courseId, active) : [];
         set({ messages, restored: true, restoring: false });
-        // 末条是 user → 上一轮仍在途 → 重连 SSE 续读
-        const last = messages[messages.length - 1];
-        if (last && last.role === 'user') {
-          set({
-            sending: true,
-            streamTaskId: last.task_run_id,
-            streamText: '',
-            streamHint: '正在思考…',
-          });
-          openStream(courseId, last.task_run_id);
-        }
+        attachSessionStream(messages);
       } catch (err) {
         set({ restoring: false });
         throw err;
@@ -223,7 +312,8 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
     refresh: async () => {
       const courseId = get().courseId;
       if (!courseId) return;
-      const messages = await api.assistant.listMessages(courseId);
+      const sid = get().activeSessionId;
+      const messages = sid ? await api.assistant.listMessages(courseId, sid) : [];
       set({ messages, restored: true });
     },
 
@@ -231,9 +321,17 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
       const text = message.trim();
       const courseId = get().courseId;
       if (!courseId || !text || get().sending) return;
-      set({ sending: true, streamTaskId: null, streamText: '', streamHint: '正在思考…' });
+      set({ sending: true, streamTaskId: null, streamSessionId: null, streamText: '', streamHint: '正在思考…' });
       try {
-        const turn = await api.assistant.createTurn(courseId, text);
+        // 无会话先建（单路径：不在 UI 上设禁用态，缺省标题由首条消息自动改题）
+        let sid = get().activeSessionId;
+        if (!sid) {
+          const created = await api.assistant.createSession(courseId);
+          set((s) => ({ sessions: [created, ...s.sessions], activeSessionId: created.id, messages: [] }));
+          persistActive(courseId, created.id);
+          sid = created.id;
+        }
+        const turn = await api.assistant.createTurn(courseId, text, sid);
         const localUser: AssistantMessage = {
           id: turn.user_message_id,
           task_run_id: turn.task_run_id,
@@ -247,6 +345,7 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
           messages: [...s.messages, localUser],
           restored: true,
           streamTaskId: turn.task_run_id,
+          streamSessionId: turn.session_id,
         }));
         openStream(courseId, turn.task_run_id);
       } catch (err) {
@@ -258,6 +357,94 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
     stop: () => {
       stopStream();
       // 轮询兜底不随卸载停：store 是全局的，任务收口仍要靠它把消息刷进来
+    },
+
+    cancelTurn: async () => {
+      const courseId = get().courseId;
+      const taskRunId = get().streamTaskId;
+      if (!courseId || !taskRunId) return;
+      const res = await api.assistant.cancelTurn(courseId, taskRunId);
+      const stopped = res.status === 'cancelled';
+      useToastStore
+        .getState()
+        .addToast(
+          stopped ? '已停止生成（已生成的内容会保留）' : '本轮已结束，未受影响',
+          'info',
+        );
+      if (stopped) {
+        // 流仍开着 → worker 检查点落库后发 done 自然收口（收口时刷新可见
+        // 部分正文 +「已停止」徽标）；流已关（罕见）→ 等一拍手动收口，
+        // 给检查点留落库时间。
+        if (!closeStream) {
+          window.setTimeout(() => void finishTurn(), 700);
+        }
+      } else {
+        await finishTurn(); // 已终态（跑完了）：按正常收口刷新
+      }
+    },
+
+    createSession: async (title) => {
+      const courseId = get().courseId;
+      if (!courseId) return null;
+      const created = await api.assistant.createSession(courseId, title);
+      set((s) => ({
+        sessions: [created, ...s.sessions],
+        activeSessionId: created.id,
+        messages: [],
+        restored: true,
+      }));
+      persistActive(courseId, created.id);
+      return created;
+    },
+
+    switchSession: async (sessionId) => {
+      const { courseId, activeSessionId, messages: prevMessages } = get();
+      if (!courseId || sessionId === activeSessionId) return;
+      // 在途流不关（收口依赖它收 done）：切走后页面按 streamSessionId 归属
+      // 隐藏流式区，任务在 worker 照跑；切回原会话原样续显（不取消）。
+      const prev = activeSessionId;
+      set({ activeSessionId: sessionId, messages: [], restored: false });
+      persistActive(courseId, sessionId);
+      try {
+        const messages = await api.assistant.listMessages(courseId, sessionId);
+        set({ messages, restored: true });
+        attachSessionStream(messages);
+      } catch (err) {
+        // 失败回滚到原会话与原时间线：否则停在空时间线且同 id 点击会被
+        // 早退拦掉，无法重试
+        set({ activeSessionId: prev, messages: prevMessages, restored: true });
+        persistActive(courseId, prev);
+        useToastStore.getState().addToast('会话内容加载失败，请重试', 'error');
+        throw err;
+      }
+    },
+
+    renameSession: async (sessionId, title) => {
+      const courseId = get().courseId;
+      if (!courseId) return;
+      const updated = await api.assistant.renameSession(courseId, sessionId, title);
+      set((s) => ({ sessions: s.sessions.map((x) => (x.id === sessionId ? updated : x)) }));
+    },
+
+    deleteSession: async (sessionId) => {
+      const courseId = get().courseId;
+      if (!courseId) return;
+      await api.assistant.deleteSession(courseId, sessionId);
+      set((s) => {
+        const sessions = s.sessions.filter((x) => x.id !== sessionId);
+        const removedActive = s.activeSessionId === sessionId;
+        return {
+          sessions,
+          ...(removedActive
+            ? {
+                activeSessionId: sessions[0]?.id ?? null,
+                messages: [],
+                restored: true,
+              }
+            : {}),
+        };
+      });
+      persistActive(courseId, get().activeSessionId);
     },
 
     patchProposal: async (messageId, status, receipt) => {

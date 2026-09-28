@@ -700,8 +700,11 @@ export interface TaskRun {
 // ---------------------------------------------------------------------------
 
 export type AssistantRole = 'user' | 'assistant';
-/** 段2 流式降级时为 failed（内容仍是完整回复，仅打字机效果缺失） */
-export type AssistantStreamStatus = 'complete' | 'failed';
+/**
+ * 段2 流式降级时为 failed（内容仍是完整回复，仅打字机效果缺失）；
+ * stopped = 教师停止生成（v3，正文是中断前已流出的部分内容）
+ */
+export type AssistantStreamStatus = 'complete' | 'failed' | 'stopped';
 /** 提案卡单向迁移：proposed → executed | dismissed（后端 _PROPOSAL_TRANSITIONS 同集合） */
 export type AssistantProposalStatus = 'executed' | 'dismissed';
 
@@ -834,6 +837,16 @@ export interface AssistantMessage {
 export interface AssistantTurnCreated {
   task_run_id: string;
   user_message_id: string;
+  /** 本轮归属会话（v3）：请求未带时后端兜底解析后返回 */
+  session_id: string;
+}
+
+/** AI 助手会话（v3 多会话：一条会话 = 一条独立时间线与记忆边界） */
+export interface AssistantSession {
+  id: string;
+  title: string;
+  created_at: string | null;
+  updated_at: string | null;
 }
 
 /** PATCH assistant/messages/{id} 请求：只回写卡片状态，不执行任何业务 */

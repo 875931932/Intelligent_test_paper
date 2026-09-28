@@ -765,11 +765,13 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
 
 `POST /api/v1/courses/{course_id}/assistant/turns`
 
-- 请求：`{ "message": "..." }`（必填，去空格后 ≤ 2000 字）
-- 响应 202：`{ "task_run_id", "user_message_id" }`
-- 行为：写 `assistant_messages(user)` + `task_runs(assistant_turn, queued)` + outbox 派发；
-  同课程**在途**同文本任务复用同一 `task_run_id`（双击不重复烧模型），终态后同文本换新键。
-- 状态码：503 `LLM model is not configured`；404 课程不存在；422 空消息/超长。
+- 请求：`{ "message": "...", "session_id": "..." }`（`message` 必填，去空格后 ≤ 2000 字；
+  `session_id` 可选——缺省时取课程最近会话，无则自动新建，旧客户端兼容）
+- 响应 202：`{ "task_run_id", "user_message_id", "session_id" }`
+- 行为：写 `assistant_messages(user, session_id)` + `task_runs(assistant_turn, queued)` + outbox 派发；
+  同课程**同会话**在途同文本任务复用同一 `task_run_id`（双击不重复烧模型，会话参与幂等键），
+  终态后同文本换新键；会话标题为「新会话」时以首条消息自动改题（去换行取前 40 字）。
+- 状态码：503 `LLM model is not configured`；404 课程不存在/会话不存在；422 空消息/超长。
 
 ### 10.2 SSE 事件流
 
@@ -781,15 +783,17 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
 - 每帧带 `id:`（Redis 流条目 id）——断线重连带 `?last_id=<最后收到的 id>` 从该条目后续读，
   不重放已收增量；前端用 `fetch` + `ReadableStream`（`EventSource` 带不了 Authorization）。
 - 只读转发 Redis Stream（`assistant:turn:{task_run_id}`，MAXLEN ~5000 / TTL 600s）；
-  通道不可用时按 `task_runs` 终态 DB 兜底（首轮 + 每 8 轮 probe 推 done/error）。
-  跨课程/未知任务 404。**端点不调用模型**。
+  通道不可用时按 `task_runs` 终态 DB 兜底（首轮 + 每 8 轮 probe 推 done/error；
+  **`cancelled` 按 `done` 收口**——教师主动停止是正常结束，不是错误）。跨课程/未知任务 404。
+  **端点不调用模型**。
 
 ### 10.3 历史恢复
 
-`GET .../assistant/messages` →
+`GET .../assistant/messages?session_id=<sid>` →
 `[{ id, task_run_id, role, content, action, stream_status, created_at }]`
 
-按 `created_at` 时间序（≤200 条）。挂载拉取 + `done` 后刷新，前端以它为权威；
+按 `created_at` 时间序（≤200 条）；`session_id` 给定只返回该会话，**缺省返回全课程**
+（向后兼容）。挂载拉取 + `done` 后刷新，前端以它为权威；
 末条为 `user` 即视为上一轮在途 → 重连 §10.2 续读。
 
 ### 10.4 提案卡状态回写（只记账）
@@ -804,7 +808,12 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
 ### 10.5 数据与工具
 
 - 新表 `assistant_messages`（`app/db/schema.py`，`python -m app.db.init_db` 幂等迁移）：
-  `task_run_id` FK + `role` + `content` + `action`(JSON) + `stream_status`，全部带 `course_id`。
+  `task_run_id` FK + `role` + `content` + `action`(JSON) + `stream_status`
+  （`complete` | `failed` | `stopped`，`stopped` = v3 停止生成保留的部分正文）+ `session_id`
+  （可空，v3），全部带 `course_id`；索引 `ix_assistant_messages_course_session`。
+- 新表 `assistant_sessions`（v3 多会话，会话 = 时间线与记忆边界）：
+  `course_id` + `title` + `created_at`/`updated_at`（活跃排序用），按 `course_id` 隔离；
+  历史消息按课程回填会话的幂等迁移见 §10.6。
 - 只读工具（结果卡）：`course_overview` / `list_materials` / `framework_status` /
   `blueprint_status` / `contract_status` / `paper_status` / `list_exam_projects`。
   项目级工具（overview/blueprint/contract/paper/list_exam_projects）支持可选
@@ -832,6 +841,42 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
   (VARCHAR(64))——换嵌入模型时按 `embedding_model != settings.embedding_model` 重嵌；
   由 `app/db/init_db.py` 幂等迁移（无 Alembic）。索引任务 `task_runs(material_index)`
   （幂等键 `material_index:{run_id}`，lease 300s）在 worker 内调嵌入，端点只入队（§3.5/§3.6）。
+
+### 10.6 会话管理（v3 多会话）
+
+前缀同上 `.../assistant/sessions`，全部带 `course_id` 隔离；会话是**记忆边界**
+（历史、幂等键都按会话隔离）。响应形状：
+`{ id, title, created_at, updated_at }`。
+
+| 方法 | 路径 | 成功 | 说明 / 失败 |
+|---|---|---|---|
+| GET | `/sessions` | 200 `[{...}]` | 按 `updated_at` 倒序（最近活跃在前） |
+| POST | `/sessions` | 201 `{...}` | 请求 `{title?}`，缺省「新会话」，超长截断 40 字 |
+| PATCH | `/sessions/{sid}` | 200 `{...}` | 请求 `{title}`；422 空标题；404 不存在/跨课程 |
+| DELETE | `/sessions/{sid}` | 204 | 级联删本会话全部消息；404 不存在/跨课程；**409 有在途任务**（先停本轮，§10.7） |
+
+- 首条用户消息自动改题：会话标题仍为「新会话」时，以消息（去换行取前 40 字）改题
+  （`ensure_default_session` 路径）。
+- 所有端点纯 DB、**零 LLM**。
+- 迁移（v2 → v3）：`init_db` 幂等补 `assistant_messages.session_id` 列与索引，
+  逐课程回填历史消息到「该课首条 user 消息」命名的回填会话；PostgreSQL 另把
+  `stream_status` CHECK 追加 `'stopped'`（SQLite 不能原地改约束，按既有先例跳过，
+  新库 `create_all` 自带新 CHECK）。
+
+### 10.7 停止生成（v3 协作式取消）
+
+`POST .../assistant/turns/{task_run_id}/cancel` → 200 `{ "task_run_id", "status": "cancelled" }`
+
+- **纯 DB**：`task_runs.queued|running → cancelled`，端点零 LLM、不碰外部系统；
+  已到终态则**幂等**返回现态（`status` 即现态，非 `cancelled` = 没停成/已跑完）。
+- worker 三检查点协作式中止（`assistant_service.run_turn`）：
+  **A** 轮次开始前发现取消 → 直接返回，不产出任何消息、零模型调用；
+  **B** 流式 `on_delta` 节流 0.5s 探测 → `TurnCancelled` 穿透降级，**保留已流出的部分正文**；
+  **C** 路由产出后、落库前 → 照常落卡与正文，标记 `stream_status='stopped'`。
+- 落库的停止消息带 `stream_status='stopped'`，前端渲染「已停止」徽标（任何 kind）。
+- SSE 侧：worker 发布 `done` 正常收口；通道兜底把 `cancelled` 按 `done`（非 `error`）推给前端。
+- 状态码：404 未知任务/跨课程；422 路径参数非法。
+- worker `claim` 为条件更新（仅 `queued` 可领取）：已取消的任务领不到，不跑 handler、零模型调用。
 
 ## 11. 数据模型汇总（复用类型）
 

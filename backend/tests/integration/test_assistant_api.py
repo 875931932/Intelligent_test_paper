@@ -514,3 +514,156 @@ def test_stream_endpoint_404_unknown_or_cross_course(env):
     assert (
         auth.get(f"{PATH.format(cid='c2')}/turns/{task_id}/stream").status_code == 404
     )
+
+
+# ---------------------------------------------------------------------------
+# 会话管理（v3 多会话）
+# ---------------------------------------------------------------------------
+
+
+def test_sessions_crud_over_http(env):
+    auth, _factory, _dispatched = env
+    base = f"{PATH.format(cid='c1')}/sessions"
+
+    assert auth.get(base).json() == []
+
+    created = auth.post(base, json={"title": "  期末复习  "})
+    assert created.status_code == 201
+    sid = created.json()["id"]
+    assert created.json()["title"] == "期末复习"
+
+    assert [s["id"] for s in auth.get(base).json()] == [sid]
+
+    renamed = auth.patch(f"{base}/{sid}", json={"title": "复习范围"})
+    assert renamed.status_code == 200
+    assert renamed.json()["title"] == "复习范围"
+
+    # 空标题 422；跨课程路径挂 c1 的会话 → 404
+    assert auth.patch(f"{base}/{sid}", json={"title": "   "}).status_code == 422
+    assert (
+        auth.patch(f"{PATH.format(cid='c2')}/sessions/{sid}", json={"title": "x"}).status_code
+        == 404
+    )
+
+    # 删除 204 → 列表空 → 再删 404
+    assert auth.delete(f"{base}/{sid}").status_code == 204
+    assert auth.get(base).json() == []
+    assert auth.delete(f"{base}/{sid}").status_code == 404
+
+
+def test_turn_session_scoping_idempotency_and_filter(env):
+    auth, _factory, _dispatched = env
+    sessions_url = f"{PATH.format(cid='c1')}/sessions"
+    s1 = auth.post(sessions_url, json={}).json()
+    s2 = auth.post(sessions_url, json={}).json()
+
+    # 不带 session_id → 兜底最近会话（s2 后建 → updated_at 更新）
+    auto = _turn(auth, message="第一句")
+    assert auto["session_id"] == s2["id"]
+    titles = {s["id"]: s["title"] for s in auth.get(sessions_url).json()}
+    assert titles[s2["id"]] == "第一句"  # 首条消息自动改题
+
+    # 幂等：同会话同文本在途复用、换会话同文本新任务
+    r1 = auth.post(
+        f"{PATH.format(cid='c1')}/turns",
+        json={"message": "同文本", "session_id": s1["id"]},
+    )
+    assert r1.status_code == 202
+    r1b = auth.post(
+        f"{PATH.format(cid='c1')}/turns",
+        json={"message": "同文本", "session_id": s1["id"]},
+    )
+    assert r1b.json()["task_run_id"] == r1.json()["task_run_id"]
+    r2 = auth.post(
+        f"{PATH.format(cid='c1')}/turns",
+        json={"message": "同文本", "session_id": s2["id"]},
+    )
+    assert r2.json()["task_run_id"] != r1.json()["task_run_id"]
+
+    # messages 过滤：s1 只有一条；缺省全课程 3 条
+    m1 = auth.get(f"{PATH.format(cid='c1')}/messages?session_id={s1['id']}").json()
+    assert [m["content"] for m in m1] == ["同文本"]
+    assert len(auth.get(f"{PATH.format(cid='c1')}/messages").json()) == 3
+
+    # 无效会话 404
+    assert (
+        auth.post(
+            f"{PATH.format(cid='c1')}/turns", json={"message": "x", "session_id": "nope"}
+        ).status_code
+        == 404
+    )
+
+
+def test_delete_session_409_inflight_then_204_cascade(env):
+    auth, factory, _dispatched = env
+    sid = auth.post(f"{PATH.format(cid='c1')}/sessions", json={}).json()["id"]
+    task_id = _turn(auth, message="在途问题")["task_run_id"]  # 兜底 → 唯一会话 sid
+
+    # 在途（queued）→ 409
+    assert auth.delete(f"{PATH.format(cid='c1')}/sessions/{sid}").status_code == 409
+
+    # 终态 → 204 + 级联删消息
+    with factory() as session:
+        session.execute(
+            update(task_runs)
+            .where(task_runs.c.id == task_id, task_runs.c.course_id == "c1")
+            .values(status="succeeded")
+        )
+        session.commit()
+    assert auth.delete(f"{PATH.format(cid='c1')}/sessions/{sid}").status_code == 204
+    assert auth.get(f"{PATH.format(cid='c1')}/messages").json() == []
+    assert auth.get(f"{PATH.format(cid='c1')}/sessions").json() == []
+
+
+# ---------------------------------------------------------------------------
+# 停止生成（v3）
+# ---------------------------------------------------------------------------
+
+
+def test_cancel_endpoint_idempotent_and_stream_done(env):
+    """停止端点：纯 DB、幂等；取消后 SSE 兜底按 done 正常收口（不是 error）。"""
+    auth, _factory, _dispatched = env
+    task_id = _turn(auth, message="该停就停")["task_run_id"]
+
+    resp = auth.post(f"{PATH.format(cid='c1')}/turns/{task_id}/cancel")
+    assert resp.status_code == 200
+    assert resp.json() == {"task_run_id": task_id, "status": "cancelled"}
+
+    # 幂等：已终态原样返回现态
+    again = auth.post(f"{PATH.format(cid='c1')}/turns/{task_id}/cancel")
+    assert again.status_code == 200
+    assert again.json()["status"] == "cancelled"
+
+    # 404：未知任务 / 跨课程
+    assert auth.post(f"{PATH.format(cid='c1')}/turns/ghost/cancel").status_code == 404
+    assert auth.post(f"{PATH.format(cid='c2')}/turns/{task_id}/cancel").status_code == 404
+
+    # SSE DB 兜底：cancelled → done（教师主动停止是正常收口）
+    stream = auth.get(f"{PATH.format(cid='c1')}/turns/{task_id}/stream")
+    assert "event: done" in stream.text
+    assert "event: error" not in stream.text
+
+
+def test_cancelled_task_worker_claim_refuses(env, monkeypatch):
+    """取消后 execute_task 领不到任务：不跑 handler、零模型调用、不落助手消息。"""
+    auth, factory, _dispatched = env
+    task_id = _turn(auth, message="该被拦下")["task_run_id"]
+    auth.post(f"{PATH.format(cid='c1')}/turns/{task_id}/cancel")
+
+    from app.infrastructure.tasks import worker
+
+    monkeypatch.setattr(worker, "get_session_factory", lambda: factory)
+    stub = StubClient()
+    monkeypatch.setattr(assistant_service, "build_client", lambda: stub)
+
+    handled = worker.execute_task(task_id, worker_id="test-worker")
+    assert handled is False
+    assert stub.calls == []
+
+    views = auth.get(f"{PATH.format(cid='c1')}/messages").json()
+    assert [v["role"] for v in views] == ["user"]  # 只有提问，无回复
+    with factory() as session:
+        status = session.execute(
+            select(task_runs.c.status).where(task_runs.c.id == task_id)
+        ).scalar_one()
+    assert status == "cancelled"

@@ -11,7 +11,7 @@ import asyncio
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
@@ -36,6 +36,8 @@ class AssistantTurnRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     message: str
+    # v3 多会话：缺省时后端用课程最近会话（无则新建）——旧客户端兜底
+    session_id: str | None = None
 
 
 class AssistantMessagePatch(BaseModel):
@@ -43,6 +45,92 @@ class AssistantMessagePatch(BaseModel):
 
     action_status: str
     receipt: str = ""
+
+
+class AssistantSessionCreate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    title: str = ""
+
+
+class AssistantSessionRename(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    title: str
+
+
+# ---------------------------------------------------------------------------
+# 会话管理（v3 多会话：新建 / 重命名 / 删除；切换由前端带 session_id 完成）
+# ---------------------------------------------------------------------------
+
+
+@router.get("/sessions", response_model=list[dict])
+def list_sessions(
+    course_id: str, session: Session = Depends(get_session)
+) -> list[dict]:
+    """按最近活跃排序的会话列表。"""
+    return assistant_service.list_sessions(session, course_id=course_id)
+
+
+@router.post("/sessions", response_model=dict, status_code=status.HTTP_201_CREATED)
+def create_session(
+    course_id: str,
+    body: AssistantSessionCreate,
+    session: Session = Depends(get_session),
+) -> dict:
+    try:
+        view = assistant_service.create_session(
+            session, course_id=course_id, title=body.title
+        )
+        session.commit()
+    except assistant_service.AssistantError as exc:
+        session.rollback()
+        raise HTTPException(status_code=422, detail=str(exc))
+    return view
+
+
+@router.patch("/sessions/{session_id}", response_model=dict)
+def rename_session(
+    course_id: str,
+    session_id: str,
+    body: AssistantSessionRename,
+    session: Session = Depends(get_session),
+) -> dict:
+    try:
+        view = assistant_service.rename_session(
+            session, course_id=course_id, session_id=session_id, title=body.title
+        )
+        session.commit()
+    except assistant_service.AssistantError as exc:
+        session.rollback()
+        msg = str(exc)
+        if "不存在" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=422, detail=msg)
+    return view
+
+
+@router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_session(
+    course_id: str,
+    session_id: str,
+    session: Session = Depends(get_session),
+) -> Response:
+    """删除会话及全部消息（级联）；会话内有在途轮次 → 409。"""
+    try:
+        assistant_service.delete_session(
+            session, course_id=course_id, session_id=session_id
+        )
+        session.commit()
+    except assistant_service.AssistantError as exc:
+        session.rollback()
+        msg = str(exc)
+        if "不存在" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        if "在途" in msg:
+            raise HTTPException(status_code=409, detail=msg)
+        raise HTTPException(status_code=422, detail=msg)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +154,10 @@ def create_turn(
 
     try:
         result = assistant_service.enqueue_turn(
-            session, course_id=course_id, message=body.message
+            session,
+            course_id=course_id,
+            message=body.message,
+            session_id=body.session_id,
         )
         # 显式 commit：outbox 派发会用另一个事务/连接读取事件，任务行必须先落地
         session.commit()
@@ -96,6 +187,40 @@ def create_turn(
     return result
 
 
+@router.post("/turns/{task_run_id}/cancel", response_model=dict)
+def cancel_turn(
+    course_id: str,
+    task_run_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    """停止生成（v3）：只改任务状态，**零 LLM**；worker 协作式检查点中止流式并
+    保留已流出的部分正文（`stream_status='stopped'`）。
+
+    幂等：任务已到终态（含已取消）时原样返回现态，不报错。
+    """
+    from app.infrastructure.tasks.models import TERMINAL_TASK_STATUSES, cancel_task
+
+    row = session.execute(
+        select(task_runs.c.status).where(
+            task_runs.c.id == task_run_id,
+            task_runs.c.course_id == course_id,
+        )
+    ).one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="task run not found")
+    if row[0] in TERMINAL_TASK_STATUSES:
+        return {"task_run_id": task_run_id, "status": row[0]}
+    cancel_task(session, course_id=course_id, task_id=task_run_id)
+    session.commit()
+    current = session.execute(
+        select(task_runs.c.status).where(
+            task_runs.c.id == task_run_id,
+            task_runs.c.course_id == course_id,
+        )
+    ).scalar_one()
+    return {"task_run_id": task_run_id, "status": current}
+
+
 # ---------------------------------------------------------------------------
 # 消息恢复与提案状态回写
 # ---------------------------------------------------------------------------
@@ -103,10 +228,17 @@ def create_turn(
 
 @router.get("/messages", response_model=list[dict])
 def list_messages(
-    course_id: str, session: Session = Depends(get_session)
+    course_id: str,
+    session_id: str | None = None,
+    session: Session = Depends(get_session),
 ) -> list[dict]:
-    """按时间序恢复对话（挂载拉取；在途轮次由前端另接 SSE）。"""
-    return assistant_service.list_messages(session, course_id=course_id)
+    """按时间序恢复对话（挂载拉取；在途轮次由前端另接 SSE）。
+
+    `session_id` 给定只返回该会话；缺省返回全课程（向后兼容）。
+    """
+    return assistant_service.list_messages(
+        session, course_id=course_id, session_id=session_id
+    )
 
 
 @router.patch("/messages/{message_id}", response_model=dict)
@@ -248,13 +380,15 @@ async def _event_stream(course_id: str, task_run_id: str, *, start_id: str = "0"
             empty_rounds += 1
             if empty_rounds == 1 or empty_rounds % 8 == 0:
                 state = await run_in_threadpool(_probe_turn_state, course_id, task_run_id)
-                if state["status"] == "succeeded":
+                if state["status"] in ("succeeded", "cancelled"):
+                    # cancelled = 教师主动停止（§10.7）：正常收口而非错误；
+                    # 检查点 A 场景 message_id 可为 null，前端以 GET messages 为权威
                     yield _sse(
                         "done",
                         {"message_id": state["message_id"], "task_run_id": task_run_id},
                     )
                     return
-                if state["status"] in ("failed", "cancelled", "missing"):
+                if state["status"] in ("failed", "missing"):
                     yield _sse(
                         "error",
                         {

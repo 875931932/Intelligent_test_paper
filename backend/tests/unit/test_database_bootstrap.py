@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.schema import CreateIndex, CreateTable
 
 from app.db.init_db import (
+    _migrate_assistant_session,
     _migrate_evidence_chunk_columns,
     _migrate_knowledge_link_role,
     bootstrap_database,
@@ -25,7 +26,8 @@ EXPECTED_CORE_TABLES = {
     "assessment_units", "knowledge_cards", "knowledge_evidence_links", "index_versions",
     "index_memberships", "exam_projects", "blueprint_versions", "blueprint_sections", "plan_items",
     "generation_runs", "generation_attempts", "generated_questions", "quality_checks", "paper_versions",
-    "paper_items", "model_calls", "task_runs", "outbox_events", "assistant_messages",
+    "paper_items", "model_calls", "task_runs", "outbox_events", "assistant_sessions",
+    "assistant_messages",
 }
 
 
@@ -121,6 +123,83 @@ def test_migrate_knowledge_link_role_normalizes_answer_basis(database_url):
             assert connection.exec_driver_sql(
                 "SELECT evidence_role FROM knowledge_evidence_links WHERE id='l1'"
             ).scalar_one() == "direct"
+    finally:
+        engine.dispose()
+
+
+def test_migrate_assistant_session_adds_column_and_backfills(database_url):
+    """助手 v3：旧库补 session_id 列 + 索引，历史消息逐课程回填会话（幂等）。
+
+    CHECK 约束加 'stopped' 为 PostgreSQL-only（SQLite 不能原地改约束，按
+    _migrate_evidence_link_fk 先例跳过；测试库全为新建库、create_all 自带新 CHECK）。
+    """
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE assistant_sessions ("
+                "id VARCHAR(64) PRIMARY KEY, "
+                "course_id VARCHAR(64) NOT NULL, "
+                "title VARCHAR(80) NOT NULL, "
+                "created_at TIMESTAMP, updated_at TIMESTAMP)"
+            )
+            connection.exec_driver_sql(
+                "CREATE TABLE assistant_messages ("
+                "id VARCHAR(64) PRIMARY KEY, "
+                "course_id VARCHAR(64) NOT NULL, "
+                "task_run_id VARCHAR(64) NOT NULL, "
+                "role VARCHAR(20) NOT NULL, "
+                "content TEXT, stream_status VARCHAR(20), created_at TIMESTAMP)"
+            )
+            # 两课各一组 v2 时代的老消息（无 session_id 列）
+            connection.exec_driver_sql(
+                "INSERT INTO assistant_messages "
+                "(id, course_id, task_run_id, role, content, stream_status, created_at) VALUES "
+                "('m1', 'c1', 't1', 'user', '第一句老消息', 'complete', '2026-09-01 10:00:00.000001'), "
+                "('m2', 'c1', 't1', 'assistant', '回复', 'complete', '2026-09-01 10:00:01.000001'), "
+                "('m3', 'c2', 't2', 'user', '另一门课', 'complete', '2026-09-02 10:00:00.000001')"
+            )
+        _migrate_assistant_session(engine)
+
+        columns = {c["name"] for c in inspect(engine).get_columns("assistant_messages")}
+        assert "session_id" in columns
+        indexes = {ix["name"] for ix in inspect(engine).get_indexes("assistant_messages")}
+        assert "ix_assistant_messages_course_session" in indexes
+
+        with engine.connect() as connection:
+            sessions = {
+                row[0]: (row[1], row[2])
+                for row in connection.exec_driver_sql(
+                    "SELECT id, course_id, title FROM assistant_sessions"
+                )
+            }
+            # 逐课程一条会话，标题 = 该课首条 user 消息
+            assert len(sessions) == 2
+            assert {course: title for course, title in sessions.values()} == {
+                "c1": "第一句老消息",
+                "c2": "另一门课",
+            }
+            # 消息挂到本课程的会话（课程隔离不串）
+            by_course: dict[str, set] = {}
+            for course_id, sid in connection.exec_driver_sql(
+                "SELECT course_id, session_id FROM assistant_messages"
+            ).fetchall():
+                by_course.setdefault(course_id, set()).add(sid)
+            assert set(by_course) == {"c1", "c2"}
+            for course_id, sids in by_course.items():
+                assert len(sids) == 1
+                (sid,) = sids
+                assert sessions[sid][0] == course_id
+
+        # 幂等：重复迁移不重复建会话、不重复回填
+        _migrate_assistant_session(engine)
+        with engine.connect() as connection:
+            assert connection.exec_driver_sql(
+                "SELECT COUNT(*) FROM assistant_sessions"
+            ).scalar_one() == 2
+            assert connection.exec_driver_sql(
+                "SELECT COUNT(*) FROM assistant_messages WHERE session_id IS NULL"
+            ).scalar_one() == 0
     finally:
         engine.dispose()
 

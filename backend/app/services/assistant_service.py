@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 from app.db.schema import (
     Course,
     assistant_messages,
+    assistant_sessions,
     blueprint_versions,
     exam_projects,
     framework_versions,
@@ -390,15 +391,17 @@ def _project_rows(session: Session, course_id: str) -> list[dict]:
     ]
 
 
-def _history_rows(session: Session, course_id: str) -> list[dict]:
+def _history_rows(session: Session, course_id: str, session_id: str | None = None) -> list[dict]:
+    stmt = select(
+        assistant_messages.c.role,
+        assistant_messages.c.content,
+        assistant_messages.c.action,
+    ).where(assistant_messages.c.course_id == course_id)
+    if session_id:
+        # 会话是记忆边界：切换会话即切换上下文（v3 多会话）
+        stmt = stmt.where(assistant_messages.c.session_id == session_id)
     rows = session.execute(
-        select(
-            assistant_messages.c.role,
-            assistant_messages.c.content,
-            assistant_messages.c.action,
-        )
-        .where(assistant_messages.c.course_id == course_id)
-        .order_by(assistant_messages.c.created_at.desc(), assistant_messages.c.id.desc())
+        stmt.order_by(assistant_messages.c.created_at.desc(), assistant_messages.c.id.desc())
         .limit(_HISTORY_LIMIT)
     ).all()
     history = []
@@ -420,8 +423,14 @@ def _history_rows(session: Session, course_id: str) -> list[dict]:
     return history
 
 
-def load_turn_context(session: Session, *, course_id: str) -> dict:
-    """装配一轮对话的确定性上下文：业务快照 + 白名单 + 历史。"""
+def load_turn_context(
+    session: Session, *, course_id: str, session_id: str | None = None
+) -> dict:
+    """装配一轮对话的确定性上下文：业务快照 + 白名单 + 历史。
+
+    session_id 给定时历史只取该会话（会话是记忆边界）；缺省取全课程
+    （兼容 payload 不带会话的旧任务）。
+    """
     course = session.execute(
         select(Course.name).where(Course.id == course_id)
     ).scalar_one_or_none()
@@ -452,7 +461,7 @@ def load_turn_context(session: Session, *, course_id: str) -> dict:
         "framework": _framework_summary(session, course_id),
         "catalog": _catalog_summary(session, course_id),
         "projects": project_details,
-        "history": _history_rows(session, course_id),
+        "history": _history_rows(session, course_id, session_id),
         # 白名单：模型回传的 id 必须命中这些集合
         "allowed_ids": {
             "material_ids": [m["id"] for m in materials],
@@ -1041,6 +1050,7 @@ def _insert_message(
     action: dict | None = None,
     stream_status: str = "complete",
     message_id: str | None = None,
+    session_id: str | None = None,
 ) -> str:
     new_id = message_id or uuid4().hex
     session.execute(
@@ -1048,6 +1058,8 @@ def _insert_message(
             id=new_id,
             course_id=course_id,
             task_run_id=task_run_id,
+            # 会话归属：应用层恒写（v3 多会话）；旧任务 payload 缺失时为 NULL
+            session_id=session_id,
             role=role,
             content=content,
             action=action or {},
@@ -1057,6 +1069,7 @@ def _insert_message(
             created_at=datetime.now(timezone.utc),
         )
     )
+    _touch_session(session, session_id=session_id)
     return new_id
 
 
@@ -1072,11 +1085,18 @@ def message_view(row) -> dict:
     }
 
 
-def list_messages(session: Session, *, course_id: str, limit: int = 200) -> list[dict]:
+def list_messages(
+    session: Session,
+    *,
+    course_id: str,
+    session_id: str | None = None,
+    limit: int = 200,
+) -> list[dict]:
+    stmt = select(assistant_messages).where(assistant_messages.c.course_id == course_id)
+    if session_id:
+        stmt = stmt.where(assistant_messages.c.session_id == session_id)
     rows = session.execute(
-        select(assistant_messages)
-        .where(assistant_messages.c.course_id == course_id)
-        .order_by(assistant_messages.c.created_at.asc(), assistant_messages.c.id.asc())
+        stmt.order_by(assistant_messages.c.created_at.asc(), assistant_messages.c.id.asc())
         .limit(limit)
     ).mappings().all()
     return [message_view(row) for row in rows]
@@ -1134,6 +1154,85 @@ def _assistant_reply_exists(session: Session, task_run_id: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# 停止生成（v3）：协作式取消——端点只改 task_runs 状态，worker 检查点中止
+# ---------------------------------------------------------------------------
+
+
+class TurnCancelled(Exception):
+    """教师停止生成：携带已流出的部分正文（用于保留产出、标记 stopped）。"""
+
+    def __init__(self, partial: str = "") -> None:
+        super().__init__("assistant turn cancelled by teacher")
+        self.partial = partial
+
+
+def _turn_cancelled(session: Session, *, course_id: str, task_run_id: str) -> bool:
+    """检查点探测：任务是否已被取消。探测异常按未取消处理（不阻断轮次）。
+
+    用 worker 自己的 session 读（Postgres READ COMMITTED 每语句取新快照、
+    SQLite SELECT 自动提交，都能看到取消端点已提交的更新）；检查点处均无
+    未提交写入，rollback 恢复是安全的。
+    """
+    try:
+        status = session.execute(
+            select(task_runs.c.status).where(
+                task_runs.c.id == task_run_id,
+                task_runs.c.course_id == course_id,
+            )
+        ).scalar_one_or_none()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "assistant 取消探测失败 task_run_id=%s: %s", task_run_id, exc
+        )
+        session.rollback()
+        return False
+    return status == "cancelled"
+
+
+class _CancelProbe:
+    """流式高频回调内的节流探测（默认 0.5s 一次，避免每 token 打库）。"""
+
+    def __init__(
+        self,
+        session: Session,
+        *,
+        course_id: str,
+        task_run_id: str,
+        interval: float = 0.5,
+    ) -> None:
+        self._session = session
+        self._course_id = course_id
+        self._task_run_id = task_run_id
+        self._interval = interval
+        self._last = 0.0
+
+    def cancelled(self) -> bool:
+        now = time.monotonic()
+        if now - self._last < self._interval:
+            return False
+        self._last = now
+        return _turn_cancelled(
+            self._session, course_id=self._course_id, task_run_id=self._task_run_id
+        )
+
+
+def _guarded_delta(buffer: _DeltaBuffer, probe: _CancelProbe, partial: list[str]):
+    """检查点 B：攒正文 → 入缓冲（聚批发射）→ 节流探测 → 取消即中止。
+
+    异常从 on_delta 穿透 stream_text（非 httpx 异常不被其 except 吞、本就不重试），
+    `with stream_cm` 随之关闭连接即停上游生成。
+    """
+
+    def _on_delta(text: str) -> None:
+        partial.append(text)
+        buffer.add(text)
+        if probe.cancelled():
+            raise TurnCancelled("".join(partial))
+
+    return _on_delta
+
+
+# ---------------------------------------------------------------------------
 # 主执行
 # ---------------------------------------------------------------------------
 
@@ -1143,6 +1242,7 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
     course_id = str(payload["course_id"])
     task_run_id = str(payload.get("task_run_id") or "")
     message = str(payload.get("message") or "")
+    session_id = str(payload.get("session_id") or "") or None
 
     # 幂等：worker 租约过期重领时，消息已落库就不重跑（防重复烧模型与重复消息）
     existing = _assistant_reply_exists(session, task_run_id)
@@ -1150,7 +1250,14 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
         sink.publish("done", {"message_id": existing["id"], "task_run_id": task_run_id})
         return {"message_id": existing["id"], "duplicate": True}
 
-    context = load_turn_context(session, course_id=course_id)
+    # 检查点 A：取消先于产出 → 不调模型不落消息（与「取消先于领取」一致——
+    # 还没产出就不留痕），SSE 端由 DB 兜底按终态发 done。
+    if _turn_cancelled(session, course_id=course_id, task_run_id=task_run_id):
+        return {"task_run_id": task_run_id, "cancelled": True}
+
+    context = load_turn_context(
+        session, course_id=course_id, session_id=session_id
+    )
     call_context = ModelCallContext(course_id=course_id, stage=TASK_TYPE)
 
     intent = parse_intent(client, context, message, call_context=call_context)
@@ -1175,13 +1282,24 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
             }
 
     stream_status = "complete"
+    probe = _CancelProbe(session, course_id=course_id, task_run_id=task_run_id)
+    partial: list[str] = []
     if routed["kind"] == "chat":
         if routed.get("stream"):
             buffer = _DeltaBuffer(sink)
             try:
                 content = stream_answer(
-                    client, context, message, on_delta=buffer.add, call_context=call_context
+                    client,
+                    context,
+                    message,
+                    on_delta=_guarded_delta(buffer, probe, partial),
+                    call_context=call_context,
                 )
+            except TurnCancelled as stopped:
+                # 教师停止：保留已流出的部分正文，标记 stopped（不走失败降级）
+                logger.info("assistant 轮次被教师停止（段2） task_run_id=%s", task_run_id)
+                content = stopped.partial or "（已停止）"
+                stream_status = "stopped"
             except Exception as exc:  # noqa: BLE001
                 # 流式降级：段1 已有整段 reply，直接用它收口，不让一轮对话整体失败
                 logger.warning("assistant 段2流式失败，降级段1回复 task_run_id=%s: %s", task_run_id, exc)
@@ -1202,9 +1320,14 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
                 context,
                 message,
                 retrieval=routed["retrieval"],
-                on_delta=buffer.add,
+                on_delta=_guarded_delta(buffer, probe, partial),
                 call_context=call_context,
             )
+        except TurnCancelled as stopped:
+            # 教师停止：保留已流出的部分正文，标记 stopped（不走失败降级）
+            logger.info("assistant RAG轮次被教师停止 task_run_id=%s", task_run_id)
+            content = stopped.partial or "（已停止）"
+            stream_status = "stopped"
         except Exception as exc:  # noqa: BLE001
             # 流式降级：段1 已有引导语，用它收口，不让一轮对话整体失败
             logger.warning("assistant RAG段2流式失败，降级段1回复 task_run_id=%s: %s", task_run_id, exc)
@@ -1242,6 +1365,12 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
             },
         )
 
+    # 检查点 C：落库前确认取消（覆盖段1 完成后、无流式的窗口）→ 保留产出、标记 stopped
+    if stream_status != "stopped" and _turn_cancelled(
+        session, course_id=course_id, task_run_id=task_run_id
+    ):
+        stream_status = "stopped"
+
     message_id = _insert_message(
         session,
         course_id=course_id,
@@ -1250,6 +1379,7 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
         content=content,
         action=action,
         stream_status=stream_status,
+        session_id=session_id,
     )
     # 先落库再发 done：前端收到 done 立即拉 messages 必须可见（避免时序竞态）
     session.commit()
@@ -1297,6 +1427,8 @@ def _persist_failed_message(payload: dict, error: str) -> None:
             content=f"这一轮处理失败：{error}",
             action={},
             stream_status="failed",
+            # 旧任务 payload 可能没有会话（部署瞬间的在途任务）→ NULL 孤儿行
+            session_id=str(payload.get("session_id") or "") or None,
         )
         probe.commit()
     except Exception as exc:  # noqa: BLE001
@@ -1325,19 +1457,198 @@ def execute_turn_task(
 
 
 # ---------------------------------------------------------------------------
+# 会话管理（v3 多会话：新建/切换/重命名/删除；会话是消息时间线与记忆的边界）
+# ---------------------------------------------------------------------------
+
+_SESSION_TITLE_MAX = 40
+_DEFAULT_SESSION_TITLE = "新会话"
+
+
+def session_view(row) -> dict:
+    return {
+        "id": row["id"],
+        "title": row["title"],
+        "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+    }
+
+
+def list_sessions(session: Session, *, course_id: str, limit: int = 100) -> list[dict]:
+    rows = session.execute(
+        select(assistant_sessions)
+        .where(assistant_sessions.c.course_id == course_id)
+        .order_by(
+            assistant_sessions.c.updated_at.desc(), assistant_sessions.c.id.desc()
+        )
+        .limit(limit)
+    ).all()
+    return [session_view(r._mapping) for r in rows]
+
+
+def create_session(
+    session: Session, *, course_id: str, title: str = "", commit: bool = False
+) -> dict:
+    """新建会话（标题缺省「新会话」，超长截断）。commit 默认由路由负责。"""
+
+    clean = str(title or "").strip()[:_SESSION_TITLE_MAX] or _DEFAULT_SESSION_TITLE
+    now = datetime.now(timezone.utc)
+    new_id = uuid4().hex
+    session.execute(
+        assistant_sessions.insert().values(
+            id=new_id, course_id=course_id, title=clean, created_at=now, updated_at=now
+        )
+    )
+    if commit:
+        session.commit()
+    row = session.execute(
+        select(assistant_sessions).where(
+            assistant_sessions.c.id == new_id,
+            assistant_sessions.c.course_id == course_id,
+        )
+    ).one()
+    return session_view(row._mapping)
+
+
+def _load_session_row(session: Session, *, course_id: str, session_id: str):
+    """按 (id, course_id) 取会话行——跨课程即视为不存在（隔离红线）。"""
+
+    return session.execute(
+        select(assistant_sessions).where(
+            assistant_sessions.c.id == session_id,
+            assistant_sessions.c.course_id == course_id,
+        )
+    ).one_or_none()
+
+
+def rename_session(
+    session: Session, *, course_id: str, session_id: str, title: str
+) -> dict:
+    clean = str(title or "").strip()
+    if not clean:
+        raise AssistantError("会话标题不能为空")
+    row = _load_session_row(session, course_id=course_id, session_id=session_id)
+    if row is None:
+        raise AssistantError("会话不存在")
+    session.execute(
+        assistant_sessions.update()
+        .where(assistant_sessions.c.id == session_id, assistant_sessions.c.course_id == course_id)
+        .values(title=clean[:_SESSION_TITLE_MAX], updated_at=datetime.now(timezone.utc))
+    )
+    row = _load_session_row(session, course_id=course_id, session_id=session_id)
+    return session_view(row._mapping)
+
+
+def delete_session(session: Session, *, course_id: str, session_id: str) -> None:
+    """删除会话及其全部消息；会话内有在途轮次先拒绝（防 worker 落库撞 FK）。"""
+
+    if _load_session_row(session, course_id=course_id, session_id=session_id) is None:
+        raise AssistantError("会话不存在")
+    inflight = session.execute(
+        select(task_runs.c.id)
+        .where(
+            task_runs.c.course_id == course_id,
+            task_runs.c.task_type == TASK_TYPE,
+            task_runs.c.status.notin_(TERMINAL_TASK_STATUSES),
+            task_runs.c.payload["session_id"].as_string() == session_id,
+        )
+        .limit(1)
+    ).scalar_one_or_none()
+    if inflight is not None:
+        raise AssistantError("会话内仍有在途对话，请先停止后再删除")
+    session.execute(
+        assistant_messages.delete().where(
+            assistant_messages.c.course_id == course_id,
+            assistant_messages.c.session_id == session_id,
+        )
+    )
+    session.execute(
+        assistant_sessions.delete().where(
+            assistant_sessions.c.course_id == course_id,
+            assistant_sessions.c.id == session_id,
+        )
+    )
+
+
+def ensure_default_session(session: Session, *, course_id: str) -> str:
+    """课程最近会话；无则新建「新会话」——turns 不带 session_id 的兜底路径。"""
+
+    recent = session.execute(
+        select(assistant_sessions.c.id)
+        .where(assistant_sessions.c.course_id == course_id)
+        .order_by(assistant_sessions.c.updated_at.desc(), assistant_sessions.c.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    if recent is not None:
+        return recent
+    return create_session(session, course_id=course_id)["id"]
+
+
+def _resolve_session_id(session: Session, *, course_id: str, session_id: str | None) -> str:
+    """校验/解析本轮所属会话：给定必须属本课程，缺省走默认会话。"""
+
+    if not session_id:
+        return ensure_default_session(session, course_id=course_id)
+    if _load_session_row(session, course_id=course_id, session_id=session_id) is None:
+        raise AssistantError("会话不存在")
+    return session_id
+
+
+def _touch_session(session: Session, *, session_id: str | None) -> None:
+    """消息落库后 bump 会话活跃时间（列表按最近活跃排序）。"""
+
+    if not session_id:
+        return
+    session.execute(
+        assistant_sessions.update()
+        .where(assistant_sessions.c.id == session_id)
+        .values(updated_at=datetime.now(timezone.utc))
+    )
+
+
+def _maybe_retitle_session(
+    session: Session, *, session_id: str | None, first_message: str
+) -> None:
+    """首条用户消息把「新会话」自动改成消息摘要（教师不用手动改名）。"""
+
+    if not session_id:
+        return
+    current = session.execute(
+        select(assistant_sessions.c.title).where(assistant_sessions.c.id == session_id)
+    ).scalar_one_or_none()
+    if current is not None and current != _DEFAULT_SESSION_TITLE:
+        return
+    clean = str(first_message or "").replace("\n", " ").strip()[:_SESSION_TITLE_MAX]
+    if not clean:
+        return
+    session.execute(
+        assistant_sessions.update()
+        .where(assistant_sessions.c.id == session_id)
+        .values(title=clean)
+    )
+
+
+# ---------------------------------------------------------------------------
 # 任务入队
 # ---------------------------------------------------------------------------
 
 
-def _task_key(course_id: str, message: str) -> str:
-    return hashlib.sha256(f"turn:{course_id}:{message}".encode()).hexdigest()[:24]
+def _task_key(course_id: str, session_id: str, message: str) -> str:
+    # 会话参与幂等键：同一句话在两个会话是两个任务（v3 多会话）
+    return hashlib.sha256(f"turn:{course_id}:{session_id}:{message}".encode()).hexdigest()[:24]
 
 
-def enqueue_turn(session: Session, *, course_id: str, message: str) -> dict:
+def enqueue_turn(
+    session: Session,
+    *,
+    course_id: str,
+    message: str,
+    session_id: str | None = None,
+) -> dict:
     """写 user 消息并创建 assistant_turn 任务；调用方负责 commit 与 outbox 派发。
 
-    幂等语义（对齐 enqueue_propose）：同文本的**在途**任务复用（双击/重发不
-    重复烧模型），已到终态的任务换一把新键。
+    幂等语义（对齐 enqueue_propose）：同会话同文本的**在途**任务复用
+    （双击/重发不重复烧模型），已到终态的任务换一把新键。
+    session_id 缺省时用课程最近会话、无则新建（旧客户端/测试的兜底路径）。
     """
     message = str(message or "").strip()
     if not message:
@@ -1351,7 +1662,11 @@ def enqueue_turn(session: Session, *, course_id: str, message: str) -> dict:
     if course_exists is None:
         raise AssistantError("课程不存在")
 
-    base_key = _task_key(course_id, message)
+    resolved_session_id = _resolve_session_id(
+        session, course_id=course_id, session_id=session_id
+    )
+
+    base_key = _task_key(course_id, resolved_session_id, message)
     existing = session.execute(
         select(task_runs.c.id, task_runs.c.status, task_runs.c.payload).where(
             task_runs.c.course_id == course_id,
@@ -1363,6 +1678,7 @@ def enqueue_turn(session: Session, *, course_id: str, message: str) -> dict:
         return {
             "task_run_id": existing[0],
             "user_message_id": existing_payload.get("user_message_id"),
+            "session_id": resolved_session_id,
         }
     key = (
         hashlib.sha256(f"{base_key}:{uuid4().hex}".encode()).hexdigest()[:24]
@@ -1383,6 +1699,7 @@ def enqueue_turn(session: Session, *, course_id: str, message: str) -> dict:
             "message": message,
             "task_run_id": turn_id,
             "user_message_id": user_message_id,
+            "session_id": resolved_session_id,
         },
         task_id=turn_id,
     )
@@ -1393,5 +1710,14 @@ def enqueue_turn(session: Session, *, course_id: str, message: str) -> dict:
         role="user",
         content=message,
         message_id=user_message_id,
+        session_id=resolved_session_id,
     )
-    return {"task_run_id": turn_id, "user_message_id": user_message_id}
+    # 首条消息把「新会话」自动改成消息摘要（在 touch 之后改标题即可）
+    _maybe_retitle_session(
+        session, session_id=resolved_session_id, first_message=message
+    )
+    return {
+        "task_run_id": turn_id,
+        "user_message_id": user_message_id,
+        "session_id": resolved_session_id,
+    }

@@ -674,7 +674,7 @@ def test_run_turn_rag_streams_answer_and_persists_sources_card(session, monkeypa
     """整轮：段1 意图 → 检索 → 段2 流式 → action(kind=sources) 落库 + card 事件。"""
     _patch_rag(monkeypatch)
     # run_turn 从 DB 装配上下文；本测试不建解析数据，用手工上下文（含 ready 状态）
-    monkeypatch.setattr(assistant_service, "load_turn_context", lambda session, *, course_id: _rag_ctx())
+    monkeypatch.setattr(assistant_service, "load_turn_context", lambda session, *, course_id, session_id=None: _rag_ctx())
     client = StubClient(
         [_intent("已检索到相关资料，回答如下：", {"tool": assistant_service.RAG_TOOL, "args": {"material_id": "m1"}})],
         stream_text="监督学习分为分类与回归两类任务。",
@@ -723,7 +723,7 @@ def test_run_turn_rag_without_hits_persists_plain_chat(session, monkeypatch):
         monkeypatch,
         [StagingChunk(id="far", material_version_id="v1", content="完全无关内容", locator={})],
     )
-    monkeypatch.setattr(assistant_service, "load_turn_context", lambda session, *, course_id: _rag_ctx())
+    monkeypatch.setattr(assistant_service, "load_turn_context", lambda session, *, course_id, session_id=None: _rag_ctx())
     client = StubClient(
         [_intent("", {"tool": assistant_service.RAG_TOOL, "args": {}})],
         stream_text="资料里没有找到相关内容。",
@@ -747,6 +747,239 @@ def test_run_turn_rag_without_hits_persists_plain_chat(session, monkeypatch):
     assert row.stream_status == "complete"
     assert row.action == {}  # 无卡：普通问答
     assert not [e for e in sink.registry[task_id] if e["event"] == "card"]
+
+
+# ---------------------------------------------------------------------------
+# 会话管理（v3 多会话）：CRUD / 入队归属 / 记忆边界
+# ---------------------------------------------------------------------------
+
+
+def test_session_crud_lifecycle(session):
+    created = assistant_service.create_session(session, course_id="c1", title="  期末复习  ")
+    session.commit()
+    assert created["title"] == "期末复习"
+    sid = created["id"]
+
+    # 列表按最近活跃倒序（新建的在最前）
+    assert [s["id"] for s in assistant_service.list_sessions(session, course_id="c1")] == [sid]
+
+    renamed = assistant_service.rename_session(
+        session, course_id="c1", session_id=sid, title="复习范围"
+    )
+    session.commit()
+    assert renamed["title"] == "复习范围"
+
+    # 空标题拒绝
+    with pytest.raises(AssistantError, match="不能为空"):
+        assistant_service.rename_session(session, course_id="c1", session_id=sid, title="   ")
+    # 跨课程视角（c2）= 不存在——隔离红线：查询恒带 course_id
+    with pytest.raises(AssistantError, match="不存在"):
+        assistant_service.rename_session(session, course_id="c2", session_id=sid, title="x")
+    with pytest.raises(AssistantError, match="不存在"):
+        assistant_service.delete_session(session, course_id="c2", session_id=sid)
+
+    # 删除（无在途）→ 清会话；再删 404
+    assistant_service.delete_session(session, course_id="c1", session_id=sid)
+    session.commit()
+    assert assistant_service.list_sessions(session, course_id="c1") == []
+    with pytest.raises(AssistantError, match="不存在"):
+        assistant_service.delete_session(session, course_id="c1", session_id=sid)
+
+
+def test_enqueue_turn_session_scoping_idempotency_autotitle(session):
+    # 兜底：不带 session_id → 自动建/取默认会话
+    r1 = enqueue_turn(session, course_id="c1", message="第一句问题")
+    session.commit()
+    sid1 = r1["session_id"]
+    assert sid1
+
+    # 自动标题 = 首条用户消息
+    listed = assistant_service.list_sessions(session, course_id="c1")
+    assert listed[0]["id"] == sid1
+    assert listed[0]["title"] == "第一句问题"
+
+    # 同会话同文本在途 → 复用同一任务（会话参与幂等键的前半）
+    r1b = enqueue_turn(session, course_id="c1", message="第一句问题", session_id=sid1)
+    assert r1b["task_run_id"] == r1["task_run_id"]
+    assert r1b["session_id"] == sid1
+
+    # 换会话同文本 → 新任务
+    other = assistant_service.create_session(session, course_id="c1")
+    session.commit()
+    r2 = enqueue_turn(session, course_id="c1", message="第一句问题", session_id=other["id"])
+    session.commit()
+    assert r2["task_run_id"] != r1["task_run_id"]
+
+    # payload 带 session_id（worker 段1 按会话取历史）
+    payload = session.execute(
+        select(task_runs.c.payload).where(task_runs.c.id == r2["task_run_id"])
+    ).scalar_one()
+    assert payload["session_id"] == other["id"]
+
+    # 无效会话拒绝
+    with pytest.raises(AssistantError, match="会话不存在"):
+        enqueue_turn(session, course_id="c1", message="x", session_id="nope")
+
+    # 消息按会话过滤
+    m1 = assistant_service.list_messages(session, course_id="c1", session_id=sid1)
+    assert [m["content"] for m in m1] == ["第一句问题"]
+
+
+def test_delete_session_rejects_inflight_then_cascades(session):
+    created = assistant_service.create_session(session, course_id="c1")
+    session.commit()
+    result = enqueue_turn(
+        session, course_id="c1", message="在途问题", session_id=created["id"]
+    )
+    session.commit()
+
+    # 在途（queued）→ 拒绝删除（防 worker 落库撞 FK）
+    with pytest.raises(AssistantError, match="在途"):
+        assistant_service.delete_session(session, course_id="c1", session_id=created["id"])
+
+    # 任务到终态 → 可删，级联清空消息
+    session.execute(
+        update(task_runs)
+        .where(task_runs.c.id == result["task_run_id"], task_runs.c.course_id == "c1")
+        .values(status="succeeded")
+    )
+    session.commit()
+    assistant_service.delete_session(session, course_id="c1", session_id=created["id"])
+    session.commit()
+    assert assistant_service.list_messages(session, course_id="c1") == []
+    assert assistant_service.list_sessions(session, course_id="c1") == []
+
+
+def test_history_is_session_scoped(session):
+    s1 = assistant_service.create_session(session, course_id="c1")
+    s2 = assistant_service.create_session(session, course_id="c1")
+    session.commit()
+    enqueue_turn(session, course_id="c1", message="甲会话的问题", session_id=s1["id"])
+    enqueue_turn(session, course_id="c1", message="乙会话的问题", session_id=s2["id"])
+    session.commit()
+
+    # 会话是记忆边界：段1 历史只看本会话
+    ctx1 = assistant_service.load_turn_context(session, course_id="c1", session_id=s1["id"])
+    assert [h["content"] for h in ctx1["history"]] == ["甲会话的问题"]
+
+    # 缺省不过滤（兼容旧 payload）
+    ctx_all = assistant_service.load_turn_context(session, course_id="c1")
+    assert [h["content"] for h in ctx_all["history"]] == ["甲会话的问题", "乙会话的问题"]
+
+
+# ---------------------------------------------------------------------------
+# 停止生成（v3）：三检查点 —— 开始前不产出 / 流式中留部分正文 / 落库前标记
+# ---------------------------------------------------------------------------
+
+
+def test_checkpoint_a_cancel_before_start_skips_model_and_persists_nothing(session):
+    client = StubClient([_intent("不该被调用")])
+    task_id = _new_turn(session, "t-cancel-a")
+    session.execute(
+        update(task_runs)
+        .where(task_runs.c.id == task_id, task_runs.c.course_id == "c1")
+        .values(status="cancelled")
+    )
+    session.commit()
+    sink = MemoryTurnEventSink(task_id)
+
+    result = run_turn(
+        session,
+        payload={"course_id": "c1", "task_run_id": task_id, "message": "hi"},
+        client=client,
+        sink=sink,
+    )
+
+    assert result["cancelled"] is True
+    assert client.calls == []  # 段1 都没进，零模型调用
+    assert client.stream_calls == []
+    rows = session.execute(
+        select(assistant_messages.c.role).where(assistant_messages.c.task_run_id == task_id)
+    ).all()
+    assert rows == []  # 还没产出就不留痕（与「取消先于领取」一致）
+    assert sink.registry.get(task_id, []) == []  # 无事件：SSE 走 DB 兜底发 done
+
+
+def test_checkpoint_b_cancel_midstream_keeps_partial_and_marks_stopped(session):
+    class CancelMidwayClient(StubClient):
+        def stream_text(self, *, system_prompt, payload, temperature, on_delta, call_context, **kwargs):
+            self.stream_calls.append({"system_prompt": system_prompt, "payload": payload})
+            on_delta("前半段")
+            # 模拟教师此刻点了停止（cancel 端点已提交）
+            session.execute(
+                update(task_runs)
+                .where(task_runs.c.id == task_id, task_runs.c.course_id == "c1")
+                .values(status="cancelled")
+            )
+            session.commit()
+            on_delta("后半段")  # guarded：append → 入缓冲 → 探测到 cancelled → raise
+            return "前半段后半段"
+
+    client = CancelMidwayClient([_intent("不该出现在正文里")])
+    task_id = _new_turn(session, "t-cancel-b")
+    sink = MemoryTurnEventSink(task_id)
+
+    result = run_turn(
+        session,
+        payload={"course_id": "c1", "task_run_id": task_id, "message": "讲讲第三章"},
+        client=client,
+        sink=sink,
+    )
+
+    assert result["kind"] == "chat"
+    row = session.execute(
+        select(assistant_messages.c.content, assistant_messages.c.stream_status).where(
+            assistant_messages.c.task_run_id == task_id, assistant_messages.c.role == "assistant"
+        )
+    ).one()
+    assert row.stream_status == "stopped"
+    assert row.content == "前半段后半段"  # 保留已流出的部分正文
+    assert "不该出现在正文里" not in row.content  # 没走 failed 降级
+    assert sink.registry[task_id][-1]["event"] == "done"  # done 照常收口
+
+
+def test_checkpoint_c_cancel_after_route_persists_stopped(session):
+    class CancelAfterIntentClient(StubClient):
+        def request_json(self, *, system_prompt, payload, temperature, call_context, **kwargs):
+            response = super().request_json(
+                system_prompt=system_prompt,
+                payload=payload,
+                temperature=temperature,
+                call_context=call_context,
+                **kwargs,
+            )
+            # 模拟意图解析返回后、路由/落库前教师停止
+            session.execute(
+                update(task_runs)
+                .where(task_runs.c.id == task_id, task_runs.c.course_id == "c1")
+                .values(status="cancelled")
+            )
+            session.commit()
+            return response
+
+    client = CancelAfterIntentClient(
+        [_intent("课程当前各阶段状态见下表：", {"tool": "course_overview", "args": {}})]
+    )
+    task_id = _new_turn(session, "t-cancel-c")
+    sink = MemoryTurnEventSink(task_id)
+
+    result = run_turn(
+        session,
+        payload={"course_id": "c1", "task_run_id": task_id, "message": "课程概览"},
+        client=client,
+        sink=sink,
+    )
+
+    assert result["kind"] == "result"
+    row = session.execute(
+        select(assistant_messages.c.content, assistant_messages.c.action, assistant_messages.c.stream_status).where(
+            assistant_messages.c.task_run_id == task_id, assistant_messages.c.role == "assistant"
+        )
+    ).one()
+    assert row.stream_status == "stopped"
+    assert row.content == "课程当前各阶段状态见下表："  # 产出保留
+    assert row.action["kind"] == "result"  # 结果卡照常落
+    assert sink.registry[task_id][-1]["event"] == "done"
 
 
 # ---------------------------------------------------------------------------
