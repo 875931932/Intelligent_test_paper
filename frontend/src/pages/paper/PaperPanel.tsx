@@ -21,6 +21,7 @@ import { QuestionEditor, type QuestionEditorHandle } from './QuestionEditor';
 import { QuestionIndex } from './QuestionIndex';
 import { QuestionDetail } from './QuestionDetail';
 import { PaperProfile } from './PaperProfile';
+import { PaperHistoryBar } from './PaperHistoryBar';
 
 // ═══════════════════════════════════════════════
 //  试卷面板（双栏阅读器）
@@ -500,6 +501,13 @@ export default function PaperPanel({
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+      {/* 试卷历史：最近 3 份，点一下切当前卷；更早的已被后端物理删除 */}
+      <PaperHistoryBar
+        courseId={courseId}
+        projectId={project?.id ?? pv.exam_project_id}
+        currentPvId={pv.id}
+        onChanged={onChanged}
+      />
       <PaperProfile
         pv={pv}
         project={project}

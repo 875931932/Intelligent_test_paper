@@ -13,10 +13,13 @@ from sqlalchemy.orm import Session
 from app.db.schema import (
     exam_projects,
     generated_questions,
+    generation_attempts,
     generation_runs,
+    model_calls,
     paper_items,
     paper_versions,
     plan_items,
+    quality_checks,
 )
 from app.services.generation_service import answer_option_keys
 
@@ -105,6 +108,275 @@ def resolve_current_paper_version_id(
     if resolved is None:
         raise PaperVersionError("no paper version exists for project")
     return resolved
+
+
+# ─── 试卷历史：每个项目在库中只保留最近 N 份 ────────────────────
+
+# 超出该份数的试卷版本在新卷落地时被**物理删除**（不是置状态、不是软删）：
+# 题面、答案与模型响应一并从库里消失，历史里永远只看得到最近 3 份。
+PAPER_VERSION_HISTORY_LIMIT = 3
+
+
+def prune_paper_version_history(
+    session: Session,
+    *,
+    course_id: str,
+    project_id: str,
+    keep: int = PAPER_VERSION_HISTORY_LIMIT,
+) -> list[str]:
+    """物理删除项目最旧的试卷版本，只留最新 ``keep`` 份，返回被删版本 id。
+
+    删除深度（「试卷实体 + 该卷题目内容」）——按外键依赖自底向上，任一步失败
+    由调用方事务整体回滚：
+
+        model_calls（details.response 里存着完整题面，不删等于旧卷还在库里）
+        → quality_checks → paper_items → generated_questions → paper_versions
+
+    ``generation_runs`` / ``generation_attempts`` 作为运行日志保留：它们只有
+    状态、耗时与错误信息，不含题面；删掉会让「上一次生成」的引用悬空。
+
+    两条豁免：
+    - 被删卷引用的 generated_questions 若仍被**保留卷**的 paper_items 挂着，不删
+      （同一 run 的题被多份卷引用时，保住还在用的那份）。
+    - 被删卷若正是项目当前卷（active_paper_version_id），指针改指最新保留卷，
+      绝不留下指向已删行的外键。
+
+    不提交事务：由调用方（生成创建流程 / 历史读取）决定提交时机。
+    """
+    keep = max(1, int(keep))
+    rows = session.execute(
+        select(
+            paper_versions.c.id,
+            paper_versions.c.generation_run_id,
+            paper_versions.c.version_no,
+        )
+        .where(
+            paper_versions.c.exam_project_id == project_id,
+            paper_versions.c.course_id == course_id,
+        )
+        .order_by(paper_versions.c.version_no.desc())
+    ).all()
+    if len(rows) <= keep:
+        return []
+
+    kept_ids = [r[0] for r in rows[:keep]]
+    pruned_ids = [r[0] for r in rows[keep:]]
+    pruned_run_ids = [r[1] for r in rows[keep:] if r[1]]
+
+    # 被删卷的题目 = 它 paper_items 挂的 + 它那次生成 run 产的（run 与卷基本 1:1，
+    # 但教师新增题、AI 改题产生的 revision 行只在 run 侧，靠 run 兜住）
+    doomed_gq = set(
+        session.execute(
+            select(paper_items.c.generated_question_id).where(
+                paper_items.c.paper_version_id.in_(pruned_ids),
+                paper_items.c.course_id == course_id,
+            )
+        ).scalars()
+    )
+    if pruned_run_ids:
+        doomed_gq |= set(
+            session.execute(
+                select(generated_questions.c.id).where(
+                    generated_questions.c.generation_run_id.in_(pruned_run_ids),
+                    generated_questions.c.course_id == course_id,
+                )
+            ).scalars()
+        )
+    kept_gq = set(
+        session.execute(
+            select(paper_items.c.generated_question_id).where(
+                paper_items.c.paper_version_id.in_(kept_ids),
+                paper_items.c.course_id == course_id,
+            )
+        ).scalars()
+    )
+    gq_ids = sorted(doomed_gq - kept_gq)
+
+    attempt_ids: list[str] = []
+    if pruned_run_ids:
+        attempt_ids = list(
+            session.execute(
+                select(generation_attempts.c.id).where(
+                    generation_attempts.c.generation_run_id.in_(pruned_run_ids),
+                    generation_attempts.c.course_id == course_id,
+                )
+            ).scalars()
+        )
+
+    # 当前卷指针先挪开，否则删 paper_versions 会撞上 exam_projects 的外键
+    proj = session.execute(
+        select(exam_projects.c.active_paper_version_id).where(
+            exam_projects.c.id == project_id,
+            exam_projects.c.course_id == course_id,
+        )
+    ).one_or_none()
+    if proj is not None and proj._mapping["active_paper_version_id"] in pruned_ids:
+        session.execute(
+            update(exam_projects)
+            .where(
+                exam_projects.c.id == project_id,
+                exam_projects.c.course_id == course_id,
+            )
+            .values(active_paper_version_id=kept_ids[0])
+        )
+
+    if attempt_ids:
+        session.execute(
+            delete(model_calls).where(
+                model_calls.c.generation_attempt_id.in_(attempt_ids),
+                model_calls.c.course_id == course_id,
+            )
+        )
+    if gq_ids:
+        session.execute(
+            delete(quality_checks).where(
+                quality_checks.c.generated_question_id.in_(gq_ids),
+                quality_checks.c.course_id == course_id,
+            )
+        )
+    session.execute(
+        delete(paper_items).where(
+            paper_items.c.paper_version_id.in_(pruned_ids),
+            paper_items.c.course_id == course_id,
+        )
+    )
+    if gq_ids:
+        session.execute(
+            delete(generated_questions).where(
+                generated_questions.c.id.in_(gq_ids),
+                generated_questions.c.course_id == course_id,
+            )
+        )
+    session.execute(
+        delete(paper_versions).where(
+            paper_versions.c.id.in_(pruned_ids),
+            paper_versions.c.course_id == course_id,
+        )
+    )
+    return pruned_ids
+
+
+def list_paper_versions(
+    session: Session,
+    *,
+    course_id: str,
+    project_id: str,
+) -> list[dict]:
+    """项目试卷历史（新 → 旧）：题数、状态、是否当前卷，不含逐题内容。
+
+    读取即执行保留策略——「只留最近 3 份」是产品规则而非仅在生成时生效，
+    这样规则落地前积累的超量旧卷在教师第一次打开历史时也被清掉。
+    """
+    try:
+        proj = session.execute(
+            select(exam_projects.c.active_paper_version_id).where(
+                exam_projects.c.id == project_id,
+                exam_projects.c.course_id == course_id,
+            )
+        ).one_or_none()
+        if proj is None:
+            raise PaperVersionError("exam project not found")
+        active_id = proj._mapping["active_paper_version_id"]
+        prune_paper_version_history(session, course_id=course_id, project_id=project_id)
+
+        rows = session.execute(
+            select(
+                paper_versions.c.id,
+                paper_versions.c.version_no,
+                paper_versions.c.status,
+                paper_versions.c.created_at,
+                paper_versions.c.confirmed_at,
+                paper_versions.c.finalized_at,
+            )
+            .where(
+                paper_versions.c.exam_project_id == project_id,
+                paper_versions.c.course_id == course_id,
+            )
+            .order_by(paper_versions.c.version_no.desc())
+        ).mappings().all()
+        ids = [r["id"] for r in rows]
+        counts: dict[str, int] = {}
+        if ids:
+            for r in session.execute(
+                select(paper_items.c.paper_version_id, func.count(paper_items.c.id))
+                .where(
+                    paper_items.c.paper_version_id.in_(ids),
+                    paper_items.c.course_id == course_id,
+                )
+                .group_by(paper_items.c.paper_version_id)
+            ).all():
+                counts[r[0]] = int(r[1])
+        # 修剪改变了库（规则可能删掉旧卷），历史读取负责落地
+        session.commit()
+    except PaperVersionError:
+        session.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        session.rollback()
+        raise PaperVersionError(f"数据库错误: {exc}") from exc
+
+    return [
+        {
+            "id": r["id"],
+            "version_no": r["version_no"],
+            "status": r["status"],
+            "item_count": counts.get(r["id"], 0),
+            "is_current": r["id"] == active_id,
+            "created_at": r["created_at"],
+            "confirmed_at": r["confirmed_at"],
+            "finalized_at": r["finalized_at"],
+        }
+        for r in rows
+    ]
+
+
+def activate_paper_version(
+    session: Session,
+    *,
+    course_id: str,
+    project_id: str,
+    paper_version_id: str,
+) -> dict:
+    """把项目当前卷切到指定历史版本，返回该版本完整内容（供前端直接渲染）。
+
+    只改 ``exam_projects.active_paper_version_id`` 指针，**不碰版本本身**：
+    已定稿的旧卷仍是 finalized，要改必须先走既有 ``revert_to_candidate``
+    （撤销定稿），「冻结即不可变」的纪律不受影响。
+    """
+    try:
+        pv = session.execute(
+            select(paper_versions.c.id).where(
+                paper_versions.c.id == paper_version_id,
+                paper_versions.c.exam_project_id == project_id,
+                paper_versions.c.course_id == course_id,
+            )
+        ).one_or_none()
+        if pv is None:
+            raise PaperVersionError("试卷版本不存在或不属于该项目")
+        proj = session.execute(
+            select(exam_projects.c.id).where(
+                exam_projects.c.id == project_id,
+                exam_projects.c.course_id == course_id,
+            )
+        ).one_or_none()
+        if proj is None:
+            raise PaperVersionError("exam project not found")
+        session.execute(
+            update(exam_projects)
+            .where(
+                exam_projects.c.id == project_id,
+                exam_projects.c.course_id == course_id,
+            )
+            .values(active_paper_version_id=paper_version_id)
+        )
+        session.commit()
+    except PaperVersionError:
+        session.rollback()
+        raise
+    except SQLAlchemyError as exc:
+        session.rollback()
+        raise PaperVersionError(f"数据库错误: {exc}") from exc
+    return get_paper_version(session, paper_version_id, course_id=course_id)
 
 
 def summarize_paper_versions_for_projects(
@@ -390,6 +662,11 @@ def create_paper_version_from_generation(
             )
             .values(status="review", active_paper_version_id=pv_id)
         )
+
+        # 历史保留策略：新卷落地即把项目最旧的版本连题目内容一起物理删除，
+        # 库内恒为最近 3 份。与建卷同事务，删除失败则整次生成回滚，不会出现
+        # 「新卷没建成、旧卷反倒删了」。
+        prune_paper_version_history(session, course_id=course_id, project_id=project_id)
 
         session.commit()
         return pv_id

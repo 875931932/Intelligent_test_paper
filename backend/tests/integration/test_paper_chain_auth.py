@@ -12,7 +12,7 @@ from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.db.schema import Base, User, paper_versions
+from app.db.schema import Base, User, exam_projects, paper_versions
 from app.db.session import get_session
 from app.main import app
 from app.services.auth_service import hash_password
@@ -78,6 +78,9 @@ PAPER_ENDPOINTS = [
     ("GET", f"{C}/exam-projects/p1/paper-versions/pv1/export/answer-card?format=docx", None),
     # 一键打包（全部导出产物 → zip）
     ("GET", f"{C}/exam-projects/p1/paper-versions/pv1/export/bundle", None),
+    # 试卷历史（读即执行「只留最近 3 份」）与切当前卷
+    ("GET", f"{C}/exam-projects/p1/paper-versions", None),
+    ("POST", f"{C}/exam-projects/p1/paper-versions/pv1/activate", {}),
 ]
 EXAM_PROJECT_ENDPOINTS = [
     ("GET", f"{C}/exam-projects", None),
@@ -188,3 +191,66 @@ def test_paper_version_and_exports_accept_token(env):
         )
         assert html.status_code == 200, f"{suffix}: {html.text[:200]}"
         assert "html" in html.headers["content-type"]
+
+
+def test_paper_history_prunes_to_three_and_activate_switches_current(env):
+    """历史端点读取即修剪到 3 份；activate 只改指针，current 随之换卷。"""
+    auth, factory = env
+    course = auth.post("/api/v1/courses", json={"name": "数据结构3", "slug": "ds3"})
+    assert course.status_code == 201, course.text
+    cid = course.json()["id"]
+    proj = auth.post(f"/api/v1/courses/{cid}/exam-projects", json={"name": "期末卷"})
+    assert proj.status_code == 201, proj.text
+    pid = proj.json()["id"]
+
+    with factory() as session:
+        for n in range(1, 5):
+            session.execute(
+                paper_versions.insert().values(
+                    id=f"pv{n}", course_id=cid, exam_project_id=pid,
+                    version_no=n, status="candidate",
+                )
+            )
+        # 指针与生成完成时一致：落在最新一卷
+        session.execute(
+            exam_projects.update()
+            .where(exam_projects.c.id == pid, exam_projects.c.course_id == cid)
+            .values(active_paper_version_id="pv4")
+        )
+        session.commit()
+
+    history = auth.get(f"/api/v1/courses/{cid}/exam-projects/{pid}/paper-versions")
+    assert history.status_code == 200, history.text
+    rows = history.json()
+    # 4 份 → 读取即删最旧的，且新在前、当前卷有标记
+    assert [r["version_no"] for r in rows] == [4, 3, 2]
+    assert [r["id"] for r in rows if r["is_current"]] == ["pv4"]
+
+    switched = auth.post(
+        f"/api/v1/courses/{cid}/exam-projects/{pid}/paper-versions/pv3/activate"
+    )
+    assert switched.status_code == 200, switched.text
+    assert switched.json()["id"] == "pv3"
+
+    current = auth.get(f"/api/v1/courses/{cid}/exam-projects/{pid}/paper-versions/current")
+    assert current.json()["id"] == "pv3"
+
+    # 历史里的「当前」标记跟着指针走
+    rows = auth.get(f"/api/v1/courses/{cid}/exam-projects/{pid}/paper-versions").json()
+    assert [r["id"] for r in rows if r["is_current"]] == ["pv3"]
+
+    # 切到别的项目的卷 / 不存在的卷：404
+    missing = auth.post(
+        f"/api/v1/courses/{cid}/exam-projects/{pid}/paper-versions/ghost/activate"
+    )
+    assert missing.status_code == 404
+
+    # 收尾置空指针：exam_projects → paper_versions 是循环外键，SQLite 的
+    # drop_all 排不出先后，带着指针 DROP 会报 FOREIGN KEY constraint failed。
+    with factory() as session:
+        session.execute(
+            exam_projects.update()
+            .where(exam_projects.c.course_id == cid)
+            .values(active_paper_version_id=None)
+        )
+        session.commit()

@@ -21,6 +21,7 @@ from app.services.paper_version_service import (
     Conflict,
     PendingNeedsReview,
     PaperVersionError,
+    activate_paper_version,
     confirm_paper_version,
     create_paper_item as create_paper_item_svc,
     delete_paper_item as delete_paper_item_svc,
@@ -30,6 +31,7 @@ from app.services.paper_version_service import (
     export_student_paper_html,
     get_paper_version,
     list_needs_review,
+    list_paper_versions,
     reorder_paper_items as reorder_paper_items_svc,
     resolve_current_paper_version_id,
     revert_to_candidate,
@@ -80,6 +82,47 @@ def get_current_paper_version(
         return get_paper_version(session, pv_id, course_id=course_id)
     except PaperVersionError as exc:
         raise HTTPException(status_code=404, detail=str(exc))
+
+
+@router.get("/exam-projects/{project_id}/paper-versions", response_model=list[dict])
+def list_project_paper_versions(
+    course_id: str,
+    project_id: str,
+    session: Session = Depends(get_session),
+) -> list[dict]:
+    """试卷历史（新 → 旧）：每项目只保留最近 3 份，更早的在此被物理删除。"""
+    try:
+        return list_paper_versions(session, course_id=course_id, project_id=project_id)
+    except PaperVersionError as exc:
+        msg = str(exc)
+        if "不存在" in msg or "not found" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=422, detail=msg)
+
+
+@router.post(
+    "/exam-projects/{project_id}/paper-versions/{pv_id}/activate",
+    response_model=dict,
+)
+def activate_project_paper_version(
+    course_id: str,
+    project_id: str,
+    pv_id: str,
+    session: Session = Depends(get_session),
+) -> dict:
+    """切当前卷到指定历史版本（回到旧卷继续编辑/导出）。只改指针不动版本。"""
+    try:
+        return activate_paper_version(
+            session,
+            course_id=course_id,
+            project_id=project_id,
+            paper_version_id=pv_id,
+        )
+    except PaperVersionError as exc:
+        msg = str(exc)
+        if "不存在" in msg or "not found" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=422, detail=msg)
 
 
 @router.get("/paper-versions/{pv_id}/needs-review", response_model=list[dict])

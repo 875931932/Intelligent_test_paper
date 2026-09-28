@@ -1,5 +1,5 @@
 import { request, requestBlob } from '../http';
-import type { PaperVersion, NeedsReviewItem } from '../../types/api';
+import type { PaperVersion, PaperVersionSummary, NeedsReviewItem } from '../../types/api';
 
 /** 可导出的三份卷面 + 答案细则 JSON；前三种同时也是整体预览的页签 */
 export type PaperExportKind = 'student' | 'card' | 'answer' | 'json';
@@ -30,6 +30,12 @@ const exportPath = (kind: PaperExportKind, courseId: string, projectId: string, 
 export const paperVersionsApi = {
   getCurrent: (courseId: string, projectId: string, token?: string): Promise<PaperVersion> =>
     request('/courses/' + courseId + '/exam-projects/' + projectId + '/paper-versions/current', undefined, token),
+  /** 试卷历史（新 → 旧，最多 3 条；读取即在后端执行保留策略，更早的被物理删除） */
+  listVersions: (courseId: string, projectId: string, token?: string): Promise<PaperVersionSummary[]> =>
+    request('/courses/' + courseId + '/exam-projects/' + projectId + '/paper-versions', undefined, token),
+  /** 切当前卷到指定历史版本（只改指针，返回完整试卷供直接替换展示） */
+  activate: (courseId: string, projectId: string, pvId: string, token?: string): Promise<PaperVersion> =>
+    request('/courses/' + courseId + '/exam-projects/' + projectId + '/paper-versions/' + pvId + '/activate', { method: 'POST' }, token),
   getNeedsReview: (courseId: string, pvId: string, token?: string): Promise<NeedsReviewItem[]> =>
     request('/courses/' + courseId + '/paper-versions/' + pvId + '/needs-review', undefined, token),
   patchItem: (courseId: string, pvId: string, itemIndex: number, body: { teacher_override_patch?: Record<string, unknown>; clear_needs_review?: boolean }, token?: string) =>

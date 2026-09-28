@@ -522,6 +522,22 @@ export interface PaperVersion {
   finalized_at?: string | null;
 }
 
+/**
+ * 试卷历史条目（GET …/paper-versions）。
+ * 每项目只保留最近 3 份，更早的在后端被物理删除；不含逐题内容。
+ */
+export interface PaperVersionSummary {
+  id: string;
+  version_no: number;
+  status: string;
+  item_count: number;
+  /** 项目当前卷（exam_projects.active_paper_version_id） */
+  is_current: boolean;
+  created_at: string;
+  confirmed_at?: string | null;
+  finalized_at?: string | null;
+}
+
 export interface NeedsReviewItem {
   item_index: number;
   question_type: string;

@@ -59,6 +59,9 @@ class _FakeSession:
             return _FakeResult([])
         if "MAX(" in upper:
             return _FakeResult([None])
+        if upper.startswith("SELECT") and "FROM PAPER_VERSIONS" in upper:
+            # 历史保留策略先查项目在册卷数（空 = 尚无旧卷，直接返回不修剪）
+            return _FakeResult([])
         if "GENERATED_QUESTIONS" in upper:
             return _FakeResult(self.gq_rows)
         if "PLAN_ITEMS" in upper and " IN " in upper:
