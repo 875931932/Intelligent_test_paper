@@ -325,6 +325,108 @@ def test_worker_end_to_end_persists_assistant_reply(env, monkeypatch):
     assert row.result["message_id"] == assistant["id"]
 
 
+def test_worker_end_to_end_rag_answer_with_sources(env, monkeypatch):
+    """端到端 RAG：点名已解析资料 → 真实语料装载 + 词面检索 → 流式作答 + 来源卡落库。"""
+    auth, factory, _dispatched = env
+    from app.db.schema import (
+        content_blocks,
+        document_parse_runs,
+        material_versions,
+        parser_profiles,
+    )
+    from app.services import content_index_service
+
+    # 为 m1 建 ready 解析产物（两个块：一相关一无关）
+    with factory() as session:
+        session.execute(
+            material_versions.insert().values(
+                id="v1", course_id="c1", material_id="m1", version_no=1, status="staged",
+                object_key="courses/c1/m1.pdf", size_bytes=100, sha256="a" * 64,
+                mime_type="application/pdf",
+            )
+        )
+        session.execute(
+            parser_profiles.insert().values(
+                id="mineru-profile", course_id="c1", name="mineru", version="v1",
+                provider="mineru", configuration={},
+            )
+        )
+        session.execute(
+            document_parse_runs.insert().values(
+                id="run1", course_id="c1", material_version_id="v1",
+                parser_profile_id="mineru-profile", status="ready",
+                completed_at=datetime.now(timezone.utc),
+            )
+        )
+        session.execute(
+            content_blocks.insert().values(
+                id="rb1", course_id="c1", document_parse_run_id="run1",
+                material_version_id="v1", block_index=0, block_type="text",
+                text="教学大纲第三章讲解监督学习的分类与回归任务。", heading_path=["第三章"],
+                page_index=2, reading_order=0, content_hash="c" * 64,
+            )
+        )
+        session.execute(
+            content_blocks.insert().values(
+                id="rb2", course_id="c1", document_parse_run_id="run1",
+                material_version_id="v1", block_index=1, block_type="text",
+                text="实验在 GPU 上完成。", heading_path=[], page_index=7,
+                reading_order=1, content_hash="d" * 64,
+            )
+        )
+        session.commit()
+
+    # 嵌入一律视为未配置 → 词面路径（测试不发真实嵌入请求）
+    monkeypatch.setattr(content_index_service, "embedding_configured", lambda: False)
+    monkeypatch.setattr(assistant_service, "embedding_configured", lambda: False)
+
+    result = _turn(auth, message="总结教学大纲第三章的监督学习分类")
+    task_id = result["task_run_id"]
+    stub = StubClient(
+        intent={
+            "reply": "已检索到相关资料，回答如下：",
+            "action": {"tool": "answer_material_content", "args": {"material_id": "m1"}},
+        }
+    )
+    monkeypatch.setattr(assistant_service, "build_client", lambda: stub)
+    monkeypatch.setattr(
+        assistant_service, "build_event_sink", assistant_service.MemoryTurnEventSink
+    )
+    from app.infrastructure.tasks import worker
+
+    monkeypatch.setattr(worker, "get_session_factory", lambda: factory)
+
+    assert worker.execute_task(task_id, worker_id="test-worker") is True
+
+    with factory() as session:
+        row = session.execute(
+            select(task_runs.c.status, task_runs.c.error_message).where(task_runs.c.id == task_id)
+        ).one()
+    assert row.status == "succeeded", row.error_message
+
+    views = auth.get(f"{PATH.format(cid='c1')}/messages").json()
+    assistant = views[-1]
+    assert assistant["action"]["kind"] == "sources"
+    payload = assistant["action"]["payload"]
+    assert payload["material_id"] == "m1"
+    assert payload["material_name"] == "教学大纲"
+    assert payload["mode"] == "lexical"
+    # 词面命中相关块 rb1，无关块 rb2 被过滤
+    assert [s["block_id"] for s in payload["sources"]] == ["rb1"]
+    assert payload["sources"][0]["material_name"] == "教学大纲"
+    assert payload["sources"][0]["page_index"] == 2
+    assert payload["sources"][0]["heading_path"] == ["第三章"]
+    assert assistant["stream_status"] == "complete"
+
+    # 段2 prompt 为 RAG grounding 版本且携带检索片段
+    assert stub.stream_calls
+    stream_payload = stub.stream_calls[0]["payload"]
+    assert stream_payload["question"] == "总结教学大纲第三章的监督学习分类"
+    assert stream_payload["sources"][0]["material_name"] == "教学大纲"
+    assert "监督学习的分类与回归" in stream_payload["sources"][0]["text"]
+    assert "只依据下方「资料片段」作答" in stub.stream_calls[0]["system_prompt"]
+
+
 def test_worker_failure_persists_failed_message(env, monkeypatch):
     """段1 模型抛错 → 任务 failed + 失败消息可见（刷新不丢）。"""
     auth, factory, _dispatched = env

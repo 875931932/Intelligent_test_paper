@@ -111,9 +111,12 @@
 ### 3.5 启动解析（MinerU）
 `POST /api/v1/courses/{course_id}/materials/{material_id}/parse` → **202**
 同哈希已 ready 会直接复用。错误状态码随 `ParseError.status_code`（多为 409/422）。
+转 `ready` 时入队 `task_runs(material_index)`（幂等键 `material_index:{run_id}`，
+transactional outbox 派发，见 §10.5）——嵌入只在 worker 执行，端点只入队。
 
 ### 3.6 轮询解析
 `POST /api/v1/courses/{course_id}/materials/{material_id}/parse/poll` → 推进一次解析状态机，前端周期调用直至 `ready` / `failed`。返回解析状态对象。
+落块转 `ready` 同样触发 §3.5 的 `material_index` 入队（重复轮询 ready 幂等，不重复入队）。
 
 ### 3.7 修改资料类型
 `PATCH /api/v1/courses/{course_id}/materials/{material_id}/type?material_type=exercise` → `MaterialResponse`；非法类型 422。
@@ -772,7 +775,8 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
 
 `GET .../assistant/turns/{task_run_id}/stream?last_id=0`
 
-- `text/event-stream`；事件：`delta {text}` / `card {kind,tool,payload}` /
+- `text/event-stream`；事件：`delta {text}` / `card {kind,tool,payload}`（kind ∈
+  `result` | `proposal` | `sources`，sources=资料内容问答的来源引用卡，§10.5）/
   `done {message_id,task_run_id}` / `error {message}`，另有心跳注释行 `: ping`。
 - 每帧带 `id:`（Redis 流条目 id）——断线重连带 `?last_id=<最后收到的 id>` 从该条目后续读，
   不重放已收增量；前端用 `fetch` + `ReadableStream`（`EventSource` 带不了 Authorization）。
@@ -810,6 +814,24 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
   `enqueue_blueprint_suggest` → §8.7b、`confirm_contract` → §8.11。
   模型回传的 id 必须命中段1 上下文白名单，非法带反馈重试一次；比例/难度/去重规则
   不进任何助手 prompt（助手职责不涉及）。
+- **资料内容问答（RAG，助手 v2）**：`answer_material_content`（第 4 类路由，`kind="sources"`）——
+  - `args={material_id?}` 点名资料（复用同一套材料白名单 + `parse_status=="ready"` 硬校验，
+    未解析引导先解析）；不传则限定**全课程已解析资料**（无已解析资料时带反馈重试后落确定性文案）；
+  - 问题 = 教师原话（`route_intent(message=...)` 原样下传，不经模型转述）；
+  - worker 内：`ensure_embedded` 自愈缺向量块（历史数据/任务失败兜底）→ `load_content_chunks`
+    装载（仅 staged 最新版本最新 ready run 的块）→ 检索：混合 `0.35 词面 + 0.65 语义`
+    （`top_k=6`、hybrid min 0.15），嵌入未配置/失败/向量缺失 → 纯词面降级（Jaccard 2/3-gram，min 0.2）；
+  - 段2 流式用 `answer_material_content` 专用 grounding prompt（temperature 0.3，只依据片段作答，
+    找不到就说找不到；拒绝话术第 6 条：全文照抄/朗读仍拒，`read_material_content` 保持在 `REFUSED_TOOLS`）；
+  - 命中：`action={kind:"sources", tool, args, status:"completed", payload:{question,
+    material_id, material_name, mode:"hybrid"|"lexical", sources:[{block_id, material_id,
+    material_name, page_index, heading_path, snippet}]}}`，SSE `card {kind:"sources"}`，
+    前端来源卡展示片段出处 +「打开资料库」CTA（score 不进 payload，避免把相关度当可信度）；
+    无命中 → `action={}`（普通问答形态，正文说明没找到，不落卡）。
+- **语料向量列（v2）**：`content_blocks` 增 `embedding`(JSON，可空) + `embedding_model`
+  (VARCHAR(64))——换嵌入模型时按 `embedding_model != settings.embedding_model` 重嵌；
+  由 `app/db/init_db.py` 幂等迁移（无 Alembic）。索引任务 `task_runs(material_index)`
+  （幂等键 `material_index:{run_id}`，lease 300s）在 worker 内调嵌入，端点只入队（§3.5/§3.6）。
 
 ## 11. 数据模型汇总（复用类型）
 

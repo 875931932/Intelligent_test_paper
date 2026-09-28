@@ -29,6 +29,8 @@
 
 - **资料内容问答**（「总结这份教学资料」）：需新建 RAG 检索链路（向量检索 + 资料内容进上下文），
   底子是既有 `staging_retrieval_service`/`EmbeddingClient`，独立迭代；
+  → ✅ **v2 已实现**（`answer_material_content` 工具 + 来源引用卡 + 解析后自动建索引），
+  见 `2026-09-28-ai-assistant-rag-design.md`；
 - 多会话管理（新建/切换/重命名会话）；
 - 跨课程聚合视图与操作；
 - 生成中「停止」按钮（v1 断开 SSE 不取消任务，回复照常落库）。

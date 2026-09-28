@@ -136,7 +136,11 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
         if (event === 'card') {
           set({
             streamHint:
-              data.kind === 'proposal' ? '正在生成提案卡…' : '正在汇总查询结果…',
+              data.kind === 'proposal'
+                ? '正在生成提案卡…'
+                : data.kind === 'sources'
+                  ? '正在检索资料内容…'
+                  : '正在汇总查询结果…',
           });
           return;
         }

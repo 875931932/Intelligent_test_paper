@@ -21,7 +21,9 @@ from app.domain.knowledge.relevance import StagingChunk
 from app.services.staging_retrieval_service import (
     HybridStagingRetriever,
     RetrievalConfigurationError,
+    lexical_rank_for_question,
     retrieve_for_exam_point,
+    retrieve_for_question,
 )
 
 
@@ -269,6 +271,103 @@ def test_equal_scores_use_material_version_and_chunk_id_as_stable_tiebreakers():
     # prompt 稳定的前提），同内容下按 id 字典序，与输入顺序无关。
     assert [item.chunk.id for item in first] == ["a-chunk"]
     assert [item.chunk.id for item in reversed_input] == ["a-chunk"]
+
+
+# ---------------------------------------------------------------------------
+# 资料内容问答（助手 RAG）：裸问题串检索 + 词面降级
+# ---------------------------------------------------------------------------
+
+
+def _question_chunks() -> list[StagingChunk]:
+    return [
+        StagingChunk(
+            id="q1",
+            material_version_id="v1",
+            content="监督学习分为分类与回归两大任务。",
+            embedding=[1.0, 0.0],
+        ),
+        StagingChunk(
+            id="q2",
+            material_version_id="v1",
+            content="聚类与降维属于无监督学习方法。",
+            embedding=[0.6, 0.8],
+        ),
+    ]
+
+
+def test_retrieve_for_question_ranks_by_similarity_and_is_deterministic():
+    embedder = StaticEmbedder([[1.0, 0.0]])
+
+    first = retrieve_for_question(
+        "监督学习有哪些任务", _question_chunks(), embedder, top_k=2, minimum_score=0.05
+    )
+    second = retrieve_for_question(
+        "监督学习有哪些任务", _question_chunks(), embedder, top_k=2, minimum_score=0.05
+    )
+
+    # 查询向量贴近 q1 → q1 首位；两次排序完全一致（量化 + 决胜键）
+    assert [item.chunk.id for item in first] == ["q1", "q2"]
+    assert [(item.chunk.id, item.score) for item in first] == [
+        (item.chunk.id, item.score) for item in second
+    ]
+    # 问题串原样进嵌入调用（不经模型转述）
+    assert embedder.calls[0] == ["监督学习有哪些任务"]
+    assert all(item.semantic_score > 0 for item in first)
+
+
+def test_retrieve_for_question_empty_chunks_skips_embedder():
+    embedder = StaticEmbedder([])
+    assert retrieve_for_question("任意问题", [], embedder, top_k=3, minimum_score=0.1) == []
+    assert embedder.calls == []
+
+
+def test_retrieve_for_question_wraps_embedder_failure():
+    class FailingEmbedder:
+        def embed(self, texts):
+            raise RuntimeError("network down")
+
+    with pytest.raises(RetrievalConfigurationError, match="检索已中止"):
+        retrieve_for_question("问题", _question_chunks(), FailingEmbedder(), top_k=2, minimum_score=0.1)
+
+
+def test_retrieve_for_question_rejects_unsafe_configuration():
+    with pytest.raises(RetrievalConfigurationError):
+        retrieve_for_question("问题", _question_chunks(), StaticEmbedder([]), top_k=0, minimum_score=0.1)
+    with pytest.raises(RetrievalConfigurationError):
+        lexical_rank_for_question("问题", _question_chunks(), top_k=1, minimum_score=1.5)
+
+
+def test_lexical_rank_for_question_orders_by_overlap_without_embedder():
+    chunks = [
+        StagingChunk(id="a", material_version_id="v1", content="监督学习分为分类与回归。"),
+        StagingChunk(id="b", material_version_id="v1", content="实验使用 QLoRA 微调模型。"),
+    ]
+
+    ranked = lexical_rank_for_question("监督学习的分类", chunks, top_k=2, minimum_score=0.1)
+
+    assert ranked[0].chunk.id == "a"  # 词面重合度高的块在前
+    assert all(item.semantic_score == 0.0 for item in ranked)  # 词面路径不碰语义
+    assert all(item.score >= 0.1 for item in ranked)  # 低于阈值的块被过滤
+    assert all(item.chunk.id != "b" for item in ranked) or ranked[-1].score >= 0.1
+
+
+def test_lexical_rank_for_question_applies_top_k_deterministically():
+    chunks = [
+        StagingChunk(id="c1", material_version_id="v1", content="监督学习"),
+        StagingChunk(id="c2", material_version_id="v1", content="监督学习"),
+        StagingChunk(id="c3", material_version_id="v1", content="完全无关内容"),
+    ]
+
+    top = lexical_rank_for_question("监督学习", chunks, top_k=1, minimum_score=0.0)
+    full = lexical_rank_for_question("监督学习", chunks, top_k=3, minimum_score=0.0)
+
+    # top_k 截断 + 同分并列按 (content_hash, id) 决胜：与输入顺序无关
+    assert len(top) == 1
+    reversed_order = lexical_rank_for_question(
+        "监督学习", list(reversed(chunks)), top_k=1, minimum_score=0.0
+    )
+    assert [item.chunk.id for item in reversed_order] == [item.chunk.id for item in top]
+    assert len(full) == 3
 
 
 def test_embedding_gateway_sorts_response_by_index_and_returns_vectors():

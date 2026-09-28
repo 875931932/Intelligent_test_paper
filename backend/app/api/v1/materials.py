@@ -37,6 +37,38 @@ def _not_found() -> HTTPException:
     return HTTPException(status_code=404, detail="resource not found")
 
 
+def _maybe_enqueue_index(session: Session, *, course_id: str, run_id: str, parse_status: str) -> None:
+    """解析转 ready 即入队语料向量索引（transactional outbox → Celery worker）。
+
+    红线：嵌入 API 只在 worker 里调，请求线程只入队；任务已存在则幂等跳过，
+    派发失败仅回滚（事件保持 pending，不阻塞解析响应）。
+    """
+    if parse_status != "ready" or not run_id:
+        return
+    from app.services import content_index_service
+
+    try:
+        created = content_index_service.enqueue_index_task(
+            session, course_id=course_id, run_id=run_id
+        )
+        if created is None:
+            return
+        # 显式 commit：outbox 派发会用另一个事务/连接读取事件，任务行必须先落地
+        session.commit()
+    except Exception:
+        session.rollback()
+        return
+
+    from app.infrastructure.tasks.celery_app import CeleryPublisher
+    from app.infrastructure.tasks.outbox import dispatch_pending_events
+
+    try:
+        dispatch_pending_events(session, CeleryPublisher(), course_id=course_id, limit=5)
+        session.commit()
+    except Exception:
+        session.rollback()
+
+
 @router.post("/upload-sessions", response_model=UploadSessionResponse, status_code=status.HTTP_201_CREATED)
 def create_upload_session(
     course_id: str, payload: UploadSessionCreate, session: Session = Depends(get_session), storage: StoragePort = Depends(get_storage)
@@ -114,11 +146,18 @@ def start_material_parse(
 ) -> dict:
     """为资料最新版本启动 MinerU 解析（同哈希 ready 结果直接复用）。"""
     try:
-        return parse_service.start_parse(session, storage, course_id=course_id, material_id=material_id)
+        result = parse_service.start_parse(session, storage, course_id=course_id, material_id=material_id)
     except (course_service.CourseNotFoundError, material_service.MaterialNotFoundError):
         raise _not_found()
     except parse_service.ParseError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc))
+    _maybe_enqueue_index(
+        session,
+        course_id=course_id,
+        run_id=str(result.get("run_id") or ""),
+        parse_status=str(result.get("status") or ""),
+    )
+    return result
 
 @router.post("/materials/{material_id}/parse/poll")
 def poll_material_parse(
@@ -126,11 +165,18 @@ def poll_material_parse(
 ) -> dict:
     """推进一次解析状态机（轮询 MinerU；完成则落块），前端周期调用直至 ready/failed。"""
     try:
-        return parse_service.advance_parse(session, storage, course_id=course_id, material_id=material_id)
+        result = parse_service.advance_parse(session, storage, course_id=course_id, material_id=material_id)
     except (course_service.CourseNotFoundError, material_service.MaterialNotFoundError):
         raise _not_found()
     except parse_service.ParseError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc))
+    _maybe_enqueue_index(
+        session,
+        course_id=course_id,
+        run_id=str(result.get("run_id") or ""),
+        parse_status=str(result.get("status") or ""),
+    )
+    return result
 
 @router.patch("/materials/{material_id}/type", response_model=MaterialResponse)
 def update_material_type(course_id: str, material_id: str, material_type: str, session: Session = Depends(get_session)) -> dict:

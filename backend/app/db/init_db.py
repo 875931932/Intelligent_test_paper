@@ -119,6 +119,28 @@ def _migrate_evidence_chunk_columns(engine: Engine) -> None:
             conn.execute(text("ALTER TABLE evidence_chunks ADD COLUMN embedding_model VARCHAR(64)"))
 
 
+def _migrate_content_block_columns(engine: Engine) -> None:
+    """Idempotently add embedding / embedding_model columns to content_blocks.
+
+    助手 v2 资料内容问答（RAG）：解析块逐块嵌入落库，语义检索用。旧表无这些列，
+    create_all 不会 ALTER 已存在表，需显式迁移（与 evidence_chunks 向量列同语义）。
+    """
+
+    try:
+        insp = inspect(engine)
+        if not insp.has_table("content_blocks"):
+            return
+        existing = {c["name"] for c in insp.get_columns("content_blocks")}
+    except Exception:
+        # 迁移是尽力而为的幂等维护：无法内省时不阻断启动（与 link score 迁移同口径）。
+        return
+    with engine.begin() as conn:
+        if "embedding" not in existing:
+            conn.execute(text("ALTER TABLE content_blocks ADD COLUMN embedding JSON"))
+        if "embedding_model" not in existing:
+            conn.execute(text("ALTER TABLE content_blocks ADD COLUMN embedding_model VARCHAR(64)"))
+
+
 def _migrate_evidence_link_score(engine: Engine) -> None:
     """Idempotently add retrieval_score column to exam_point_evidence_links.
 
@@ -249,6 +271,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
                 _migrate_evidence_chunk_columns(engine)
                 _migrate_evidence_link_score(engine)
                 _migrate_knowledge_link_role(engine)
+                _migrate_content_block_columns(engine)
                 if seed:
                     _seed_dev_data(conn)
         else:
@@ -260,6 +283,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             _migrate_evidence_chunk_columns(engine)
             _migrate_evidence_link_score(engine)
             _migrate_knowledge_link_role(engine)
+            _migrate_content_block_columns(engine)
             if seed:
                 _seed_dev_data(engine)
     finally:

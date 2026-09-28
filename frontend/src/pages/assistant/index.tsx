@@ -65,7 +65,7 @@ const PROPOSAL_META: Record<string, { label: string; impact: string }> = {
 /** 首屏空状态的引导问题（点击即发送） */
 const SUGGESTIONS = [
   '课程现在到哪一步了？',
-  '资料解析状态怎么样？',
+  '总结教学大纲讲了什么？',
   '有哪些试卷项目？',
 ];
 
@@ -339,6 +339,70 @@ function ResultCard({
   );
 }
 
+/**
+ * 来源引用卡：资料内容问答的命中片段（资料名 + 页/章节 + 摘要）。
+ * 正文（模型基于片段的回答）由上方 StemBlocks 渲染，本卡只负责可追溯性：
+ * 教师据此可到资料库核对原文；score 不展示（避免把相关度当可信度）。
+ */
+function SourcesCard({
+  message,
+  courseId,
+  navigate,
+}: {
+  message: AssistantMessage;
+  courseId: string;
+  navigate: (to: string) => void;
+}) {
+  const payload = message.action.payload ?? {};
+  const sources = payload.sources ?? [];
+  const scope = payload.material_name ? `「${payload.material_name}」` : '课程全部资料';
+  return (
+    <div style={cardBox}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <Badge variant="info">资料来源</Badge>
+        <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+          回答依据 {scope} 的 {sources.length} 处片段
+          {payload.mode === 'lexical' ? '（词面匹配）' : ''}
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 2 }}>
+        {sources.map((s, i) => {
+          const loc = [
+            s.material_name,
+            s.page_index != null ? `第 ${s.page_index} 页` : '',
+            s.heading_path.join(' › '),
+          ]
+            .filter(Boolean)
+            .join(' · ');
+          return (
+            <div
+              key={s.block_id}
+              style={{ borderLeft: '3px solid var(--accent-soft)', paddingLeft: 8 }}
+            >
+              <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
+                {i + 1}. {loc || '资料片段'}
+              </div>
+              <p style={{ fontSize: '0.8rem', lineHeight: 1.6, margin: '2px 0 0' }}>
+                {s.snippet}
+              </p>
+            </div>
+          );
+        })}
+      </div>
+      <div>
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={() => navigate(`/courses/${courseId}/materials`)}
+          icon={<ExternalLink size={13} />}
+        >
+          打开资料库查看原文
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 /** 提案参数预览（人话字段名；body 由后端白名单硬校验，展示即执行内容） */
 function proposalParamRows(tool: string, payload: AssistantActionPayload): Array<[string, string]> {
   const body = payload.body ?? {};
@@ -578,7 +642,7 @@ const AssistantPage: FC = () => {
       <div>
         <h1 className="page-title">AI 助手</h1>
         <p className="page-subtitle">
-          问答与查询直达结果，写操作生成提案卡——确认后才执行
+          资料正文问答直达依据片段，查询直达结果，写操作生成提案卡——确认后才执行
         </p>
       </div>
 
@@ -607,8 +671,8 @@ const AssistantPage: FC = () => {
               <strong style={{ fontSize: '0.9rem' }}>你好，我是本课程的 AI 助手</strong>
             </div>
             <p style={muted}>
-              我能回答课程进度、资料解析、蓝图/合同/试卷状态的问题；
-              修改类操作会生成提案卡，由你确认后执行。试试：
+              我能回答课程进度、资料解析、蓝图/合同/试卷状态的问题，也能基于已解析的
+              资料正文总结与问答；修改类操作会生成提案卡，由你确认后执行。试试：
             </p>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {SUGGESTIONS.map((s) => (
@@ -666,10 +730,16 @@ const AssistantPage: FC = () => {
                     onConfirm={(msg) => void handleConfirm(msg)}
                     onDismiss={(msg) => void handleDismiss(msg)}
                   />
+                ) : m.action.kind === 'sources' ? (
+                  <>
+                    <StemBlocks text={m.content} />
+                    <SourcesCard message={m} courseId={courseId} navigate={navigate} />
+                  </>
                 ) : (
                   <StemBlocks text={m.content} />
                 )}
-                {m.action.kind === undefined && m.stream_status === 'failed' && (
+                {(m.action.kind === undefined || m.action.kind === 'sources') &&
+                  m.stream_status === 'failed' && (
                   <div style={{ marginTop: 6 }}>
                     <Badge variant="warning">网关未走流式，整段返回</Badge>
                   </div>

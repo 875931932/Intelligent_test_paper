@@ -42,6 +42,7 @@ from app.db.schema import (
     plan_items,
     task_runs,
 )
+from app.domain.knowledge.relevance import StagingChunk
 from app.domain.model_calls import ModelCallContext
 from app.infrastructure.tasks.models import TERMINAL_TASK_STATUSES, create_task_run
 from app.services import (
@@ -52,6 +53,9 @@ from app.services import (
 )
 # 复用既有判定（模块级 import 优于复制第二份）
 from app.services.ai_revise_service import llm_configured
+# RAG 检索与语料索引（助手 v2 资料内容问答）
+from app.services.content_index_service import build_embedder, embedding_configured, ensure_embedded, load_content_chunks
+from app.services.staging_retrieval_service import RankedChunk, lexical_rank_for_question, retrieve_for_question
 
 logger = logging.getLogger("services.assistant")
 
@@ -98,8 +102,7 @@ REFUSED_TOOLS = frozenset(
         "finalize_paper",
         "export_paper",
         "start_generation",
-        "read_material_content",
-        "answer_material_content",
+        "read_material_content",  # 全文照抄/朗读仍拒绝；问答与总结走 RAG_TOOL（v2）
         "online_exam",
         "grading",
     }
@@ -108,6 +111,15 @@ REFUSED_REPLY = (
     "这类操作需要你亲自到对应页面完成：出题/改题去「试卷」页，蓝图确认与试卷定稿导出"
     "是里程碑操作不代劳，删除资料去「资料库」页，在线考试与阅卷不在本系统范围内。"
 )
+
+# 资料内容问答（RAG，助手 v2）：第 4 类路由——语料检索 + 段2 流式作答 + 来源引用卡
+RAG_TOOL = "answer_material_content"
+_RAG_TOP_K = 6
+_RAG_HYBRID_MIN_SCORE = 0.15
+_RAG_LEXICAL_MIN_SCORE = 0.2
+_RAG_SNIPPET_CHARS = 160        # 来源卡摘要长度
+_RAG_BLOCK_PROMPT_CHARS = 1500  # 单块进段2 prompt 的上限
+_RAG_FALLBACK_REPLY = "已检索到相关资料，回答见下："
 
 # 提案卡状态只允许单向迁移（proposed → executed/dismissed）
 _PROPOSAL_TRANSITIONS = {"executed", "dismissed"}
@@ -465,6 +477,9 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 - list_exam_projects：试卷项目列表
 只读工具 args 默认 {}（呈现全部）。教师**点名了某个试卷项目**时，course_overview/blueprint_status/contract_status/paper_status/list_exam_projects 必须传 args={project_id(取自 payload.ids.project_ids)}，结果卡只呈现该项目；没点名就不传。
 
+资料内容问答工具：
+- answer_material_content：基于已解析资料正文回答问题/做总结。args={material_id?}——教师点名某份资料时必须传 material_id（取自 payload.ids.material_ids）；问全课程资料时不传。仅对 snapshot.materials 中 parse_status=="ready" 的资料使用；没有已解析资料时不使用本工具，回复引导教师先到「资料库」解析。回答正文由系统按检索片段生成，你的 reply 只给一句引导（如「已检索到相关资料，回答如下：」），不要复述片段。
+
 可用提案工具（action.args 只允许下述字段，id 必须取自 payload.ids 白名单）：
 - create_course：新建课程。args={name(必填,1~200字), slug?(小写字母数字连字符), description?}
 - update_course：修改当前课程。args={name?, slug?, description?}（至少一个）
@@ -478,7 +493,7 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 3. 删除资料 → 「删除资料请到『资料库』页操作。」
 4. 在线考试、阅卷、评分 → 「在线考试与阅卷不在本系统范围内——本系统止于导出纸质试卷产物。」
 5. 操作其它课程 → 「我只能操作当前课程空间内的数据。」
-6. 总结/问答资料内容 → 「资料内容的问答与总结暂不支持，当前可查看资料清单与解析状态。」
+6. 要求原样输出/朗读整份资料全文 → 「全文照抄请到『资料库』页查看原文；针对资料内容的提问与总结可选用 answer_material_content 工具。」
 
 规则：
 - 需要具体数据且命中上述工具时才给 action；闲聊、询问用法、解释状态含义时 action 置 null，直接回答。
@@ -735,6 +750,95 @@ def build_proposal_payload(tool: str, args: dict, *, context: dict) -> dict:
 # 路由（确定性收口）
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 资料内容问答（RAG）执行
+# ---------------------------------------------------------------------------
+
+
+def _rank_rag_chunks(question: str, chunks: list[StagingChunk]) -> tuple[str, list[RankedChunk]]:
+    """混合检索；嵌入不可用或混合无命中 → 纯词面（确定性降级，嵌入故障不断轮）。"""
+
+    if embedding_configured() and all(chunk.embedding is not None for chunk in chunks):
+        try:
+            ranked = retrieve_for_question(
+                question,
+                chunks,
+                build_embedder(),
+                top_k=_RAG_TOP_K,
+                minimum_score=_RAG_HYBRID_MIN_SCORE,
+            )
+            if ranked:
+                return "hybrid", ranked
+        except Exception as exc:  # noqa: BLE001 — 嵌入故障降级词面，不上抛
+            logger.warning("RAG 混合检索失败，降级词面: %s", exc)
+    return "lexical", lexical_rank_for_question(
+        question, chunks, top_k=_RAG_TOP_K, minimum_score=_RAG_LEXICAL_MIN_SCORE
+    )
+
+
+def execute_rag(
+    session: Session, *, context: dict, args: dict, question: str
+) -> tuple[dict, dict]:
+    """资料内容问答：白名单/解析状态校验 → 自愈索引 → 检索 → (来源卡 payload, 检索态)。
+
+    嵌入调用只发生在 worker（本模块只被 handler 调用），不进请求线程；非法参数/
+    未解析抛 AssistantError（上层带反馈重试一次）。
+    """
+
+    if not question.strip():
+        raise AssistantError("问题不能为空")
+    material_id = str(args.get("material_id") or "").strip() or None
+    material_ids = None
+    target_row = None
+    if material_id is not None:
+        if material_id not in (context["allowed_ids"].get("material_ids") or []):
+            raise AssistantError("material_id 不在当前课程资料白名单内")
+        target_row = next((m for m in context["materials"] if m["id"] == material_id), None)
+        if target_row is None:
+            raise AssistantError("material_id 不在当前课程资料白名单内")
+        if target_row.get("parse_status") != "ready":
+            raise AssistantError(
+                f"资料「{target_row.get('name')}」尚未解析完成，先到资料库页完成解析"
+            )
+        material_ids = [material_id]
+    elif not any(m.get("parse_status") == "ready" for m in context["materials"]):
+        raise AssistantError("课程内还没有已解析的资料，请先到资料库完成解析")
+
+    # 查询时自愈：历史数据/索引任务失败留下的缺向量块在 worker 内补嵌
+    ensure_embedded(session, course_id=context["course_id"], material_ids=material_ids)
+    chunks = load_content_chunks(
+        session, course_id=context["course_id"], material_ids=material_ids
+    )
+    if not chunks:
+        raise AssistantError("该范围没有可检索的资料内容")
+
+    mode, ranked = _rank_rag_chunks(question, chunks)
+    payload = {
+        "question": question,
+        "material_id": material_id,
+        "material_name": target_row.get("name") if target_row else None,
+        "mode": mode,
+        "sources": [
+            {
+                "block_id": item.chunk.id,
+                "material_id": item.chunk.locator.get("material_id"),
+                "material_name": item.chunk.locator.get("material_name"),
+                "page_index": item.chunk.locator.get("page_index"),
+                "heading_path": [
+                    str(h) for h in list(item.chunk.locator.get("heading_path") or [])
+                ][:6],
+                "snippet": (
+                    item.chunk.content[: _RAG_SNIPPET_CHARS] + "…"
+                    if len(item.chunk.content) > _RAG_SNIPPET_CHARS
+                    else item.chunk.content
+                ),
+            }
+            for item in ranked
+        ],
+    }
+    return payload, {"mode": mode, "ranked": ranked}
+
+
 _DEFAULT_READ_REPLIES = {
     "course_overview": "课程当前各阶段状态见下表：",
     "list_materials": "这是你的资料清单与解析状态：",
@@ -753,11 +857,12 @@ _DEFAULT_PROPOSAL_REPLIES = {
 }
 
 
-def route_intent(intent: dict, *, session: Session, context: dict) -> dict:
-    """意图 → {kind: chat|result|proposal, reply, action?, payload?}。
+def route_intent(intent: dict, *, session: Session, context: dict, message: str = "") -> dict:
+    """意图 → {kind: chat|result|proposal|rag, reply, action?, payload?}。
 
     AssistantError 表示意图/参数问题（上层带反馈重试一次）；工具白名单外的
-    tool 名同样按 AssistantError 走重试，最终落确定性失败文案。
+    tool 名同样按 AssistantError 走重试，最终落确定性失败文案。message 为教师
+    原话（RAG 的问题即原话，不经模型转述）。
     """
     action = intent.get("action")
     if action is None:
@@ -781,6 +886,20 @@ def route_intent(intent: dict, *, session: Session, context: dict) -> dict:
             "payload": payload,
         }
 
+    if tool == RAG_TOOL:
+        # 问题 = 教师原话：检索与段2 都用 message，不经模型转述（防改写失真）
+        payload, retrieval = execute_rag(
+            session, context=context, args=args, question=message
+        )
+        return {
+            "kind": "rag",
+            "stream": True,
+            "reply": intent.get("reply") or _RAG_FALLBACK_REPLY,
+            "retrieval": retrieval,
+            "action": {"kind": "sources", "tool": RAG_TOOL, "args": args, "status": "completed"},
+            "payload": payload,
+        }
+
     if tool in PROPOSAL_TOOLS:
         payload = build_proposal_payload(tool, args, context=context)
         reply = intent.get("reply") or _DEFAULT_PROPOSAL_REPLIES.get(tool, "已生成提案，确认后执行：")
@@ -795,7 +914,7 @@ def route_intent(intent: dict, *, session: Session, context: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 段2：流式正文（仅纯问答）
+# 段2：流式正文（纯问答 / 资料内容问答）
 # ---------------------------------------------------------------------------
 
 _ANSWER_SYSTEM_PROMPT = """你是高校课程「{course_name}」工作台内的 AI 助手，正在与命题教师对话。
@@ -858,6 +977,50 @@ def stream_answer(
         system_prompt=system_prompt,
         payload=payload,
         temperature=0.6,
+        on_delta=on_delta,
+        call_context=call_context,
+    )
+
+
+_RAG_ANSWER_SYSTEM_PROMPT = """你是高校课程「{course_name}」工作台内的 AI 助手，正在基于教师指定的资料回答问题。
+
+要求：
+- **只依据下方「资料片段」作答**：片段覆盖不足时明确说明「资料里没有找到」，不得编造片段之外的内容。
+- 引用出处：结合片段的页码/章节标题指明依据位置；总结型请求先给结构化要点再展开。
+- 用中文简洁自然回答；与资料无关的寒暄礼貌拉回资料话题。
+- 不承诺出题比例/难度/去重——这些由系统确定性算法保证；写操作只说明会生成提案由教师确认。"""
+
+
+def stream_rag_answer(
+    client,
+    context: dict,
+    message: str,
+    *,
+    retrieval: dict,
+    on_delta,
+    call_context: ModelCallContext,
+) -> str:
+    """段2（RAG）：以检索片段为依据流式生成回答。"""
+
+    system_prompt = _RAG_ANSWER_SYSTEM_PROMPT.replace("{course_name}", context["course_name"])
+    payload = {
+        "course": {"id": context["course_id"], "name": context["course_name"]},
+        "history": context.get("history") or [],
+        "question": message,
+        "sources": [
+            {
+                "material_name": item.chunk.locator.get("material_name"),
+                "page_index": item.chunk.locator.get("page_index"),
+                "heading_path": list(item.chunk.locator.get("heading_path") or []),
+                "text": item.chunk.content[:_RAG_BLOCK_PROMPT_CHARS],
+            }
+            for item in retrieval["ranked"]
+        ],
+    }
+    return client.stream_text(
+        system_prompt=system_prompt,
+        payload=payload,
+        temperature=0.3,
         on_delta=on_delta,
         call_context=call_context,
     )
@@ -992,7 +1155,7 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
 
     intent = parse_intent(client, context, message, call_context=call_context)
     try:
-        routed = route_intent(intent, session=session, context=context)
+        routed = route_intent(intent, session=session, context=context, message=message)
     except AssistantError as first_error:
         # 带反馈纠错一次：把校验失败原因交回模型重新解析
         intent = parse_intent(
@@ -1003,7 +1166,7 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
             previous_error=str(first_error),
         )
         try:
-            routed = route_intent(intent, session=session, context=context)
+            routed = route_intent(intent, session=session, context=context, message=message)
         except AssistantError as second_error:
             routed = {
                 "kind": "chat",
@@ -1030,6 +1193,33 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
             content = routed["reply"]
             sink.publish("delta", {"text": content})
         action: dict = {}
+    elif routed["kind"] == "rag":
+        # 资料内容问答：检索片段驱动的流式正文 + 命中时来源引用卡
+        buffer = _DeltaBuffer(sink)
+        try:
+            content = stream_rag_answer(
+                client,
+                context,
+                message,
+                retrieval=routed["retrieval"],
+                on_delta=buffer.add,
+                call_context=call_context,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # 流式降级：段1 已有引导语，用它收口，不让一轮对话整体失败
+            logger.warning("assistant RAG段2流式失败，降级段1回复 task_run_id=%s: %s", task_run_id, exc)
+            content = routed.get("reply") or "（回答生成失败，请重试）"
+            stream_status = "failed"
+        buffer.flush()
+        if routed["payload"].get("sources"):
+            action = dict(routed["action"])
+            action["payload"] = routed["payload"]
+            sink.publish(
+                "card",
+                {"kind": "sources", "tool": RAG_TOOL, "payload": routed["payload"]},
+            )
+        else:
+            action = {}  # 无命中：普通问答形态，不落卡（正文说明没找到）
     elif routed["kind"] == "result":
         content = routed["reply"]
         action = dict(routed["action"])

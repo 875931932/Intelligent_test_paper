@@ -82,6 +82,8 @@ _LEASE_SECONDS_BY_TYPE = {
     "review_framework_candidate": 300,
     # 助手一轮 = 意图解析 + 可选流式正文（两次模型调用），按短任务上限算
     "assistant_turn": 300,
+    # 解析块索引 = 批量嵌入 API 调用（几百块 × 分批），按短任务上限算
+    "material_index": 300,
 }
 
 
@@ -313,3 +315,24 @@ def _handle_assistant_turn(context: TaskContext) -> dict:
 
 
 register_task_handler("assistant_turn", _handle_assistant_turn)
+
+
+def _handle_material_index(context: TaskContext) -> dict:
+    """解析转 ready 后的语料向量索引：只写 content_blocks 向量派生列。
+
+    未配置嵌入服务时静默跳过（检索层走词面降级）；失败只记日志返回 0，
+    查询时 ensure_embedded 自愈兜底。
+    """
+    from app.services.content_index_service import ensure_embedded
+
+    context.report_progress(stage="embedding", progress=10)
+    payload = dict(context.payload)
+    course_id = str(payload.get("course_id") or "")
+    run_ids = [str(payload["run_id"])] if payload.get("run_id") else None
+    if not course_id:
+        raise ValueError("material_index payload requires course_id")
+    embedded = ensure_embedded(context.session, course_id=course_id, run_ids=run_ids)
+    return {"embedded_blocks": embedded}
+
+
+register_task_handler("material_index", _handle_material_index)

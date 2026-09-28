@@ -136,6 +136,96 @@ def retrieve_for_exam_point(
         except Exception as exc:
             raise RetrievalConfigurationError("嵌入服务调用失败，暂存检索已中止") from exc
         query_vector = _validated_vectors(raw_query_vectors, expected_count=1)[0]
+    return _rank_hybrid(
+        intent=point.retrieval_intent,
+        chunks=chunks,
+        query_vector=query_vector,
+        top_k=top_k,
+        minimum_score=minimum_score,
+    )
+
+
+def retrieve_for_question(
+    question: str,
+    chunks: list[StagingChunk],
+    embedder: EmbeddingClient,
+    *,
+    top_k: int,
+    minimum_score: float,
+    query_vector: list[float] | None = None,
+) -> list[RankedChunk]:
+    """资料内容问答（助手 RAG）的混合检索：与 exam point 同款打分/量化/决胜，入参为裸问题串。"""
+
+    _validate_configuration(top_k=top_k, minimum_score=minimum_score)
+    if not chunks:
+        return []
+
+    if query_vector is None:
+        try:
+            raw_query_vectors = embedder.embed([question])
+        except RetrievalConfigurationError:
+            raise
+        except Exception as exc:
+            raise RetrievalConfigurationError("嵌入服务调用失败，检索已中止") from exc
+        query_vector = _validated_vectors(raw_query_vectors, expected_count=1)[0]
+    return _rank_hybrid(
+        intent=question,
+        chunks=chunks,
+        query_vector=query_vector,
+        top_k=top_k,
+        minimum_score=minimum_score,
+    )
+
+
+def lexical_rank_for_question(
+    question: str,
+    chunks: list[StagingChunk],
+    *,
+    top_k: int,
+    minimum_score: float,
+) -> list[RankedChunk]:
+    """纯词面降级：嵌入不可用（未配置/调用失败/向量缺失）时按词面单独打分。
+
+    semantic=0、score=词面分，同款 3 位量化与 content_hash 决胜，排序依旧确定。
+    """
+
+    _validate_configuration(top_k=top_k, minimum_score=minimum_score)
+    if not chunks:
+        return []
+    ranked: list[RankedChunk] = []
+    for chunk in chunks:
+        lexical_score = lexical_overlap(question, chunk.content)
+        if lexical_score >= float(minimum_score):
+            ranked.append(
+                RankedChunk(
+                    chunk=chunk,
+                    score=lexical_score,
+                    lexical_score=lexical_score,
+                    semantic_score=0.0,
+                )
+            )
+    for item in ranked:
+        item.score = round(item.score, 3)
+    ranked.sort(
+        key=lambda item: (
+            -item.score,
+            _chunk_content_hash(item.chunk),
+            item.chunk.id,
+        )
+    )
+    return ranked[:top_k]
+
+
+def _rank_hybrid(
+    *,
+    intent: str,
+    chunks: list[StagingChunk],
+    query_vector: list[float],
+    top_k: int,
+    minimum_score: float,
+) -> list[RankedChunk]:
+    """0.35 词面 + 0.65 语义混合打分（要求全部块带向量，维度不齐直接抛配置错误）。"""
+
     vectors = _validated_vectors(
         [query_vector, *(chunk.embedding for chunk in chunks)],
         expected_count=len(chunks) + 1,
@@ -144,7 +234,7 @@ def retrieve_for_exam_point(
 
     ranked: list[RankedChunk] = []
     for chunk, vector in zip(chunks, chunk_vectors, strict=True):
-        lexical_score = lexical_overlap(point.retrieval_intent, chunk.content)
+        lexical_score = lexical_overlap(intent, chunk.content)
         semantic_score = cosine_similarity(query_vector, vector)
         if semantic_score <= MINIMUM_SEMANTIC_SCORE:
             continue

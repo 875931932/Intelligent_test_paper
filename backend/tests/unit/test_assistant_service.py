@@ -426,6 +426,330 @@ def test_read_tool_rejects_foreign_project_id():
 
 
 # ---------------------------------------------------------------------------
+# 资料内容问答（RAG）：意图路由、白名单/解析状态校验、检索模式与来源卡 payload
+# ---------------------------------------------------------------------------
+
+
+def _rag_chunks(*, with_embeddings: bool = False) -> list:
+    from app.domain.knowledge.relevance import StagingChunk
+
+    chunks = [
+        StagingChunk(
+            id="blk-1",
+            material_version_id="v1",
+            content="监督学习的分类与回归是两种基本任务。",
+            locator={
+                "material_id": "m1",
+                "material_name": "教学大纲",
+                "page_index": 2,
+                "heading_path": ["第3章", "3.1 监督学习"],
+            },
+            embedding=[1.0, 0.0] if with_embeddings else None,
+        ),
+        StagingChunk(
+            id="blk-2",
+            material_version_id="v1",
+            content="天气晴朗。",
+            locator={
+                "material_id": "m1",
+                "material_name": "教学大纲",
+                "page_index": 9,
+                "heading_path": [],
+            },
+            embedding=[0.0, 1.0] if with_embeddings else None,
+        ),
+    ]
+    return chunks
+
+
+def _rag_ctx(**overrides) -> dict:
+    materials = [
+        {"id": "m1", "name": "教学大纲", "type": "teaching_syllabus", "status": "staged", "parse_status": "ready"},
+        {"id": "m2", "name": "第3章讲义", "type": "teaching_material", "status": "staged", "parse_status": None},
+    ]
+    return _ctx(materials=materials, **overrides)
+
+
+def _patch_rag(monkeypatch, chunks=None, *, configured: bool = False):
+    """隔离 DB 与嵌入配置：记录 ensure/load 调用并返回预置语料。"""
+    calls = {"ensure": [], "load": []}
+
+    def fake_ensure(session, *, course_id, material_ids=None, run_ids=None):
+        calls["ensure"].append((course_id, material_ids))
+        return 0
+
+    def fake_load(session, *, course_id, material_ids=None):
+        calls["load"].append((course_id, material_ids))
+        return _rag_chunks() if chunks is None else chunks
+
+    monkeypatch.setattr(assistant_service, "ensure_embedded", fake_ensure)
+    monkeypatch.setattr(assistant_service, "load_content_chunks", fake_load)
+    monkeypatch.setattr(assistant_service, "embedding_configured", lambda: configured)
+    return calls
+
+
+def test_rag_prompt_documents_tool_and_grounding_rules():
+    """段1 prompt 有工具说明与解析状态约束；拒绝表第 6 条不再禁问答；红线不入 prompt。"""
+    system_prompt, _payload = build_intent_prompt(_rag_ctx(), "总结这份资料")
+
+    assert "answer_material_content" in system_prompt
+    assert 'parse_status=="ready"' in system_prompt
+    assert "material_id" in system_prompt
+    # 全文照抄仍拒绝（第 6 条改写）
+    assert "原样输出/朗读整份资料全文" in system_prompt
+    assert "暂不支持" not in system_prompt
+    # 既有红线不回退
+    assert "比例/难度/去重" in system_prompt
+
+    # 双保险集合：问答工具移出 REFUSED，全文照抄仍被拒
+    assert assistant_service.RAG_TOOL not in assistant_service.REFUSED_TOOLS
+    assert "read_material_content" in assistant_service.REFUSED_TOOLS
+
+    # 段2 grounding 规则
+    rag_prompt = assistant_service._RAG_ANSWER_SYSTEM_PROMPT
+    assert "只依据下方「资料片段」作答" in rag_prompt
+    assert "没有找到" in rag_prompt
+    assert "比例/难度/去重" in rag_prompt
+
+
+def test_rag_route_targets_named_material_lexical_mode(monkeypatch):
+    """点名资料：白名单通过 + ready → kind=rag，词面模式组装来源卡 payload。"""
+    calls = _patch_rag(monkeypatch)
+
+    routed = route_intent(
+        _intent("已检索到相关资料，回答如下：", {"tool": assistant_service.RAG_TOOL, "args": {"material_id": "m1"}}),
+        session=None,
+        context=_rag_ctx(),
+        message="监督学习的分类与回归是什么",
+    )
+
+    assert routed["kind"] == "rag"
+    assert routed["stream"] is True
+    assert routed["retrieval"]["mode"] == "lexical"
+    assert calls["ensure"] == [("c1", ["m1"])]  # 自愈索引按点名范围
+    assert calls["load"] == [("c1", ["m1"])]
+
+    payload = routed["payload"]
+    assert payload["question"] == "监督学习的分类与回归是什么"  # 教师原话，不经模型转述
+    assert payload["material_id"] == "m1"
+    assert payload["material_name"] == "教学大纲"
+    assert payload["mode"] == "lexical"
+    # 命中相关块、过滤无关块
+    assert [s["block_id"] for s in payload["sources"]] == ["blk-1"]
+    source = payload["sources"][0]
+    assert source["material_name"] == "教学大纲"
+    assert source["page_index"] == 2
+    assert source["heading_path"] == ["第3章", "3.1 监督学习"]
+    assert len(source["snippet"]) <= assistant_service._RAG_SNIPPET_CHARS
+    assert routed["action"] == {
+        "kind": "sources",
+        "tool": assistant_service.RAG_TOOL,
+        "args": {"material_id": "m1"},
+        "status": "completed",
+    }
+
+
+def test_rag_route_course_wide_without_material_id(monkeypatch):
+    calls = _patch_rag(monkeypatch)
+
+    routed = route_intent(
+        _intent("", {"tool": assistant_service.RAG_TOOL, "args": {}}),
+        session=None,
+        context=_rag_ctx(),
+        message="这些资料都讲了什么",
+    )
+
+    assert routed["kind"] == "rag"
+    assert calls["ensure"] == [("c1", None)]  # 全课程语料
+    assert routed["payload"]["material_id"] is None
+    assert routed["payload"]["material_name"] is None
+
+
+def test_rag_route_hybrid_mode_when_embeddings_present(monkeypatch):
+    """语料向量齐备 + 嵌入已配置 → 混合检索（0.35 词面 + 0.65 语义）。"""
+
+    class QueryEmbedder:
+        def embed(self, texts):
+            assert texts == ["监督学习的分类与回归是什么"]
+            return [[1.0, 0.0]]
+
+    calls = _patch_rag(monkeypatch, _rag_chunks(with_embeddings=True), configured=True)
+    monkeypatch.setattr(assistant_service, "build_embedder", lambda: QueryEmbedder())
+
+    routed = route_intent(
+        _intent("", {"tool": assistant_service.RAG_TOOL, "args": {"material_id": "m1"}}),
+        session=None,
+        context=_rag_ctx(),
+        message="监督学习的分类与回归是什么",
+    )
+
+    assert routed["retrieval"]["mode"] == "hybrid"
+    assert routed["payload"]["mode"] == "hybrid"
+    # 语义命中 blk-1（cos=1），blk-2 语义为 0 被过滤
+    assert [s["block_id"] for s in routed["payload"]["sources"]] == ["blk-1"]
+    assert calls["ensure"]  # 自愈仍先执行
+
+
+def test_rag_route_embedder_failure_degrades_to_lexical(monkeypatch):
+    """混合检索嵌入失败 → 词面降级，不断轮。"""
+
+    class BrokenEmbedder:
+        def embed(self, texts):
+            raise RuntimeError("embedding down")
+
+    _patch_rag(monkeypatch, _rag_chunks(with_embeddings=True), configured=True)
+    monkeypatch.setattr(assistant_service, "build_embedder", lambda: BrokenEmbedder())
+
+    routed = route_intent(
+        _intent("", {"tool": assistant_service.RAG_TOOL, "args": {}}),
+        session=None,
+        context=_rag_ctx(),
+        message="监督学习的分类与回归是什么",
+    )
+    assert routed["retrieval"]["mode"] == "lexical"
+    assert routed["payload"]["sources"]
+
+
+def test_rag_route_rejects_foreign_material_id(monkeypatch):
+    _patch_rag(monkeypatch)
+    with pytest.raises(AssistantError, match="白名单"):
+        route_intent(
+            _intent("", {"tool": assistant_service.RAG_TOOL, "args": {"material_id": "m-evil"}}),
+            session=None,
+            context=_rag_ctx(),
+            message="问题",
+        )
+
+
+def test_rag_route_rejects_unparsed_material(monkeypatch):
+    """点名未解析资料 → AssistantError（带反馈重试一次后落确定性文案）。"""
+    _patch_rag(monkeypatch)
+    with pytest.raises(AssistantError, match="尚未解析完成"):
+        route_intent(
+            _intent("", {"tool": assistant_service.RAG_TOOL, "args": {"material_id": "m2"}}),
+            session=None,
+            context=_rag_ctx(),
+            message="问题",
+        )
+
+
+def test_rag_route_requires_parsed_material_course_wide(monkeypatch):
+    """全课程无已解析资料 → 引导先解析（不让模型空转检索）。"""
+    _patch_rag(monkeypatch)
+    context = _ctx(materials=[
+        {"id": "m1", "name": "教学大纲", "type": "teaching_syllabus", "status": "staged", "parse_status": None},
+    ])
+    with pytest.raises(AssistantError, match="已解析"):
+        route_intent(
+            _intent("", {"tool": assistant_service.RAG_TOOL, "args": {}}),
+            session=None,
+            context=context,
+            message="问题",
+        )
+
+
+def test_rag_route_empty_question_rejected(monkeypatch):
+    _patch_rag(monkeypatch)
+    with pytest.raises(AssistantError, match="问题不能为空"):
+        route_intent(
+            _intent("", {"tool": assistant_service.RAG_TOOL, "args": {}}),
+            session=None,
+            context=_rag_ctx(),
+            message="   ",
+        )
+
+
+def test_rag_route_no_retrievable_content_raises(monkeypatch):
+    _patch_rag(monkeypatch, chunks=[])
+    with pytest.raises(AssistantError, match="没有可检索"):
+        route_intent(
+            _intent("", {"tool": assistant_service.RAG_TOOL, "args": {}}),
+            session=None,
+            context=_rag_ctx(),
+            message="问题",
+        )
+
+
+def test_run_turn_rag_streams_answer_and_persists_sources_card(session, monkeypatch):
+    """整轮：段1 意图 → 检索 → 段2 流式 → action(kind=sources) 落库 + card 事件。"""
+    _patch_rag(monkeypatch)
+    # run_turn 从 DB 装配上下文；本测试不建解析数据，用手工上下文（含 ready 状态）
+    monkeypatch.setattr(assistant_service, "load_turn_context", lambda session, *, course_id: _rag_ctx())
+    client = StubClient(
+        [_intent("已检索到相关资料，回答如下：", {"tool": assistant_service.RAG_TOOL, "args": {"material_id": "m1"}})],
+        stream_text="监督学习分为分类与回归两类任务。",
+    )
+    task_id = _new_turn(session, "t-rag")
+    sink = MemoryTurnEventSink(task_id)
+
+    result = run_turn(
+        session,
+        payload={"course_id": "c1", "task_run_id": task_id, "message": "监督学习的分类与回归是什么"},
+        client=client,
+        sink=sink,
+    )
+
+    assert result["kind"] == "rag"
+    # 段2 用 RAG 专用 grounding prompt，且携带检索片段
+    stream_call = client.stream_calls[0]
+    assert stream_call["system_prompt"].startswith("你是高校课程「CS101」")
+    assert "只依据下方「资料片段」作答" in stream_call["system_prompt"]
+    assert stream_call["payload"]["question"] == "监督学习的分类与回归是什么"
+    assert stream_call["payload"]["sources"][0]["material_name"] == "教学大纲"
+    assert len(stream_call["payload"]["sources"][0]["text"]) <= assistant_service._RAG_BLOCK_PROMPT_CHARS
+
+    # 落库：action kind=sources + payload，SSE 收到 card 事件
+    row = session.execute(
+        select(assistant_messages.c.action, assistant_messages.c.content, assistant_messages.c.stream_status)
+        .where(assistant_messages.c.task_run_id == task_id, assistant_messages.c.role == "assistant")
+    ).one()
+    action = row.action
+    assert row.stream_status == "complete"
+    assert action["kind"] == "sources"
+    assert action["tool"] == assistant_service.RAG_TOOL
+    assert action["status"] == "completed"
+    assert [s["block_id"] for s in action["payload"]["sources"]] == ["blk-1"]
+    assert action["payload"]["mode"] == "lexical"
+    assert row.content == "监督学习分为分类与回归两类任务。"
+    cards = [e for e in sink.registry[task_id] if e["event"] == "card"]
+    assert cards and cards[0]["data"]["kind"] == "sources"
+
+
+def test_run_turn_rag_without_hits_persists_plain_chat(session, monkeypatch):
+    """无命中：正文说明没找到，不落 sources 卡（action 回落普通问答形态）。"""
+    from app.domain.knowledge.relevance import StagingChunk
+
+    _patch_rag(
+        monkeypatch,
+        [StagingChunk(id="far", material_version_id="v1", content="完全无关内容", locator={})],
+    )
+    monkeypatch.setattr(assistant_service, "load_turn_context", lambda session, *, course_id: _rag_ctx())
+    client = StubClient(
+        [_intent("", {"tool": assistant_service.RAG_TOOL, "args": {}})],
+        stream_text="资料里没有找到相关内容。",
+    )
+    task_id = _new_turn(session, "t-rag-empty")
+    sink = MemoryTurnEventSink(task_id)
+
+    result = run_turn(
+        session,
+        payload={"course_id": "c1", "task_run_id": task_id, "message": "量子引力如何统一"},
+        client=client,
+        sink=sink,
+    )
+
+    assert result["kind"] == "rag"
+    row = session.execute(
+        select(assistant_messages.c.action, assistant_messages.c.stream_status).where(
+            assistant_messages.c.task_run_id == task_id, assistant_messages.c.role == "assistant"
+        )
+    ).one()
+    assert row.stream_status == "complete"
+    assert row.action == {}  # 无卡：普通问答
+    assert not [e for e in sink.registry[task_id] if e["event"] == "card"]
+
+
+# ---------------------------------------------------------------------------
 # 落库：幂等 / 时间序 / 提案状态回写
 # ---------------------------------------------------------------------------
 

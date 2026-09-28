@@ -775,15 +775,17 @@ export interface AssistantProjectRow {
 }
 
 /**
- * 卡片载荷（action.payload）：结果卡与提案卡共用一张可选字段表，渲染按
- * action.tool 取用对应字段（后端 build_proposal_payload / execute_read_tool 产出）。
+ * 卡片载荷（action.payload）：结果卡 / 提案卡 / 来源引用卡共用一张可选字段表，
+ * 渲染按 action.kind 与 action.tool 取用对应字段
+ * （后端 build_proposal_payload / execute_read_tool / execute_rag 产出）。
  */
 export interface AssistantActionPayload {
   // 提案
   body?: Record<string, unknown>;
   course_id?: string;
-  material_id?: string;
-  material_name?: string;
+  /** 提案恒有值；来源卡在课程级问答时为 null */
+  material_id?: string | null;
+  material_name?: string | null;
   project_id?: string;
   project_name?: string;
   // 结果卡
@@ -792,13 +794,27 @@ export interface AssistantActionPayload {
   framework?: AssistantFrameworkSummary | null;
   catalog?: { version_no: number; status: string } | null;
   projects?: AssistantProjectRow[];
+  // 来源引用卡（资料内容问答：教师原话 + 检索模式 + 命中片段）
+  question?: string;
+  mode?: string;
+  sources?: AssistantSourceCitation[];
+}
+
+/** 来源引用条目（与后端 payload.sources 同构；snippet 为块正文前 160 字） */
+export interface AssistantSourceCitation {
+  block_id: string;
+  material_id: string | null;
+  material_name: string | null;
+  page_index: number | null;
+  heading_path: string[];
+  snippet: string;
 }
 
 export interface AssistantAction {
-  kind?: 'result' | 'proposal';
+  kind?: 'result' | 'proposal' | 'sources';
   tool?: string;
   args?: Record<string, unknown>;
-  /** result=completed；proposal=proposed|executed|dismissed */
+  /** result|sources=completed；proposal=proposed|executed|dismissed */
   status?: string;
   receipt?: string;
   payload?: AssistantActionPayload;
