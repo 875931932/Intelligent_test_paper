@@ -308,8 +308,17 @@ function ResultCard({
   const tool = message.action.tool ?? '';
   const meta = READ_TOOL_META[tool];
   const payload = message.action.payload ?? {};
-  const go = () =>
-    navigate(meta && meta.nav ? `/courses/${courseId}/${meta.nav}` : `/courses/${courseId}`);
+  // 点名查询的卡片只含一个项目 → CTA 深链到该项目（试卷页支持 ?project= 定位）
+  const singleProjectId =
+    payload.projects && payload.projects.length === 1 ? payload.projects[0].id : null;
+  const go = () => {
+    if (!meta || !meta.nav) {
+      navigate(`/courses/${courseId}`);
+      return;
+    }
+    const query = meta.nav === 'paper' && singleProjectId ? `?project=${singleProjectId}` : '';
+    navigate(`/courses/${courseId}/${meta.nav}${query}`);
+  };
   return (
     <div style={cardBox}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>

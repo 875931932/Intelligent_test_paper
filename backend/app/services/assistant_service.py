@@ -455,14 +455,15 @@ def load_turn_context(session: Session, *, course_id: str) -> dict:
 
 _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{course_name}」课程空间里用自然语言向你提需求，你输出一句回复与一个可选的动作（action）。动作分两类：只读查询（后端直接执行并展示结果卡）、写操作提案（只生成提案卡，教师点「确认」才由既有接口执行——你永远不直接执行写操作）。
 
-可用只读工具（action.tool 取其一，args 留 {} 即可）：
+可用只读工具（action.tool 取其一）：
 - course_overview：课程全阶段状态概览（资料/框架/目录/蓝图/合同/试卷/项目）
 - list_materials：上传资料清单与解析状态
 - framework_status：命题框架与考核规则状态
-- blueprint_status：各试卷项目蓝图的题位统计
-- contract_status：各项目合同状态
-- paper_status：各试卷版本与待复核题数
+- blueprint_status：蓝图题位统计（逐试卷项目）
+- contract_status：合同状态（逐试卷项目）
+- paper_status：试卷版本与待复核题数（逐试卷项目）
 - list_exam_projects：试卷项目列表
+只读工具 args 默认 {}（呈现全部）。教师**点名了某个试卷项目**时，course_overview/blueprint_status/contract_status/paper_status/list_exam_projects 必须传 args={project_id(取自 payload.ids.project_ids)}，结果卡只呈现该项目；没点名就不传。
 
 可用提案工具（action.args 只允许下述字段，id 必须取自 payload.ids 白名单）：
 - create_course：新建课程。args={name(必填,1~200字), slug?(小写字母数字连字符), description?}
@@ -481,7 +482,8 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 
 规则：
 - 需要具体数据且命中上述工具时才给 action；闲聊、询问用法、解释状态含义时 action 置 null，直接回答。
-- 回复用中文，面向教师，简洁自然；查询/提案类回复 1~2 句引出下卡即可。
+- 回复用中文，面向教师，简洁自然；查询/提案类回复 1~2 句：先给针对教师所问对象的结论，再引出卡片。
+- 结果卡已结构化呈现数据：回复不要逐条复述卡内容，教师没点名的项目/资料不要罗列；状态以卡片标签为准，回复里不要自行转述另一套状态说法。
 - 你给的 id 必须来自 payload.ids 白名单；不确定教师指哪份资料/项目时，action 置 null 并在回复里追问。
 - 只依据 payload 中的真实数据回答，不臆造资料、项目、状态或数字。
 - 不承诺任何出题比例/难度/去重的调整——这些由系统确定性算法保证，不归对话管。
@@ -553,7 +555,7 @@ def parse_intent(
 # ---------------------------------------------------------------------------
 
 
-def _read_course_overview(session: Session, context: dict) -> dict:
+def _read_course_overview(session: Session, context: dict, *, projects: list[dict]) -> dict:
     materials = context["materials"]
     return {
         "course_name": context["course_name"],
@@ -566,13 +568,39 @@ def _read_course_overview(session: Session, context: dict) -> dict:
         },
         "framework": context["framework"],
         "catalog": context["catalog"],
-        "projects": context["projects"],
+        "projects": projects,
     }
 
 
-def execute_read_tool(session: Session, *, context: dict, tool: str) -> dict:
+# 逐项目粒度的只读工具：教师点名项目时按 project_id 过滤（资料/框架是课程级，无此参数）
+_PROJECT_READ_TOOLS = frozenset(
+    {"course_overview", "blueprint_status", "contract_status", "paper_status", "list_exam_projects"}
+)
+
+
+def _target_projects(context: dict, args: dict | None) -> list[dict]:
+    """读工具的可选项目定位：未传 → 全部；传了 → 必须命中白名单。
+
+    非法 id 抛 AssistantError，由上层带反馈重试一次（与提案工具同一套白名单语义）。
+    """
+    project_id = str((args or {}).get("project_id") or "").strip()
+    if not project_id:
+        return context["projects"]
+    allowed = context.get("allowed_ids") or {}
+    if project_id not in (allowed.get("project_ids") or []):
+        raise AssistantError("project_id 不在当前课程项目白名单内")
+    return [p for p in context["projects"] if p["id"] == project_id]
+
+
+def execute_read_tool(
+    session: Session, *, context: dict, tool: str, args: dict | None = None
+) -> dict:
+    # 项目定位只对逐项目工具生效；非逐项目工具收到 project_id 时忽略（粒度不变）
+    projects = (
+        _target_projects(context, args) if tool in _PROJECT_READ_TOOLS else context["projects"]
+    )
     if tool == "course_overview":
-        return _read_course_overview(session, context)
+        return _read_course_overview(session, context, projects=projects)
     if tool == "list_materials":
         return {"materials": context["materials"]}
     if tool == "framework_status":
@@ -580,16 +608,16 @@ def execute_read_tool(session: Session, *, context: dict, tool: str) -> dict:
             raise AssistantError("尚未构建命题框架")
         return {"framework": context["framework"], "catalog": context["catalog"]}
     if tool == "blueprint_status":
-        return {"projects": [{"id": p["id"], "name": p["name"], "blueprint": p["blueprint"]} for p in context["projects"]]}
+        return {"projects": [{"id": p["id"], "name": p["name"], "blueprint": p["blueprint"]} for p in projects]}
     if tool == "contract_status":
-        return {"projects": [{"id": p["id"], "name": p["name"], "contract": p["contract"]} for p in context["projects"]]}
+        return {"projects": [{"id": p["id"], "name": p["name"], "contract": p["contract"]} for p in projects]}
     if tool == "paper_status":
-        return {"projects": [{"id": p["id"], "name": p["name"], "paper": p["paper"]} for p in context["projects"]]}
+        return {"projects": [{"id": p["id"], "name": p["name"], "paper": p["paper"]} for p in projects]}
     if tool == "list_exam_projects":
         return {
             "projects": [
                 {"id": p["id"], "name": p["name"], "status": p["status"]}
-                for p in context["projects"]
+                for p in projects
             ]
         }
     raise AssistantError(f"未知只读工具 {tool}")
@@ -744,7 +772,7 @@ def route_intent(intent: dict, *, session: Session, context: dict) -> dict:
         return {"kind": "chat", "stream": False, "reply": REFUSED_REPLY}
 
     if tool in READ_TOOLS:
-        payload = execute_read_tool(session, context=context, tool=tool)
+        payload = execute_read_tool(session, context=context, tool=tool, args=args)
         reply = intent.get("reply") or _DEFAULT_READ_REPLIES.get(tool, "查询结果见下表：")
         return {
             "kind": "result",

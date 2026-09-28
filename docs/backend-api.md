@@ -802,7 +802,10 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
 - 新表 `assistant_messages`（`app/db/schema.py`，`python -m app.db.init_db` 幂等迁移）：
   `task_run_id` FK + `role` + `content` + `action`(JSON) + `stream_status`，全部带 `course_id`。
 - 只读工具（结果卡）：`course_overview` / `list_materials` / `framework_status` /
-  `blueprint_status` / `contract_status` / `paper_status` / `list_exam_projects`；
+  `blueprint_status` / `contract_status` / `paper_status` / `list_exam_projects`。
+  项目级工具（overview/blueprint/contract/paper/list_exam_projects）支持可选
+  `args={project_id}`——教师点名项目时卡片只呈现该项目（与提案同一套 id 白名单硬校验），
+  未点名呈现全部；前端单项目卡片 CTA 深链 `?project={id}`；
 - 提案工具（确认后调用）：`create_course` → §2、`update_course` → §2、`start_parse` → §3.5、
   `enqueue_blueprint_suggest` → §8.7b、`confirm_contract` → §8.11。
   模型回传的 id 必须命中段1 上下文白名单，非法带反馈重试一次；比例/难度/去重规则

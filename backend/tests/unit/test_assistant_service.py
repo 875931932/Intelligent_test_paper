@@ -330,6 +330,8 @@ def test_intent_prompt_carries_real_snapshot_and_ids():
     assert '{"reply":' in system_prompt
     assert "{course_name}" not in system_prompt
     assert "CS101" in system_prompt
+    # 点名查询的定位规则必须写进提示（否则卡片永远是全课程范围）
+    assert "结果卡只呈现该项目" in system_prompt
 
     _sys2, payload2 = build_intent_prompt(context, "重试", previous_error="material_id 非法")
     assert payload2["previous_validation_error"] == "material_id 非法"
@@ -347,6 +349,80 @@ def test_route_unknown_kind_neutral():
     # 未知工具 → AssistantError（上层重试）
     with pytest.raises(AssistantError):
         route_intent(_intent("", {"tool": "nope", "args": {}}), session=None, context=_ctx())
+
+
+# ---------------------------------------------------------------------------
+# 只读工具的点名定位（项目级过滤，卡片不再罗列教师没问的项目）
+# ---------------------------------------------------------------------------
+
+
+def _project_ctx() -> dict:
+    """含两个试卷项目的手工上下文（与 _ctx 同构，仅 projects/白名单不同）。"""
+    return _ctx(
+        projects=[
+            {
+                "id": "p1",
+                "name": "学期2",
+                "status": "active",
+                "blueprint": {
+                    "blueprint_version_id": "bp1", "version_no": 1, "status": "candidate",
+                    "confirmed": False, "item_count": 3, "by_type": {},
+                },
+                "contract": {"exists": False, "confirmed": False},
+                "paper": {"exists": True, "paper_version_id": "pv1", "version_no": 1,
+                          "status": "candidate", "needs_review_count": 0},
+            },
+            {
+                "id": "p2",
+                "name": "测试卷",
+                "status": "active",
+                "blueprint": None,
+                "contract": {"exists": False, "confirmed": False},
+                "paper": {"exists": False},
+            },
+        ],
+        allowed_ids={"material_ids": ["m1", "m2"], "project_ids": ["p1", "p2"]},
+    )
+
+
+def test_read_tool_targets_named_project():
+    """教师点名项目：结果卡只含该项目，不再罗列其它项目。"""
+    routed = route_intent(
+        _intent("学期2的试卷情况见下表：", {"tool": "paper_status", "args": {"project_id": "p1"}}),
+        session=None,
+        context=_project_ctx(),
+    )
+    assert routed["kind"] == "result"
+    assert [p["id"] for p in routed["payload"]["projects"]] == ["p1"]
+
+
+def test_read_tool_without_target_lists_all_projects():
+    routed = route_intent(
+        _intent("", {"tool": "paper_status", "args": {}}),
+        session=None,
+        context=_project_ctx(),
+    )
+    assert [p["id"] for p in routed["payload"]["projects"]] == ["p1", "p2"]
+
+
+def test_read_tool_course_overview_targets_project():
+    routed = route_intent(
+        _intent("", {"tool": "course_overview", "args": {"project_id": "p2"}}),
+        session=None,
+        context=_project_ctx(),
+    )
+    assert [p["id"] for p in routed["payload"]["projects"]] == ["p2"]
+    assert routed["payload"]["course_name"] == "CS101"  # 课程级字段不受项目过滤影响
+
+
+def test_read_tool_rejects_foreign_project_id():
+    """点名参数与提案同一套 id 白名单：非法 id → AssistantError（上层带反馈重试一次）。"""
+    with pytest.raises(AssistantError, match="白名单"):
+        route_intent(
+            _intent("", {"tool": "paper_status", "args": {"project_id": "p-evil"}}),
+            session=None,
+            context=_project_ctx(),
+        )
 
 
 # ---------------------------------------------------------------------------

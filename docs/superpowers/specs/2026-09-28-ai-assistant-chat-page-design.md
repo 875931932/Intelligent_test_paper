@@ -126,7 +126,7 @@ SSE 端点（FastAPI StreamingResponse，async）
 | `PATCH /api/v1/courses/{course_id}/assistant/messages/{message_id}` | 仅回写 `action.status`（`proposed→executed/dismissed` 单向），不执行任何业务 |
 
 提案确认不经过助手端点：**前端收到确认后直接调既有业务 API**（`POST /courses`、
-`PATCH .../contracts/revise`、`POST .../materials/{id}/parse`、既有 ai-suggest enqueue 等），
+`POST .../contracts/confirm`、`POST .../materials/{id}/parse`、既有 ai-suggest enqueue 等），
 成功后 PATCH 回写卡片状态。助手的写能力上限 = 既有 API 能力，无第二套写路径。
 
 路由注册归属：新增第 8 个 router `app/api/v1/assistant.py`（业务概念「AI 助手」独立成 router，
@@ -146,13 +146,18 @@ router 只做协议转换，意图解析与路由逻辑进 `app/services/assista
 | `paper_status` | 试卷版本/待复核题数 |
 | `list_exam_projects` | 既有项目列表同源数据 |
 
+> **点名定位**（教师问某个项目时卡片不罗列其它项目）：项目级只读工具
+> （`course_overview`/`blueprint_status`/`contract_status`/`paper_status`/`list_exam_projects`）
+> 收可选 `args={project_id}`，与提案共用 id 白名单硬校验（非法带反馈重试一次）；未点名
+> 呈现全部项目。前端结果卡只含单项目时，CTA 深链 `?project={id}` 直达该项目试卷。
+
 **提案（组装提案卡 → 确认调既有 API）**
 
 | tool | 确认时调用 |
 |---|---|
 | `create_course` | `POST /api/v1/courses` |
 | `update_course` | `PATCH /api/v1/courses/{id}` |
-| `revise_contract` | `PATCH .../contracts/revise`（槽位重绑仍由既有确定性分配算法执行，AI 只透传需求参数） |
+| `confirm_contract` | `POST .../contracts/confirm`（唯一落库动作：确定性分配 + 冻结，仅限未确认合同） |
 | `start_parse` | `POST .../materials/{material_id}/parse` |
 | `enqueue_blueprint_suggest` | 既有蓝图 AI 建议 enqueue（复用 task_runs 链路） |
 
