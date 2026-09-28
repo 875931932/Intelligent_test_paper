@@ -98,7 +98,7 @@ export function renderBlueprint({
         {mismatch.length > 0 && (
           <div style={{
             padding: '12px 14px', borderRadius: 10, fontSize: '0.8rem', lineHeight: 1.7,
-            background: 'var(--warning-subtle)', border: '1px solid rgba(255,149,0,0.3)',
+            background: 'var(--warning-subtle)', border: '1px solid var(--warning-line)',
           }}>
             <div style={{ fontWeight: 600, color: 'var(--warning)', marginBottom: '4px' }}>
               这份蓝图的题型比例与「考核规则」不一致

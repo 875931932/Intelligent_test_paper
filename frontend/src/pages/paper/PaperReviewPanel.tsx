@@ -111,8 +111,8 @@ export function PaperReviewPanel({
                 key={i}
                 style={{
                   padding: '10px 12px', borderRadius: 8,
-                  borderLeft: s.severity === 'warn' ? '3px solid var(--warning)' : '3px solid rgba(0,0,0,0.12)',
-                  background: 'rgba(255,255,255,0.55)',
+                  borderLeft: s.severity === 'warn' ? '3px solid var(--warning)' : '3px solid var(--line-strong)',
+                  background: 'var(--surface-glass)',
                   display: 'flex', flexDirection: 'column', gap: '6px',
                 }}
               >
@@ -153,7 +153,7 @@ export function PaperReviewPanel({
       )}
 
       {/* 页脚：范围定位（试卷稿，不是学生答卷评分）+ 落地路径；关闭由外壳提供 */}
-      <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', margin: 0, lineHeight: 1.6, paddingTop: '10px', borderTop: '1px solid rgba(0,0,0,0.06)' }}>
+      <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', margin: 0, lineHeight: 1.6, paddingTop: '10px', borderTop: '1px solid var(--line-soft)' }}>
         AI 只读评审，不含学生答卷评分；修复请用试卷页既有编辑/改题功能。
       </p>
 
@@ -168,8 +168,8 @@ export function PaperReviewPanel({
           background: 'var(--surface-elevated)',
           backdropFilter: 'var(--glass-blur)',
           WebkitBackdropFilter: 'var(--glass-blur)',
-          border: '1px solid rgba(0,0,0,0.06)',
-          boxShadow: '0 8px 32px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.05)',
+          border: '1px solid var(--line-soft)',
+          boxShadow: 'var(--shadow-3)',
         }}
       >
         <textarea
@@ -180,7 +180,7 @@ export function PaperReviewPanel({
           disabled={running}
           style={{
             resize: 'vertical', padding: '8px 10px', borderRadius: 8, fontSize: '0.875rem',
-            border: '1px solid rgba(0,0,0,0.12)', background: 'rgba(255,255,255,0.75)',
+            border: '1px solid var(--line-strong)', background: 'var(--surface-glass)',
             fontFamily: 'inherit', lineHeight: 1.6,
           }}
         />

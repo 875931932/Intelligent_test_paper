@@ -30,8 +30,8 @@ export function Button({
             width: 14,
             height: 14,
             borderWidth: 2,
-            borderColor: isSolid ? 'rgba(255,255,255,0.35)' : 'rgba(0,0,0,0.12)',
-            borderTopColor: isSolid ? '#fff' : 'var(--accent)',
+            borderColor: isSolid ? 'rgba(255,255,255,0.35)' : 'var(--line-strong)',
+            borderTopColor: isSolid ? 'var(--surface-solid)' : 'var(--accent)',
           }}
         />
       ) : (

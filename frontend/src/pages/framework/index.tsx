@@ -71,7 +71,7 @@ function SyllabusSelect({ label, value, options, onChange }: {
         style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '8px',
           width: '100%', maxWidth: '100%', minWidth: 0, padding: '10px 12px', borderRadius: '10px',
-          background: 'var(--surface)', border: '1px solid rgba(0,0,0,0.1)',
+          background: 'var(--surface)', border: '1px solid var(--line-strong)',
           fontSize: '0.875rem', color: selected ? 'var(--text-primary)' : 'var(--text-tertiary)',
           cursor: 'pointer', textAlign: 'left', overflow: 'hidden',
         }}
@@ -91,8 +91,8 @@ function SyllabusSelect({ label, value, options, onChange }: {
             style={{
               position: 'fixed', top: pos ? pos.top : 0, left: pos ? pos.left : 0,
               width: pos ? pos.width : '100%', zIndex: 9999, marginTop: 0,
-              background: 'var(--surface)', border: '1px solid rgba(0,0,0,0.1)',
-              borderRadius: '10px', boxShadow: '0 10px 30px rgba(0,0,0,0.14)', padding: 4,
+              background: 'var(--surface)', border: '1px solid var(--line-strong)',
+              borderRadius: '10px', boxShadow: 'var(--shadow-3)', padding: 4,
               maxHeight: 220, overflowY: 'auto',
             }}
           >
@@ -113,7 +113,7 @@ function SyllabusSelect({ label, value, options, onChange }: {
                 style={{
                   display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
                   padding: '9px 10px', borderRadius: 8, cursor: o.disabled ? 'not-allowed' : 'pointer',
-                  background: value === o.id ? 'rgba(0,113,227,0.08)' : 'transparent',
+                  background: value === o.id ? 'var(--accent-subtle)' : 'transparent',
                   color: o.disabled ? 'var(--text-tertiary)' : 'var(--text-primary)',
                   fontSize: '0.8125rem', opacity: o.disabled ? 0.7 : 1,
                 }}
@@ -124,7 +124,7 @@ function SyllabusSelect({ label, value, options, onChange }: {
                     title="未解析"
                     style={{
                       flexShrink: 0, fontSize: '0.6875rem', padding: '2px 6px', borderRadius: 6,
-                      background: 'rgba(0,0,0,0.06)', color: 'var(--text-tertiary)',
+                      background: 'var(--line-soft)', color: 'var(--text-tertiary)',
                     }}
                   >未解析</span>
                 )}
@@ -517,7 +517,7 @@ export default function FrameworkPage() {
             确认后命题框架将对外发布，并用于后续的知识目录与命题蓝图阶段。
           </p>
           {candidate && (
-            <div style={{ padding: '12px 16px', borderRadius: '10px', background: 'rgba(0,0,0,0.03)', fontSize: '0.875rem', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            <div style={{ padding: '12px 16px', borderRadius: '10px', background: 'var(--fill)', fontSize: '0.875rem', display: 'flex', flexDirection: 'column', gap: '6px' }}>
               <p>锚点数量: <span style={{ fontWeight: 600 }}>{(candidate.anchors || []).length}</span></p>
               <p>考点数量: <span style={{ fontWeight: 600 }}>{(candidate.exam_points || []).length}</span></p>
               {(candidate.conflicts || []).length > 0 && (
@@ -555,7 +555,7 @@ function CandidateView({ courseId, candidate, rejecting, onReject, onOpenConfirm
           </h3>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
             {blocking.map((c, i) => (
-              <div key={i} style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(255,149,0,0.06)', fontSize: '0.875rem' }}>
+              <div key={i} style={{ padding: '10px 12px', borderRadius: '10px', background: 'var(--warning-subtle)', fontSize: '0.875rem' }}>
                 <p style={{ fontWeight: 500 }}>{c.message}</p>
               </div>
             ))}
@@ -600,9 +600,9 @@ function CandidateView({ courseId, candidate, rejecting, onReject, onOpenConfirm
         padding: '12px 16px',
         background: 'var(--sidebar-glass)',
         backdropFilter: 'var(--glass-blur)', WebkitBackdropFilter: 'var(--glass-blur)',
-        border: '1px solid rgba(0,0,0,0.08)',
+        border: '1px solid var(--line)',
         borderRadius: '14px',
-        boxShadow: '0 -4px 20px rgba(0,0,0,0.06)',
+        boxShadow: 'var(--shadow-2)',
       }}>
         <Button variant="secondary" icon={<X size={16} />} loading={rejecting} onClick={onReject}>
           拒绝

@@ -316,7 +316,7 @@ const DashboardPage: FC = () => {
                       alignItems: 'center',
                       justifyContent: 'space-between',
                       padding: '6px 0',
-                      borderBottom: '1px solid rgba(0,0,0,0.04)',
+                      borderBottom: '1px solid var(--fill)',
                     }}
                   >
                     <span style={{ fontSize: '0.8125rem' }}>{project.name}</span>

@@ -380,7 +380,7 @@ export function CandidatePanel({ candidate, courseId, runId, supplementOps, onSu
                   })}
                 </div>
                 {suppPreview && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px', borderRadius: '10px', background: 'rgba(0,0,0,0.03)' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', padding: '12px', borderRadius: '10px', background: 'var(--fill)' }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                       <Badge variant={suppPreview.relevance_class === 'supporting' ? 'info' : 'warning'}>
                         {suppPreview.relevance_class === 'supporting' ? '支持证据' : '背景证据'}
@@ -481,7 +481,7 @@ const CandidateTreePreview = memo(function CandidateTreePreview({ topics, covera
         return (
           <div key={topic.code}>
             <div
-              style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderRadius: '10px', cursor: 'pointer', background: 'rgba(0,0,0,0.02)' }}
+              style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '10px 12px', borderRadius: '10px', cursor: 'pointer', background: 'var(--fill)' }}
               onClick={() => toggleTopic(topic.code)}
             >
               <span style={{ color: 'var(--text-tertiary)' }}>{isExp ? <ChevronDown size={16} /> : <ChevronRight size={16} />}</span>

@@ -14,7 +14,7 @@ export function Card({ title, subtitle, className = '', actions, children }: Pro
       {(title || actions) && (
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: subtitle ? '4px' : '0' }}>
           <div>
-            {title && <h3 style={{ fontSize: '1.05rem', fontWeight: 600, letterSpacing: '-0.01em' }}>{title}</h3>}
+            {title && <h3 className="card-title">{title}</h3>}
             {subtitle && <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)', marginTop: '2px' }}>{subtitle}</p>}
           </div>
           {actions && <div style={{ display: 'flex', gap: '8px' }}>{actions}</div>}

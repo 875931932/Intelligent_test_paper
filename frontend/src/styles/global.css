@@ -1,5 +1,6 @@
 /* ============================================================
-   Global Styles — 学海蓝（Academic Deep）主题
+   Global Styles — 水彩画风（Watercolor）主题
+   暖纸底 + 蓝灰主色 + 水彩晕染；柔影、大圆角、衬线标题、液态缓动。
    ============================================================ */
 
 @import './design-tokens.css';
@@ -26,7 +27,7 @@ body {
   position: relative;
 }
 
-/* ── 背景装饰：一抹学海蓝光晕 + 纸纹颗粒（均为静态渲染） ──
+/* ── 水彩晕染：蜜桃 / 青绿 / 玫瑰 / 沙四色大色块在湿纸上洇开（均为静态渲染） ──
    不要给它们加动画：每帧位移会让页面上所有 backdrop-filter 毛玻璃
    （侧边栏 + 浮层）每帧重新采样模糊，核显上直接拖垮全局帧率。
    静态渐变浏览器只光栅化一次，视觉差异可忽略。 */
@@ -35,22 +36,21 @@ body::before {
   position: fixed;
   z-index: 0;
   pointer-events: none;
-  width: 720px;
-  height: 720px;
-  top: -240px;
-  right: -160px;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgba(59, 125, 221, 0.1), transparent 70%);
-  filter: blur(90px);
+  inset: 0;
+  background:
+    radial-gradient(ellipse 620px 480px at 88% -8%, rgba(232, 168, 124, 0.16), transparent 70%),
+    radial-gradient(ellipse 520px 560px at -6% 32%, rgba(133, 205, 202, 0.13), transparent 70%),
+    radial-gradient(ellipse 560px 420px at 78% 88%, rgba(195, 141, 148, 0.11), transparent 70%),
+    radial-gradient(ellipse 420px 380px at 12% 96%, rgba(212, 163, 115, 0.12), transparent 70%);
 }
-/* 纸纹：教育/试卷的纸质触感；0.035 只给质感不给噪点，位于 #root 之下 */
+/* 纸纹：水彩纸的颗粒肌理；0.04 只给质感不给噪点，位于 #root 之下 */
 body::after {
   content: '';
   position: fixed;
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  opacity: 0.035;
+  opacity: 0.04;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
@@ -60,7 +60,7 @@ body::after {
 }
 
 /* ═══════════════════════════════════════════════
-   Surfaces（面板与悬浮层）
+   Surfaces（面板与悬浮层：暖白纸面 + 蓝灰发丝线 + 柔影）
    ═══════════════════════════════════════════════ */
 
 .glass {
@@ -71,28 +71,38 @@ body::after {
   box-shadow: var(--glass-shadow);
 }
 
-/* 静态容器不挂 hover 动效：上浮会暗示「可点击」，是虚假可点线索；
-   交互动效只给显式声明的 .card-hover（课程卡 / 统计卡等真可点卡）。
-   面板=实底白 + 发丝线 + 极浅阴影：半透明玻璃在叠卡时层次糊成一片，
-   深调四色需要一块干净画布衬托 */
+/* 面板=暖白纸面 + 发丝线 + 极浅柔影。大圆角柔化边缘（移动端 16px、桌面 24px）；
+   水彩忌硬边框，1px 淡染线已足够定形 */
 .glass-card {
   background: var(--surface-solid);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-1);
-}
-
-/* 可点击卡片：全站唯一允许 hover 上浮的卡 */
-.card-hover {
-  transition: transform 0.3s var(--ease-out-expo),
-              box-shadow 0.3s var(--ease-out-expo);
-}
-.card-hover:hover {
-  transform: translateY(-1px);
   box-shadow: var(--shadow-2);
 }
+
+@media (min-width: 768px) {
+  .glass-card,
+  .glass-panel {
+    border-radius: var(--radius-xl);
+  }
+}
+
+/* 可点击卡片：hover 不做生硬上浮——颜料晕开（Pigment Bloom）：
+   同色系彩色大阴影向外扩散 + 轻微放大 + 纸面吸水后加深；液态缓慢 500ms */
+.card-hover {
+  transition: transform var(--duration-hover) var(--ease-liquid),
+              box-shadow var(--duration-hover) var(--ease-liquid),
+              background-color var(--duration-hover) var(--ease-liquid);
+}
+.card-hover:hover {
+  transform: scale(1.02);
+  box-shadow: var(--shadow-bloom);
+  background-color: #f6efe2;
+}
+/* 湿纸轻压：内阴影加深 + 轻微回缩，避免弹簧感 */
 .card-hover:active {
-  transform: translateY(0) scale(0.99);
+  transform: scale(0.98);
+  box-shadow: var(--shadow-press);
 }
 
 .glass-panel {
@@ -106,7 +116,7 @@ body::after {
    卡内分组降级 + 结构工具类（工作流 E）
    ═══════════════════════════════════════════════ */
 
-/* 卡内从属分组：浅底 + 1px 分隔线 + 10px 圆角，无阴影无独立 hover——
+/* 卡内从属分组：浅底 + 1px 淡染线 + 大圆角，无阴影无独立 hover——
    视觉降级一档表达从属关系，替代「玻璃卡里再嵌玻璃卡」 */
 .sub-section {
   background: var(--fill);
@@ -117,10 +127,12 @@ body::after {
    可点的必须给反馈，否则用户发现不了它能点——卡内 hover 例外口子 */
 .sub-section.is-clickable {
   cursor: pointer;
-  transition: background 0.2s var(--ease-out-expo);
+  transition: background-color 0.4s var(--ease-liquid),
+              box-shadow 0.4s var(--ease-liquid);
 }
 .sub-section.is-clickable:hover {
   background: var(--fill-strong);
+  box-shadow: var(--shadow-1);
 }
 
 /* 高频结构工具类：替代同款 inline style（存量 inline 不一次性改写，
@@ -146,7 +158,7 @@ body::after {
    opacity 保位——行高不回流，悬浮时不产生跳动；键盘 focus-within 同样可达 */
 .reveal-hover .reveal-target {
   opacity: 0;
-  transition: opacity 0.15s ease;
+  transition: opacity 0.3s ease;
 }
 .reveal-hover:hover .reveal-target,
 .reveal-hover:focus-within .reveal-target {
@@ -160,7 +172,7 @@ body::after {
 }
 
 /* ═══════════════════════════════════════════════
-   Floating Island Sidebar
+   Floating Island Sidebar（悬浮岛：暖纸玻璃 + 大圆角）
    ═══════════════════════════════════════════════ */
 
 .sidebar-island {
@@ -169,10 +181,10 @@ body::after {
   top: var(--sidebar-offset);
   bottom: var(--sidebar-offset);
   /* 高斯模糊降档：blur(24px)+saturate 在核显上是常驻 GPU 负担，且它
-     固定全高覆盖、每页都渲染。半透明底色已足够呈现"悬浮岛"层次。 */
+     固定全高覆盖、每页都渲染。半透明暖纸底已足够呈现"悬浮岛"层次。 */
   background: var(--sidebar-glass);
-  backdrop-filter: blur(10px) saturate(1.2);
-  -webkit-backdrop-filter: blur(10px) saturate(1.2);
+  backdrop-filter: blur(12px) saturate(1.2);
+  -webkit-backdrop-filter: blur(12px) saturate(1.2);
   border: 1px solid var(--line);
   border-radius: var(--sidebar-radius);
   box-shadow: var(--sidebar-shadow);
@@ -280,7 +292,7 @@ body::after {
 }
 
 /* ═══════════════════════════════════════════════
-   Scrollbar
+   Scrollbar（蓝灰淡染滑块）
    ═══════════════════════════════════════════════ */
 
 ::-webkit-scrollbar {
@@ -291,39 +303,41 @@ body::after {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(19, 26, 38, 0.2);
+  background: rgba(74, 111, 165, 0.2);
   border-radius: var(--radius-full);
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(19, 26, 38, 0.32);
+  background: rgba(74, 111, 165, 0.32);
 }
 
 /* ═══════════════════════════════════════════════
-   Input
+   Input（白60% 湿纸面 + 大圆角 + 柔焦光环）
    ═══════════════════════════════════════════════ */
 
 .input-field {
   width: 100%;
-  padding: 10px 14px;
+  padding: 10px 16px;
   border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  background: rgba(255, 255, 255, 0.6);
   font-size: 0.875rem;
+  font-weight: 400;
   color: var(--text);
-  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+  transition: border-color 0.4s var(--ease-liquid),
+              box-shadow 0.4s var(--ease-liquid);
   outline: none;
 }
-/* 聚焦不位移：输入框上浮会让整行表单抖动，改为原地色环提示 */
+/* 聚焦不位移：输入框上浮会让整行表单抖动，改为原地柔光晕（水彩洇开） */
 .input-field:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
+  border-color: var(--accent-soft);
+  box-shadow: 0 4px 20px rgba(74, 111, 165, 0.15);
 }
 .input-field::placeholder {
   color: var(--text-tertiary);
 }
 
 /* ═══════════════════════════════════════════════
-   Buttons
+   Buttons（rounded-2xl + 柔影 + 液态缓动；hover 晕开不上浮）
    ═══════════════════════════════════════════════ */
 
 .btn {
@@ -333,11 +347,13 @@ body::after {
   gap: 6px;
   padding: 10px 20px;
   border: none;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   font-size: 0.875rem;
-  font-weight: 500;
+  font-weight: 400;
   cursor: pointer;
-  transition: all 0.25s var(--ease-out-expo);
+  transition: transform var(--duration-hover) var(--ease-liquid),
+              box-shadow var(--duration-hover) var(--ease-liquid),
+              background-color var(--duration-hover) var(--ease-liquid);
   font-family: var(--font-sans);
   position: relative;
   overflow: hidden;
@@ -346,38 +362,48 @@ body::after {
   opacity: 0.5;
   cursor: not-allowed;
 }
+/* 主按钮：蓝灰 92% 准实底（水彩透明感）+ 白字（白字对比度 ≥4.5:1，
+   再低的透明度会让按钮文字跌出 WCAG AA）；晕 Rose 按钮同理加深 */
 .btn-primary {
-  background: var(--accent);
+  background: rgba(74, 111, 165, 0.92);
   color: var(--text-on-accent);
-  box-shadow: 0 1px 2px rgba(59, 125, 221, 0.28);
+  box-shadow: 0 2px 10px rgba(74, 111, 165, 0.18);
 }
 .btn-primary:hover:not(:disabled) {
-  background: var(--accent-hover);
-  transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(59, 125, 221, 0.3);
+  background: rgb(74, 111, 165);
+  transform: scale(1.02);
+  box-shadow: var(--shadow-bloom);
 }
 .btn-primary:active:not(:disabled) {
-  transform: translateY(0) scale(0.98);
-  box-shadow: 0 1px 3px rgba(59, 125, 221, 0.24);
+  transform: scale(0.98);
+  box-shadow: var(--shadow-press);
 }
 .btn-secondary {
   background: var(--surface-solid);
-  color: var(--text);
-  border: 1px solid var(--line);
+  color: var(--accent-text);
+  border: 1px solid rgba(74, 111, 165, 0.3);
 }
 .btn-secondary:hover:not(:disabled) {
-  background: var(--fill);
+  background: var(--accent-faint);
+  transform: scale(1.02);
+  box-shadow: var(--shadow-2);
 }
 .btn-secondary:active:not(:disabled) {
-  transform: translateY(0) scale(0.98);
+  transform: scale(0.98);
+  box-shadow: var(--shadow-press);
 }
 .btn-danger {
-  background: var(--error);
-  color: white;
+  background: rgba(156, 90, 100, 0.92);
+  color: #ffffff;
 }
 .btn-danger:hover:not(:disabled) {
-  background: var(--error-ink);
-  box-shadow: 0 4px 12px rgba(229, 84, 75, 0.3);
+  background: rgb(156, 90, 100);
+  transform: scale(1.02);
+  box-shadow: 0 10px 40px rgba(156, 90, 100, 0.3);
+}
+.btn-danger:active:not(:disabled) {
+  transform: scale(0.98);
+  box-shadow: inset 0 1px 6px rgba(156, 90, 100, 0.25);
 }
 .btn-ghost {
   background: transparent;
@@ -385,34 +411,36 @@ body::after {
 }
 .btn-ghost:hover:not(:disabled) {
   background: var(--fill-strong);
-  color: var(--text);
+  color: var(--accent-text);
+}
+.btn-ghost:active:not(:disabled) {
+  transform: scale(0.98);
 }
 .btn-sm {
   padding: 6px 14px;
   font-size: 0.8125rem;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
 }
 .btn-lg {
   padding: 14px 28px;
   font-size: 1rem;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
 }
 
 /* ═══════════════════════════════════════════════
-   Badges
+   Badges（水彩淡染小签：10px 圆角，深值 *-ink 文字压同色浅底）
    ═══════════════════════════════════════════════ */
 
-/* 状态签：6px 方圆小签（不再用胶囊），深值 *-ink 文字压在同色浅底上 */
 .badge {
   display: inline-flex;
   align-items: center;
-  padding: 3px 9px;
-  border-radius: 6px;
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
   font-size: 0.75rem;
-  font-weight: 500;
+  font-weight: 400;
   line-height: 1.4;
   letter-spacing: 0.01em;
-  transition: transform 0.2s ease;
+  transition: transform 0.3s ease;
 }
 .badge-default {
   background: var(--fill-strong);
@@ -458,7 +486,7 @@ body::after {
 }
 
 /* ═══════════════════════════════════════════════
-   Progress panel
+   Progress panel（蓝灰 → 青碧的水彩渐变进度）
    ═══════════════════════════════════════════════ */
 
 .progress-track {
@@ -471,7 +499,7 @@ body::after {
 .progress-fill {
   height: 100%;
   border-radius: var(--radius-full);
-  background: linear-gradient(90deg, var(--accent-hover), var(--accent));
+  background: linear-gradient(90deg, rgba(74, 111, 165, 0.9), rgba(133, 205, 202, 0.95));
   transition: width 0.5s var(--ease-in-out);
 }
 .progress-indeterminate {
@@ -483,31 +511,31 @@ body::after {
 }
 
 /* ═══════════════════════════════════════════════
-   Modal
+   Modal（暖纸面板 + 大圆角 + 柔影；缓出禁弹跳）
    ═══════════════════════════════════════════════ */
 
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(19, 26, 38, 0.38);
-  backdrop-filter: blur(4px);
-  -webkit-backdrop-filter: blur(4px);
+  background: rgba(74, 111, 165, 0.22);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: var(--z-modal);
-  animation: fadeIn 0.2s var(--ease-out-expo);
+  animation: fadeIn 0.25s var(--ease-out-expo);
 }
 .modal-content {
   background: var(--surface-elevated);
   border: 1px solid var(--line);
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-2xl);
   box-shadow: var(--shadow-3);
   width: 90%;
   max-width: 560px;
   max-height: 85vh;
   overflow-y: auto;
-  animation: scaleIn 0.3s var(--ease-spring);
+  animation: scaleIn 0.3s var(--ease-out-expo);
 }
 .modal-header {
   display: flex;
@@ -518,7 +546,9 @@ body::after {
 }
 .modal-title {
   font-size: 1.0625rem;
-  font-weight: 600;
+  font-weight: 500;
+  font-family: var(--font-serif);
+  letter-spacing: 0.02em;
   color: var(--text);
 }
 .modal-body {
@@ -547,9 +577,9 @@ body::after {
   flex-direction: column;
   background: var(--surface-elevated);
   border: 1px solid var(--line);
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-2xl);
   box-shadow: var(--shadow-3);
-  animation: slideInUp 0.28s var(--ease-out-expo);
+  animation: slideInUp 0.35s var(--ease-out-expo);
 }
 /* 最小化：隐藏而非卸载，子面板轮询/状态保留 */
 .floating-panel.is-minimized {
@@ -577,7 +607,7 @@ body::after {
   align-items: center;
   gap: 8px;
   font-size: 0.85rem;
-  font-weight: 600;
+  font-weight: 500;
   color: var(--text);
   overflow: hidden;
   white-space: nowrap;
@@ -593,10 +623,12 @@ body::after {
   background: transparent;
   color: var(--text-tertiary);
   cursor: pointer;
+  transition: background-color 0.4s var(--ease-liquid),
+              color 0.4s var(--ease-liquid);
 }
 .floating-icon-btn:hover {
   background: var(--fill-strong);
-  color: var(--text);
+  color: var(--accent-text);
 }
 /* 内部滚动：头部/胶囊固定，内容区自滚（面板内输入条自身 sticky 底边） */
 .floating-panel-body {
@@ -620,10 +652,16 @@ body::after {
   background: var(--surface-elevated);
   box-shadow: var(--shadow-2);
   font-size: 0.8rem;
-  font-weight: 600;
+  font-weight: 400;
   color: var(--text);
   cursor: pointer;
-  animation: slideInUp 0.28s var(--ease-out-expo);
+  transition: transform var(--duration-hover) var(--ease-liquid),
+              box-shadow var(--duration-hover) var(--ease-liquid);
+  animation: slideInUp 0.35s var(--ease-out-expo);
+}
+.floating-pill:hover {
+  transform: scale(1.03);
+  box-shadow: var(--shadow-bloom);
 }
 /* 多个面板同时最小化时，胶囊纵向错开（body 直系 button 只有胶囊） */
 body > .floating-pill:nth-of-type(2) {
@@ -631,7 +669,7 @@ body > .floating-pill:nth-of-type(2) {
 }
 @media (max-width: 640px) {
   /* 窄屏面板改底部抽屉：贴边全宽，避免悬浮卡遮挡半屏（锚定模式除外——
-     它按行定位，left/top 是脚本内联值，若再补 right/bottom 会被拉伸） */
+      它按行定位，left/top 是脚本内联值，若再补 right/bottom 会被拉伸） */
   .floating-panel:not(.is-anchored) {
     left: 8px;
     right: 8px;
@@ -671,15 +709,15 @@ body > .floating-pill:nth-of-type(2) {
   align-items: center;
   gap: 10px;
   padding: 12px 18px;
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   font-size: 0.875rem;
-  font-weight: 500;
+  font-weight: 400;
   color: var(--text);
   backdrop-filter: var(--glass-blur);
   -webkit-backdrop-filter: var(--glass-blur);
   border: 1px solid var(--line);
   box-shadow: var(--shadow-2);
-  animation: slideInRight 0.3s var(--ease-out-expo);
+  animation: slideInRight 0.35s var(--ease-out-expo);
   cursor: pointer;
   max-width: 420px;
 }
@@ -715,17 +753,17 @@ body > .floating-pill:nth-of-type(2) {
 .data-table th {
   text-align: left;
   padding: 12px 16px;
-  font-weight: 600;
+  font-weight: 500;
   font-size: 0.75rem;
   letter-spacing: 0.05em;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   border-bottom: 1px solid var(--line);
   background: var(--fill);
 }
 .data-table td {
   padding: 12px 16px;
   border-bottom: 1px solid var(--line-soft);
-  transition: background-color 0.15s ease;
+  transition: background-color 0.3s ease;
 }
 .data-table tbody tr:hover td {
   background: var(--accent-faint);
@@ -776,22 +814,22 @@ body > .floating-pill:nth-of-type(2) {
 
 /* ── 动画工具类 ── */
 .animate-fade-in {
-  animation: fadeIn 0.4s var(--ease-out-expo);
+  animation: fadeIn 0.45s var(--ease-out-expo);
 }
 .animate-slide-in {
-  animation: slideInLeft 0.35s var(--ease-out-expo);
+  animation: slideInLeft 0.4s var(--ease-out-expo);
 }
 .animate-slide-up {
-  animation: slideInUp 0.4s var(--ease-out-expo);
+  animation: slideInUp 0.45s var(--ease-out-expo);
 }
 .animate-scale-in {
-  animation: scaleIn 0.35s var(--ease-out-expo);
+  animation: scaleIn 0.4s var(--ease-out-expo);
 }
 
 /* ── 交错动画（仅首屏卡片入场，一次性；不用于列表行） ── */
 .stagger-item {
   opacity: 0;
-  animation: slideInUp 0.4s var(--ease-out-expo) forwards;
+  animation: slideInUp 0.45s var(--ease-out-expo) forwards;
 }
 .stagger-item:nth-child(1) { animation-delay: 0.04s; }
 .stagger-item:nth-child(2) { animation-delay: 0.1s; }
@@ -802,13 +840,14 @@ body > .floating-pill:nth-of-type(2) {
 
 /* ── 页面切换 ── */
 .page-enter {
-  animation: fadeIn 0.4s var(--ease-out-expo);
+  animation: fadeIn 0.45s var(--ease-out-expo);
 }
 
-/* ── 导航项 ── */
+/* ── 导航项（激活指示：柔和小药丸，非硬杆） ── */
 .nav-item {
   position: relative;
-  transition: all 0.25s var(--ease-out-expo);
+  transition: color 0.4s var(--ease-liquid),
+              background-color 0.4s var(--ease-liquid);
 }
 .nav-item::before {
   content: '';
@@ -819,8 +858,8 @@ body > .floating-pill:nth-of-type(2) {
   width: 3px;
   height: 16px;
   background: var(--accent);
-  border-radius: 0 4px 4px 0;
-  transition: transform 0.25s var(--ease-out-expo);
+  border-radius: var(--radius-full);
+  transition: transform 0.4s var(--ease-liquid);
 }
 .nav-item:hover::before,
 .nav-item.active::before {
@@ -834,16 +873,18 @@ body > .floating-pill:nth-of-type(2) {
 
 /* ── 响应式微调 ── */
 @media (max-width: 768px) {
-  /* 触屏会把 hover 粘在点击上，卡片上浮在移动端只会造成误触感 */
+  /* 触屏会把 hover 粘在点击上，卡片放大在移动端只会造成误触感 */
   .card-hover:hover {
     transform: none;
   }
-  .btn-primary:hover:not(:disabled) {
+  .btn-primary:hover:not(:disabled),
+  .btn-secondary:hover:not(:disabled),
+  .btn-danger:hover:not(:disabled) {
     transform: none;
   }
 }
 
-/* ── 键盘焦点：全站统一高亮环（输入框自带色环，不重复画） ── */
+/* ── 键盘焦点：全站统一高亮环（输入框自带柔光晕，不重复画） ── */
 :focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
@@ -852,18 +893,29 @@ body > .floating-pill:nth-of-type(2) {
   outline: none;
 }
 
-/* ── 页头标题工具类：统一各页 h1 规格，替代行内重复声明 ── */
+/* ── 页头标题工具类：统一各页 h1 规格——衬线 + 中度字重 + 宽字距 ── */
 /* ── 页面排版节奏（页头/副题/纵向堆叠）——与 Layout 的 --space-lg 同源 ── */
 .page-title {
+  font-family: var(--font-serif);
   font-size: 1.75rem;
-  font-weight: 700;
-  letter-spacing: -0.01em;
+  font-weight: 500;
+  letter-spacing: 0.02em;
   color: var(--text);
   margin-bottom: 6px;
 }
 
+/* 卡内标题：与页头同族衬线，替代 Card 组件的行内声明 */
+.card-title {
+  font-family: var(--font-serif);
+  font-size: 1.05rem;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
 .page-subtitle {
   font-size: 0.9375rem;
+  font-weight: 400;
   color: var(--text-secondary);
 }
 
@@ -889,7 +941,7 @@ body > .floating-pill:nth-of-type(2) {
     transition-duration: 0.01ms !important;
   }
   /* 功能性等待指示器（spinner / 进度条）不受减少动画影响，
-    否则用户无法感知任务仍在进行中 */
+     否则用户无法感知任务仍在进行中 */
   .spinner,
   .progress-fill,
   .progress-indeterminate {

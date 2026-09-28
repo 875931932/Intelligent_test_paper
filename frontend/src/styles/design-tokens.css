@@ -1,101 +1,112 @@
 /* ============================================================
-   Design System Tokens — 学海蓝（Academic Deep）
-   浅冷灰画布 + 深调四色：学海蓝 / 松绿 / 琥珀 / 绯红（AI 紫为辅）
-   饱和但不刺眼；小字号文字一律用 *-ink 深值保证对比度。
-   命名承诺：旧变量名全部保留，只精修取值；新增 line/shadow/fill 三族。
+   Design System Tokens — 水彩画风（Watercolor）
+   暖纸底 #faf8f5 + 蓝灰主色 #4a6fa5；蜜桃/青绿/玫瑰/沙四色水彩
+   以半透明方式晕染。柔软圆角、低透明柔影、衬线标题、缓慢液态动效。
+   命名承诺：旧变量名全部保留，只精修取值；新增水彩色与晕染影两族。
    ============================================================ */
 
 :root {
-  /* ── 背景层（同一蓝灰家族，严禁混入暖灰） ── */
-  --bg: #e8ecf4;
+  /* ── 背景层（暖纸家族：画布深一档、面板浅一档，严禁混入冷灰/纯白） ── */
+  --bg: #f0ebe3;
   /* 主内容区页面底色（Layout 主区），sticky 条的不透明底必须与它同源 */
-  --page-bg: #eff2f8;
-  --bg-secondary: #ffffff;
-  /* 内容面板一律实底：半透明玻璃让每张卡都透出下一层，叠卡时层次糊成一片 */
-  --surface: #ffffff;
-  --surface-solid: #ffffff;
-  --surface-elevated: rgba(255, 255, 255, 0.96);
-  --surface-glass: rgba(255, 255, 255, 0.55);
-  --glass: rgba(255, 255, 255, 0.62);
-  --glass-border: rgba(255, 255, 255, 0.6);
+  --page-bg: #faf8f5;
+  --bg-secondary: #fffdf9;
+  /* 内容面板一律暖白纸面：水彩画需要干净的纸做底 */
+  --surface: #fffdf9;
+  --surface-solid: #fffdf9;
+  --surface-elevated: rgba(255, 253, 249, 0.97);
+  --surface-glass: rgba(255, 253, 249, 0.78);
+  --glass: rgba(255, 253, 249, 0.82);
+  --glass-border: rgba(74, 111, 165, 0.16);
   --glass-shadow: var(--shadow-2);
-  --glass-blur: blur(20px) saturate(180%);
+  --glass-blur: blur(18px) saturate(1.35);
 
-  /* ── 发丝线（所有边框的唯一来源；行内样式也引用这里，禁止再写裸 rgba 黑） ── */
-  --line-soft: rgba(19, 26, 38, 0.05);
-  --line: rgba(19, 26, 38, 0.09);
-  --line-strong: rgba(19, 26, 38, 0.16);
+  /* ── 发丝线（所有边框的唯一来源；蓝灰淡染，行内样式也引用这里） ── */
+  --line-soft: rgba(74, 111, 165, 0.09);
+  --line: rgba(74, 111, 165, 0.16);
+  --line-strong: rgba(74, 111, 165, 0.26);
   /* 兼容行内 var(--border, …) 写法的历史引用 */
-  --border: rgba(19, 26, 38, 0.11);
+  --border: rgba(74, 111, 165, 0.18);
 
-  /* ── 填充（浅底分组 / hover 面：同色相同透明度，替代散落的 rgba(0,0,0,x)） ── */
-  --fill: rgba(19, 32, 54, 0.04);
-  --fill-strong: rgba(19, 32, 54, 0.07);
+  /* ── 填充（浅底分组 / hover 面：水彩淡染，替代散落的 rgba(0,0,0,x)） ── */
+  --fill: rgba(74, 111, 165, 0.05);
+  --fill-strong: rgba(74, 111, 165, 0.09);
 
-  /* ── 色相化阴影（单一光源：自上而下；蓝墨而非纯黑，压在冷灰底上不发脏） ── */
-  --shadow-1: 0 1px 2px rgba(15, 27, 50, 0.05), 0 1px 3px rgba(15, 27, 50, 0.06);
-  --shadow-2: 0 4px 14px rgba(15, 27, 50, 0.07), 0 2px 5px rgba(15, 27, 50, 0.05);
-  --shadow-3: 0 18px 44px rgba(15, 27, 50, 0.13), 0 6px 14px rgba(15, 27, 50, 0.07);
+  /* ── 色相化柔影（蓝灰水墨而非纯黑，压在暖纸上不发脏；低透明扩散） ── */
+  --shadow-1: 0 2px 10px rgba(74, 111, 165, 0.08);
+  --shadow-2: 0 4px 20px rgba(74, 111, 165, 0.12);
+  --shadow-3: 0 8px 30px rgba(74, 111, 165, 0.15);
+  /* 颜料晕开（Pigment Bloom）：hover 时同色系彩色大阴影向外扩散 */
+  --shadow-bloom: 0 10px 40px rgba(74, 111, 165, 0.28);
+  /* 湿纸按压：active 内阴影，模拟轻压湿纸面 */
+  --shadow-press: inset 0 1px 6px rgba(74, 111, 165, 0.18);
 
   /* ── 悬浮岛侧栏 ── */
   --sidebar-width: 260px;
   --sidebar-collapsed: 72px;
   --sidebar-offset: 12px;
-  --sidebar-radius: 18px;
-  --sidebar-glass: rgba(255, 255, 255, 0.88);
-  --sidebar-blur: blur(24px) saturate(1.8);
+  --sidebar-radius: 24px;
+  --sidebar-glass: rgba(255, 253, 249, 0.86);
+  --sidebar-blur: blur(12px) saturate(1.3);
   --sidebar-shadow: var(--shadow-2);
   --topbar-height: 52px;
   /* 主内容区最大宽度（Layout 主区） */
   --content-max-width: 1400px;
 
-  /* ── 文字（蓝墨中性，与画布同色相） ── */
-  --text: #131a26;
-  --text-secondary: #4c5668;
-  --text-tertiary: #7c8698;
+  /* ── 文字（蓝墨中性，与暖纸同色相） ── */
+  --text: #3a3a3a;
+  --text-secondary: #4a6fa5;
+  --text-tertiary: #8a8a8a;
   --text-on-accent: #ffffff;
 
-  /* ── 学海蓝（主色：主按钮 / 链接 / 激活态 / 蓝色分类） ── */
-  --accent: #3b7ddd;
-  --accent-hover: #2f6cc7;
-  --accent-subtle: rgba(59, 125, 221, 0.1);
-  --accent-soft: rgba(59, 125, 221, 0.17);
-  --accent-faint: rgba(59, 125, 221, 0.05);
-  --accent-text: #2a63b8;
-  --accent-glass: rgba(59, 125, 221, 0.2);
+  /* ── 蓝灰（主色：主按钮 / 链接 / 激活态） ── */
+  --accent: #4a6fa5;
+  --accent-hover: #3d5e8c;
+  --accent-subtle: rgba(74, 111, 165, 0.1);
+  --accent-soft: rgba(74, 111, 165, 0.16);
+  --accent-faint: rgba(74, 111, 165, 0.05);
+  --accent-text: #3d5e8c;
+  --accent-glass: rgba(74, 111, 165, 0.2);
 
-  /* ── 松绿（正确 / 已发布 / 已落地 / 绿色分类） ── */
-  --success: #2fae5c;
-  --success-subtle: rgba(47, 174, 92, 0.12);
-  --success-ink: #1f8b47;
+  /* ── 青绿（正确 / 已发布 / 已落地 / 绿色分类） ── */
+  --success: #78a082;
+  --success-subtle: rgba(120, 160, 130, 0.16);
+  --success-ink: #527a5d;
 
-  /* ── 琥珀（提醒 / 需审阅 / 橙色分类） ── */
-  --warning: #e8930c;
-  --warning-subtle: rgba(232, 147, 12, 0.13);
-  --warning-ink: #a56505;
-  --warning-line: rgba(232, 147, 12, 0.35);
+  /* ── 沙金（提醒 / 需审阅 / 橙色分类） ── */
+  --warning: #c9a84c;
+  --warning-subtle: rgba(201, 168, 76, 0.16);
+  --warning-ink: #8a6d24;
+  --warning-line: rgba(201, 168, 76, 0.4);
 
-  /* ── 绯红（错误 / 危险 / 未落地 / 红色分类） ── */
-  --error: #e5544b;
-  --error-subtle: rgba(229, 84, 75, 0.12);
-  --error-ink: #bb3a33;
+  /* ── 玫瑰（错误 / 危险 / 未落地 / 红色分类） ── */
+  --error: #c38d94;
+  --error-subtle: rgba(195, 141, 148, 0.16);
+  --error-ink: #9c5a64;
+  --error-line: rgba(195, 141, 148, 0.4);
 
-  /* ── 湖蓝（信息态：与主蓝拉开一档，偏青） ── */
-  --info: #1f8ab0;
-  --info-subtle: rgba(31, 138, 176, 0.12);
-  --info-ink: #156a8a;
+  /* ── 青碧（信息态：与主蓝灰拉开一档，偏青） ── */
+  --info: #6fb2ae;
+  --info-subtle: rgba(111, 178, 174, 0.16);
+  --info-ink: #4a8a86;
 
-  /* ── AI 紫（辅色：AI 面板身份色。历史 #7c5cff/#5856d6/#af52de 已并轨于此） ── */
-  --purple: #6e56cf;
-  --purple-subtle: rgba(110, 86, 207, 0.12);
-  --purple-soft: rgba(110, 86, 207, 0.3);
-  --purple-ink: #5640b0;
+  /* ── 深玫瑰（AI 辅色：AI 面板身份色。历史紫色系已并轨于此） ── */
+  --purple: #b4788c;
+  --purple-subtle: rgba(180, 120, 140, 0.15);
+  --purple-soft: rgba(180, 120, 140, 0.32);
+  --purple-ink: #96586b;
 
   /* ── 相关性色 ── */
-  --relevance-direct: #2fae5c;
-  --relevance-supporting: #e8930c;
-  --relevance-background: #7c8698;
-  --relevance-outofscope: #c4cad4;
+  --relevance-direct: #78a082;
+  --relevance-supporting: #c9a84c;
+  --relevance-background: #9aa3ad;
+  --relevance-outofscope: #c9c2b6;
+
+  /* ── 水彩四色（装饰晕染专用：蜜桃 / 青绿 / 玫瑰 / 沙，一律低透明使用） ── */
+  --wc-peach: #e8a87c;
+  --wc-teal: #85cdca;
+  --wc-rose: #c38d94;
+  --wc-sand: #d4a373;
 
   /* ── 间距 ── */
   --space-xs: 4px;
@@ -106,26 +117,29 @@
   --space-2xl: 48px;
   --space-3xl: 64px;
 
-  /* ── 圆角（容器软、内部紧、控件居中；行内裸值向这里靠拢） ── */
-  --radius-sm: 8px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --radius-xl: 18px;
-  --radius-2xl: 22px;
+  /* ── 圆角（水彩忌直角：控件 ≥16px 如 rounded-2xl，容器 ≥24px 如 rounded-3xl） ── */
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  --radius-2xl: 30px;
   --radius-full: 9999px;
 
-  /* ── 字体 ── */
-  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  /* ── 字体（标题衬线增艺术感，正文无衬线保清晰） ── */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --font-serif: 'Songti SC', 'STSong', 'Noto Serif SC', 'Source Han Serif SC', SimSun, Georgia, 'Times New Roman', serif;
 
   /* ── 骨架屏 ── */
-  --skeleton-base: rgba(19, 32, 54, 0.06);
-  --skeleton-shine: rgba(19, 32, 54, 0.03);
-  --skeleton-radius: var(--radius-md);
+  --skeleton-base: rgba(74, 111, 165, 0.08);
+  --skeleton-shine: rgba(74, 111, 165, 0.03);
+  --skeleton-radius: var(--radius-lg);
 
-  /* ── 动画缓动 ── */
+  /* ── 动效缓动（液态缓慢：hover 一律 400~500ms，禁快速线性） ── */
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
-  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-liquid: cubic-bezier(0.45, 0, 0.55, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --duration-hover: 0.5s;
 
   /* ── z-index ── */
   --z-dropdown: 100;

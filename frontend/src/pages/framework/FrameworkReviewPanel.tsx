@@ -26,7 +26,7 @@ const SEVERITY_STYLES: Record<
 > = {
   info: { label: '提示', color: 'var(--info)', background: 'var(--info-subtle)' },
   warning: { label: '注意', color: 'var(--warning)', background: 'var(--warning-subtle)' },
-  critical: { label: '重要', color: 'var(--danger-text)', background: 'rgba(255,59,48,0.08)' },
+  critical: { label: '重要', color: 'var(--error-ink)', background: 'var(--error-subtle)' },
 };
 
 /**
@@ -150,7 +150,7 @@ export function FrameworkReviewPanel({ courseId }: { courseId: string }) {
                     key={i}
                     style={{
                       padding: '10px 12px', borderRadius: '10px',
-                      background: style.background, border: '1px solid rgba(0,0,0,0.06)',
+                      background: style.background, border: '1px solid var(--line-soft)',
                       display: 'flex', flexDirection: 'column', gap: '4px',
                     }}
                   >
@@ -161,7 +161,7 @@ export function FrameworkReviewPanel({ courseId }: { courseId: string }) {
                       <span
                         style={{
                           fontSize: '0.7rem', padding: '1px 7px', borderRadius: '6px',
-                          background: 'rgba(0,0,0,0.05)', color: 'var(--text-secondary)',
+                          background: 'var(--fill-strong)', color: 'var(--text-secondary)',
                         }}
                       >
                         {AREA_LABELS[f.area] ?? f.area}

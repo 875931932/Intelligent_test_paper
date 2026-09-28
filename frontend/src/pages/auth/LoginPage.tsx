@@ -142,7 +142,7 @@ const loginStyles = `
   .orb-1 {
     width: 400px;
     height: 400px;
-    background: radial-gradient(circle, rgba(0, 113, 227, 0.08), transparent 70%);
+    background: radial-gradient(circle, rgba(232, 168, 124, 0.16), transparent 70%);
     top: -10%;
     left: -5%;
   }
@@ -150,7 +150,7 @@ const loginStyles = `
   .orb-2 {
     width: 350px;
     height: 350px;
-    background: radial-gradient(circle, rgba(0, 113, 227, 0.06), transparent 70%);
+    background: radial-gradient(circle, rgba(133, 205, 202, 0.14), transparent 70%);
     bottom: -10%;
     right: -5%;
   }
@@ -158,7 +158,7 @@ const loginStyles = `
   .orb-3 {
     width: 280px;
     height: 280px;
-    background: radial-gradient(circle, rgba(0, 113, 227, 0.05), transparent 70%);
+    background: radial-gradient(circle, rgba(195, 141, 148, 0.12), transparent 70%);
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
@@ -191,9 +191,10 @@ const loginStyles = `
   }
 
   .login-title {
+    font-family: var(--font-serif);
     font-size: 1.75rem;
-    font-weight: 700;
-    letter-spacing: -0.02em;
+    font-weight: 500;
+    letter-spacing: 0.02em;
     color: var(--text);
     margin: 0;
   }

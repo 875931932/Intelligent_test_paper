@@ -24,8 +24,9 @@ const CARD_RING_MAX = 96; // 卡片螺线半径上限（封顶后按黄金角继
 // 约 0.28，12× 时考点标签屏显约 30px）；下限允许退回全景。
 const ZOOM_MIN = 0.3;
 const ZOOM_MAX = 12;
-// 深空提亮色板（旧色板在深底上偏暗）
-const GRAPH_PALETTE = ['#4da3ff', '#22d3ee', '#34d399', '#fbbf24', '#c084fc', '#fb7185', '#f87171', '#2dd4bf'];
+// 水彩星图色板：蜜桃 / 青绿 / 沙金 / 玫瑰 / 蓝灰 的水彩亮调（旧深空星图迁到
+// 暖纸底后，亮度整体压低、饱和度收敛；光晕改为低透明径向晕染）
+const GRAPH_PALETTE = ['#e8a87c', '#85cdca', '#c9a84c', '#c38d94', '#8fa8cf', '#a3b183', '#d4a373', '#b49f9a'];
 
 function hashStr(s: string | null | undefined): number {
   if (!s) return 0;
@@ -149,7 +150,7 @@ export const GraphView = memo(function GraphView(props: {
           label: truncate(p.title || p.code, 6),
           full: p.title || p.code,
           sub: '',
-          color: '#4da3ff', grounded: true,
+          color: '#4a6fa5', grounded: true,
         });
       });
     });
@@ -170,7 +171,7 @@ export const GraphView = memo(function GraphView(props: {
         label: truncate(u.title || u.code, 6),
         full: u.title || u.code,
         sub: String(u.card_ids?.length || 0) + '卡',
-        color: '#c084fc', grounded: true, unitId: u.unit_id,
+        color: '#b4788c', grounded: true, unitId: u.unit_id,
       });
     });
     const cardsByUnit = new Map<string, KnowledgeCard[]>();
@@ -244,7 +245,7 @@ export const GraphView = memo(function GraphView(props: {
         big: rnd() < 0.1,
         // 三档静态透明度分层代替旧版循环闪烁：1400 颗常驻星的无限动画是白耗的 GPU 负担
         opacity: bucket < 0.34 ? 0.35 : bucket < 0.67 ? 0.6 : 0.9,
-        hue: warm < 0.22 ? '#9ecbff' : warm < 0.4 ? '#ffe9c4' : '#ffffff',
+        hue: warm < 0.22 ? '#b9cde6' : warm < 0.4 ? '#e9d9b4' : '#fffdf9',
       };
     });
   }, []);
@@ -431,14 +432,14 @@ export const GraphView = memo(function GraphView(props: {
   );
   void allNodes;
 
-  // 深空底上的「星座连线」：从属边走半透明星光白，关系边保留彩色但提亮
+  // 暖纸底上的「星座连线」：从属边走蓝灰淡染，关系边保留彩色但收敛
   const edgeStyle = (kind: string) => {
-    if (kind === 'specializes' || kind === 'requires') return { stroke: '#4da3ff', width: 1.6, dash: undefined, opacity: 0.75, marker: true };
-    if (kind === 'contrasts') return { stroke: '#c084fc', width: 1.3, dash: '5 4', opacity: 0.7, marker: false };
-    if (kind === 'equivalent') return { stroke: '#34d399', width: 2.6, dash: undefined, opacity: 0.7, marker: false };
-    if (kind === 'card-unit') return { stroke: 'rgba(158,191,255,0.13)', width: 1, dash: undefined, opacity: 1, marker: false };
-    if (kind === 'unit-point') return { stroke: 'rgba(192,132,252,0.20)', width: 1.2, dash: undefined, opacity: 1, marker: false };
-    return { stroke: 'rgba(255,255,255,0.25)', width: 1.2, dash: undefined, opacity: 0.7, marker: false };
+    if (kind === 'specializes' || kind === 'requires') return { stroke: '#4a6fa5', width: 1.6, dash: undefined, opacity: 0.75, marker: true };
+    if (kind === 'contrasts') return { stroke: '#b4788c', width: 1.3, dash: '5 4', opacity: 0.7, marker: false };
+    if (kind === 'equivalent') return { stroke: '#78a082', width: 2.6, dash: undefined, opacity: 0.7, marker: false };
+    if (kind === 'card-unit') return { stroke: 'rgba(74,111,165,0.14)', width: 1, dash: undefined, opacity: 1, marker: false };
+    if (kind === 'unit-point') return { stroke: 'rgba(180,120,140,0.2)', width: 1.2, dash: undefined, opacity: 1, marker: false };
+    return { stroke: 'rgba(74,111,165,0.25)', width: 1.2, dash: undefined, opacity: 0.7, marker: false };
   };
 
   const isDimmed = (key: string) => activeSet !== null && !activeSet.has(key);
@@ -460,7 +461,7 @@ export const GraphView = memo(function GraphView(props: {
           viewBox={`0 0 ${GRAPH_W} ${GRAPH_H}`}
           style={{
             width: '100%', maxHeight: '760px',
-            background: 'radial-gradient(ellipse at 50% 38%, #0b1530 0%, #070d1f 55%, #04070f 100%)',
+            background: 'radial-gradient(ellipse at 50% 38%, #f5efe1 0%, #f0e8d7 55%, #ece2cc 100%)',
             cursor: panning ? 'grabbing' : 'grab', touchAction: 'none',
           }}
           onPointerMove={onSvgPointerMove}
@@ -470,29 +471,29 @@ export const GraphView = memo(function GraphView(props: {
         >
           <defs>
             <marker id="gh-arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-              <path d="M0,0 L8,3 L0,6 Z" fill="#4da3ff" />
+              <path d="M0,0 L8,3 L0,6 Z" fill="#4a6fa5" />
             </marker>
-            {/* 节点光晕：径向渐变模拟发光，避免逐节点 SVG 滤镜的性能开销 */}
+            {/* 节点晕染：径向渐变模拟颜料在湿纸上洇开，避免逐节点 SVG 滤镜的性能开销 */}
             {GRAPH_PALETTE.map((c, i) => (
               <radialGradient key={'g' + i} id={'glow-' + i}>
-                <stop offset="0%" stopColor={c} stopOpacity="0.75" />
-                <stop offset="42%" stopColor={c} stopOpacity="0.22" />
+                <stop offset="0%" stopColor={c} stopOpacity="0.5" />
+                <stop offset="42%" stopColor={c} stopOpacity="0.16" />
                 <stop offset="100%" stopColor={c} stopOpacity="0" />
               </radialGradient>
             ))}
             <radialGradient id="glow-pt">
-              <stop offset="0%" stopColor="#8ec9ff" stopOpacity="0.85" />
-              <stop offset="45%" stopColor="#4da3ff" stopOpacity="0.25" />
-              <stop offset="100%" stopColor="#4da3ff" stopOpacity="0" />
+              <stop offset="0%" stopColor="#6f93c4" stopOpacity="0.55" />
+              <stop offset="45%" stopColor="#4a6fa5" stopOpacity="0.22" />
+              <stop offset="100%" stopColor="#4a6fa5" stopOpacity="0" />
             </radialGradient>
             <radialGradient id="glow-un">
-              <stop offset="0%" stopColor="#d8b4fe" stopOpacity="0.8" />
-              <stop offset="45%" stopColor="#c084fc" stopOpacity="0.22" />
-              <stop offset="100%" stopColor="#c084fc" stopOpacity="0" />
+              <stop offset="0%" stopColor="#cfa0ac" stopOpacity="0.5" />
+              <stop offset="45%" stopColor="#b4788c" stopOpacity="0.2" />
+              <stop offset="100%" stopColor="#b4788c" stopOpacity="0" />
             </radialGradient>
             <radialGradient id="glow-star">
-              <stop offset="0%" stopColor="#ffffff" stopOpacity="0.9" />
-              <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
+              <stop offset="0%" stopColor="#fffdf9" stopOpacity="0.9" />
+              <stop offset="100%" stopColor="#fffdf9" stopOpacity="0" />
             </radialGradient>
           </defs>
           <g transform={transform}>
@@ -538,14 +539,13 @@ export const GraphView = memo(function GraphView(props: {
                   onPointerDown={(e) => onNodePointerDown(e, n)}
                   style={{ cursor: 'grab' }}
                 >
-                  <line x1={p.x - n.r * 2.4} y1={p.y} x2={p.x + n.r * 2.4} y2={p.y} stroke="rgba(255,255,255,0.45)" strokeWidth={1} style={{ pointerEvents: 'none' }} />
-                  <line x1={p.x} y1={p.y - n.r * 2.4} x2={p.x} y2={p.y + n.r * 2.4} stroke="rgba(255,255,255,0.45)" strokeWidth={1} style={{ pointerEvents: 'none' }} />
+                  <line x1={p.x - n.r * 2.4} y1={p.y} x2={p.x + n.r * 2.4} y2={p.y} stroke="rgba(74,111,165,0.35)" strokeWidth={1} style={{ pointerEvents: 'none' }} />
+                  <line x1={p.x} y1={p.y - n.r * 2.4} x2={p.x} y2={p.y + n.r * 2.4} stroke="rgba(74,111,165,0.35)" strokeWidth={1} style={{ pointerEvents: 'none' }} />
                   <circle cx={p.x} cy={p.y} r={hov ? n.r * 3.1 : n.r * 2.6} fill="url(#glow-pt)" style={{ transition: 'r 0.15s' }} />
-                  <circle cx={p.x} cy={p.y} r={n.r + (hov ? 3 : 0)} fill="#f2f8ff" stroke="#4da3ff" strokeWidth={1.6} style={{ transition: 'r 0.15s' }} />
-                  {/* 标题挂核外深底：浅字+深描边与深空天然高对比（旧版序号压在
-                      同色系光晕上糊成一片）；hover 展开全名；核内留白做纯恒星。 */}
-                  <text x={p.x} y={p.y + n.r + (hov ? 6 : 0) + 12} textAnchor="middle" fontSize={hov ? 10.5 : 9} fontWeight="600" fill="#eaf2ff"
-                    style={{ paintOrder: 'stroke', stroke: '#050914', strokeWidth: 3, strokeLinejoin: 'round', pointerEvents: 'none' }}>
+                  <circle cx={p.x} cy={p.y} r={n.r + (hov ? 3 : 0)} fill="#fffdf9" stroke="#4a6fa5" strokeWidth={1.6} style={{ transition: 'r 0.15s' }} />
+                  {/* 标题挂核外纸底：蓝墨字 + 暖白描边与纸面天然高对比；hover 展开全名 */}
+                  <text x={p.x} y={p.y + n.r + (hov ? 6 : 0) + 12} textAnchor="middle" fontSize={hov ? 10.5 : 9} fontWeight="600" fill="#3d5e8c"
+                    style={{ paintOrder: 'stroke', stroke: '#fffdf9', strokeWidth: 3, strokeLinejoin: 'round', pointerEvents: 'none' }}>
                     {hov ? n.full : n.label}
                   </text>
                 </g>
@@ -567,13 +567,13 @@ export const GraphView = memo(function GraphView(props: {
                   style={{ cursor: 'grab' }}
                 >
                   <circle cx={p.x} cy={p.y} r={hov ? n.r * 2.9 : n.r * 2.4} fill="url(#glow-un)" style={{ transition: 'r 0.15s' }} />
-                  <circle cx={p.x} cy={p.y} r={n.r + (hov ? 2.5 : 0)} fill="#f6efff" stroke="#c084fc" strokeWidth={1.4} style={{ transition: 'r 0.15s' }} />
-                  {/* 核内只留「N卡」计数；标题挂核外深底（浅字深描边高对比），
+                  <circle cx={p.x} cy={p.y} r={n.r + (hov ? 2.5 : 0)} fill="#fffdf9" stroke="#b4788c" strokeWidth={1.4} style={{ transition: 'r 0.15s' }} />
+                  {/* 核内只留「N卡」计数；标题挂核外纸底（蓝墨字暖白描边高对比），
                       hover 展开全名。 */}
-                  <text x={p.x} y={p.y + 2.5} textAnchor="middle" fontSize="6.5" fontWeight="600" fill="#5b2196"
-                    style={{ paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 1.4, strokeLinejoin: 'round', pointerEvents: 'none' }}>{n.sub}</text>
-                  <text x={p.x} y={p.y + n.r + (hov ? 5 : 0) + 11} textAnchor="middle" fontSize={hov ? 10 : 8.5} fontWeight="600" fill="#f3e8ff"
-                    style={{ paintOrder: 'stroke', stroke: '#050914', strokeWidth: 3, strokeLinejoin: 'round', pointerEvents: 'none' }}>
+                  <text x={p.x} y={p.y + 2.5} textAnchor="middle" fontSize="6.5" fontWeight="600" fill="#96586b"
+                    style={{ paintOrder: 'stroke', stroke: '#fffdf9', strokeWidth: 1.4, strokeLinejoin: 'round', pointerEvents: 'none' }}>{n.sub}</text>
+                  <text x={p.x} y={p.y + n.r + (hov ? 5 : 0) + 11} textAnchor="middle" fontSize={hov ? 10 : 8.5} fontWeight="600" fill="#96586b"
+                    style={{ paintOrder: 'stroke', stroke: '#fffdf9', strokeWidth: 3, strokeLinejoin: 'round', pointerEvents: 'none' }}>
                     {hov ? n.full : n.label}
                   </text>
                 </g>
@@ -612,14 +612,14 @@ export const GraphView = memo(function GraphView(props: {
                     r={n.r + (hovered ? 3 : 0)}
                     fill={n.color}
                     fillOpacity={n.grounded ? 0.95 : 0.35}
-                    stroke={n.grounded ? 'rgba(255,255,255,0.8)' : '#ff5c5c'}
+                    stroke={n.grounded ? 'rgba(255,253,249,0.9)' : '#c38d94'}
                     strokeWidth={n.grounded ? 0.8 : 1.6}
                     strokeDasharray={n.grounded ? undefined : '3 2'}
                     style={{ transition: 'r 0.15s, fill-opacity 0.15s' }}
                   />
                   {hovered && (
-                    <text x={p.x} y={p.y - n.r - 8} textAnchor="middle" fontSize="9.5" fontWeight="600" fill="#eaf2ff"
-                      style={{ paintOrder: 'stroke', stroke: '#050914', strokeWidth: 3.5, strokeLinejoin: 'round', pointerEvents: 'none' }}>
+                    <text x={p.x} y={p.y - n.r - 8} textAnchor="middle" fontSize="9.5" fontWeight="600" fill="#3a3a3a"
+                      style={{ paintOrder: 'stroke', stroke: '#fffdf9', strokeWidth: 3.5, strokeLinejoin: 'round', pointerEvents: 'none' }}>
                       {truncate(n.label, 18)}
                     </text>
                   )}
@@ -629,7 +629,7 @@ export const GraphView = memo(function GraphView(props: {
           </g>
         </svg>
 
-        {/* 缩放控件（深色玻璃，浮在星空上） */}
+        {/* 缩放控件（暖纸玻璃，浮在星图上） */}
         <div style={{ position: 'absolute', right: 10, top: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
           {[
             { label: '+', fn: () => setZoom((z) => Math.min(ZOOM_MAX, z * 1.45)) },
@@ -640,9 +640,9 @@ export const GraphView = memo(function GraphView(props: {
               key={b.label}
               onClick={b.fn}
               style={{
-                width: 30, height: 30, borderRadius: 8, border: '1px solid rgba(255,255,255,0.16)',
-                background: 'rgba(13,20,38,0.88)', boxShadow: '0 2px 8px rgba(0,0,0,0.4)',
-                cursor: 'pointer', fontSize: '0.9rem', color: '#dce7f7',
+                width: 30, height: 30, borderRadius: 10, border: '1px solid var(--line)',
+                background: 'var(--surface-elevated)', boxShadow: 'var(--shadow-1)',
+                cursor: 'pointer', fontSize: '0.9rem', color: 'var(--text-secondary)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}
             >
@@ -650,7 +650,7 @@ export const GraphView = memo(function GraphView(props: {
             </button>
           ))}
         </div>
-        <div style={{ position: 'absolute', left: 10, top: 10, fontSize: '0.72rem', color: 'rgba(255,255,255,0.72)', background: 'rgba(10,16,32,0.78)', padding: '4px 8px', borderRadius: 6, border: '1px solid rgba(255,255,255,0.12)' }}>
+        <div style={{ position: 'absolute', left: 10, top: 10, fontSize: '0.72rem', color: 'var(--text-secondary)', background: 'var(--surface-elevated)', padding: '4px 8px', borderRadius: 8, border: '1px solid var(--line)' }}>
           滚轮缩放 · 拖拽画布平移 · 拖动节点调整 · 点击卡片看详情
         </div>
       </div>
@@ -658,19 +658,19 @@ export const GraphView = memo(function GraphView(props: {
       {/* Legend */}
       <div style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '12px 8px 0', flexWrap: 'wrap' }}>
         <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-          <span style={{ width: 12, height: 12, borderRadius: '50%', border: '2px dashed #ff5c5c', background: 'rgba(255,92,92,0.15)' }} /> 未落地
+          <span style={{ width: 12, height: 12, borderRadius: '50%', border: '2px dashed var(--error)', background: 'var(--error-subtle)' }} /> 未落地
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#4da3ff' }} /> 已落地卡
+          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#85cdca' }} /> 已落地卡
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#f2f8ff', border: '1.5px solid #4da3ff' }} /> 考点（恒星）
+          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#fffdf9', border: '1.5px solid #4a6fa5' }} /> 考点（恒星）
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#f6efff', border: '1.5px solid #c084fc' }} /> 单元（卫星）
+          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#fffdf9', border: '1.5px solid #b4788c' }} /> 单元（卫星）
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-          <span style={{ width: 18, height: 0, borderTop: '2px solid rgba(158,191,255,0.7)' }} /> 星座连线
+          <span style={{ width: 18, height: 0, borderTop: '2px solid rgba(74,111,165,0.6)' }} /> 星座连线
         </span>
       </div>
     </div>

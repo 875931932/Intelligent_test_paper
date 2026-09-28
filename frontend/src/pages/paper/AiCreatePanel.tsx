@@ -203,7 +203,7 @@ export function AiCreatePanel({
           </div>
 
           {/* 确认：把提案写进下方新增表单；落库仍由教师点「加入试卷」完成 */}
-          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', paddingTop: '10px', borderTop: '1px solid rgba(0,0,0,0.06)' }}>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', paddingTop: '10px', borderTop: '1px solid var(--line-soft)' }}>
             <Button size="sm" disabled={!canFill} onClick={fill} icon={<Check size={14} />}>
               填入下方表单
             </Button>
@@ -228,8 +228,8 @@ export function AiCreatePanel({
           background: 'var(--surface-elevated)',
           backdropFilter: 'var(--glass-blur)',
           WebkitBackdropFilter: 'var(--glass-blur)',
-          border: '1px solid rgba(0,0,0,0.06)',
-          boxShadow: '0 8px 32px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.05)',
+          border: '1px solid var(--line-soft)',
+          boxShadow: 'var(--shadow-3)',
         }}
       >
         <textarea
@@ -240,7 +240,7 @@ export function AiCreatePanel({
           disabled={running}
           style={{
             resize: 'vertical', padding: '8px 10px', borderRadius: 8, fontSize: '0.875rem',
-            border: '1px solid rgba(0,0,0,0.12)', background: 'rgba(255,255,255,0.75)',
+            border: '1px solid var(--line-strong)', background: 'var(--surface-glass)',
             fontFamily: 'inherit', lineHeight: 1.6,
           }}
         />

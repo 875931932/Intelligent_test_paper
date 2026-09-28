@@ -66,7 +66,7 @@ export function QuestionDetail({
         flex: 1, minHeight: 0, overflowY: 'auto',
         display: 'flex', flexDirection: 'column',
         padding: '24px 24px 24px 22px',
-        borderLeft: '3px solid ' + (flagged ? 'var(--warning)' : 'rgba(0,113,227,0.35)'),
+        borderLeft: '3px solid ' + (flagged ? 'var(--warning)' : 'var(--accent-soft)'),
       }}
     >
       {/* 一行摘要徽标：阅读态作为 details 摘要（展开看考点全文/审核原因），编辑态直接平铺 */}
@@ -83,7 +83,7 @@ export function QuestionDetail({
             )}
             <span style={{ marginLeft: 'auto', fontSize: '0.75rem', color: 'var(--text-tertiary)', whiteSpace: 'nowrap' }}>详情 ▾</span>
           </summary>
-          <div style={{ marginTop: '8px', padding: '8px 12px', borderRadius: 8, background: 'rgba(0,0,0,0.03)', fontSize: '0.8rem', lineHeight: 1.7, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+          <div style={{ marginTop: '8px', padding: '8px 12px', borderRadius: 8, background: 'var(--fill)', fontSize: '0.8rem', lineHeight: 1.7, color: 'var(--text-secondary)', display: 'flex', flexDirection: 'column', gap: '6px' }}>
             {epText && (
               <div title={epTitle}>
                 考点：{epText}{item.exam_point_code ? `（${item.exam_point_code}）` : ''}
@@ -142,7 +142,7 @@ export function QuestionDetail({
                 return (
                   <div key={o.key} style={{
                     display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '8px 12px', borderRadius: 8,
-                    background: isAns ? 'var(--success-subtle)' : 'rgba(0,0,0,0.02)',
+                    background: isAns ? 'var(--success-subtle)' : 'var(--fill)',
                     fontSize: '0.925rem', lineHeight: 1.65,
                   }}>
                     <span style={{ fontWeight: 600, color: isAns ? 'var(--success)' : 'var(--text-tertiary)', minWidth: 16 }}>{o.key}.</span>
@@ -181,7 +181,7 @@ export function QuestionDetail({
           )}
 
           {/* marginTop:auto 把按钮行推到卡片底部（拉伸后的卡片内部留白落在内容与按钮之间） */}
-          <div style={{ display: 'flex', gap: '8px', marginTop: 'auto', paddingTop: '16px', borderTop: '1px solid rgba(0,0,0,0.06)', flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: '8px', marginTop: 'auto', paddingTop: '16px', borderTop: '1px solid var(--line-soft)', flexWrap: 'wrap', alignItems: 'center' }}>
             {!readonly && (
               <Button size="sm" onClick={onEdit} icon={<Pencil size={14} />}>编辑本题</Button>
             )}

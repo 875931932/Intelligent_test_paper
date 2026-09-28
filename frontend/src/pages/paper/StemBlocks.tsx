@@ -78,7 +78,7 @@ function parseStemBlocks(stem: string): StemBlock[] {
 }
 
 const cellBase: CSSProperties = {
-  border: '1px solid rgba(0, 0, 0, 0.18)',
+  border: '1px solid var(--line-strong)',
   padding: '5px 9px',
   textAlign: 'center',
   lineHeight: 1.6,
@@ -97,8 +97,8 @@ export function StemBlocks({ text }: { text: string }) {
                 fontFamily: "Consolas, 'Courier New', monospace",
                 fontSize: '0.82rem',
                 lineHeight: 1.6,
-                background: 'rgba(0, 0, 0, 0.04)',
-                border: '1px solid rgba(0, 0, 0, 0.08)',
+                background: 'var(--fill)',
+                border: '1px solid var(--line)',
                 borderRadius: 8,
                 padding: '10px 12px',
                 margin: '8px 0',
@@ -118,7 +118,7 @@ export function StemBlocks({ text }: { text: string }) {
               <thead>
                 <tr>
                   {pad(b.header, cols).map((c, ci) => (
-                    <th key={ci} style={{ ...cellBase, fontWeight: 600, background: 'rgba(0, 0, 0, 0.04)' }}>{c}</th>
+                    <th key={ci} style={{ ...cellBase, fontWeight: 600, background: 'var(--fill)' }}>{c}</th>
                   ))}
                 </tr>
               </thead>

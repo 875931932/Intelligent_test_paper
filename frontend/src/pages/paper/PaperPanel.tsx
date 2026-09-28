@@ -398,7 +398,7 @@ export default function PaperPanel({
                   padding: '6px 14px', borderRadius: 999, border: 'none', cursor: 'pointer',
                   fontSize: '0.8rem', fontWeight: 600,
                   background: previewKind === t.key ? 'var(--accent)' : 'var(--accent-subtle)',
-                  color: previewKind === t.key ? '#fff' : 'var(--accent)',
+                  color: previewKind === t.key ? 'var(--surface-solid)' : 'var(--accent)',
                 }}
               >
                 {t.label}
@@ -427,7 +427,7 @@ export default function PaperPanel({
           title="试卷整体预览"
           style={{
             display: 'block', width: '100%', height: '64vh',
-            border: '1px solid rgba(0,0,0,0.08)', borderRadius: 8, background: '#fff',
+            border: '1px solid var(--line)', borderRadius: 8, background: 'var(--surface-solid)',
           }}
         />
       ) : (
@@ -435,8 +435,8 @@ export default function PaperPanel({
           style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             width: '100%', height: '64vh',
-            border: '1px solid rgba(0,0,0,0.08)', borderRadius: 8,
-            background: '#fff', color: 'var(--text-tertiary)', fontSize: '0.85rem',
+            border: '1px solid var(--line)', borderRadius: 8,
+            background: 'var(--surface-solid)', color: 'var(--text-tertiary)', fontSize: '0.85rem',
           }}
         >
           {previewLoading ? '预览加载中…' : '预览不可用'}
@@ -574,7 +574,7 @@ export default function PaperPanel({
             <div style={{
               position: 'sticky', bottom: 0, margin: '6px -8px 0',
               padding: '10px 14px 14px', background: 'var(--surface-solid)',
-              borderTop: '1px solid rgba(0,0,0,0.06)',
+              borderTop: '1px solid var(--line-soft)',
             }}>
               <Button variant="secondary" size="sm" onClick={() => setAddOpen(true)} icon={<Plus size={14} />} style={{ width: '100%' }}>
                 新增题目

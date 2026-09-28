@@ -267,7 +267,7 @@ export function ExamRulesCard({
           <div style={{
             display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap',
             padding: '10px 14px', borderRadius: 10,
-            background: 'var(--accent-subtle)', border: '1px dashed rgba(0, 113, 227, 0.35)',
+            background: 'var(--accent-subtle)', border: '1px dashed var(--accent-soft)',
           }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', fontWeight: 600, color: 'var(--accent)', whiteSpace: 'nowrap' }}>
               <Sparkles size={15} /> AI 助手

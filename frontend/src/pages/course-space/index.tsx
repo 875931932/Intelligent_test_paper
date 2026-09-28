@@ -70,7 +70,7 @@ export default function CourseSpacePage() {
       {/* 顶部栏 */}
       <header style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '16px 32px', borderBottom: '1px solid rgba(0,0,0,0.06)',
+        padding: '16px 32px', borderBottom: '1px solid var(--line-soft)',
         backdropFilter: 'var(--glass-blur)', WebkitBackdropFilter: 'var(--glass-blur)',
         position: 'sticky', top: 0, zIndex: 10, background: 'var(--sidebar-glass)',
       }}>
@@ -94,7 +94,7 @@ export default function CourseSpacePage() {
           padding: '8px 12px', borderRadius: '10px',
           color: 'var(--text-secondary)', fontSize: '0.8125rem',
         }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(0,0,0,0.05)'; }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--fill-strong)'; }}
           onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
         >
           <LogOut size={15} />
@@ -166,14 +166,14 @@ export default function CourseSpacePage() {
               onClick={() => { setNewName(''); setCreateOpen(true); }}
               style={{
                 minHeight: '180px', borderRadius: 'var(--radius-lg)',
-                border: '1.5px dashed rgba(0,113,227,0.3)', background: 'rgba(0,113,227,0.03)',
+                border: '1.5px dashed var(--accent-soft)', background: 'var(--accent-faint)',
                 cursor: 'pointer', display: 'flex', flexDirection: 'column',
                 alignItems: 'center', justifyContent: 'center', gap: '10px',
                 color: 'var(--accent)', fontSize: '0.875rem', fontWeight: 500,
                 transition: 'all 0.2s ease',
               }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(0,113,227,0.07)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(0,113,227,0.03)'; }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--accent-soft)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--accent-faint)'; }}
             >
               <div style={{
                 width: 44, height: 44, borderRadius: '14px',

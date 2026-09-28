@@ -18,9 +18,9 @@ import { renderGenerate } from './stage/StageGeneration';
 const STAGE_ORDER: StageKey[] = ['blueprint', 'contract', 'generate'];
 
 const STAGE_META: Record<StageKey, { label: string; icon: ReactNode; color: string }> = {
-  blueprint: { label: '蓝图', icon: <ClipboardList size={16} />, color: '#3b7ddd' },
-  contract:  { label: '合同', icon: <FileText size={16} />, color: '#6e56cf' },
-  generate:  { label: '生成', icon: <PlayCircle size={16} />, color: '#2fae5c' },
+  blueprint: { label: '蓝图', icon: <ClipboardList size={16} />, color: 'var(--accent)' },
+  contract:  { label: '合同', icon: <FileText size={16} />, color: 'var(--purple)' },
+  generate:  { label: '生成', icon: <PlayCircle size={16} />, color: 'var(--success)' },
 };
 
 const STATUS_TO_STAGE: Record<string, StageKey> = {
@@ -58,7 +58,7 @@ function StageStepper({ current, onSelect }: { current: StageKey; onSelect: (s: 
                 height: 2,
                 alignSelf: 'center',
                 marginTop: '-20px',
-                background: reachable ? meta.color : 'rgba(0,0,0,0.08)',
+                background: reachable ? meta.color : 'var(--line)',
                 borderRadius: 2,
                 transition: 'background 0.3s',
                 opacity: reachable ? 0.6 : 1,
@@ -76,9 +76,9 @@ function StageStepper({ current, onSelect }: { current: StageKey; onSelect: (s: 
               <span style={{
                 width: 32, height: 32, borderRadius: '50%',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                color: active || done ? '#fff' : 'var(--text-tertiary)',
-                background: active || done ? meta.color : 'rgba(0,0,0,0.05)',
-                boxShadow: active ? '0 0 0 4px ' + meta.color + '30' : 'none',
+                color: active || done ? 'var(--surface-solid)' : 'var(--text-tertiary)',
+                background: active || done ? meta.color : 'var(--fill-strong)',
+                boxShadow: active ? '0 0 0 4px color-mix(in srgb, ' + meta.color + ' 25%, transparent)' : 'none',
                 transition: 'all 0.25s var(--ease-out-expo)',
               }}>
                 {done ? <Check size={16} /> : meta.icon}

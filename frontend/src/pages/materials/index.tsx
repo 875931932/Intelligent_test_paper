@@ -90,8 +90,8 @@ const FOLDER_GROUPS: FolderMeta[] = [
     description: '教学大纲与考核大纲',
     icon: Folder,
     subFolders: [
-      { key: 'teaching_syllabus', name: '教学大纲', description: '课程教学目标与内容范围', icon: BookOpen, color: '#3b7ddd' },
-      { key: 'assessment_syllabus', name: '考核大纲', description: '考核方式与评分标准', icon: ClipboardCheck, color: '#2fae5c' },
+      { key: 'teaching_syllabus', name: '教学大纲', description: '课程教学目标与内容范围', icon: BookOpen, color: 'var(--accent)' },
+      { key: 'assessment_syllabus', name: '考核大纲', description: '考核方式与评分标准', icon: ClipboardCheck, color: 'var(--success)' },
     ],
   },
   {
@@ -100,8 +100,8 @@ const FOLDER_GROUPS: FolderMeta[] = [
     description: '教材与习题等教学资源',
     icon: FolderOpen,
     subFolders: [
-      { key: 'teaching_material', name: '教材', description: '教学用书与讲义', icon: BookMarked, color: '#6e56cf' },
-      { key: 'exercise', name: '习题', description: '练习与试卷', icon: FileText, color: '#e8930c' },
+      { key: 'teaching_material', name: '教材', description: '教学用书与讲义', icon: BookMarked, color: 'var(--purple)' },
+      { key: 'exercise', name: '习题', description: '练习与试卷', icon: FileText, color: 'var(--warning)' },
     ],
   },
 ];
@@ -540,7 +540,7 @@ export default function MaterialsPage() {
                   }}
                 >
                   <div style={{
-                    width: 48, height: 48, borderRadius: '14px', background: s.color + '1a', color: s.color,
+                    width: 48, height: 48, borderRadius: '14px', background: 'color-mix(in srgb, ' + s.color + ' 10%, transparent)', color: s.color,
                     display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
                   }}>
                     <Icon size={24} />

@@ -70,16 +70,16 @@ const SUGGESTIONS = [
 ];
 
 const thStyle: CSSProperties = {
-  border: '1px solid rgba(0, 0, 0, 0.18)',
+  border: '1px solid var(--line-strong)',
   padding: '5px 9px',
   textAlign: 'left',
   fontWeight: 600,
-  background: 'rgba(0, 0, 0, 0.04)',
+  background: 'var(--fill)',
   lineHeight: 1.6,
 };
 
 const tdStyle: CSSProperties = {
-  border: '1px solid rgba(0, 0, 0, 0.18)',
+  border: '1px solid var(--line-strong)',
   padding: '5px 9px',
   lineHeight: 1.6,
 };
@@ -389,7 +389,7 @@ function ProposalCard({
   const status = message.action.status ?? 'proposed';
   const rows = proposalParamRows(tool, message.action.payload ?? {});
   return (
-    <div style={{ ...cardBox, border: '1px dashed rgba(0,113,227,0.45)', background: 'var(--accent-subtle)' }}>
+    <div style={{ ...cardBox, border: '1px dashed var(--accent-soft)', background: 'var(--accent-subtle)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <Badge variant="purple">提案</Badge>
         <strong style={{ fontSize: '0.85rem' }}>{meta?.label ?? tool}</strong>
@@ -630,7 +630,7 @@ const AssistantPage: FC = () => {
                 style={{
                   maxWidth: '78%',
                   background: 'var(--accent)',
-                  color: '#fff',
+                  color: 'var(--surface-solid)',
                   borderRadius: '14px 14px 4px 14px',
                   padding: '8px 12px',
                   fontSize: '0.875rem',

@@ -301,7 +301,7 @@ export function BlueprintSuggestPanel({
   return (
     <div style={{
       borderRadius: 10, padding: '12px 14px',
-      background: 'var(--accent-subtle)', border: '1px dashed rgba(0,113,227,0.35)',
+      background: 'var(--accent-subtle)', border: '1px dashed var(--accent-soft)',
       display: 'flex', flexDirection: 'column', gap: '10px',
     }}>
       <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -382,7 +382,7 @@ export function BlueprintSuggestPanel({
                 style={{
                   display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap',
                   padding: '8px 10px', borderRadius: 8,
-                  background: isApplied ? 'rgba(0,0,0,0.03)' : 'var(--surface, #fff)',
+                  background: isApplied ? 'var(--fill)' : 'var(--surface, #fff)',
                   border: '1px solid var(--border, #d2d2d7)',
                   opacity: isApplied ? 0.65 : 1,
                 }}

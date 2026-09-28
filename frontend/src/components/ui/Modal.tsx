@@ -38,7 +38,7 @@ export function Modal({
             background: 'none', border: 'none', cursor: 'pointer', padding: '4px',
             borderRadius: '6px', color: 'var(--text-tertiary)', display: 'flex',
           }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(0,0,0,0.05)'; }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--fill-strong)'; }}
             onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
           >
             <X size={18} />

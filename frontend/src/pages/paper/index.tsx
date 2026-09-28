@@ -214,7 +214,7 @@ export default function PaperPage() {
                   <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
                     <div style={{
                       width: 42, height: 42, borderRadius: '12px',
-                      background: 'rgba(0,113,227,0.08)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      background: 'var(--accent-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center',
                     }}>
                       <ClipboardList size={20} style={{ color: 'var(--accent)' }} />
                     </div>

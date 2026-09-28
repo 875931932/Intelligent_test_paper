@@ -631,8 +631,8 @@ export default function KnowledgePage() {
                     style={{
                       display: 'flex', alignItems: 'center', gap: '10px',
                       padding: '10px 12px', borderRadius: '10px',
-                      border: checked ? '1px solid var(--accent)' : '1px solid rgba(0,0,0,0.06)',
-                      background: checked ? 'var(--accent-subtle)' : 'rgba(0,0,0,0.02)',
+                      border: checked ? '1px solid var(--accent)' : '1px solid var(--line-soft)',
+                      background: checked ? 'var(--accent-subtle)' : 'var(--fill)',
                       cursor: 'pointer', transition: 'all 0.2s',
                     }}
                   >
@@ -674,7 +674,7 @@ export default function KnowledgePage() {
             {(selectedUnit || selectedPoint) && (
               <div style={{
                 padding: '12px 14px', borderRadius: '12px',
-                background: 'rgba(0,113,227,0.05)', border: '1px solid rgba(0,113,227,0.12)',
+                background: 'var(--accent-faint)', border: '1px solid var(--accent-soft)',
                 display: 'flex', flexDirection: 'column', gap: '5px',
               }}>
                 <span style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--accent)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
@@ -748,7 +748,7 @@ export default function KnowledgePage() {
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '200px', overflowY: 'auto' }}>
                   {evidence.map((ev, i) => (
-                    <div key={i} style={{ padding: '10px 12px', borderRadius: '10px', background: 'rgba(0,0,0,0.02)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <div key={i} style={{ padding: '10px 12px', borderRadius: '10px', background: 'var(--fill)', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                         <Badge variant={EvidenceRoleVariant(ev.evidence_role)}>{EvidenceRoleLabel(ev.evidence_role)}</Badge>
                         <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>{formatConfidence(ev.confidence)}</span>
