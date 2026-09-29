@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import {
   Upload, RefreshCw, Trash2, FileText,
-  Folder, FolderOpen, BookOpen, ClipboardCheck, BookMarked, X,
+  Folder, FolderOpen, BookOpen, ClipboardCheck, BookMarked, X, Files, Eye,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { api } from '@/api/client';
@@ -11,9 +11,10 @@ import { useToastStore } from '@/stores/toast';
 import { Button, Modal, Badge, SkeletonCardGrid } from '@/components/ui';
 import { computeSha256 } from '@/lib/sha256';
 import { PARSE_STATUS_LABELS } from '@/utils/format';
-import type { MaterialResponse } from '@/types/api';
+import { qlabel } from '@/lib/examDisplay';
+import type { MaterialResponse, PaperArchiveDetail, PaperArchiveSummary } from '@/types/api';
 
-type FolderKey = 'syllabus' | 'materials';
+type FolderKey = 'syllabus' | 'materials' | 'papers';
 type SubFolderKey = 'teaching_syllabus' | 'assessment_syllabus' | 'teaching_material' | 'exercise';
 
 interface SubFolderMeta {
@@ -104,6 +105,14 @@ const FOLDER_GROUPS: FolderMeta[] = [
       { key: 'exercise', name: '习题', description: '练习与试卷', icon: FileText, color: 'var(--warning)' },
     ],
   },
+  {
+    key: 'papers',
+    name: '试卷',
+    description: '从试卷页保存的归档，可编辑可下载',
+    icon: Files,
+    // 无子分区：进文件夹直接看归档列表
+    subFolders: [],
+  },
 ];
 
 const ALL_TYPE_OPTIONS = [
@@ -146,6 +155,13 @@ export default function MaterialsPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
 
+  // ── 「试卷」文件夹：归档快照（与材料文件夹无关，走 paper-archives 接口） ──
+  const [archives, setArchives] = useState<PaperArchiveSummary[]>([]);
+  const [archivesLoading, setArchivesLoading] = useState(true);
+  const [archiveDetail, setArchiveDetail] = useState<PaperArchiveDetail | null>(null);
+  const [archiveDeleteId, setArchiveDeleteId] = useState<string | null>(null);
+  const [archiveBusy, setArchiveBusy] = useState(false);
+
   // 单一批量轮询定时器：多文件解析共享一个定时器，一次静默 list 返回全部状态，避免 N 个定时器各查一次库
   const pollingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -163,13 +179,54 @@ export default function MaterialsPage() {
     }
   }, [courseId, addToast]);
 
+  // 归档列表随页面挂载取一次：状态变更全部落在 await 之后，不进 effect 同步 setState；
+  // 供根文件夹计数与「试卷」文件夹列表共用
+  const loadArchives = useCallback(async () => {
+    if (!courseId) return;
+    try {
+      const data = await api.paperArchives.list(courseId);
+      setArchives(Array.isArray(data) ? data : []);
+    } catch {
+      addToast('加载试卷归档失败', 'error');
+    } finally {
+      setArchivesLoading(false);
+    }
+  }, [courseId, addToast]);
+
   useEffect(() => {
+    // 挂载一次取两个列表：材料（解析轮询的基准）+ 归档（根文件夹计数也依赖它）
     loadMaterials();
+    void loadArchives();
     return () => {
       if (pollingTimerRef.current) clearInterval(pollingTimerRef.current);
       pollingTimerRef.current = null;
     };
-  }, [loadMaterials]);
+  }, [loadMaterials, loadArchives]);
+
+  const openArchive = async (id: string) => {
+    if (!courseId) return;
+    try {
+      setArchiveDetail(await api.paperArchives.get(courseId, id));
+    } catch {
+      addToast('加载归档详情失败', 'error');
+    }
+  };
+
+  // 归档删除 = 真删；只影响文件夹里的副本，不动原试卷
+  const handleArchiveDelete = async () => {
+    if (!courseId || !archiveDeleteId) return;
+    setArchiveBusy(true);
+    try {
+      await api.paperArchives.remove(courseId, archiveDeleteId);
+      setArchives((prev) => prev.filter((a) => a.id !== archiveDeleteId));
+      setArchiveDeleteId(null);
+      addToast('已删除归档试卷', 'success');
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : '删除归档失败', 'error');
+    } finally {
+      setArchiveBusy(false);
+    }
+  };
 
   const filteredMaterials = useMemo(() => {
     if (activeSubFolder) return materials.filter((m) => m.material_type === activeSubFolder);
@@ -385,6 +442,80 @@ export default function MaterialsPage() {
   const currentFolder = activeFolder ? FOLDER_GROUPS.find((f) => f.key === activeFolder) : null;
   const currentSubFolder = activeSubFolder ? currentFolder?.subFolders.find((s) => s.key === activeSubFolder) : null;
 
+  const archiveGrid = () => {
+    if (archivesLoading) return <SkeletonCardGrid count={3} />;
+
+    if (archives.length === 0) {
+      return (
+        <div style={{ padding: '80px 20px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', textAlign: 'center' }}>
+          <div style={{ width: 56, height: 56, borderRadius: 'var(--radius-lg)', background: 'var(--brand)', color: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <Files size={28} />
+          </div>
+          <h3 style={{ fontSize: '1.125rem', fontWeight: 600 }}>暂无归档试卷</h3>
+          <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)', maxWidth: 460 }}>
+            在试卷页点「保存到资料库」，这里就会多出一份副本。
+            归档是独立快照：原卷被「只留最近 3 份」清掉后，它依然可看、可编辑、可下载。
+          </p>
+        </div>
+      );
+    }
+
+    return (
+      <div className="bento bento-3">
+        {archives.map((a) => (
+          <div
+            key={a.id}
+            className="sub-section"
+            style={{ padding: '18px', display: 'flex', flexDirection: 'column', gap: '12px' }}
+          >
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
+              <div style={{
+                width: 44, height: 44, borderRadius: '12px',
+                background: 'var(--accent-subtle)', color: 'var(--accent)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+              }}>
+                <FileText size={22} />
+              </div>
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <h4 style={{
+                  fontSize: '0.95rem', fontWeight: 600, margin: 0,
+                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }} title={a.name}>
+                  {a.name}
+                </h4>
+                <p style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', marginTop: '4px' }}>
+                  {a.project_name ?? '未知项目'}
+                  {a.source_version_no != null ? ` · 源卷 v${a.source_version_no}` : ''}
+                </p>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: 'auto' }}>
+              <Badge variant="default">{a.item_count} 题</Badge>
+              <Badge variant="info">{a.total_score} 分</Badge>
+              <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)', marginLeft: 'auto' }}>
+                {a.created_at.slice(0, 10)}
+              </span>
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <Button
+                variant="secondary" size="sm" onClick={() => void openArchive(a.id)}
+                icon={<Eye size={14} />} style={{ flex: 1 }}
+              >
+                查看
+              </Button>
+              <Button
+                variant="danger" size="sm" onClick={() => setArchiveDeleteId(a.id)}
+                icon={<Trash2 size={14} />}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   const fileGrid = () => {
     if (loading) {
       return <SkeletonCardGrid count={6} />;
@@ -393,7 +524,7 @@ export default function MaterialsPage() {
     if (filteredMaterials.length === 0) {
       return (
         <div style={{ padding: '80px 20px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', textAlign: 'center' }}>
-          <div style={{ width: 56, height: 56, borderRadius: 'var(--radius-lg)', background: 'var(--accent-subtle)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ width: 56, height: 56, borderRadius: 'var(--radius-lg)', background: 'var(--brand)', color: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <FileText size={28} />
           </div>
           <h3 style={{ fontSize: '1.125rem', fontWeight: 600 }}>暂无资料</h3>
@@ -470,23 +601,28 @@ export default function MaterialsPage() {
 
   return (
     <div className="page-enter page-stack">
-      {/* Header */}
+      {/* Header（「试卷」文件夹不上传材料，藏掉上传入口） */}
       <div className="page-header">
         <div>
           <h1 className="page-title">资料库</h1>
           <p className="page-subtitle">按文件夹管理课程大纲与教学资料</p>
         </div>
-        <Button onClick={openUpload} icon={<Upload size={16} />}>
-          上传资料
-        </Button>
+        {activeFolder !== 'papers' && (
+          <Button onClick={openUpload} icon={<Upload size={16} />}>
+            上传资料
+          </Button>
+        )}
       </div>
 
-      {/* ── 根视图：两个一级文件夹（bento 大格） ── */}
+      {/* ── 根视图：三个一级文件夹（bento 大格） ── */}
       {activeFolder === null && (
-        <div className="bento bento-2">
+        <div className="bento bento-3">
           {FOLDER_GROUPS.map((f) => {
             const Icon = f.icon;
-            const count = f.subFolders.reduce((sum, s) => sum + countByType(s.key), 0);
+            // 「试卷」的计数来自归档接口，不走 material_type 统计
+            const count = f.key === 'papers'
+              ? archives.length
+              : f.subFolders.reduce((sum, s) => sum + countByType(s.key), 0);
             return (
               <button
                 key={f.key}
@@ -497,9 +633,8 @@ export default function MaterialsPage() {
                   cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '18px',
                 }}
               >
-                <div style={{
-                  width: 56, height: 56, borderRadius: '16px',
-                  background: 'var(--accent-subtle)', color: 'var(--accent)',
+                <div className="icon-box" style={{
+                  width: 56, height: 56, borderRadius: 16,
                   display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
                 }}>
                   <Icon size={28} />
@@ -507,7 +642,9 @@ export default function MaterialsPage() {
                 <div style={{ minWidth: 0 }}>
                   <h3 style={{ fontSize: '1.05rem', fontWeight: 600, marginBottom: '4px' }}>{f.name}</h3>
                   <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{f.description}</p>
-                  <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '6px' }}>{count} 份文件</p>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '6px' }}>
+                    {count} {f.key === 'papers' ? '份试卷' : '份文件'}
+                  </p>
                 </div>
               </button>
             );
@@ -515,8 +652,25 @@ export default function MaterialsPage() {
         </div>
       )}
 
-      {/* ── 一级视图：子文件夹 ── */}
-      {activeFolder !== null && activeSubFolder === null && currentFolder && (
+      {/* ── 「试卷」文件夹：归档列表（无子分区，进文件夹即列卷） ── */}
+      {activeFolder === 'papers' && (
+        <div className="glass-card" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '18px' }}>
+          <div className="row">
+            <Button variant="secondary" size="sm" onClick={() => setActiveFolder(null)}>
+              返回文件夹
+            </Button>
+            <span style={{ color: 'var(--text-tertiary)' }}>/</span>
+            <h2 style={{ fontSize: '1.15rem', fontWeight: 600 }}>试卷</h2>
+            <span style={{ fontSize: '0.85rem', color: 'var(--text-tertiary)' }}>
+              ({archives.length} 份)
+            </span>
+          </div>
+          {archiveGrid()}
+        </div>
+      )}
+
+      {/* ── 一级视图：子文件夹（「试卷」无子分区，走上一支） ── */}
+      {activeFolder !== null && activeFolder !== 'papers' && activeSubFolder === null && currentFolder && (
         <div className="glass-card" style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: '18px' }}>
           <div className="row">
             <Button variant="secondary" size="sm" onClick={() => setActiveFolder(null)}>
@@ -666,6 +820,69 @@ export default function MaterialsPage() {
         danger
       >
         <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>确定要删除这份资料吗？此操作不可撤销。</p>
+      </Modal>
+
+      {/* ── 归档试卷详情（只读快照；P2c 起在此处加编辑与导出） ── */}
+      <Modal
+        open={!!archiveDetail}
+        onClose={() => setArchiveDetail(null)}
+        title={archiveDetail ? archiveDetail.name : '归档试卷'}
+        maxWidth="720px"
+      >
+        {archiveDetail && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+              <span>来源项目：{archiveDetail.project_name ?? '未知'}</span>
+              {archiveDetail.source_version_no != null && <span>· 源卷 v{archiveDetail.source_version_no}</span>}
+              <span>· {archiveDetail.item_count} 题 / {archiveDetail.total_score} 分</span>
+              <span>· 保存于 {archiveDetail.created_at.slice(0, 10)}</span>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', maxHeight: '360px', overflowY: 'auto' }}>
+              {archiveDetail.questions.map((q) => (
+                <div
+                  key={q.item_index}
+                  style={{
+                    padding: '10px 12px', background: 'var(--surface-elevated)',
+                    border: '1px solid var(--line)', borderRadius: '12px',
+                  }}
+                >
+                  <div style={{ display: 'flex', gap: '8px', alignItems: 'center', fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
+                    <span>{q.item_index}.</span>
+                    <Badge variant="default">{qlabel(q.question_type)}</Badge>
+                    <span>{q.score} 分</span>
+                  </div>
+                  <p style={{
+                    fontSize: '0.85rem', margin: '6px 0 0', color: 'var(--text-secondary)',
+                    display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+                    overflow: 'hidden',
+                  }}>
+                    {q.stem || '（无题干）'}
+                  </p>
+                </div>
+              ))}
+            </div>
+
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
+              归档是独立副本：即使源卷已被「只留最近 3 份」从库里删除，这里的内容仍完整保留。
+            </p>
+          </div>
+        )}
+      </Modal>
+
+      {/* ── 归档删除确认 ── */}
+      <Modal
+        open={!!archiveDeleteId}
+        onClose={() => setArchiveDeleteId(null)}
+        title="确认删除"
+        onConfirm={handleArchiveDelete}
+        confirmLabel="删除"
+        loading={archiveBusy}
+        danger
+      >
+        <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
+          确定要删除这份归档试卷吗？此操作不可撤销（不影响原试卷）。
+        </p>
       </Modal>
     </div>
   );

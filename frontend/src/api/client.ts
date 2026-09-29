@@ -9,6 +9,7 @@ import { materialsApi } from './domains/materials';
 import { frameworkApi } from './domains/framework';
 import { examProjectsApi } from './domains/examProjects';
 import { paperVersionsApi } from './domains/paperVersions';
+import { paperArchivesApi } from './domains/paperArchives';
 
 export const api = {
   health: () => request('/health'),
@@ -20,5 +21,6 @@ export const api = {
   framework: frameworkApi,
   examProjects: examProjectsApi,
   paperVersions: paperVersionsApi,
+  paperArchives: paperArchivesApi,
   uploadBinary,
 };

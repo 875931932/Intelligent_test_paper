@@ -49,6 +49,8 @@ export default function PaperPanel({
   const [onlyNeedsReview, setOnlyNeedsReview] = useState(false);
   const [saving, setSaving] = useState(false);
   const [adding, setAdding] = useState(false);
+  // 保存到资料库（快照归档）的提交态：按钮防重复点击
+  const [archiving, setArchiving] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [finalizeOpen, setFinalizeOpen] = useState(false);
   // 单题 AI 改题面板的展开状态：一次会话属于一道题，切题即收起
@@ -296,6 +298,21 @@ export default function PaperPanel({
     }
   };
 
+  // 保存到资料库：存的是独立快照副本（不给 source 即存当前卷），与「只留 3 份」无关
+  const handleArchive = async () => {
+    setArchiving(true);
+    try {
+      const saved = await api.paperArchives.archive(
+        courseId, project?.id ?? pv.exam_project_id, {}, token ?? undefined,
+      );
+      addToast(`已保存到资料库「试卷」：${saved.name}`, 'success');
+    } catch (e) {
+      addToast('保存失败: ' + getErrorMessage(e), 'error');
+    } finally {
+      setArchiving(false);
+    }
+  };
+
   // ── 导出与整体预览 ──
   // 导出端点需要 Authorization 头：iframe / window.open 裸开 URL 都带不了，
   // 也禁止把 token 拼进 query（会进浏览器历史与日志）。统一做法是带鉴权
@@ -520,6 +537,8 @@ export default function PaperPanel({
         onRevert={handleRevert}
         onRegenerate={onRegenerate}
         onReview={() => setReviewOpen((v) => !v)}
+        onArchive={handleArchive}
+        archiving={archiving}
       />
 
       {/* AI 质量评审面板：只读报告，工具栏按钮开关；试卷加载即可用（含 readonly/定稿态）。

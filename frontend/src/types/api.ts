@@ -28,6 +28,8 @@ export interface CourseCreate {
   name: string;
   slug?: string;
   description?: string;
+  /** 课程类别（题型集合/格式预设选取键，取自 GET /courses/categories） */
+  category?: string;
 }
 export interface CourseUpdate {
   name?: string;
@@ -40,6 +42,15 @@ export interface CourseResponse {
   name: string;
   slug: string;
   description: string | null;
+  category: string;
+}
+
+/** 课程类别清单条目（GET /courses/categories，数据源为后端类别档案） */
+export interface CourseCategoryInfo {
+  key: string;
+  label: string;
+  description: string;
+  question_types: string[];
 }
 
 // ── Material ──
@@ -200,6 +211,11 @@ export interface ExamRules {
   chapter_weights: ExamRuleChapterWeight[];
   /** 考试侧重点：各考查方式权重（保存时归一到 100）；空 = 均衡（按题型默认分布） */
   assessment_focus?: ExamRuleFocus[];
+  /**
+   * 题型出题格式覆盖 {question_type: 完整格式要求}：课程级，压过类别预设与全局档案。
+   * 未覆盖的题型回落默认；缺省/空 = 无覆盖。AI 助手经 PATCH .../rules/type-formats 逐键修改。
+   */
+  type_formats?: Record<string, string>;
 }
 
 export interface ExamRuleTypeRatio {
@@ -538,6 +554,36 @@ export interface PaperVersionSummary {
   finalized_at?: string | null;
 }
 
+/**
+ * 资料库「试卷」文件夹的归档条目（GET …/paper-archives）。
+ * 归档是独立快照副本：与 paper_versions 无外键牵连，源卷被「只留最近 3 份」
+ * 的保留策略物理删除后仍可看/编辑/下载；列表不带快照内容。
+ */
+export interface PaperArchiveSummary {
+  id: string;
+  exam_project_id: string;
+  project_name: string | null;
+  source_paper_version_id: string | null;
+  source_version_no: number | null;
+  name: string;
+  item_count: number;
+  total_score: number;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** 归档详情：档案字段 + 快照（questions 与 PaperVersion 同构，已合并 teacher_override） */
+export interface PaperArchiveDetail extends PaperArchiveSummary {
+  snapshot: {
+    version_no: number;
+    status: string;
+    total_score: number;
+    questions: PaperVersionItem[];
+  };
+  questions: PaperVersionItem[];
+}
+
 export interface NeedsReviewItem {
   item_index: number;
   question_type: string;
@@ -807,6 +853,8 @@ export interface AssistantActionPayload {
   material_name?: string | null;
   project_id?: string;
   project_name?: string;
+  /** update_question_type_format：题型现格式（空 = 从未设置，走类别/全局默认） */
+  current?: string;
   // 结果卡
   course_name?: string;
   materials?: AssistantMaterialRow[] | { count: number; parse_status: Record<string, number> };

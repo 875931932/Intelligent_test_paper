@@ -1,5 +1,5 @@
 import {
-  Check, ClipboardList, Eye, FileJson, FileSearch, FileText, KeySquare,
+  Check, ClipboardList, Eye, FileJson, FileSearch, FileText, FolderPlus, KeySquare,
   Package, RefreshCw, RotateCcw,
 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
@@ -15,6 +15,7 @@ import { type ExportKind, normalizeAnswer } from './questionShared';
 
 export function PaperProfile({
   pv, project, examPointCount, onExport, onBundle, bundleBusy, onPreview, onFinalize, onRevert, onRegenerate, onReview,
+  onArchive, archiving,
 }: {
   pv: PaperVersion;
   project?: ExamProject;
@@ -27,6 +28,9 @@ export function PaperProfile({
   onRevert: () => void;
   onRegenerate: () => void;
   onReview: () => void;
+  /** 存一份快照副本进资料库「试卷」文件夹（不受「只留 3 份」约束） */
+  onArchive: () => void;
+  archiving?: boolean;
 }) {
   const questions = pv.questions;
   const typeAcc = new Map<string, { score: number; count: number }>();
@@ -103,6 +107,14 @@ export function PaperProfile({
             一键打包
           </Button>
           <Button variant="secondary" size="sm" onClick={onPreview} icon={<Eye size={14} />}>整体预览</Button>
+          {/* 归档 = 存独立快照副本：源卷被「只留 3 份」清掉后副本仍在资料库里 */}
+          <Button
+            variant="secondary" size="sm" onClick={onArchive} loading={archiving}
+            icon={<FolderPlus size={14} />}
+            title="在资料库「试卷」文件夹存一份可编辑、可下载的副本（不受只留 3 份限制）"
+          >
+            保存到资料库
+          </Button>
           {/* 只读评审对定稿卷同样可用：不按 readonly/finalized 收起 */}
           <Button variant="secondary" size="sm" onClick={onReview} icon={<FileSearch size={14} />} title="AI 对整份试卷稿出一份只读质量评审报告（不含学生答卷评分）">
             AI 质量评审
