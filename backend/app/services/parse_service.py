@@ -116,12 +116,22 @@ def latest_parse_status(session: Session, *, course_id: str, material_version_id
 
 
 def _mark_run_failed(session: Session, *, course_id: str, run_id: str, error_code: str, error_summary: str) -> None:
-    """提交阶段失败的收尾：把本次 run 落成 failed 并提交，避免留下停在 queued 的僵尸行。"""
+    """提交/启动阶段失败的收尾：把仍停在 queued 的 run 落成 failed。
 
+    仅在 status='queued' 时生效——已 submitted/ready 的运行不许被覆盖，
+    因此可以安全地在异常链上重复调用（内层写具体 code，外层兜底）。
+    先 rollback：失败点可能把会话留在脏/中止状态，收尾写库前必须清干净。
+    """
+
+    session.rollback()
     now = datetime.now(UTC)
     session.execute(
         update(document_parse_runs)
-        .where(document_parse_runs.c.id == run_id, document_parse_runs.c.course_id == course_id)
+        .where(
+            document_parse_runs.c.id == run_id,
+            document_parse_runs.c.course_id == course_id,
+            document_parse_runs.c.status == "queued",
+        )
         .values(status="failed", error_code=error_code, error_summary=error_summary[:500], updated_at=now, completed_at=now)
     )
     session.commit()
@@ -169,8 +179,13 @@ def start_parse(
                 content=content,
                 markdown=mime_type != "text/plain",
             )
-        except DocumentParserError as exc:
-            raise ParseError(f"local text parse failed: {exc}") from exc
+        except Exception as exc:
+            # 本地链路失败同样要收尾：否则留下停在 queued 的 run，
+            # 前端会永远显示"解析中"且 poll 撞 409 无法自愈。
+            _mark_run_failed(session, course_id=course_id, run_id=run_id, error_code="start_failed", error_summary=str(exc))
+            if isinstance(exc, DocumentParserError):
+                raise ParseError(f"local text parse failed: {exc}") from exc
+            raise
         return {"run_id": run_id, "status": "ready", "reused": False}
     parser = build_mineru_client()
 
