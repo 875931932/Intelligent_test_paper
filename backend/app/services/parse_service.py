@@ -10,9 +10,10 @@ ready 结果），前端轮询 poll 端点推进状态机直至 ready/failed。�
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime
 from typing import Iterator, Protocol
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.adapters.document.mineru_client import MineruClient
@@ -114,6 +115,18 @@ def latest_parse_status(session: Session, *, course_id: str, material_version_id
     return dict(row) if row is not None else None
 
 
+def _mark_run_failed(session: Session, *, course_id: str, run_id: str, error_code: str, error_summary: str) -> None:
+    """提交阶段失败的收尾：把本次 run 落成 failed 并提交，避免留下停在 queued 的僵尸行。"""
+
+    now = datetime.now(UTC)
+    session.execute(
+        update(document_parse_runs)
+        .where(document_parse_runs.c.id == run_id, document_parse_runs.c.course_id == course_id)
+        .values(status="failed", error_code=error_code, error_summary=error_summary[:500], updated_at=now, completed_at=now)
+    )
+    session.commit()
+
+
 def start_parse(
     session: Session,
     storage: ParseStorage,
@@ -178,6 +191,9 @@ def start_parse(
     try:
         asyncio.run(submit_parse_run(session, parser, course_id=course_id, run_id=run_id, request=request))
     except DocumentParserError as exc:
+        # 提交失败必须收尾成 failed：留 queued 的行会让前端永远显示"解析中"，
+        # 且后续 poll 撞 409（run created but never submitted）无法自愈。
+        _mark_run_failed(session, course_id=course_id, run_id=run_id, error_code="submit_failed", error_summary=str(exc))
         raise ParseError(f"mineru submit failed: {exc}", status_code=502) from exc
     row = session.execute(
         select(document_parse_runs.c.status).where(

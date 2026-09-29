@@ -211,6 +211,51 @@ def test_parse_reuses_ready_result_for_same_hash(client, monkeypatch):
     assert len(parser.submitted) == 1
 
 
+def test_parse_submit_failure_marks_run_failed_not_queued(client, monkeypatch):
+    """MinerU 拒收时必须把 run 收尾成 failed：留 queued 会让前端永远"解析中"且 poll 撞 409。"""
+
+    monkeypatch.setattr(settings, "mineru_api_token", "mineru-test-token")
+    storage = FakeStorage()
+    client.app.state.storage = storage
+    course = _course(client, slug="submit-fail-course")
+    version = _upload_material(client, course["id"], filename="slides.pdf")
+
+    class _RejectingParser:
+        async def submit(self, request: ParseRequest) -> ParseSubmission:
+            raise DocumentProviderError("unsupported file type: slides.pdf")
+
+        async def poll(self, provider_batch_id: str) -> ParseProgress:
+            raise AssertionError("submit 已失败，不应再 poll")
+
+        async def fetch(self, provider_batch_id: str) -> ParseArtifact:
+            raise AssertionError("submit 已失败，不应再 fetch")
+
+    monkeypatch.setattr(parse_service, "build_mineru_client", lambda: _RejectingParser())
+
+    resp = client.post(f"/api/v1/courses/{course['id']}/materials/{version['material_id']}/parse")
+    assert resp.status_code == 502
+    assert "mineru submit failed" in resp.json()["detail"]
+
+    with client.app.state.test_engine.begin() as connection:
+        run = connection.execute(
+            text("SELECT status, error_code, error_summary FROM document_parse_runs WHERE material_version_id = :v"),
+            {"v": version["id"]},
+        ).one()
+    assert (run.status, run.error_code) == ("failed", "submit_failed")
+    assert "unsupported file type" in run.error_summary
+
+    listed = client.get(f"/api/v1/courses/{course['id']}/materials")
+    item = next(m for m in listed.json() if m["id"] == version["material_id"])
+    assert item["parse_status"]["status"] == "failed"
+
+    # 失败的 run 不参与复用：换可用解析器重触发走全新 run
+    monkeypatch.setattr(parse_service, "build_mineru_client", lambda: FakeMineruParser([ParseState.DONE]))
+    retry = client.post(f"/api/v1/courses/{course['id']}/materials/{version['material_id']}/parse")
+    assert retry.status_code == 202
+    assert retry.json()["reused"] is False
+    assert retry.json()["status"] == "submitted"
+
+
 def test_parse_markdown_and_text_use_local_path_without_mineru(client, monkeypatch):
     """md/txt 不经 MinerU：提交即 ready、落块带 heading_path、同哈希可复用。"""
 

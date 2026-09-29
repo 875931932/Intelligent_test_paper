@@ -175,6 +175,11 @@ export default function MaterialsPage() {
 
   // 单一批量轮询定时器：多文件解析共享一个定时器，一次静默 list 返回全部状态，避免 N 个定时器各查一次库
   const pollingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // 定时器只建一次、回调闭包会拿首轮的旧清单：解析中的文件清单必须经 ref 取当前值
+  const materialsRef = useRef<MaterialResponse[]>([]);
+  useEffect(() => {
+    materialsRef.current = materials;
+  }, [materials]);
 
   const loadMaterials = useCallback(async (silent = false) => {
     if (!courseId) return;
@@ -399,11 +404,17 @@ export default function MaterialsPage() {
   };
 
   // ── 解析 ──
-  // 单一批量轮询：所有解析中的文件共享一个定时器，每次静默 list 一次拿到全部 parse_status，
-  // 相比每文件一个定时器各查一次接口，显著减少数据库查询。全部 terminal 即停止并提示一次。
+  // 单一批量轮询：所有解析中的文件共享一个定时器，每次先逐份 /parse/poll 推进状态机
+  //（MinerU 提交后必须有人推进，否则永远停在 submitted/running），再静默 list 一次拿到
+  // 全部 parse_status。全部 terminal 即停止并提示一次。
   const startPolling = useCallback(() => {
     if (!courseId || pollingTimerRef.current) return;
     pollingTimerRef.current = setInterval(async () => {
+      const pending = materialsRef.current.filter(isParsing);
+      if (pending.length > 0) {
+        // 单份推进失败不影响其余（如 run 尚未提交的 409）；真实终态由随后的 list 反映
+        await Promise.allSettled(pending.map((m) => api.materials.pollParse(courseId, m.id)));
+      }
       // 静默刷新（不置 loading），避免整页闪烁
       await loadMaterials(true);
     }, 2000);
