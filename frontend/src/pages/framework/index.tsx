@@ -588,10 +588,11 @@ function CandidateView({ courseId, candidate, rejecting, onReject, onOpenConfirm
         onSaved={onRulesSaved}
       />
 
-      <FrameworkBreakdown anchors={anchors} points={points} />
-
-      {/* AI 评审（只读报告）：放在确认按钮之前，教师读完报告再决定确认/拒绝 */}
+      {/* AI 评审（只读报告）：置于规则卡之后、考点分解之前——教师先看到评审
+         结论再逐章核对明细，不用滚到页面底部才发现报告 */}
       <FrameworkReviewPanel courseId={courseId} />
+
+      <FrameworkBreakdown anchors={anchors} points={points} />
 
       {/* Actions: 固定在视口底部，内容较多时无需滚到页面最下方 */}
       <div style={{
