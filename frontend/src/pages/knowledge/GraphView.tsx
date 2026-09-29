@@ -1,4 +1,4 @@
-import { useState, useMemo, memo } from 'react';
+import { useState, useMemo, useCallback, useRef, memo, useEffect } from 'react';
 import { Network } from 'lucide-react';
 import type { FrameworkExamPoint, AssessmentUnit, KnowledgeCard } from '@/types/api';
 import { truncate } from './knowledgeShared';
@@ -93,6 +93,20 @@ export const GraphView = memo(function GraphView(props: {
 }) {
   const { examPoints, units, cardsDict, filteredCardIds, onCardClick } = props;
   const [hoverPoint, setHoverPoint] = useState<string | null>(null);
+  // 浮层关闭宽限：鼠标从节点移向浮层时有 14px 空隙，不留宽限会当场卸载
+  // （用户根本来不及把光标移上去点卡片）。离开后 150ms 内进入浮层即取消关闭。
+  const closeTimer = useRef<number | null>(null);
+  const cancelClose = useCallback(() => {
+    if (closeTimer.current !== null) {
+      window.clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+  }, []);
+  const scheduleClose = useCallback(() => {
+    cancelClose();
+    closeTimer.current = window.setTimeout(() => setHoverPoint(null), 150);
+  }, [cancelClose]);
+  useEffect(() => cancelClose, [cancelClose]);
 
   // 卡片 → 考点（经单元归组）；统计仅算过滤后可见卡片
   const cardsByPoint = useMemo(() => {
@@ -211,13 +225,15 @@ export const GraphView = memo(function GraphView(props: {
   }
 
   return (
-    <div style={{ position: 'relative' }}>
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        style={{ width: '100%', maxHeight: 760, display: 'block', background: 'transparent' }}
-        role="img"
-        aria-label="知识图谱：章节权重扇区与考点关系"
-      >
+    <div>
+      {/* SVG 独立相对容器：浮层百分比锚定只映射画布，不受下方图例高度影响 */}
+      <div style={{ position: 'relative' }}>
+        <svg
+          viewBox={`0 0 ${W} ${H}`}
+          style={{ width: '100%', maxHeight: 760, display: 'block', background: 'transparent' }}
+          role="img"
+          aria-label="知识图谱：章节权重扇区与考点关系"
+        >
         <defs>
           <marker id="rg-arrow" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
             <path d="M0,0 L6,2.5 L0,5 Z" fill="#3b82f6" />
@@ -286,8 +302,8 @@ export const GraphView = memo(function GraphView(props: {
             <g
               key={n.point.id}
               opacity={dim ? 0.25 : 1}
-              onPointerEnter={() => setHoverPoint(n.point.id)}
-              onPointerLeave={() => setHoverPoint((h) => (h === n.point.id ? null : h))}
+              onPointerEnter={() => { cancelClose(); setHoverPoint(n.point.id); }}
+              onPointerLeave={scheduleClose}
               style={{ cursor: 'pointer', transition: 'opacity .2s' }}
             >
               <circle cx={n.x} cy={n.y} r={n.r + (hov ? 4 : 0)} fill={n.chapter.color} opacity={0.16} />
@@ -311,58 +327,69 @@ export const GraphView = memo(function GraphView(props: {
             </g>
           );
         })}
-      </svg>
+        </svg>
 
-      {/* 考点详情浮层：该考点下的卡片清单（点击卡片进详情抽屉） */}
-      {hovered && (
-        <div
-          style={{
-            position: 'absolute',
-            left: `${(hovered.x / W) * 100}%`,
-            top: `${(hovered.y / H) * 100}%`,
-            transform: 'translate(-50%, calc(-100% - 14px))',
-            width: 260,
-            background: 'var(--surface-solid)',
-            border: '1px solid var(--line)',
-            borderRadius: 'var(--radius-md)',
-            boxShadow: 'var(--shadow-3)',
-            padding: '12px 14px',
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 8,
-            zIndex: 5,
-          }}
-          onPointerLeave={() => setHoverPoint(null)}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: hovered.chapter.color, flexShrink: 0 }} />
-            <strong style={{ fontSize: '0.85rem', lineHeight: 1.35 }}>{hovered.point.title || hovered.point.code}</strong>
-          </div>
-          <div style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>
-            {hovered.point.code} · {truncate(hovered.chapter.title, 12)} · 权重 {formatPercent(hovered.point.weight_value)} · {hovered.cardCount} 卡（已落地 {hovered.groundedCount}）
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 180, overflowY: 'auto' }}>
-            {hoveredCards.length === 0 && (
-              <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>当前过滤下无可见卡片</p>
-            )}
-            {hoveredCards.slice(0, 20).map((c) => (
-              <button
-                key={c.id}
-                type="button"
-                onClick={() => onCardClick(c.id)}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px',
-                  border: 'none', borderRadius: 'var(--radius-sm)', background: 'var(--fill)',
-                  cursor: 'pointer', textAlign: 'left', fontSize: '0.78rem',
-                }}
-              >
-                <span style={{ width: 6, height: 6, borderRadius: '50%', flexShrink: 0, background: c.grounded ? 'var(--success)' : 'var(--error)' }} />
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
+        {/* 考点详情浮层：该考点下的卡片清单（点击卡片进详情抽屉）。
+            上下半屏翻转 placement（顶部节点浮层向下，避免被卡片上缘裁剪），
+            左右边缘 15% 区域内改边缘锚定（避免横向裁剪）。 */}
+        {hovered && (() => {
+          const below = hovered.y < H * 0.45;
+          const pct = (hovered.x / W) * 100;
+          const edge = pct < 18 ? 'left' : pct > 82 ? 'right' : 'center';
+          const tx = edge === 'left' ? '0%' : edge === 'right' ? '-100%' : '-50%';
+          const ty = below ? '14px' : 'calc(-100% - 14px)';
+          return (
+            <div
+              onPointerEnter={cancelClose}
+              onPointerLeave={scheduleClose}
+              style={{
+                position: 'absolute',
+                left: `${pct}%`,
+                top: `${(hovered.y / H) * 100}%`,
+                transform: `translate(${tx}, ${ty})`,
+                width: 260,
+                background: 'var(--surface-solid)',
+                border: '1px solid var(--line)',
+                borderRadius: 'var(--radius-md)',
+                boxShadow: 'var(--shadow-3)',
+                padding: '12px 14px',
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 8,
+                zIndex: 5,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ width: 8, height: 8, borderRadius: '50%', background: hovered.chapter.color, flexShrink: 0 }} />
+                <strong style={{ fontSize: '0.85rem', lineHeight: 1.35 }}>{hovered.point.title || hovered.point.code}</strong>
+              </div>
+              <div style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>
+                {hovered.point.code} · {truncate(hovered.chapter.title, 12)} · 权重 {formatPercent(hovered.point.weight_value)} · {hovered.cardCount} 卡（已落地 {hovered.groundedCount}）
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 180, overflowY: 'auto' }}>
+                {hoveredCards.length === 0 && (
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>当前过滤下无可见卡片</p>
+                )}
+                {hoveredCards.slice(0, 20).map((c) => (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => onCardClick(c.id)}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px',
+                      border: 'none', borderRadius: 'var(--radius-sm)', background: 'var(--fill)',
+                      cursor: 'pointer', textAlign: 'left', fontSize: '0.78rem',
+                    }}
+                  >
+                    <span style={{ width: 6, height: 6, borderRadius: '50%', flexShrink: 0, background: c.grounded ? 'var(--success)' : 'var(--error)' }} />
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        })()}
+      </div>
 
       {/* 图例 */}
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', padding: '10px 4px 0', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
