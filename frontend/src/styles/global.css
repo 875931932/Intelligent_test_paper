@@ -138,10 +138,11 @@ body {
    ═══════════════════════════════════════════════ */
 
 .tile-dark { background: #18181b; color: #ffffff; }
+/* 实色瓦片一律用色板原值（showcase palette：#3b82f6 / #8b5cf6 / #ec4899 / #f97316） */
 .tile-brand { background: var(--brand); color: #ffffff; }
-.tile-purple { background: var(--purple); color: #ffffff; }
-.tile-pink { background: var(--pink); color: #ffffff; }
-.tile-orange { background: var(--warning); color: #ffffff; }
+.tile-purple { background: var(--acc-violet); color: #ffffff; }
+.tile-pink { background: var(--acc-pink); color: #ffffff; }
+.tile-orange { background: var(--acc-orange); color: #ffffff; }
 
 .tile-brand-soft { background: var(--brand-subtle); color: var(--brand-ink); }
 .tile-purple-soft { background: var(--purple-subtle); color: var(--purple-ink); }

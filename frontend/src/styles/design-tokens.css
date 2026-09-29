@@ -91,8 +91,12 @@
   --purple-soft: #ddd6fe;
   --purple-ink: #6d28d9;
 
-  /* ── 便当强调色（showcase 色彩系统：蓝主强调 / 粉高亮 / 橙能量） ── */
+  /* ── 便当强调色（showcase 色彩系统原值：蓝主强调 / 紫 / 粉高亮 / 橙能量） ── */
   --brand: #3b82f6;
+  --acc-violet: #8b5cf6;
+  --acc-pink: #ec4899;
+  --acc-orange: #f97316;
+  /* -600/-700 派生值仅用于文字 ink 与浅底，瓦片实色一律用上面的原值 */
   --brand-subtle: #eff6ff;
   --brand-ink: #1d4ed8;
   --pink: #ec4899;
