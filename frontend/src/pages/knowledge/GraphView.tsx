@@ -15,14 +15,17 @@ import { formatPercent } from '@/lib/format';
 //   知识卡不占节点——收编进考点，hover 弹出该考点的卡片清单。
 // 布局全确定性（无力图、无随机），同数据永远同构图。
 
-const W = 1160;
-const H = 700;
+const W = 1200;
+const H = 720;
 const CX = W / 2;
 const CY = H / 2 - 10;
-const RC = 132; // 章节环半径
-const RP = 292; // 考点环半径
-const GAP_DEG = 3.2; // 章节扇区间隔（度）：大了才能把边界邻点推开
-const MIN_INNER = 0.05; // 章内边距下限（弧度）：叠加扇区间隔后，同环跨章边界净空 ≈45px
+const RC = 96; // 章节环半径（内移，让出考点节点带与标签文字带）
+const RP = 320; // 考点环半径（外扩，整体更散）
+const GAP_DEG = 5; // 章节扇区间隔（度）
+const MIN_INNER = 0.07; // 章内边距下限（弧度）：叠加扇区间隔后跨章边界角距 ≈13°，最内环上也有 ≥40px 弧长
+const RING_STEP = 42; // 多环锯齿的环距
+const MAX_RINGS = 4; // 环数上限：窄章多点也摊得开（最内环仍避开标签文字带）
+const SPACING_TARGET = 96; // 弧上中心距目标（px）：不足则分环
 
 /** 章节色板（kit 色系，固定顺序分配，保证同章节同色） */
 const CHAPTER_COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f97316', '#22c55e', '#06b6d4', '#eab308', '#64748b'];
@@ -77,10 +80,11 @@ function sectorPath(cx: number, cy: number, r0: number, r1: number, a0: number, 
   ].join(' ');
 }
 
-/** 关系弧：两点间的二次贝塞尔，控制点拉向圆心产生弧感 */
+/** 关系弧：两点间的二次贝塞尔，控制点拉向圆心产生弧感（0.42 浅弧，
+ *  避免短弧下探进章节标签文字带） */
 function arcPath(a: PointNode, b: PointNode): string {
   const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
-  const pull = 0.32;
+  const pull = 0.42;
   const c = { x: CX + (mid.x - CX) * pull, y: CY + (mid.y - CY) * pull };
   return `M ${a.x.toFixed(1)} ${a.y.toFixed(1)} Q ${c.x.toFixed(1)} ${c.y.toFixed(1)} ${b.x.toFixed(1)} ${b.y.toFixed(1)}`;
 }
@@ -130,7 +134,7 @@ export const GraphView = memo(function GraphView(props: {
     return m;
   }, [cardsDict, units, filteredCardIds]);
 
-  // 章节扇区：角度 ∝ 章节权重和（无权重时等分）；考点在扇区内等距铺开
+  // 章节扇区：角度 ∝ 章节权重（设最小角宽保底，无权重时等分）；考点在扇区内等距铺开
   const { chapters, pointNodes, arcs } = useMemo(() => {
     const byChapter = new Map<string, FrameworkExamPoint[]>();
     examPoints.forEach((p) => {
@@ -151,30 +155,64 @@ export const GraphView = memo(function GraphView(props: {
     const useWeight = totalWeight > 0;
     const gap = (GAP_DEG * Math.PI) / 180;
     const usable = raw.length > 1 ? Math.PI * 2 - gap * raw.length : Math.PI * 2;
-    const spanOf = (c: (typeof raw)[number]) =>
-      useWeight ? (c.weight / totalWeight) * usable : usable / raw.length;
+    // 每章最小角宽：窄章（低权重点多）若只按权重分弧，8~9 个考点挤在十几度里
+    // 再分环也散不开。保底 26°，富余光按权重补给未触底的章——
+    // 角度∝权重在大章上依然成立（35% 章仍是最大扇区）。
+    const MIN_SPAN = (32 * Math.PI) / 180;
+    let spans = raw.map((c) => (useWeight ? Math.max(MIN_SPAN, (c.weight / totalWeight) * usable) : usable / raw.length));
+    const spanSum = spans.reduce((s, x) => s + x, 0);
+    if (spanSum > usable) {
+      spans = spans.map((s) => (s * usable) / spanSum);
+    } else {
+      const slack = usable - spanSum;
+      const wsum = raw.reduce((s, c, i) => s + (spans[i] > MIN_SPAN + 1e-9 ? c.weight : 0), 0);
+      if (wsum > 0) {
+        spans = spans.map((s, i) => s + (raw[i].weight / wsum) * slack * (spans[i] > MIN_SPAN + 1e-9 ? 1 : 0));
+      }
+    }
 
     const chapterArcs: ChapterArc[] = [];
     const nodes: PointNode[] = [];
     let angle = -Math.PI / 2; // 12 点方向起笔
 
     raw.forEach((c, ci) => {
-      const span = spanOf(c);
+      const span = spans[ci];
       const arc: ChapterArc = { ...c, a0: angle, a1: angle + span, color: CHAPTER_COLORS[ci % CHAPTER_COLORS.length] };
       chapterArcs.push(arc);
 
       const pts = c.points;
-      // 密章防挤：自适应多环锯齿。弧上中心间距不足 70px 时按需分 2~3 环
-      // （隔点内缩 46px 换 Functional 间距），稀疏章保持单环不抖。
+      // 密章防挤：自适应多环。弧上中心间距不足目标值（84px）时按需分 2~4 环。
+      // 环分配用贪心：同环两点间距 = 角步长 × 环半径，内环半径小，要求索引
+      // 间隔更大（minSteps 按 45px 净空反推）；边界点与密点因此优先落外环，
+      // 跨章边界的邻点也因半径差异自然分离。
       const arcSpacing = pts.length > 1 ? (span * RP) / (pts.length - 1) : Infinity;
-      const rings = pts.length > 2 ? Math.min(3, Math.max(1, Math.ceil(70 / arcSpacing))) : 1;
+      const rings = pts.length > 2
+        ? Math.min(MAX_RINGS, Math.ceil(pts.length / 2), Math.max(1, Math.ceil(SPACING_TARGET / arcSpacing)))
+        : 1;
+      const ringRadii = Array.from({ length: rings }, (_, r) => RP - r * RING_STEP);
+      const inner0 = Math.max(span * 0.12, MIN_INNER);
+      const usableRad = Math.max(0.01, span - inner0 * 2);
+      const stepAngle = usableRad / Math.max(1, pts.length - 1);
+      const minSteps = ringRadii.map((rho) => Math.max(1, Math.ceil(45 / (stepAngle * rho))));
+      const lastIdx = ringRadii.map(() => Number.NEGATIVE_INFINITY);
+      const ringOfIdx: number[] = [];
+      pts.forEach((_pt, pi) => {
+        let pick = 0;
+        let bestGap = Number.NEGATIVE_INFINITY;
+        for (let r = 0; r < rings; r++) {
+          const gap = pi - lastIdx[r];
+          if (gap >= minSteps[r]) { pick = r; break; }
+          if (gap > bestGap) { bestGap = gap; pick = r; }
+        }
+        lastIdx[pick] = pi;
+        ringOfIdx.push(pick);
+      });
       pts.forEach((p, pi) => {
         // 扇区内等距，避开边缘留白（下限保证跨章边界也有净空）
-        const inner = Math.max(span * 0.12, MIN_INNER);
+        const inner = inner0;
         const t = pts.length === 1 ? 0.5 : pi / (pts.length - 1);
         const a = angle + inner + span * (1 - inner * 2 / span) * t;
-        // 章间奇偶错环：相邻章的点尽量落在不同半径，边界邻点径向分离
-        const { x, y } = polar(CX, CY, RP - ((pi + ci) % rings) * 46, a);
+        const { x, y } = polar(CX, CY, ringRadii[ringOfIdx[pi]], a);
         const cards = cardsByPoint.get(p.id) ?? [];
         const grounded = cards.filter((c2) => c2.grounded).length;
         nodes.push({
@@ -254,7 +292,7 @@ export const GraphView = memo(function GraphView(props: {
         {/* 章节标签：沿角平分线外置，按方位自动锚点 */}
         {chapters.map((c) => {
           const mid = (c.a0 + c.a1) / 2;
-          const p = polar(CX, CY, RC + 44, mid);
+          const p = polar(CX, CY, RC + 42, mid);
           const anchor = Math.cos(mid) > 0.25 ? 'start' : Math.cos(mid) < -0.25 ? 'end' : 'middle';
           return (
             <g key={'lab-' + c.key}>
