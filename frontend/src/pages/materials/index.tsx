@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   Upload, RefreshCw, Trash2, FileText,
   Folder, FolderOpen, BookOpen, ClipboardCheck, BookMarked, X, Files, Eye,
+  Package, Pencil, RotateCcw,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { api } from '@/api/client';
@@ -10,8 +11,10 @@ import { useCourseStore } from '@/stores/course';
 import { useToastStore } from '@/stores/toast';
 import { Button, Modal, Badge, SkeletonCardGrid } from '@/components/ui';
 import { computeSha256 } from '@/lib/sha256';
+import { downloadBlob } from '@/lib/download';
 import { PARSE_STATUS_LABELS } from '@/utils/format';
 import { qlabel } from '@/lib/examDisplay';
+import type { PaperExportKind } from '@/api/domains/paperVersions';
 import type { MaterialResponse, PaperArchiveDetail, PaperArchiveSummary } from '@/types/api';
 
 type FolderKey = 'syllabus' | 'materials' | 'papers';
@@ -140,11 +143,17 @@ export default function MaterialsPage() {
   const { activeCourseId } = useCourseStore();
   const courseId = routeCourseId || activeCourseId || '';
   const { addToast } = useToastStore();
+  const navigate = useNavigate();
+  // ?folder=<key> 深链：从归档编辑页「返回试卷文件夹」原路回到 试卷 文件夹
+  const [searchParams] = useSearchParams();
 
   const [materials, setMaterials] = useState<MaterialResponse[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const [activeFolder, setActiveFolder] = useState<FolderKey | null>(null);
+  const [activeFolder, setActiveFolder] = useState<FolderKey | null>(() => {
+    const f = searchParams.get('folder');
+    return f === 'syllabus' || f === 'materials' || f === 'papers' ? f : null;
+  });
   const [activeSubFolder, setActiveSubFolder] = useState<SubFolderKey | null>(null);
 
   const [uploadOpen, setUploadOpen] = useState(false);
@@ -161,6 +170,8 @@ export default function MaterialsPage() {
   const [archiveDetail, setArchiveDetail] = useState<PaperArchiveDetail | null>(null);
   const [archiveDeleteId, setArchiveDeleteId] = useState<string | null>(null);
   const [archiveBusy, setArchiveBusy] = useState(false);
+  // 「存回试卷区」确认弹窗（会成为项目当前卷，必须先说清后果）
+  const [restoreOpen, setRestoreOpen] = useState(false);
 
   // 单一批量轮询定时器：多文件解析共享一个定时器，一次静默 list 返回全部状态，避免 N 个定时器各查一次库
   const pollingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -223,6 +234,54 @@ export default function MaterialsPage() {
       addToast('已删除归档试卷', 'success');
     } catch (err) {
       addToast(err instanceof Error ? err.message : '删除归档失败', 'error');
+    } finally {
+      setArchiveBusy(false);
+    }
+  };
+
+  // ── P2c：归档编辑 / 存回试卷区 / 四件套导出 ──
+  // 导出端点要 Authorization 头：token 不进 URL，带鉴权拉 Blob 再本地下载
+
+  const editArchive = (id: string) => {
+    setArchiveDetail(null);
+    navigate('/courses/' + courseId + '/paper-archive/' + id);
+  };
+
+  const exportArchive = async (kind: PaperExportKind) => {
+    if (!courseId || !archiveDetail) return;
+    try {
+      const { blob, filename } = await api.paperArchives.fetchExport(
+        kind, courseId, archiveDetail.id, undefined,
+        kind === 'card' || kind === 'student' ? 'docx' : undefined,
+      );
+      downloadBlob(blob, filename);
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : '导出失败', 'error');
+    }
+  };
+
+  const exportArchiveBundle = async () => {
+    if (!courseId || !archiveDetail) return;
+    try {
+      const { blob, filename } = await api.paperArchives.fetchBundle(
+        courseId, archiveDetail.id, archiveDetail.snapshot.version_no,
+      );
+      downloadBlob(blob, filename);
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : '打包下载失败', 'error');
+    }
+  };
+
+  // 存回 = 按快照新建一版并设为项目当前卷（归档本身不动）
+  const handleArchiveRestore = async () => {
+    if (!courseId || !archiveDetail) return;
+    setArchiveBusy(true);
+    try {
+      const out = await api.paperArchives.restore(courseId, archiveDetail.id);
+      setRestoreOpen(false);
+      addToast(`已存回试卷区：${out.item_count} 道题，当前卷 v${out.version_no}`, 'success');
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : '存回试卷区失败', 'error');
     } finally {
       setArchiveBusy(false);
     }
@@ -505,6 +564,10 @@ export default function MaterialsPage() {
               >
                 查看
               </Button>
+              <Button
+                variant="secondary" size="sm" onClick={() => editArchive(a.id)}
+                icon={<Pencil size={14} />} title="编辑这份归档"
+              />
               <Button
                 variant="danger" size="sm" onClick={() => setArchiveDeleteId(a.id)}
                 icon={<Trash2 size={14} />}
@@ -822,12 +885,31 @@ export default function MaterialsPage() {
         <p style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>确定要删除这份资料吗？此操作不可撤销。</p>
       </Modal>
 
-      {/* ── 归档试卷详情（只读快照；P2c 起在此处加编辑与导出） ── */}
+      {/* ── 归档试卷详情：预览快照 + 编辑 / 存回 / 四件套导出 ── */}
       <Modal
         open={!!archiveDetail}
-        onClose={() => setArchiveDetail(null)}
+        onClose={() => { setArchiveDetail(null); setRestoreOpen(false); }}
         title={archiveDetail ? archiveDetail.name : '归档试卷'}
-        maxWidth="720px"
+        maxWidth="760px"
+        footer={
+          <div style={{ display: 'flex', width: '100%', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <Button size="sm" onClick={() => archiveDetail && editArchive(archiveDetail.id)} icon={<Pencil size={14} />}>
+              编辑
+            </Button>
+            <Button variant="secondary" size="sm" onClick={() => setRestoreOpen(true)} icon={<RotateCcw size={14} />}>
+              存回试卷区
+            </Button>
+            <div style={{ marginLeft: 'auto', display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+              <Button variant="secondary" size="sm" onClick={() => void exportArchive('student')}>学生卷</Button>
+              <Button variant="secondary" size="sm" onClick={() => void exportArchive('answer')}>答卷</Button>
+              <Button variant="secondary" size="sm" onClick={() => void exportArchive('card')}>答题卡</Button>
+              <Button variant="secondary" size="sm" onClick={() => void exportArchive('json')}>细则 JSON</Button>
+              <Button variant="secondary" size="sm" onClick={() => void exportArchiveBundle()} icon={<Package size={14} />}>
+                打包
+              </Button>
+            </div>
+          </div>
+        }
       >
         {archiveDetail && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
@@ -868,6 +950,29 @@ export default function MaterialsPage() {
             </p>
           </div>
         )}
+      </Modal>
+
+      {/* ── 存回试卷区确认：成为当前卷、走「只留 3 份」，必须先说清 ── */}
+      <Modal
+        open={restoreOpen}
+        onClose={() => setRestoreOpen(false)}
+        title="存回试卷区"
+        maxWidth="560px"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setRestoreOpen(false)}>取消</Button>
+            <Button loading={archiveBusy} onClick={() => void handleArchiveRestore()}>确认存回</Button>
+          </>
+        }
+      >
+        <p style={{ fontSize: '0.875rem', lineHeight: 1.8, color: 'var(--text-secondary)' }}>
+          将按这份归档的快照新建一版试卷，并设为该项目的<strong>当前卷</strong>：
+        </p>
+        <ul style={{ fontSize: '0.85rem', lineHeight: 1.9, color: 'var(--text-secondary)', paddingLeft: '1.2em', marginTop: 8 }}>
+          <li>版本号在现有基础上追加，项目状态回到「待审核」；</li>
+          <li>与生成建卷一样走「每个项目只留最近 3 份」，更早的版本会被物理删除；</li>
+          <li>归档本身不受影响，之后仍可继续编辑、导出或再次存回。</li>
+        </ul>
       </Modal>
 
       {/* ── 归档删除确认 ── */}

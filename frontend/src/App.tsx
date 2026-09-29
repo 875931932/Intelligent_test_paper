@@ -6,7 +6,7 @@ import { useAuthStore } from '@/stores/auth';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Layout } from '@/components/layout/Layout';
 
-/* 路由级代码分割：首屏只带外壳与共享 UI，八个页面按需加载，
+/* 路由级代码分割：首屏只带外壳与共享 UI，九个页面按需加载，
    避免单 bundle 越过 500kB 警戒线（vite 打包警告的根治路径） */
 const CourseSpacePage = lazy(() => import('@/pages/course-space'));
 const Dashboard = lazy(() => import('@/pages/dashboard'));
@@ -14,6 +14,8 @@ const Materials = lazy(() => import('@/pages/materials'));
 const Framework = lazy(() => import('@/pages/framework'));
 const Knowledge = lazy(() => import('@/pages/knowledge'));
 const PaperPage = lazy(() => import('@/pages/paper'));
+/* 资料库「试卷」文件夹的归档快照编辑页（与试卷页同款双栏阅读器） */
+const PaperArchivePage = lazy(() => import('@/pages/paper-archive'));
 const AssistantPage = lazy(() => import('@/pages/assistant'));
 const LoginPage = lazy(() =>
   import('@/pages/auth/LoginPage').then((m) => ({ default: m.LoginPage }))
@@ -68,6 +70,8 @@ export default function App() {
           <Route path="knowledge" element={<Knowledge />} />
           {/* 出卷流水线与试卷查看/审核/导出已合并为同一个「试卷」页面 */}
           <Route path="paper" element={<PaperPage />} />
+          {/* 归档快照编辑：资料库「试卷」文件夹点「编辑」进来，只改副本 */}
+          <Route path="paper-archive/:archiveId" element={<PaperArchivePage />} />
           {/* AI 助手对话页：问答/查询流式回复，写操作提案卡确认制 */}
           <Route path="assistant" element={<AssistantPage />} />
           <Route path="exam-projects" element={<Navigate to="../paper" replace />} />

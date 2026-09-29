@@ -41,13 +41,16 @@ def bundle_paper_exports(
     paper_version_id: str,
     *,
     course_id: str,
+    pv: dict | None = None,
 ) -> tuple[bytes, str]:
     """打包试卷全部导出产物为 ZIP 字节，返回 ``(zip_bytes, 下载文件名)``。
 
     任一环节试卷版本不存在/跨课程访问时抛 ``PaperVersionError``，由 API 层映射
-    404——与其它导出端点同口径。
+    404——与其它导出端点同口径。``pv`` 可传入预加载的试卷 dict（归档导出用），
+    逐个渲染器复用同一份，避免重复查库。
     """
-    pv = get_paper_version(session, paper_version_id, course_id=course_id)
+    if pv is None:
+        pv = get_paper_version(session, paper_version_id, course_id=course_id)
     version_no = int(pv.get("version_no") or 1)
 
     renderers = (
@@ -60,7 +63,7 @@ def bundle_paper_exports(
     )
     entries: list[tuple[str, bytes]] = []
     for name_tpl, render in zip(_ENTRIES, renderers, strict=True):
-        data = render(session, paper_version_id, course_id=course_id)
+        data = render(session, paper_version_id, course_id=course_id, pv=pv)
         if isinstance(data, str):
             data = data.encode("utf-8")
         elif isinstance(data, dict):

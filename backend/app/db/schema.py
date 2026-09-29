@@ -574,8 +574,12 @@ generation_attempts = _course_table(
 
 generated_questions = _course_table(
     "generated_questions",
-    Column("generation_run_id", String(64), ForeignKey("generation_runs.id"), nullable=False),
-    Column("plan_item_id", String(64), ForeignKey("plan_items.id"), nullable=False),
+    # generation_run_id / plan_item_id 可空：资料库归档**存回试卷区**的题与
+    # 教师手拟新增的题没有生成 run、也没有蓝图槽位（见 paper_archive_service.
+    # restore_archive_to_paper / paper_version_service.create_paper_item）。
+    # 题面内容一律在 payload，plan 侧字段（分值/考点）缺失时读端回落 payload。
+    Column("generation_run_id", String(64), ForeignKey("generation_runs.id")),
+    Column("plan_item_id", String(64), ForeignKey("plan_items.id")),
     Column("knowledge_card_id", String(64), ForeignKey("knowledge_cards.id")),
     Column("revision_no", Integer, nullable=False, default=1),
     Column("status", String(40), nullable=False, default="candidate"),

@@ -445,6 +445,30 @@ def summarize_paper_versions_for_projects(
         for r in aggregate_rows
     }
 
+    # 归档存回/无蓝图槽位的题：plan_items 没有对应行，上式聚合不到它们的分值
+    # （分数只存在于 generated_questions.payload）。这类版本逐个按题面解析补算
+    # —— get_paper_version 汇总口径与试卷页「总分 N 分」一致，且只对少数版本触发。
+    planless = {
+        r[0]
+        for r in session.execute(
+            select(paper_items.c.paper_version_id)
+            .select_from(paper_items)
+            .join(
+                generated_questions,
+                generated_questions.c.id == paper_items.c.generated_question_id,
+            )
+            .where(
+                paper_items.c.paper_version_id.in_(list(chosen.values())),
+                paper_items.c.course_id == course_id,
+                generated_questions.c.plan_item_id.is_(None),
+            )
+            .distinct()
+        ).all()
+    }
+    for pv_id in planless:
+        pv = get_paper_version(session, pv_id, course_id=course_id)
+        stats[pv_id] = (len(pv.get("questions") or []), float(pv.get("total_score") or 0.0))
+
     summaries: dict[str, dict] = {}
     for pid, pv_id in chosen.items():
         version = next(v for v in by_project[pid] if str(v["id"]) == pv_id)
@@ -806,7 +830,9 @@ def list_needs_review(
         .select_from(paper_items)
         .join(paper_versions, paper_versions.c.id == paper_items.c.paper_version_id)
         .join(generated_questions, generated_questions.c.id == paper_items.c.generated_question_id)
-        .join(plan_items, plan_items.c.id == generated_questions.c.plan_item_id)
+        # 左连接：归档存回的题没有 plan_item 槽位，内连接会把它们从「待审核」
+        # 清单里抹掉（快照带着 needs_review 标记却看不到）。plan 侧字段读端回落 payload。
+        .join(plan_items, plan_items.c.id == generated_questions.c.plan_item_id, isouter=True)
         .where(
             paper_items.c.paper_version_id == paper_version_id,
             paper_versions.c.course_id == course_id,
@@ -836,8 +862,9 @@ def list_needs_review(
             "question_type": r.get("question_type") or q.get("question_type"),
             "needs_review_reason": r.get("needs_review_reason") or "",
             "quality_message": (qa.get("quality") or {}).get("message", ""),
-            "exam_point_id": r.get("exam_point_id"),
-            "card_id": r.get("card_id"),
+            # 归档存回的题没有 plan 槽位：考点/知识卡回落 payload（快照里存了原值）
+            "exam_point_id": r.get("exam_point_id") or q.get("exam_point_id"),
+            "card_id": r.get("card_id") or q.get("knowledge_card_id") or q.get("card_id"),
         })
     return out
 
@@ -1056,8 +1083,10 @@ def create_paper_item(
 ) -> dict:
     """在试卷末尾新增一道教师自拟题目。
 
-    生成一条 plan_item 槽位（接在蓝图既有槽位之后）＋ generated_question ＋
-    paper_item，返回刷新后的完整试卷。新增题标记 payload.teacher_added=true。
+    有蓝图时生成一条 plan_item 槽位（接在蓝图既有槽位之后）＋ generated_question ＋
+    paper_item；归档**存回试卷区**的版本没有 run/蓝图，只落 generated_question
+    （generation_run_id/plan_item_id 置空）＋ paper_item。返回刷新后的完整试卷。
+    新增题标记 payload.teacher_added=true。
     """
     try:
         _validate_teacher_item(
@@ -1073,7 +1102,13 @@ def create_paper_item(
                 generation_runs.c.blueprint_version_id,
             )
             .select_from(paper_versions)
-            .join(generation_runs, generation_runs.c.id == paper_versions.c.generation_run_id)
+            # 左连接：归档**存回试卷区**的版本没有生成 run，内连接会把这类
+            # 版本误报成「试卷版本不存在」；左连接后按「无蓝图」分支处理。
+            .join(
+                generation_runs,
+                generation_runs.c.id == paper_versions.c.generation_run_id,
+                isouter=True,
+            )
             .where(
                 paper_versions.c.id == paper_version_id,
                 paper_versions.c.course_id == course_id,
@@ -1086,40 +1121,44 @@ def create_paper_item(
             raise Conflict("paper version finalized")
         bp_id = p.get("blueprint_version_id")
         run_id = p.get("generation_run_id")
-        if not bp_id or not run_id:
-            raise PaperVersionError("该试卷版本缺少生成 run / 蓝图信息，无法新增题目")
+        # 有蓝图 → 照旧造 plan_item 槽位（分值/考点的权威来源）；
+        # 无 run/蓝图（归档存回的卷）→ 只落 generated_questions(payload) + paper_item，
+        # 不建槽位——读端 plan 侧字段缺失时回落 payload，与归档题同一口径。
+        has_blueprint = bool(bp_id and run_id)
 
-        # 复用同蓝图下任意一个 assessment_unit_id（新增题不绑定具体考核单元）
-        assessment_unit = session.execute(
-            select(plan_items.c.assessment_unit_id)
-            .where(plan_items.c.blueprint_version_id == bp_id, plan_items.c.course_id == course_id)
-            .limit(1)
-        ).scalar_one_or_none()
-        if assessment_unit is None:
-            raise PaperVersionError("蓝图无考核单元可关联，无法新增题目")
+        new_plan_id: str | None = None
+        if has_blueprint:
+            # 复用同蓝图下任意一个 assessment_unit_id（新增题不绑定具体考核单元）
+            assessment_unit = session.execute(
+                select(plan_items.c.assessment_unit_id)
+                .where(plan_items.c.blueprint_version_id == bp_id, plan_items.c.course_id == course_id)
+                .limit(1)
+            ).scalar_one_or_none()
+            if assessment_unit is None:
+                raise PaperVersionError("蓝图无考核单元可关联，无法新增题目")
 
-        max_idx = session.execute(
-            select(func.max(plan_items.c.item_index))
-            .where(plan_items.c.blueprint_version_id == bp_id, plan_items.c.course_id == course_id)
-        ).scalar() or 0
+            max_idx = session.execute(
+                select(func.max(plan_items.c.item_index))
+                .where(plan_items.c.blueprint_version_id == bp_id, plan_items.c.course_id == course_id)
+            ).scalar() or 0
 
-        new_plan_id = _nid()
-        session.execute(
-            plan_items.insert().values(
-                id=new_plan_id,
-                course_id=course_id,
-                blueprint_version_id=bp_id,
-                assessment_unit_id=assessment_unit,
-                question_type=question_type,
-                item_index=max_idx + 1,
-                score=score or 0.0,
-                difficulty=difficulty,
-                cognitive_level="understand",
-                assessment_mode="conceptual",
-                exam_point_id=None,
-                knowledge_card_id=None,
+            new_plan_id = _nid()
+            session.execute(
+                plan_items.insert().values(
+                    id=new_plan_id,
+                    course_id=course_id,
+                    blueprint_version_id=bp_id,
+                    assessment_unit_id=assessment_unit,
+                    question_type=question_type,
+                    item_index=max_idx + 1,
+                    score=score or 0.0,
+                    difficulty=difficulty,
+                    cognitive_level="understand",
+                    assessment_mode="conceptual",
+                    exam_point_id=None,
+                    knowledge_card_id=None,
+                )
             )
-        )
 
         new_gq_id = _nid()
         session.execute(
@@ -1905,9 +1944,16 @@ def export_answer_detail_json(
     paper_version_id: str,
     *,
     course_id: str,
+    pv: dict | None = None,
 ) -> dict:
-    """答案细则 JSON：每题含题干/选项/答案/评分细则/难度/认知层级/质量审计。"""
-    pv = get_paper_version(session, paper_version_id, course_id=course_id)
+    """答案细则 JSON：每题含题干/选项/答案/评分细则/难度/认知层级/质量审计。
+
+    ``pv`` 可传入预加载的试卷 dict（与 get_paper_version 同构）：资料库归档
+    导出没有 paper_versions 行，用快照构造的 dict 走同一套渲染。
+    ``paper_version_id`` 此时填归档 id（作 JSON 里的来源标识）。
+    """
+    if pv is None:
+        pv = get_paper_version(session, paper_version_id, course_id=course_id)
     questions = pv.get("questions", [])
     return {
         "answer_detail_schema_version": "1.1.0",
@@ -1946,9 +1992,11 @@ def export_student_paper_html(
     paper_version_id: str,
     *,
     course_id: str,
+    pv: dict | None = None,
 ) -> str:
     """学生卷：正式卷面（信息头 + 题次表 + 分节题面），不含答案。"""
-    pv = get_paper_version(session, paper_version_id, course_id=course_id)
+    if pv is None:
+        pv = get_paper_version(session, paper_version_id, course_id=course_id)
     groups = _section_groups(pv.get("questions", []))
     meta = _paper_meta(session, course_id=course_id, pv=pv)
     meta["question_count"] = len(pv.get("questions", []))
@@ -1968,9 +2016,11 @@ def export_answer_key_html(
     paper_version_id: str,
     *,
     course_id: str,
+    pv: dict | None = None,
 ) -> str:
     """答卷：正式卷面 + 答案（客观题附答案速查表），缺答案显式标注。"""
-    pv = get_paper_version(session, paper_version_id, course_id=course_id)
+    if pv is None:
+        pv = get_paper_version(session, paper_version_id, course_id=course_id)
     questions = pv.get("questions", [])
     groups = _section_groups(questions)
     meta = _paper_meta(session, course_id=course_id, pv=pv)
@@ -2057,10 +2107,12 @@ def export_answer_card_html(
     paper_version_id: str,
     *,
     course_id: str,
+    pv: dict | None = None,
 ) -> str:
     """答题卡：学生作答用空卷（考生信息栏 + 客观题格子表 + 填空横线 + 主观题矩形大框），
     版式对齐 docs/素材/答卷A卷 范本。不含题面与答案，与学生卷配套使用。"""
-    pv = get_paper_version(session, paper_version_id, course_id=course_id)
+    if pv is None:
+        pv = get_paper_version(session, paper_version_id, course_id=course_id)
     questions = pv.get("questions", [])
     groups = _section_groups(questions)
     meta = _paper_meta(session, course_id=course_id, pv=pv)

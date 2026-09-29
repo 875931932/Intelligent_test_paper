@@ -298,6 +298,40 @@ def _migrate_course_columns(engine: Engine) -> None:
         )
 
 
+def _migrate_generated_question_nullable(engine: Engine) -> None:
+    """Idempotently 放开 generated_questions.generation_run_id / plan_item_id 非空。
+
+    资料库归档「存回试卷区」的题与教师手拟题没有生成 run、也没有蓝图槽位，
+    内容整体落在 payload（读端 plan 侧字段缺失时回落 payload）。旧库这两列是
+    NOT NULL，create_all 不会 ALTER 已存在表，需显式 DROP NOT NULL。
+    SQLite 无 ALTER COLUMN DROP NOT NULL 语法，且测试库均为 create_all 新建
+    （直接建出可空列），故旧库迁移只在 PostgreSQL 上执行。
+    """
+
+    if engine.dialect.name != "postgresql":
+        return
+    try:
+        insp = inspect(engine)
+        if not insp.has_table("generated_questions"):
+            return
+        cols = {c["name"]: c for c in insp.get_columns("generated_questions")}
+    except Exception:
+        # 迁移是尽力而为的幂等维护：无法内省时不阻断启动（同 retrieval_score 口径）。
+        return
+    to_relax = [
+        name
+        for name in ("generation_run_id", "plan_item_id")
+        if name in cols and not cols[name].get("nullable", True)
+    ]
+    if not to_relax:
+        return
+    with engine.begin() as conn:
+        for name in to_relax:
+            conn.execute(
+                text(f"ALTER TABLE generated_questions ALTER COLUMN {name} DROP NOT NULL")
+            )
+
+
 def _seed_dev_data(bind: Engine | Connection) -> None:
     """Upsert the admin test account and fold any legacy 'owner-dev' data into it."""
 
@@ -389,6 +423,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             _migrate_content_block_columns(engine)
             _migrate_assistant_session(engine)
             _migrate_course_columns(engine)
+            _migrate_generated_question_nullable(engine)
             if seed:
                 with engine.begin() as conn:
                     _seed_dev_data(conn)
@@ -404,6 +439,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             _migrate_content_block_columns(engine)
             _migrate_assistant_session(engine)
             _migrate_course_columns(engine)
+            _migrate_generated_question_nullable(engine)
             if seed:
                 _seed_dev_data(engine)
     finally:

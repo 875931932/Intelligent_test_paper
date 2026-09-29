@@ -13,31 +13,31 @@ def _stub_renderers(monkeypatch, *, version_no=3):
     """把六份渲染全部换成确定性桩件，聚焦打包本身的组装与命名。"""
     monkeypatch.setattr(
         bundle, "get_paper_version",
-        lambda session, pv_id, *, course_id: {"id": pv_id, "version_no": version_no},
+        lambda session, pv_id, *, course_id, pv=None: {"id": pv_id, "version_no": version_no},
     )
     monkeypatch.setattr(
         bundle, "export_exam_paper_docx",
-        lambda session, pv_id, *, course_id: b"PK-\x03\x04exam-docx",
+        lambda session, pv_id, *, course_id, pv=None: b"PK-\x03\x04exam-docx",
     )
     monkeypatch.setattr(
         bundle, "export_student_paper_html",
-        lambda session, pv_id, *, course_id: "<html>学生卷</html>",
+        lambda session, pv_id, *, course_id, pv=None: "<html>学生卷</html>",
     )
     monkeypatch.setattr(
         bundle, "export_answer_card_docx",
-        lambda session, pv_id, *, course_id: b"PK-\x03\x04card-docx",
+        lambda session, pv_id, *, course_id, pv=None: b"PK-\x03\x04card-docx",
     )
     monkeypatch.setattr(
         bundle, "export_answer_card_html",
-        lambda session, pv_id, *, course_id: "<html>答题卡</html>",
+        lambda session, pv_id, *, course_id, pv=None: "<html>答题卡</html>",
     )
     monkeypatch.setattr(
         bundle, "export_answer_key_html",
-        lambda session, pv_id, *, course_id: "<html>答卷</html>",
+        lambda session, pv_id, *, course_id, pv=None: "<html>答卷</html>",
     )
     monkeypatch.setattr(
         bundle, "export_answer_detail_json",
-        lambda session, pv_id, *, course_id: {"version_no": version_no, "questions": []},
+        lambda session, pv_id, *, course_id, pv=None: {"version_no": version_no, "questions": []},
     )
 
 
@@ -70,7 +70,7 @@ def test_bundle_defaults_to_v1_when_version_no_missing(monkeypatch):
     _stub_renderers(monkeypatch, version_no=1)
     monkeypatch.setattr(
         bundle, "get_paper_version",
-        lambda session, pv_id, *, course_id: {"id": pv_id},
+        lambda session, pv_id, *, course_id, pv=None: {"id": pv_id},
     )
 
     data, filename = bundle.bundle_paper_exports(object(), "pv1", course_id="c1")
@@ -86,7 +86,7 @@ def test_bundle_passes_course_id_to_every_renderer(monkeypatch):
     seen: list[str] = []
     monkeypatch.setattr(
         bundle, "get_paper_version",
-        lambda session, pv_id, *, course_id: (seen.append(course_id), {"version_no": 1})[1],
+        lambda session, pv_id, *, course_id, pv=None: (seen.append(course_id), {"version_no": 1})[1],
     )
     for name in (
         "export_exam_paper_docx", "export_student_paper_html",
@@ -95,9 +95,9 @@ def test_bundle_passes_course_id_to_every_renderer(monkeypatch):
     ):
         original = getattr(bundle, name)
 
-        def _wrapped(session, pv_id, *, course_id, _orig=original, _name=name):
+        def _wrapped(session, pv_id, *, course_id, pv=None, _orig=original, _name=name):
             seen.append(f"{_name}:{course_id}")
-            return _orig(session, pv_id, course_id=course_id)
+            return _orig(session, pv_id, course_id=course_id, pv=pv)
 
         monkeypatch.setattr(bundle, name, _wrapped)
 
@@ -124,3 +124,32 @@ def test_bundle_propagates_missing_version(monkeypatch):
 
     with pytest.raises(PaperVersionError, match="试卷版本不存在"):
         bundle.bundle_paper_exports(object(), "pvX", course_id="c1")
+
+
+def test_bundle_forwards_preloaded_pv_to_renderers(monkeypatch):
+    """归档导出路径：调用方预加载 pv（归档快照），六份渲染复用同一份且不再回查版本。"""
+    _stub_renderers(monkeypatch, version_no=7)
+    pv = {"id": "archive-1", "version_no": 7}
+    seen: list[int] = []
+    monkeypatch.setattr(
+        bundle,
+        "get_paper_version",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("已预加载 pv，不应再回查版本")),
+    )
+    for name in (
+        "export_exam_paper_docx", "export_student_paper_html",
+        "export_answer_card_docx", "export_answer_card_html",
+        "export_answer_key_html", "export_answer_detail_json",
+    ):
+        original = getattr(bundle, name)
+
+        def _wrapped(session, pv_id, *, course_id, pv=None, _orig=original, _name=name):
+            seen.append(id(pv) if pv is not None else -1)
+            return _orig(session, pv_id, course_id=course_id, pv=pv)
+
+        monkeypatch.setattr(bundle, name, _wrapped)
+
+    data, filename = bundle.bundle_paper_exports(object(), "archive-1", course_id="c1", pv=pv)
+
+    assert filename == "paper-bundle-v7.zip"
+    assert seen == [id(pv)] * 6

@@ -193,11 +193,13 @@ def export_answer_card_docx(
     paper_version_id: str,
     *,
     course_id: str,
+    pv: dict | None = None,
 ) -> bytes:
     """答题卡 Word 文档字节（可编辑）：页眉页脚/页面设置取自模板，正文按数据重建。"""
     if not _TEMPLATE.exists():
         raise FileNotFoundError(f"答题卡 docx 模板缺失：{_TEMPLATE}")
-    pv = get_paper_version(session, paper_version_id, course_id=course_id)
+    if pv is None:
+        pv = get_paper_version(session, paper_version_id, course_id=course_id)
     questions = pv.get("questions", [])
     groups = _section_groups(questions)
     meta = _paper_meta(session, course_id=course_id, pv=pv)
