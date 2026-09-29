@@ -684,15 +684,30 @@ class LLMSyllabusExtractor:
                 )
             except ValidationError as exc:
                 raise _schema_error(exc) from None
-            points = [
-                point.model_copy(
-                    update={
-                        "assessment_anchor_keys": point.assessment_anchor_keys
-                        or [point.anchor_key],
-                    }
+            # teaching_anchor_keys 结构性不可知：考核提取分支只拿到 assessment_blocks，
+            # 教学主题在并行分支单独提取，模型永远看不到教学大纲，填写的知识点描述
+            # 无法与教学主题对齐（曾致89/89 考点全部误报 missing_teaching_coverage）。
+            # 按所属锚点确定性推导为 merge 阶段锚点对齐所用的同一组候选键
+            # [anchor.key, *alignment_keys] + anchor.title（锚点级10/10 对齐成功），
+            # 使考点覆盖判定与其所属锚点的覆盖判定一致。系统推导为唯一权威，
+            # 模型取值整体重算（与 assessment_anchor_keys 归一化同层）。
+            # anchor 必存在：AssessmentOutline.validate_anchor_keys 已在构造期拒绝孤儿考点。
+            anchors_by_key = {anchor.key: anchor for anchor in outline.anchors}
+            points = []
+            for point in outline.exam_points:
+                anchor = anchors_by_key[point.anchor_key]
+                teaching_keys = list(
+                    dict.fromkeys([anchor.key, *anchor.alignment_keys, anchor.title])
                 )
-                for point in outline.exam_points
-            ]
+                points.append(
+                    point.model_copy(
+                        update={
+                            "assessment_anchor_keys": point.assessment_anchor_keys
+                            or [point.anchor_key],
+                            "teaching_anchor_keys": teaching_keys,
+                        }
+                    )
+                )
             parsed.append(outline.model_copy(update={"exam_points": points}))
 
         self.client.request_json(
@@ -702,7 +717,9 @@ class LLMSyllabusExtractor:
                 "包含 anchors、exam_points、final_exam_rules。每个 exam_point 必须包含 code、anchor_key、"
                 "title、assessment_requirement、weight_value、weight_source、weight_group_id、"
                 "cognitive_targets、assessment_orientations、operational_detail_policy、retrieval_intent、"
-                "teaching_anchor_keys。每个 anchor 必须包含 key（章节key，如『第1章 开源大模型运行原理与量化部署』）、"
+                "teaching_anchor_keys：数组，填该考点所属章节的 key（与该考点 anchor_key 相同），"
+                "用于对齐教学大纲；这是章节 key，不是知识点，禁止填整句知识点描述。"
+                "每个 anchor 必须包含 key（章节key，如『第1章 开源大模型运行原理与量化部署』）、"
                 "title（章节名称）、exam_weight（该章考试权重，照考纲原值填 0~100 的数字，"
                 "不要求与考点权重和精确相等——系统会统一归一到 100）。"
                 "不要用 anchor_key/anchor_scope 等别名代替 key/title。"

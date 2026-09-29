@@ -627,7 +627,13 @@ def test_syllabus_extractor_requires_final_exam_points_and_sends_only_supplied_o
         call_context=ModelCallContext(course_id="course", framework_build_run_id="run", stage="assessment"),
     )
 
-    assert result.exam_points == [_point()]
+    # teaching_anchor_keys 由所属锚点确定性推导（模型看不到教学大纲，其取值
+    # 结构性无信息，整体重算为 [anchor.key, *alignment_keys, anchor.title]）。
+    assert result.exam_points == [
+        _point().model_copy(
+            update={"teaching_anchor_keys": ["rag", "rag-teaching", "RAG"]}
+        )
+    ]
     request = client.recorded_payloads[0]
     assert request["user"] == {"blocks": ["课程封面", "平时成绩30%", "期末考试：RAG占100%"]}
     assert "期末考试" in request["system"]
@@ -636,6 +642,59 @@ def test_syllabus_extractor_requires_final_exam_points_and_sends_only_supplied_o
     # 提示词必须明说"无需填写"，否则模型白算、还可能被自己的取值误导
     assert "operational_detail_policy" in request["system"]
     assert "由系统" in request["system"]
+    # teaching_anchor_keys 需给模型可满足的填写指引（填章节 key），
+    # 否则会填成知识点描述句，落进与教学主题三级匹配的盲区
+    assert "禁止填整句知识点描述" in request["system"]
+
+
+def test_assessment_rewrites_teaching_anchor_keys_from_parent_anchor():
+    # 回归：考核提取分支看不到教学大纲（教学主题在并行分支提取），模型把
+    # teaching_anchor_keys 填成知识点描述句时，与教学主题的三级匹配全落空，
+    # 考点全部误报 missing_teaching_coverage 阻塞发布。系统按所属锚点
+    # 确定性推导为 merge 阶段锚点对齐的同一组候选键，整体替换模型取值。
+    client = RecordingJsonClient(
+        [
+            {
+                "anchors": [
+                    {
+                        "key": "ch5-rag",
+                        "title": "第5章 RAG检索增强生成",
+                        "exam_weight": 100,
+                        "alignment_keys": ["chapter_5"],
+                    },
+                ],
+                "exam_points": [
+                    {
+                        "code": "rag-flow",
+                        "anchor_key": "ch5-rag",
+                        "title": "检索流程诊断",
+                        "assessment_requirement": "能够诊断召回偏差",
+                        "weight_value": 100,
+                        "weight_source": "assessment_syllabus",
+                        "weight_group_id": "ch5-rag",
+                        "cognitive_targets": ["analyze"],
+                        "assessment_orientations": ["diagnostic"],
+                        "operational_detail_policy": "supporting_only",
+                        "retrieval_intent": "检索偏差及诊断依据",
+                        # 模型结构性看不到教学大纲，只能填知识点描述句
+                        "teaching_anchor_keys": [
+                            "检索增强生成系统需要在检索环节之后对候选文档进行重排序"
+                        ],
+                    },
+                ],
+                "final_exam_rules": {},
+            }
+        ]
+    )
+
+    result = LLMSyllabusExtractor(client).extract_assessment(["期末考试"])
+
+    # 整体替换为 [anchor.key, *alignment_keys, anchor.title]
+    assert result.exam_points[0].teaching_anchor_keys == [
+        "ch5-rag",
+        "chapter_5",
+        "第5章 RAG检索增强生成",
+    ]
 
 
 def test_syllabus_extractor_validates_teaching_topic_schema():
