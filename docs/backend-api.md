@@ -870,6 +870,13 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
   项目级工具（overview/blueprint/contract/paper/list_exam_projects）支持可选
   `args={project_id}`——教师点名项目时卡片只呈现该项目（与提案同一套 id 白名单硬校验），
   未点名呈现全部；前端单项目卡片 CTA 深链 `?project={id}`；
+- **使用引导（`usage_guide`，能力地图 + 操作引导）**：`kind="result"` 引导卡（前端 `GuideCard`），
+  `args={}` 恒定、不触库——载荷 `payload:{steps:[{key,label,nav,status,hint}…], pages:[{label,nav,desc}…],
+  current_step}`。步骤 = 出卷主线六步（上传解析 → 框架 → 目录 → 蓝图 → 合同生成 → 审核导出），
+  `status`（done/current/todo）由本轮 snapshot 的既有完成信号按前缀推导（第一未完成步 = current，
+  全完成 = `current_step:null`）；段1 prompt 同时注入产品能力地图（页面模块 / 出卷主线 / 助手边界），
+  教师问「这个网站能干什么/怎么出卷/下一步做什么」时模型选此工具，reply 结合 `current_step`
+  给 1~3 句引导（不复述步骤）；卡上每步带「前往」跳转按钮 + 卡底五模块页面导航；
 - 提案工具（确认后调用）：`create_course` → §2、`update_course` → §2、`start_parse` → §3.5、
   `enqueue_blueprint_suggest` → §8.7b、`confirm_contract` → §8.11。
   模型回传的 id 必须命中段1 上下文白名单，非法带反馈重试一次；比例/难度/去重规则

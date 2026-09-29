@@ -778,7 +778,8 @@ export type AssistantReadTool =
   | 'blueprint_status'
   | 'contract_status'
   | 'paper_status'
-  | 'list_exam_projects';
+  | 'list_exam_projects'
+  | 'usage_guide';
 
 /** 提案工具（组装提案卡 → 教师确认后由前端调既有业务 API；与后端白名单同集合） */
 export type AssistantProposalTool =
@@ -865,6 +866,10 @@ export interface AssistantActionPayload {
   question?: string;
   mode?: string;
   sources?: AssistantSourceCitation[];
+  // 使用引导卡（usage_guide：出卷主线步骤 + 页面导航 + 当前步骤 key）
+  steps?: AssistantGuideStep[];
+  pages?: AssistantGuidePage[];
+  current_step?: string | null;
 }
 
 /** 来源引用条目（与后端 payload.sources 同构；snippet 为块正文前 160 字） */
@@ -875,6 +880,22 @@ export interface AssistantSourceCitation {
   page_index: number | null;
   heading_path: string[];
   snippet: string;
+}
+
+/** 引导卡步骤（与后端 _GUIDE_STEPS 同构；status 由后端按课程进度推导） */
+export interface AssistantGuideStep {
+  key: string;
+  label: string;
+  nav: string;
+  status: 'done' | 'current' | 'todo';
+  hint: string;
+}
+
+/** 引导卡页面导航（与后端 _GUIDE_PAGES 同构；nav 为空串 = 课程概览根路径） */
+export interface AssistantGuidePage {
+  label: string;
+  nav: string;
+  desc: string;
 }
 
 export interface AssistantAction {

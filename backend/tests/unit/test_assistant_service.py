@@ -29,6 +29,7 @@ from app.services.assistant_service import (
     build_intent_prompt,
     build_proposal_payload,
     enqueue_turn,
+    execute_read_tool,
     list_messages,
     load_turn_context,
     patch_message_action,
@@ -422,6 +423,123 @@ def test_intent_prompt_carries_categories_and_format_tool():
         _ctx(framework={"exam_rules": {"type_formats": {"fill_blank": "旧格式"}}}), "现在什么格式"
     )
     assert snapshot_payload["snapshot"]["framework"]["exam_rules"]["type_formats"] == {"fill_blank": "旧格式"}
+
+
+def test_intent_prompt_documents_capability_map_and_usage_guide():
+    """能力地图/出卷主线/助手边界必须进段1；询问用法的路由规则指向 usage_guide。"""
+    system_prompt, _payload = build_intent_prompt(_ctx(), "这个网站怎么用")
+
+    assert "usage_guide" in system_prompt
+    assert "产品能力地图" in system_prompt
+    assert "出卷主线" in system_prompt
+    # 边界：在线考试与阅卷明确排除
+    assert "在线考试与阅卷不在本系统范围内" in system_prompt
+    # 询问「下一步做什么」→ 引导卡，而非 action 置 null；回复依据是 snapshot（单次调用时工具尚未执行）
+    assert "下一步做什么" in system_prompt
+    assert "payload.snapshot" in system_prompt
+
+
+def test_usage_guide_route_returns_steps_and_navigation():
+    """usage_guide 走只读路由 → 引导卡：六步主线 + 页面导航 + 当前步骤定位。"""
+    routed = route_intent(
+        _intent("", {"tool": "usage_guide", "args": {}}), session=None, context=_ctx()
+    )
+
+    assert routed["kind"] == "result"
+    assert routed["action"]["kind"] == "result"
+    assert routed["action"]["tool"] == "usage_guide"
+    steps = routed["payload"]["steps"]
+    assert [s["key"] for s in steps] == [
+        "materials",
+        "framework",
+        "knowledge",
+        "blueprint",
+        "contract_generate",
+        "review_export",
+    ]
+    # 空进度上下文 → 从第一步开始
+    assert routed["payload"]["current_step"] == "materials"
+    assert steps[0]["status"] == "current"
+    assert all(s["status"] == "todo" for s in steps[1:])
+    # 每步都带可跳转的页面锚点；页面导航覆盖五个模块
+    assert {s["nav"] for s in steps} <= {"materials", "framework", "knowledge", "paper"}
+    assert {"课程概览", "资料库", "命题框架", "知识目录", "试卷"} <= {
+        p["label"] for p in routed["payload"]["pages"]
+    }
+    # 模型缺省回复也已登记
+    assert "出卷全流程见下卡" in routed["reply"]
+
+
+def test_usage_guide_status_derives_current_step():
+    """完成信号按前缀推导：就绪到蓝图 → 当前步=确认合同并生成；全完成 → current_step None。"""
+    ready_materials = [
+        {
+            "id": "m1",
+            "name": "教学大纲",
+            "type": "teaching_syllabus",
+            "status": "staged",
+            "parse_status": "ready",
+        },
+    ]
+    confirmed_project = {
+        "id": "p1",
+        "name": "期末卷",
+        "status": "contract",
+        "blueprint": {
+            "blueprint_version_id": "bp1",
+            "version_no": 1,
+            "status": "confirmed",
+            "confirmed": True,
+            "item_count": 5,
+            "by_type": {},
+        },
+        "contract": {"exists": True, "confirmed": True, "slot_count": 5},
+        "paper": {"exists": False},
+    }
+    mid = execute_read_tool(
+        None,
+        context=_ctx(
+            materials=ready_materials,
+            framework={"version_no": 1, "status": "published"},
+            catalog={"version_no": 1, "status": "published"},
+            projects=[confirmed_project],
+        ),
+        tool="usage_guide",
+    )
+    assert {s["key"]: s["status"] for s in mid["steps"]} == {
+        "materials": "done",
+        "framework": "done",
+        "knowledge": "done",
+        "blueprint": "done",
+        "contract_generate": "current",
+        "review_export": "todo",
+    }
+    assert mid["current_step"] == "contract_generate"
+
+    done = execute_read_tool(
+        None,
+        context=_ctx(
+            materials=ready_materials,
+            framework={"version_no": 1, "status": "published"},
+            catalog={"version_no": 1, "status": "published"},
+            projects=[
+                {
+                    **confirmed_project,
+                    "status": "exported",
+                    "paper": {
+                        "exists": True,
+                        "paper_version_id": "pv1",
+                        "version_no": 1,
+                        "status": "finalized",
+                        "needs_review_count": 0,
+                    },
+                }
+            ],
+        ),
+        tool="usage_guide",
+    )
+    assert done["current_step"] is None
+    assert all(s["status"] == "done" for s in done["steps"])
 
 
 def test_route_unknown_kind_neutral():

@@ -92,6 +92,7 @@ READ_TOOLS = (
     "contract_status",
     "paper_status",
     "list_exam_projects",
+    "usage_guide",
 )
 # 提案工具：只组装提案卡（执行契约在 payload），确认由前端调既有业务 API
 PROPOSAL_TOOLS = (
@@ -497,10 +498,16 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 - contract_status：合同状态（逐试卷项目）
 - paper_status：试卷版本与待复核题数（逐试卷项目）
 - list_exam_projects：试卷项目列表
-只读工具 args 默认 {}（呈现全部）。教师**点名了某个试卷项目**时，course_overview/blueprint_status/contract_status/paper_status/list_exam_projects 必须传 args={project_id(取自 payload.ids.project_ids)}，结果卡只呈现该项目；没点名就不传。
+- usage_guide：使用引导（网站能力地图 + 出卷全流程 + 当前进行到哪一步；引导卡自带步骤与页面跳转按钮）。教师问「这个网站能干什么/怎么用/怎么出一份卷子/下一步做什么」时必须使用，args={}。
+只读工具 args 默认 {}（呈现全部）。教师**点名了某个试卷项目**时，course_overview/blueprint_status/contract_status/paper_status/list_exam_projects 必须传 args={project_id(取自 payload.ids.project_ids)}，结果卡只呈现该项目；没点名就不传（usage_guide 与项目无关，恒 args={}）。
 
 资料内容问答工具：
 - answer_material_content：基于已解析资料正文回答问题/做总结。args={material_id?}——教师点名某份资料时必须传 material_id（取自 payload.ids.material_ids）；问全课程资料时不传。仅对 snapshot.materials 中 parse_status=="ready" 的资料使用；没有已解析资料时不使用本工具，回复引导教师先到「资料库」解析。回答正文由系统按检索片段生成，你的 reply 只给一句引导（如「已检索到相关资料，回答如下：」），不要复述片段。
+
+产品能力地图（回答「这个网站能做什么/怎么操作/流程是什么」时的依据；结构化步骤与跳转按钮由 usage_guide 引导卡呈现）：
+- 页面模块：课程概览（全阶段状态）、资料库（上传/解析/索引资料，四分区展示）、命题框架（双大纲→考点与考核规则，确认后冻结）、知识目录（分类→事实→画像→知识卡）、试卷（试卷项目工作区）。
+- 出卷主线：上传并解析资料 → 构建并冻结命题框架 → 生成知识目录 → 创建试卷项目并确认蓝图 → 确认合同（系统逐题位确定性分配）→ AI 生成 → 审核编辑 → 定稿导出学生卷/答卷/答题卡/答案细则四份产物。
+- 助手边界：只读查询、资料内容问答与总结、写操作提案（教师点确认后由既有接口执行）可由我代劳；出题改题、蓝图确认、定稿导出、删除资料需引导教师到对应页面亲自完成；在线考试与阅卷不在本系统范围内。
 
 可用提案工具（action.args 只允许下述字段，id 必须取自 payload.ids 白名单）：
 - create_course：新建课程。args={name(必填,1~200字), slug?(小写字母数字连字符), description?, category?(类别 key，取自 payload.course_categories)}
@@ -519,7 +526,7 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 6. 要求原样输出/朗读整份资料全文 → 「全文照抄请到『资料库』页查看原文；针对资料内容的提问与总结可选用 answer_material_content 工具。」
 
 规则：
-- 需要具体数据且命中上述工具时才给 action；闲聊、询问用法、解释状态含义时 action 置 null，直接回答。
+- 需要具体数据且命中上述工具时才给 action；闲聊、解释状态含义时 action 置 null，直接回答。询问网站能做什么、怎么操作、出卷流程、下一步做什么 → 给 usage_guide 引导卡，reply 结合 payload.snapshot（资料解析/框架/目录/项目的现有状态）推断教师当前所处步骤，给下一步建议（1~3 句），精确进度与跳转以卡片为准，不要逐条复述步骤。
 - 回复用中文，面向教师，简洁自然；查询/提案类回复 1~2 句：先给针对教师所问对象的结论，再引出卡片。
 - 结果卡已结构化呈现数据：回复不要逐条复述卡内容，教师没点名的项目/资料不要罗列；状态以卡片标签为准，回复里不要自行转述另一套状态说法。
 - 你给的 id 必须来自 payload.ids 白名单；不确定教师指哪份资料/项目时，action 置 null 并在回复里追问。
@@ -635,6 +642,86 @@ def _target_projects(context: dict, args: dict | None) -> list[dict]:
     return [p for p in context["projects"] if p["id"] == project_id]
 
 
+# 出卷主线步骤与页面导航（usage_guide 引导卡的确定性内容）
+_GUIDE_STEPS = (
+    {
+        "key": "materials",
+        "label": "上传并解析资料",
+        "nav": "materials",
+        "hint": "资料库上传大纲/讲义，解析后建立语料索引（问答与生成的依据）",
+    },
+    {
+        "key": "framework",
+        "label": "构建命题框架",
+        "nav": "framework",
+        "hint": "双大纲生成考点与考核规则，教师确认后冻结",
+    },
+    {
+        "key": "knowledge",
+        "label": "生成知识目录",
+        "nav": "knowledge",
+        "hint": "分类→事实→画像→知识卡，发布后供合同分配引用",
+    },
+    {
+        "key": "blueprint",
+        "label": "创建项目并确认蓝图",
+        "nav": "paper",
+        "hint": "试卷页新建项目，AI 给蓝图调整建议，教师逐条确认题位",
+    },
+    {
+        "key": "contract_generate",
+        "label": "确认合同并生成试卷",
+        "nav": "paper",
+        "hint": "确定性分配逐题位原子并冻结合同，随后 AI 分批生成",
+    },
+    {
+        "key": "review_export",
+        "label": "审核定稿并导出",
+        "nav": "paper",
+        "hint": "逐题审核编辑 → 定稿 → 导出学生卷/答卷/答题卡/答案细则",
+    },
+)
+_GUIDE_PAGES = (
+    {"label": "课程概览", "nav": "", "desc": "全阶段状态总览"},
+    {"label": "资料库", "nav": "materials", "desc": "上传/解析/索引资料"},
+    {"label": "命题框架", "nav": "framework", "desc": "考点与考核规则（冻结）"},
+    {"label": "知识目录", "nav": "knowledge", "desc": "知识卡与证据链"},
+    {"label": "试卷", "nav": "paper", "desc": "蓝图→合同→生成→审核→导出"},
+)
+
+
+def _usage_guide_payload(context: dict) -> dict:
+    """使用引导卡载荷：出卷主线步骤（done/current/todo）+ 页面导航。
+
+    完成信号取自本轮 snapshot 的既有字段；状态按前缀推导——第一个未完成
+    步骤为「进行中」，其后全部「未开始」，即使个别信号非线性，卡片呈现
+    的仍是一条从头开始的流程。全部完成时 current_step 为 None。
+    """
+    projects = context.get("projects") or []
+    done_flags = [
+        any(m.get("parse_status") == "ready" for m in context.get("materials") or []),
+        context.get("framework") is not None,
+        context.get("catalog") is not None,
+        any((p.get("blueprint") or {}).get("confirmed") for p in projects),
+        any((p.get("paper") or {}).get("exists") for p in projects),
+        any(
+            p.get("status") == "exported"
+            or (p.get("paper") or {}).get("status") == "finalized"
+            for p in projects
+        ),
+    ]
+    current = next((i for i, done in enumerate(done_flags) if not done), len(done_flags))
+    steps = [
+        {**step, "status": "done" if i < current else ("current" if i == current else "todo")}
+        for i, step in enumerate(_GUIDE_STEPS)
+    ]
+    return {
+        "steps": steps,
+        "pages": list(_GUIDE_PAGES),
+        "current_step": _GUIDE_STEPS[current]["key"] if current < len(_GUIDE_STEPS) else None,
+    }
+
+
 def execute_read_tool(
     session: Session, *, context: dict, tool: str, args: dict | None = None
 ) -> dict:
@@ -663,6 +750,9 @@ def execute_read_tool(
                 for p in projects
             ]
         }
+    if tool == "usage_guide":
+        # 不触库：能力地图 + 步骤状态全由本轮 snapshot 推导
+        return _usage_guide_payload(context)
     raise AssistantError(f"未知只读工具 {tool}")
 
 
@@ -1009,6 +1099,7 @@ _DEFAULT_READ_REPLIES = {
     "contract_status": "合同状态如下：",
     "paper_status": "试卷状态如下：",
     "list_exam_projects": "试卷项目列表如下：",
+    "usage_guide": "这个课程空间能做什么与出卷全流程见下卡，结合你当前进度的建议：",
 }
 _DEFAULT_PROPOSAL_REPLIES = {
     "create_course": "已生成新建课程提案，确认后执行：",

@@ -344,6 +344,93 @@ function ResultCard({
 }
 
 /**
+ * 使用引导卡（usage_guide）：出卷主线六步 + 每步跳转按钮 + 页面导航。
+ * 步骤状态（done/current/todo）由后端按课程进度推导，当前步骤高亮；
+ * 教师既能看到全流程与自己的位置，也能一键直达对应页面继续操作。
+ */
+function GuideCard({
+  message,
+  courseId,
+  navigate,
+}: {
+  message: AssistantMessage;
+  courseId: string;
+  navigate: (to: string) => void;
+}) {
+  const payload = message.action.payload ?? {};
+  const steps = payload.steps ?? [];
+  const pages = payload.pages ?? [];
+  const statusMeta: Record<string, { label: string; variant: 'success' | 'info' | 'default' }> = {
+    done: { label: '已完成', variant: 'success' },
+    current: { label: '进行中', variant: 'info' },
+    todo: { label: '未开始', variant: 'default' },
+  };
+  const nav = (path: string) => navigate(`/courses/${courseId}/${path}`);
+  return (
+    <div style={cardBox}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <Badge variant="info">使用引导</Badge>
+        <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+          {message.content ||
+            (payload.current_step ? '出卷全流程与你的当前位置' : '出卷全流程已全部完成')}
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 2 }}>
+        {steps.map((s, i) => {
+          const meta = statusMeta[s.status] ?? statusMeta.todo;
+          const isCurrent = s.status === 'current';
+          return (
+            <div
+              key={s.key}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+                flexWrap: 'wrap',
+                padding: '8px 12px',
+                borderRadius: 'var(--radius-sm)',
+                background: isCurrent ? 'var(--accent-subtle)' : 'var(--fill)',
+                border: isCurrent ? '1px solid var(--accent-soft)' : '1px solid transparent',
+              }}
+            >
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
+                    {i + 1}.
+                  </span>
+                  <strong style={{ fontSize: '0.83rem' }}>{s.label}</strong>
+                  <Badge variant={meta.variant}>{meta.label}</Badge>
+                </div>
+                <div style={{ fontSize: '0.76rem', color: 'var(--text-secondary)', marginTop: 2 }}>
+                  {s.hint}
+                </div>
+              </div>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => nav(s.nav)}
+                icon={<ExternalLink size={13} />}
+              >
+                前往
+              </Button>
+            </div>
+          );
+        })}
+      </div>
+      {pages.length > 0 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 4 }}>
+          {pages.map((p) => (
+            <Button key={p.label} size="sm" variant="secondary" onClick={() => nav(p.nav)}>
+              {p.label}
+            </Button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
  * 来源引用卡：资料内容问答的命中片段（资料名 + 页/章节 + 摘要）。
  * 正文（模型基于片段的回答）由上方 StemBlocks 渲染，本卡只负责可追溯性：
  * 教师据此可到资料库核对原文；score 不展示（避免把相关度当可信度）。
@@ -1139,7 +1226,11 @@ const AssistantPage: FC = () => {
                   }}
                 >
                 {m.action.kind === 'result' ? (
-                  <ResultCard message={m} courseId={courseId} navigate={navigate} />
+                  m.action.tool === 'usage_guide' ? (
+                    <GuideCard message={m} courseId={courseId} navigate={navigate} />
+                  ) : (
+                    <ResultCard message={m} courseId={courseId} navigate={navigate} />
+                  )
                 ) : m.action.kind === 'proposal' ? (
                   <ProposalCard
                     message={m}
