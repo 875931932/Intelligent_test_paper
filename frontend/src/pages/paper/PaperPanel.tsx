@@ -556,7 +556,7 @@ export default function PaperPanel({
       {/* 双栏：左题号索引，右当前题目。两卡等高平齐：高度的唯一来源是这一行
           （max-height 从左卡上移到行本身），默认 stretch 让两张卡都由行高撑开，
           两卡底部即行底，天然平齐；左卡超长时仍靠自身 overflowY 内部滚动。 */}
-      <div style={{ display: 'flex', gap: '16px', maxHeight: 'calc(100vh - 140px)' }}>
+      <div className="paper-reader" style={{ display: 'flex', gap: '16px', maxHeight: 'calc(100vh - 140px)' }}>
         <div
           className="glass-card paper-index-card"
           style={{

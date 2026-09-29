@@ -42,6 +42,7 @@
 
   /* ── 侧栏（实底白面板，禁玻璃态） ── */
   --sidebar-width: 248px;
+  --sidebar-collapsed: 68px;
   --sidebar-offset: 12px;
   --sidebar-radius: 20px;
   --sidebar-bg: #ffffff;
@@ -89,6 +90,21 @@
   --purple-subtle: #f5f3ff;
   --purple-soft: #ddd6fe;
   --purple-ink: #6d28d9;
+
+  /* ── 便当强调色（showcase 色彩系统：蓝主强调 / 粉高亮 / 橙能量） ── */
+  --brand: #3b82f6;
+  --brand-subtle: #eff6ff;
+  --brand-ink: #1d4ed8;
+  --pink: #ec4899;
+  --pink-subtle: #fdf2f8;
+  --pink-ink: #be185d;
+
+  /* ── 深色瓦片上的语义亮色（深底不用 -600 深值，用 -400 亮值保对比） ── */
+  --on-dark-success: #4ade80;
+  --on-dark-warning: #fb923c;
+  --on-dark-error: #f87171;
+  --on-dark-info: #38bdf8;
+  --on-dark-purple: #c4b5fd;
 
   /* ── 间距 ── */
   --space-xs: 4px;

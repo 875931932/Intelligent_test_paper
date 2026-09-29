@@ -139,8 +139,8 @@ const loginStyles = `
     width: 56px;
     height: 56px;
     border-radius: 16px;
-    background: var(--accent-subtle);
-    color: var(--accent);
+    background: var(--brand);
+    color: #ffffff;
     margin-bottom: 16px;
   }
 

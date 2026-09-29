@@ -193,7 +193,7 @@ export default function PaperPage() {
 
         {projects.length === 0 ? (
           <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: '72px 24px', gap: '16px' }}>
-            <div style={{ width: 60, height: 60, borderRadius: 'var(--radius-lg)', background: 'var(--accent-subtle)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div style={{ width: 60, height: 60, borderRadius: 'var(--radius-lg)', background: 'var(--brand)', color: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <ClipboardList size={30} />
             </div>
             <h3 style={{ fontWeight: 600, fontSize: '1.05rem' }}>暂无试卷项目</h3>
@@ -212,11 +212,11 @@ export default function PaperPage() {
                   onClick={() => openProject(p)}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-                    <div style={{
-                      width: 42, height: 42, borderRadius: '12px',
-                      background: 'var(--accent-subtle)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    <div className="icon-box" style={{
+                      width: 42, height: 42,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
                     }}>
-                      <ClipboardList size={20} style={{ color: 'var(--accent)' }} />
+                      <ClipboardList size={20} />
                     </div>
                     <div>
                       <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>{p.name}</div>

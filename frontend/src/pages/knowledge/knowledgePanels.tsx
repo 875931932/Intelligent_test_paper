@@ -4,10 +4,13 @@ import type { ViewMode } from './knowledgeShared';
 
 // ─── Sub-components ───
 
-export function StatsBadge({ icon, color, value, label }: { icon: React.ReactNode; color: string; value: number; label: string }) {
+export function StatsBadge({ icon, color, tint, value, label }: { icon: React.ReactNode; color: string; tint?: string; value: number; label: string }) {
   return (
     <div className="glass-card" style={{ padding: '10px 16px', display: 'flex', alignItems: 'center', gap: '10px' }}>
-      <span style={{ color, display: 'flex' }}>{icon}</span>
+      <span style={{
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        width: 28, height: 28, borderRadius: 9, background: tint ?? 'var(--fill-strong)', color, flexShrink: 0,
+      }}>{icon}</span>
       <span style={{ fontSize: '1.125rem', fontWeight: 600, letterSpacing: '-0.01em', lineHeight: 1.1 }}>{value}</span>
       <span style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>{label}</span>
     </div>
@@ -68,7 +71,7 @@ export function BuildingPanel() {
 export function IdlePanel({ onBuild }: { onBuild: () => void }) {
   return (
     <div className="glass-panel" style={{ padding: '64px 20px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px' }}>
-      <div style={{ width: 56, height: 56, borderRadius: 'var(--radius-lg)', background: 'var(--accent-subtle)', color: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ width: 56, height: 56, borderRadius: 'var(--radius-lg)', background: 'var(--brand)', color: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <Network size={28} />
       </div>
       <h3 style={{ fontSize: '1.125rem', fontWeight: 600 }}>尚未构建知识目录</h3>

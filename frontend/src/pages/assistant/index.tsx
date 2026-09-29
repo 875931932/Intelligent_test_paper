@@ -852,6 +852,14 @@ const AssistantPage: FC = () => {
   const [input, setInput] = useState('');
   const [busyMessageId, setBusyMessageId] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+
+  // composer 自适应长高：单行起步（placeholder 垂直居中），输入增长、封顶 120px 后滚动
+  const growTa = (el: HTMLTextAreaElement | null) => {
+    if (!el) return;
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+  };
 
   // 挂载恢复（防重复拉取 + 在途续读）；卸载只关流，任务在 worker 里照常跑完
   useEffect(() => {
@@ -876,6 +884,7 @@ const AssistantPage: FC = () => {
     const text = input.trim();
     if (!text || sending) return;
     setInput('');
+    if (taRef.current) taRef.current.style.height = 'auto'; // 清空回缩一行
     try {
       await send(text);
     } catch (err) {
@@ -1046,7 +1055,9 @@ const AssistantPage: FC = () => {
         {activeSessionId === null && !restoring && (
           <div style={{ ...cardBox, alignItems: 'flex-start', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Bot size={18} color="var(--accent)" />
+              <span className="chat-avatar" style={{ width: 32, height: 32 }} aria-hidden>
+                <Bot size={17} />
+              </span>
               <strong style={{ fontSize: '0.9rem' }}>你好，我是本课程的 AI 助手</strong>
             </div>
             <p style={muted}>
@@ -1062,7 +1073,9 @@ const AssistantPage: FC = () => {
         {activeSessionId !== null && empty && (
           <div style={{ ...cardBox, alignItems: 'flex-start', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <Bot size={18} color="var(--accent)" />
+              <span className="chat-avatar" style={{ width: 32, height: 32 }} aria-hidden>
+                <Bot size={17} />
+              </span>
               <strong style={{ fontSize: '0.9rem' }}>你好，我是本课程的 AI 助手</strong>
             </div>
             <p style={muted}>
@@ -1071,7 +1084,7 @@ const AssistantPage: FC = () => {
             </p>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {SUGGESTIONS.map((s) => (
-                <Button key={s} size="sm" variant="secondary" onClick={() => void send(s)}>
+                <Button key={s} size="sm" variant="secondary" className="chat-suggestion" onClick={() => void send(s)}>
                   {s}
                 </Button>
               ))}
@@ -1083,15 +1096,16 @@ const AssistantPage: FC = () => {
           m.role === 'user' ? (
             <div
               key={m.id}
-              style={{ display: 'flex', justifyContent: 'flex-end' }}
+              className="msg-in"
+              style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}
             >
               <div
                 style={{
                   maxWidth: '78%',
                   background: 'var(--accent)',
                   color: 'var(--surface-solid)',
-                  borderRadius: '14px 14px 4px 14px',
-                  padding: '8px 12px',
+                  borderRadius: '16px 16px 4px 16px',
+                  padding: '9px 13px',
                   fontSize: '0.875rem',
                   lineHeight: 1.6,
                   whiteSpace: 'pre-wrap',
@@ -1100,22 +1114,30 @@ const AssistantPage: FC = () => {
               >
                 {m.content}
               </div>
+              {m.created_at && (
+                <span style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', marginRight: 4 }}>
+                  {formatDateTime(m.created_at)}
+                </span>
+              )}
             </div>
           ) : (
-            <div key={m.id} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-              <div
-                style={{
-                  maxWidth: '88%',
-                  borderRadius: '14px 14px 14px 4px',
-                  padding: '8px 12px',
-                  background: 'var(--surface-solid)',
-                  border: '1px solid var(--line)',
-                  fontSize: '0.875rem',
-                  lineHeight: 1.65,
-                  color: 'var(--text)',
-                  minWidth: 180,
-                }}
-              >
+            <div key={m.id} className="msg-in" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, maxWidth: '88%' }}>
+                <span className="chat-avatar" style={{ marginTop: 2 }} aria-hidden>
+                  <Bot size={15} />
+                </span>
+                <div
+                  style={{
+                    minWidth: 0,
+                    borderRadius: '16px 16px 16px 4px',
+                    padding: '9px 13px',
+                    background: 'var(--surface-solid)',
+                    border: '1px solid var(--line)',
+                    fontSize: '0.875rem',
+                    lineHeight: 1.65,
+                    color: 'var(--text)',
+                  }}
+                >
                 {m.action.kind === 'result' ? (
                   <ResultCard message={m} courseId={courseId} navigate={navigate} />
                 ) : m.action.kind === 'proposal' ? (
@@ -1144,6 +1166,7 @@ const AssistantPage: FC = () => {
                     <Badge variant="warning">已停止</Badge>
                   </div>
                 )}
+                </div>
               </div>
               {m.created_at && (
                 <span style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', marginTop: 3, marginLeft: 4 }}>
@@ -1156,33 +1179,44 @@ const AssistantPage: FC = () => {
 
         {/* 在途轮次的流式占位（只在归属本会话时显示；POST 瞬态 session 未知也显示） */}
         {sending && (!streamSessionId || streamSessionId === activeSessionId) && (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-            <div
-              style={{
-                maxWidth: '88%',
-                borderRadius: '14px 14px 14px 4px',
-                padding: '8px 12px',
-                background: 'var(--surface-solid)',
-                border: '1px solid var(--line)',
-                fontSize: '0.875rem',
-                lineHeight: 1.65,
-                color: 'var(--text)',
-                minWidth: 180,
-              }}
-            >
-              {streamText ? (
-                <span>
-                  <StemBlocks text={streamText} />
-                  <span style={{ opacity: 0.55 }}>▍</span>
-                </span>
-              ) : (
-                <span style={{ color: 'var(--text-secondary)' }}>{streamHint ?? '正在思考…'}</span>
-              )}
+          <div className="msg-in" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, maxWidth: '88%' }}>
+              <span className="chat-avatar" style={{ marginTop: 2 }} aria-hidden>
+                <Bot size={15} />
+              </span>
+              <div
+                style={{
+                  minWidth: 0,
+                  borderRadius: '16px 16px 16px 4px',
+                  padding: '9px 13px',
+                  background: 'var(--surface-solid)',
+                  border: '1px solid var(--line)',
+                  fontSize: '0.875rem',
+                  lineHeight: 1.65,
+                  color: 'var(--text)',
+                }}
+              >
+                {streamText ? (
+                  <span>
+                    <StemBlocks text={streamText} />
+                    <span className="caret">▍</span>
+                  </span>
+                ) : (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: 'var(--text-secondary)' }}>
+                    <span className="typing-dots">
+                      <span className="typing-dot" />
+                      <span className="typing-dot" />
+                      <span className="typing-dot" />
+                    </span>
+                    {streamHint ?? '正在思考…'}
+                  </span>
+                )}
               {streamText && streamHint && (
                 <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: 4 }}>
                   {streamHint}
                 </div>
               )}
+              </div>
             </div>
           </div>
         )}
@@ -1190,12 +1224,13 @@ const AssistantPage: FC = () => {
         <div ref={bottomRef} />
       </div>
 
-      {/* 输入区 */}
-      <div style={{ display: 'flex', gap: 10, alignItems: 'flex-end', flexShrink: 0 }}>
+      {/* 输入区：composer 白卡承托 + 品牌蓝发送钮（Enter 发送 / Shift+Enter 换行） */}
+      <div className="chat-composer" style={{ flexShrink: 0 }}>
         <textarea
+          ref={taRef}
           className="input-field"
-          style={{ flex: 1, resize: 'none' }}
-          rows={2}
+          style={{ flex: 1, resize: 'none', maxHeight: 120, minHeight: 38 }}
+          rows={1}
           value={input}
           disabled={sending}
           placeholder={
@@ -1204,7 +1239,7 @@ const AssistantPage: FC = () => {
               : '输入问题，Enter 发送（Shift+Enter 换行）'
           }
           aria-label="给 AI 助手发消息"
-          onChange={(e) => setInput(e.target.value)}
+          onChange={(e) => { setInput(e.target.value); growTa(e.currentTarget); }}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
@@ -1215,19 +1250,23 @@ const AssistantPage: FC = () => {
         {sending && (
           <Button
             variant="secondary"
+            size="sm"
             onClick={() => void handleStop()}
-            icon={<Square size={15} />}
+            icon={<Square size={14} />}
           >
             停止
           </Button>
         )}
-        <Button
+        <button
+          type="button"
+          className="chat-send"
           onClick={() => void handleSend()}
           disabled={!input.trim() || sending}
-          icon={<Send size={16} />}
+          title="发送"
+          aria-label="发送消息"
         >
-          发送
-        </Button>
+          <Send size={16} />
+        </button>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.72rem', color: 'var(--text-tertiary)', flexShrink: 0, marginTop: -8 }}>
         <Sparkles size={12} />

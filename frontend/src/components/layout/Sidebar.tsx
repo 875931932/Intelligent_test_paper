@@ -20,12 +20,8 @@ interface Props {
   onLogout: () => void;
 }
 
-/* 侧栏色板全部走令牌：bento 实底白面板（禁玻璃态），曾经的 Tailwind 系
-   与旧主题色板已全部并入设计令牌 */
-const ISLAND_BG = 'var(--sidebar-bg)';
-const ISLAND_SHADOW = 'var(--shadow-1)';
-const HAIRLINE = '1px solid var(--line)';
-const RADIUS = 20;
+/* 侧栏色板全部走令牌：bento 实底白面板（禁玻璃态），基底样式在
+   .sidebar-island（global.css），本文件只保留宽度与内容配色 */
 const TEXT_MAIN = 'var(--text)';
 const TEXT_SECONDARY = 'var(--text-secondary)';
 const ACCENT = 'var(--accent)';
@@ -52,21 +48,10 @@ export function Sidebar({ onLogout }: Props) {
 
   return (
     <aside
+      className={`sidebar-island${collapsed ? ' is-collapsed' : ''}`}
       style={{
-        position: 'fixed',
-        left: 14,
-        top: 14,
-        bottom: 14,
-        width: collapsed ? 68 : 220,
-        display: 'flex',
-        flexDirection: 'column',
-        background: ISLAND_BG,
-        border: HAIRLINE,
-        borderRadius: RADIUS,
-        boxShadow: ISLAND_SHADOW,
-        zIndex: 100,
-        overflow: 'hidden',
-        transition: 'width 0.25s cubic-bezier(0, 0, 0.2, 1)',
+        // 宽度走令牌：Layout 主区经 :has(.is-collapsed) 同步让位，收起即重排
+        width: collapsed ? 'var(--sidebar-collapsed)' : 'var(--sidebar-width)',
       }}
     >
       {/* Header */}
@@ -91,7 +76,12 @@ export function Sidebar({ onLogout }: Props) {
             whiteSpace: 'nowrap',
           }}
         >
-          <BookOpen size={20} color={ACCENT} />
+          <span style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            width: 30, height: 30, borderRadius: 9, background: 'var(--brand)', color: '#ffffff', flexShrink: 0,
+          }}>
+            <BookOpen size={17} />
+          </span>
           {!collapsed && <span>智卷</span>}
         </div>
 
@@ -205,7 +195,7 @@ export function Sidebar({ onLogout }: Props) {
       <div
         style={{
           padding: '10px 8px',
-          borderTop: HAIRLINE,
+          borderTop: '1px solid var(--line)',
           flexShrink: 0,
         }}
       >

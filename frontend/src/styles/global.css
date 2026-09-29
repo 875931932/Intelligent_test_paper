@@ -132,6 +132,68 @@ body {
 }
 
 /* ═══════════════════════════════════════════════
+   便当着色瓦片（showcase 色彩系统，须排在 .glass-card 之后覆盖白底）
+   实色瓦片放主内容/核心指标，淡染软瓦片放次级信息；
+   颜色只做强调，黑白锌灰仍是画面主体。
+   ═══════════════════════════════════════════════ */
+
+.tile-dark { background: #18181b; color: #ffffff; }
+.tile-brand { background: var(--brand); color: #ffffff; }
+.tile-purple { background: var(--purple); color: #ffffff; }
+.tile-pink { background: var(--pink); color: #ffffff; }
+.tile-orange { background: var(--warning); color: #ffffff; }
+
+.tile-brand-soft { background: var(--brand-subtle); color: var(--brand-ink); }
+.tile-purple-soft { background: var(--purple-subtle); color: var(--purple-ink); }
+.tile-pink-soft { background: var(--pink-subtle); color: var(--pink-ink); }
+.tile-orange-soft { background: var(--warning-subtle); color: var(--warning-ink); }
+.tile-green-soft { background: var(--success-subtle); color: var(--success-ink); }
+.tile-red-soft { background: var(--error-subtle); color: var(--error-ink); }
+
+/* 着色瓦片上的说明文字：随底色继承色相，75% 透明阶 */
+.tile-cap { font-size: 0.75rem; opacity: 0.75; line-height: 1.5; }
+
+/* 深色瓦片上的正文/弱述：白与白透明阶，禁灰字（彩底灰字对比不足） */
+.tile-dark p { color: rgba(255, 255, 255, 0.72); }
+.tile-dark .card-title,
+.tile-dark h2, .tile-dark h3 { color: #ffffff; }
+/* 深色瓦片上的徽章：亮色系保语义可辨 */
+.tile-dark .badge { background: rgba(255, 255, 255, 0.14); color: rgba(255, 255, 255, 0.92); }
+.tile-dark .badge-success { background: rgba(74, 222, 128, 0.18); color: var(--on-dark-success); }
+.tile-dark .badge-warning { background: rgba(251, 146, 60, 0.18); color: var(--on-dark-warning); }
+.tile-dark .badge-error { background: rgba(248, 113, 113, 0.18); color: var(--on-dark-error); }
+.tile-dark .badge-info { background: rgba(56, 189, 248, 0.18); color: var(--on-dark-info); }
+.tile-dark .badge-purple { background: rgba(196, 181, 253, 0.18); color: var(--on-dark-purple); }
+/* 深色瓦片上的主按钮：白底深字（反转） */
+.tile-dark .btn-primary {
+  background: #ffffff;
+  color: #18181b;
+}
+.tile-dark .btn-primary:hover:not(:disabled) { background: rgba(255, 255, 255, 0.88); }
+
+/* 图标色翻（Icon Color Flip）：中性容器 hover 翻品牌蓝、白图标 */
+.icon-box {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--fill-strong);
+  color: var(--text);
+  border-radius: var(--radius-md);
+  transition: background-color var(--duration-hover) var(--ease-snappy),
+              color var(--duration-hover) var(--ease-snappy),
+              transform var(--duration-hover) var(--ease-snappy);
+}
+.card-hover:hover .icon-box {
+  background: var(--brand);
+  color: #ffffff;
+  transform: scale(1.06);
+}
+/* 深色瓦片上的图标容器：白透明阶，hover 反转成白底深图标 */
+.tile-dark .icon-box { background: rgba(255, 255, 255, 0.12); color: #ffffff; }
+.tile-dark .card-hover:hover .icon-box,
+.card-hover.tile-dark:hover .icon-box { background: #ffffff; color: #18181b; }
+
+/* ═══════════════════════════════════════════════
    卡内分组降级 + 结构工具类
    ═══════════════════════════════════════════════ */
 
@@ -205,6 +267,26 @@ body {
   z-index: var(--z-sticky);
   overflow: hidden;
   transition: width 0.25s var(--ease-snappy);
+}
+
+/* ═══════════════════════════════════════════════
+   App Shell 主区让位（侧栏收起 → 内容区变大）
+   ═══════════════════════════════════════════════ */
+
+.app-main {
+  flex: 1;
+  padding: 24px 32px 24px var(--sidebar-width);
+  min-height: 100vh;
+  max-width: var(--content-max-width);
+  margin: 0 auto;
+  width: 100%;
+  /* 让位重排也走液态过渡：收起/展开时内容平滑滑入，不跳变 */
+  transition: padding-left 0.25s var(--ease-snappy);
+}
+/* :has 选择器读侧栏收起态同步主区内边距（Baseline 2023+；
+   极旧浏览器不支持时保持展开态占位，不破布局） */
+.app-shell:has(.sidebar-island.is-collapsed) .app-main {
+  padding-left: var(--sidebar-collapsed);
 }
 
 /* ═══════════════════════════════════════════════
@@ -632,6 +714,110 @@ body > .floating-pill:nth-of-type(2) { top: 112px; }
 .table-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
 /* ═══════════════════════════════════════════════
+   AI 助手聊天组件（气泡 / 头像 / 输入 composer / 流式动效）
+   ═══════════════════════════════════════════════ */
+
+/* 气泡入场：上新消息从下方淡入（250ms snappy，reduced-motion 已被全局偏好覆盖） */
+.msg-in { animation: msgIn 0.25s var(--ease-snappy); }
+@keyframes msgIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* 助手头像：品牌蓝小方牌 */
+.chat-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  background: var(--brand);
+  color: #ffffff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* 输入 composer：整条白卡承托，textarea 去边框融入，聚焦时光环 */
+.chat-composer {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding: 8px 8px 8px 14px;
+  background: var(--surface-solid);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+  transition: border-color var(--duration-hover) var(--ease-snappy),
+              box-shadow var(--duration-hover) var(--ease-snappy);
+}
+.chat-composer:focus-within {
+  border-color: var(--focus-border);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+.chat-composer .input-field {
+  border: none;
+  background: transparent;
+  box-shadow: none;
+  padding: 8px 0;
+}
+.chat-composer .input-field:focus { box-shadow: none; }
+
+/* 发送钮：品牌蓝方牌，hover 深化 + 微放大，禁用转锌 */
+.chat-send {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--radius-md);
+  background: var(--brand);
+  color: #ffffff;
+  border: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background-color var(--duration-hover) var(--ease-snappy),
+              transform var(--duration-hover) var(--ease-snappy);
+}
+.chat-send:hover:not(:disabled) { background: var(--brand-ink); transform: scale(1.05); }
+.chat-send:active:not(:disabled) { transform: scale(0.95); }
+.chat-send:disabled { background: var(--fill-strong); color: var(--text-tertiary); cursor: not-allowed; }
+
+/* 建议问题芯片：hover 轻抬 + 柔影 */
+.chat-suggestion {
+  transition: transform var(--duration-hover) var(--ease-snappy),
+              box-shadow var(--duration-hover) var(--ease-snappy);
+  cursor: pointer;
+}
+.chat-suggestion:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-2);
+}
+
+/* 思考中三点：错相呼吸 */
+.typing-dots { display: inline-flex; align-items: center; gap: 4px; padding: 4px 0; }
+.typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+  animation: typingBlink 1.2s var(--ease-in-out) infinite;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.15s; }
+.typing-dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typingBlink {
+  0%, 60%, 100% { opacity: 0.25; transform: none; }
+  30% { opacity: 1; transform: translateY(-2px); }
+}
+
+/* 流式光标：半步闪烁 */
+.caret {
+  display: inline-block;
+  marginLeft: 1px;
+  animation: caretBlink 1s steps(2, start) infinite;
+}
+@keyframes caretBlink { 50% { opacity: 0; } }
+
+/* ═══════════════════════════════════════════════
    Keyframe Animations（200~300ms 短促）
    ═══════════════════════════════════════════════ */
 
@@ -693,6 +879,35 @@ body > .floating-pill:nth-of-type(2) { top: 112px; }
 @media (max-width: 768px) {
   /* 触屏会把 hover 粘在点击上，瓦片上浮在移动端只会造成误触感 */
   .card-hover:hover { transform: none; }
+}
+
+/* ═══════════════════════════════════════════════
+   响应式（三档：桌面 / 平板 / 手机）
+   ═══════════════════════════════════════════════ */
+
+@media (max-width: 1024px) {
+  .app-main { padding: 20px 20px 20px var(--sidebar-width); }
+  /* 试卷双栏阅读器窄屏列向：题号索引转横向条，题目详情下移 */
+  .paper-reader {
+    flex-direction: column;
+    max-height: none;
+  }
+  .paper-reader .paper-index-card {
+    width: 100%;
+    position: static;
+    max-height: 220px;
+  }
+}
+
+@media (max-width: 768px) {
+  html { -webkit-text-size-adjust: 100%; }
+  /* 手机：侧栏转浮层抽屉（压内容），主区贴边全宽 */
+  .app-main { padding: 16px 12px 24px 12px; }
+  .app-shell:has(.sidebar-island.is-collapsed) .app-main { padding-left: 12px; }
+  .sidebar-island { box-shadow: var(--shadow-3); }
+  .page-title { font-size: 1.5rem; margin-bottom: 4px; }
+  .page-header { gap: 12px; }
+  .data-table th, .data-table td { padding: 10px 12px; }
 }
 
 /* ── 键盘焦点：全站统一蓝色细环 ── */

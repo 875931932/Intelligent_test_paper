@@ -1,4 +1,4 @@
-import { useEffect, useState, type FC } from 'react';
+import { useEffect, useMemo, useState, type FC } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Plus, ChevronRight, FolderOpen, ClipboardList, Network, FileQuestion,
@@ -12,6 +12,14 @@ import { BadgeSuccess, BadgeWarning, BadgePurple, Badge } from '@/components/ui/
 import { SkeletonCardGrid } from '@/components/ui/Skeleton';
 import { EXAM_PROJECT_STATUS_META } from '@/lib/examDisplay';
 import type { MaterialResponse, CurrentFrameworkResponse, PublishedKnowledgeResponse, ExamProject } from '@/types/api';
+
+/** 资料类型中文名（与资料库页保持一致；仅概览分布条展示用） */
+const MATERIAL_TYPE_LABELS: Record<string, string> = {
+  teaching_syllabus: '教学大纲',
+  assessment_syllabus: '考核大纲',
+  teaching_material: '教材',
+  exercise: '习题',
+};
 
 const DashboardPage: FC = () => {
   const navigate = useNavigate();
@@ -74,6 +82,14 @@ const DashboardPage: FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeCourseId, token]);
 
+  // 资料按类型分布（hero 卡填充用）：只列有数的类型，占比相对总数。
+  // 必须置于 loading 早返回之前——Hook 不允许条件调用。
+  const typeCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    materials.forEach((m) => counts.set(m.material_type, (counts.get(m.material_type) ?? 0) + 1));
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  }, [materials]);
+
   // ── 加载中 ──
   if (loading) {
     return (
@@ -132,7 +148,7 @@ const DashboardPage: FC = () => {
         <p className="page-subtitle">智能出卷系统 · 从课程资料到成品试卷的完整链路</p>
       </div>
 
-      {/* 统计瓦片行：1x1 小卡放数字指标，渐变卡强调核心指标（白字深底） */}
+      {/* 统计瓦片行：白底 zinc + 品牌蓝实色（核心指标）+ 紫/橙淡染，四色混排 */}
       <div className="bento">
         <div className="glass-card" style={{ padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -142,35 +158,31 @@ const DashboardPage: FC = () => {
           <div style={{ fontSize: '1.75rem', fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1.1 }}>
             {materialStats.total} <span style={{ fontSize: '0.875rem', fontWeight: 400, color: 'var(--text-tertiary)' }}>份</span>
           </div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>已解析 {materialStats.parsed} · 未解析 {materialStats.unparsed}</div>
+          <span className="tile-cap">已解析 {materialStats.parsed} · 未解析 {materialStats.unparsed}</span>
         </div>
-        <div style={{
-          padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: '6px',
-          borderRadius: 'var(--radius-lg)', background: 'linear-gradient(135deg, #2563eb, #0891b2)',
-          boxShadow: 'var(--shadow-1)', color: '#ffffff',
-        }}>
+        <div className="glass-card tile-brand" style={{ padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span style={{ fontSize: '0.75rem', opacity: 0.85 }}>考核点</span>
+            <span className="tile-cap">考核点</span>
             <ClipboardList size={16} style={{ opacity: 0.85 }} />
           </div>
           <div style={{ fontSize: '1.75rem', fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1.1 }}>{examPointCount}</div>
-          <div style={{ fontSize: '0.75rem', opacity: 0.85 }}>{isFrameworkPublished ? '框架已发布' : '框架待构建'}</div>
+          <span className="tile-cap">{isFrameworkPublished ? '框架已发布' : '框架待构建'}</span>
         </div>
-        <div className="glass-card" style={{ padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        <div className="glass-card tile-purple-soft" style={{ padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>知识卡</span>
-            <Network size={16} style={{ color: 'var(--text-tertiary)' }} />
+            <span className="tile-cap">知识卡</span>
+            <Network size={16} style={{ opacity: 0.7 }} />
           </div>
           <div style={{ fontSize: '1.75rem', fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1.1 }}>{knowledgeCardCount}</div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>{evidenceCount} 条关联关系</div>
+          <span className="tile-cap">{evidenceCount} 条关联关系</span>
         </div>
-        <div className="glass-card" style={{ padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+        <div className="glass-card tile-orange-soft" style={{ padding: '20px 22px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>试卷项目</span>
-            <FileQuestion size={16} style={{ color: 'var(--text-tertiary)' }} />
+            <span className="tile-cap">试卷项目</span>
+            <FileQuestion size={16} style={{ opacity: 0.7 }} />
           </div>
           <div style={{ fontSize: '1.75rem', fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1.1 }}>{examProjects.length}</div>
-          <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>最近 {recentProjects.length} 个进行中</div>
+          <span className="tile-cap">最近 {recentProjects.length} 个进行中</span>
         </div>
       </div>
 
@@ -190,19 +202,14 @@ const DashboardPage: FC = () => {
           style={{ cursor: 'pointer', display: 'flex' }}
           className="stagger-item bento-col-2 bento-row-2"
         >
-          <Card className="card-hover" style={{ flex: 1 }}>
+          <Card className="card-hover tile-dark" style={{ flex: 1 }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px', marginBottom: '16px' }}>
-              <div style={{
-                width: 44, height: 44, borderRadius: '14px',
-                background: 'var(--accent-subtle)', color: 'var(--accent)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                flexShrink: 0,
-              }}>
+              <div className="icon-box" style={{ width: 44, height: 44, flexShrink: 0 }}>
                 <FolderOpen size={22} />
               </div>
               <div>
                 <h3 className="card-title" style={{ marginBottom: '4px' }}>资料库</h3>
-                <p style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>管理课程教学资料</p>
+                <p style={{ fontSize: '0.8125rem', color: 'rgba(255,255,255,0.72)' }}>管理课程教学资料</p>
               </div>
             </div>
             <div style={{ display: 'flex', gap: '8px', marginBottom: '12px', flexWrap: 'wrap' }}>
@@ -210,6 +217,27 @@ const DashboardPage: FC = () => {
               {materialStats.unparsed > 0 && <BadgeWarning>未解析 {materialStats.unparsed}</BadgeWarning>}
               <span className="badge badge-default">{materialStats.categories} 类资料</span>
             </div>
+            {/* 按类型分布细条：把 hero 卡的下部空白变成有用信息（深色底白细条） */}
+            {typeCounts.length > 0 && (
+              <div style={{ marginTop: 'auto', marginBottom: '16px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <span style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.6)' }}>按类型分布</span>
+                {typeCounts.map(([type, count]) => (
+                  <div key={type} style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span style={{ fontSize: '0.78rem', color: 'rgba(255,255,255,0.72)', width: 58, flexShrink: 0 }}>
+                      {MATERIAL_TYPE_LABELS[type] ?? type}
+                    </span>
+                    <div style={{ flex: 1, height: 4, borderRadius: 999, background: 'rgba(255,255,255,0.14)', overflow: 'hidden' }}>
+                      <div style={{
+                        width: materialStats.total ? Math.round((count / materialStats.total) * 100) + '%' : '0%',
+                        height: '100%', borderRadius: 999, background: 'rgba(255,255,255,0.85)',
+                        transition: 'width 0.3s var(--ease-snappy)',
+                      }} />
+                    </div>
+                    <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.72)', width: 24, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{count}</span>
+                  </div>
+                ))}
+              </div>
+            )}
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <Button
                 variant="secondary"
@@ -239,12 +267,7 @@ const DashboardPage: FC = () => {
         >
           <Card className="card-hover" style={{ flex: 1 }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px', marginBottom: '16px' }}>
-              <div style={{
-                width: 44, height: 44, borderRadius: '14px',
-                background: 'var(--purple-subtle)', color: 'var(--purple)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                flexShrink: 0,
-              }}>
+              <div className="icon-box" style={{ width: 44, height: 44, flexShrink: 0 }}>
                 <ClipboardList size={22} />
               </div>
               <div>
@@ -288,12 +311,7 @@ const DashboardPage: FC = () => {
         >
           <Card className="card-hover" style={{ flex: 1 }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px', marginBottom: '16px' }}>
-              <div style={{
-                width: 44, height: 44, borderRadius: '14px',
-                background: 'var(--info-subtle)', color: 'var(--info)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                flexShrink: 0,
-              }}>
+              <div className="icon-box" style={{ width: 44, height: 44, flexShrink: 0 }}>
                 <Network size={22} />
               </div>
               <div>
@@ -334,12 +352,7 @@ const DashboardPage: FC = () => {
         >
           <Card className="card-hover" style={{ flex: 1 }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px', marginBottom: '16px' }}>
-              <div style={{
-                width: 44, height: 44, borderRadius: '14px',
-                background: 'var(--success-subtle)', color: 'var(--success)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                flexShrink: 0,
-              }}>
+              <div className="icon-box" style={{ width: 44, height: 44, flexShrink: 0 }}>
                 <FileQuestion size={22} />
               </div>
               <div>

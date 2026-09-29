@@ -104,7 +104,7 @@ export default function CourseSpacePage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <div style={{
             width: 38, height: 38, borderRadius: '12px',
-            background: 'var(--accent)',
+            background: 'var(--brand)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             color: 'white',
           }}>
@@ -164,10 +164,8 @@ export default function CourseSpacePage() {
                 className="stagger-item"
               >
                 <div className="glass-card card-hover" style={{ padding: '24px', height: '100%', display: 'flex', flexDirection: 'column' }}>
-                  <div style={{
-                    width: 46, height: 46, borderRadius: '14px',
-                    background: 'var(--accent-subtle)', color: 'var(--accent)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  <div className="icon-box" style={{
+                    width: 46, height: 46,
                     marginBottom: '16px',
                   }}>
                     <BookOpen size={22} />

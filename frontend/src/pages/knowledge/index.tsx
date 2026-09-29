@@ -465,12 +465,12 @@ export default function KnowledgePage() {
       {/* Stats */}
       {stats.totalCards > 0 && (
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-          <StatsBadge icon={<BookOpen size={14} />} color="var(--accent)" value={stats.totalCards} label="知识卡" />
-          <StatsBadge icon={<Target size={14} />} color="var(--warning)" value={stats.totalPoints} label="考点" />
-          <StatsBadge icon={<GitBranch size={14} />} color="var(--purple)" value={stats.totalUnits} label="考核单元" />
-          <StatsBadge icon={<CheckCircle2 size={14} />} color="var(--success)" value={stats.groundedCards} label="已落地" />
+          <StatsBadge icon={<BookOpen size={14} />} color="var(--brand-ink)" tint="var(--brand-subtle)" value={stats.totalCards} label="知识卡" />
+          <StatsBadge icon={<Target size={14} />} color="var(--warning-ink)" tint="var(--warning-subtle)" value={stats.totalPoints} label="考点" />
+          <StatsBadge icon={<GitBranch size={14} />} color="var(--purple-ink)" tint="var(--purple-subtle)" value={stats.totalUnits} label="考核单元" />
+          <StatsBadge icon={<CheckCircle2 size={14} />} color="var(--success-ink)" tint="var(--success-subtle)" value={stats.groundedCards} label="已落地" />
           {stats.ungroundedCards > 0 && (
-            <StatsBadge icon={<AlertTriangle size={14} />} color="var(--error)" value={stats.ungroundedCards} label="未落地" />
+            <StatsBadge icon={<AlertTriangle size={14} />} color="var(--error-ink)" tint="var(--error-subtle)" value={stats.ungroundedCards} label="未落地" />
           )}
         </div>
       )}
