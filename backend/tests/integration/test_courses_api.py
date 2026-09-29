@@ -91,3 +91,28 @@ def test_course_categories_endpoint_not_shadowed_by_path_param(env):
     # 裸客户端（无 token）同样 401，清单不绕过鉴权
     anon = TestClient(app)
     assert anon.get("/api/v1/courses/categories").status_code == 401
+
+
+def test_delete_course_removes_children_and_frees_uniqueness(env):
+    created = env.post("/api/v1/courses", json={"name": "删除验收课", "slug": "del-course"})
+    assert created.status_code == 201, created.text
+    course_id = created.json()["id"]
+
+    # 挂一条课程域子记录（exam_projects 带 course_id 外键）：子记录没清掉，
+    # SQLite PRAGMA foreign_keys=ON 下 DELETE 会 FK 违约 → 500 而非 204
+    proj = env.post(f"/api/v1/courses/{course_id}/exam-projects", json={"name": "p1"})
+    assert proj.status_code in (200, 201), proj.text
+
+    resp = env.delete(f"/api/v1/courses/{course_id}")
+    assert resp.status_code == 204, resp.text
+
+    assert course_id not in {c["id"] for c in env.get("/api/v1/courses").json()}
+    assert env.get(f"/api/v1/courses/{course_id}").status_code == 404
+
+    # 名称/slug 唯一约束随删除释放：同名同 slug 重建成功
+    again = env.post("/api/v1/courses", json={"name": "删除验收课", "slug": "del-course"})
+    assert again.status_code == 201, again.text
+
+
+def test_delete_missing_course_returns_404(env):
+    assert env.delete("/api/v1/courses/no-such-course").status_code == 404

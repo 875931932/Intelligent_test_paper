@@ -16,6 +16,7 @@ interface CourseState {
   setCourses: (courses: Course[]) => void;
   setActiveCourse: (courseId: string) => void;
   addCourse: (course: Course) => void;
+  removeCourse: (courseId: string) => void;
 }
 
 export const useCourseStore = create<CourseState>((set) => ({
@@ -29,5 +30,11 @@ export const useCourseStore = create<CourseState>((set) => ({
       courses: s.courses.some((c) => c.id === course.id)
         ? s.courses.map((c) => (c.id === course.id ? course : c))
         : [...s.courses, course],
+    })),
+  // 删除课程后从列表移除；被删的恰是当前活跃课程则清空活跃标记
+  removeCourse: (courseId) =>
+    set((s) => ({
+      courses: s.courses.filter((c) => c.id !== courseId),
+      activeCourseId: s.activeCourseId === courseId ? null : s.activeCourseId,
     })),
 }));

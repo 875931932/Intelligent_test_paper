@@ -74,3 +74,16 @@ def patch(
         raise HTTPException(status_code=409, detail="同名课程已存在，请更换课程名称")
     except course_service.CourseConflictError:
         raise HTTPException(status_code=409, detail="course slug already exists")
+
+
+@router.delete("/{course_id}", status_code=status.HTTP_204_NO_CONTENT)
+def remove(
+    course_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    """删除课程（连同全部课程域数据）；不存在或非本人课程均 404。"""
+    try:
+        course_service.delete_course(session, current_user.id, course_id)
+    except course_service.CourseNotFoundError:
+        raise _not_found()

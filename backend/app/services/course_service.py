@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.db.schema import Course
+from app.db.schema import Base, Course
 from app.domain.course.category_profiles import normalize_category
 
 
@@ -98,3 +98,19 @@ def update_course(session: Session, owner_id: str, course_id: str, **changes: ob
         raise
     session.refresh(course)
     return course
+
+
+def delete_course(session: Session, owner_id: str, course_id: str) -> None:
+    """硬删课程及其全部课程域数据。
+
+    course_id 外键是裸引用（无 ON DELETE CASCADE），必须显式清理：
+    按 metadata.sorted_tables 拓扑序删除所有带 course_id 列的表，
+    未来新增课程域表自动纳入。不带 course_id 的表不可能引用课程域
+    （已用元数据自省验证：40 表中 38 个带 course_id，其余无一指向课程域）。
+    """
+    course = get_owned_course(session, owner_id, course_id)
+    for table in Base.metadata.sorted_tables:
+        if "course_id" in table.c:
+            session.execute(table.delete().where(table.c.course_id == course_id))
+    session.delete(course)
+    session.commit()

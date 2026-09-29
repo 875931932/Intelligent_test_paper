@@ -13,4 +13,7 @@ export const coursesApi = {
     request('/courses/' + courseId, undefined, token),
   update: (courseId: string, data: CourseUpdate, token?: string): Promise<CourseResponse> =>
     request('/courses/' + courseId, { method: 'PATCH', body: JSON.stringify(data) }, token),
+  /** 硬删课程（连同全部课程域数据），204 → undefined */
+  remove: (courseId: string, token?: string): Promise<void> =>
+    request('/courses/' + courseId, { method: 'DELETE' }, token),
 };
