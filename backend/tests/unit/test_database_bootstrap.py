@@ -66,6 +66,55 @@ def test_bootstrap_seed_is_idempotent(database_url):
         engine.dispose()
 
 
+def test_bootstrap_migrates_legacy_courses_without_category(tmp_path):
+    """既有库无 category 列：bootstrap 幂等补列并落默认 general；重复执行无副作用。
+
+    空库场景由 test_bootstrap_creates_core_schema 覆盖（create_all 自带新列）。
+    """
+    db = f"sqlite:///{tmp_path / 'legacy.db'}"
+    engine = create_engine(db)
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "CREATE TABLE courses ("
+            "id VARCHAR(64) PRIMARY KEY, owner_id VARCHAR(64) NOT NULL, "
+            "slug VARCHAR(120) NOT NULL, name VARCHAR(200) NOT NULL, description TEXT)"
+        )
+        conn.exec_driver_sql(
+            "INSERT INTO courses (id, owner_id, slug, name) VALUES ('c1', 'u1', 'c1', 'Legacy')"
+        )
+    engine.dispose()
+
+    bootstrap_database(db, seed=False)
+    bootstrap_database(db, seed=False)
+
+    engine = create_engine(db)
+    try:
+        columns = {c["name"] for c in inspect(engine).get_columns("courses")}
+        assert "category" in columns
+        with engine.connect() as connection:
+            assert (
+                connection.exec_driver_sql("SELECT category FROM courses WHERE id='c1'").scalar_one()
+                == "general"
+            )
+    finally:
+        engine.dispose()
+
+
+def test_bootstrap_database_url_falls_back_to_settings(tmp_path, monkeypatch):
+    """无参数且进程无 DATABASE_URL 时回退到 settings（仓库根 .env）——裸 CLI 文档流程可跑。"""
+    from types import SimpleNamespace
+
+    import app.config as config
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    fallback = f"sqlite:///{tmp_path / 'fallback.db'}"
+    monkeypatch.setattr(config, "settings", SimpleNamespace(database_url=fallback))
+
+    bootstrap_database(seed=False)
+
+    assert table_exists(fallback, "courses")
+
+
 def test_migrate_evidence_chunk_columns_adds_embedding_model(database_url):
     """旧库缺 kind/source_evidence_chunk_id/embedding_model 列时幂等补齐。"""
     engine = create_engine(database_url)

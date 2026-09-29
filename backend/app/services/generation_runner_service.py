@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import settings
 from app.db.schema import (
+    Course,
     exam_points,
     exam_projects,
     generated_questions,
@@ -27,6 +28,7 @@ from app.db.schema import (
     quality_checks,
     task_runs,
 )
+from app.domain.generation.question_formats import COURSE_TYPE_FORMATS_KEY
 from app.infrastructure.tasks.models import TERMINAL_TASK_STATUSES, create_task_run
 
 logger = logging.getLogger("generation.runner")
@@ -199,6 +201,26 @@ def enqueue_generation(
     )
 
 
+def _course_type_formats(session: Session, course_id: str) -> dict[str, str]:
+    """本次生成的课程级题型格式覆盖：类别预设打底，考核规则 type_formats 逐题型压过。
+
+    逐题型合并而非整级替换——教师/AI 助手只改一个题型时，其余题型仍按类别预设
+    走。结果经 ``COURSE_TYPE_FORMATS_KEY`` 随知识卡字典注入图输入，compile 装配
+    时替换对应任务卡（graph 封存件零改动，其内部只按 card_id 精确取值）。
+    """
+    from app.domain.course.category_profiles import category_profile
+    from app.services import framework_service
+
+    category = session.scalar(select(Course.category).where(Course.id == course_id))
+    merged = dict(category_profile(category)["type_formats"])
+    try:
+        current = framework_service.get_current_framework(session, course_id=course_id)
+    except framework_service.FrameworkNotFoundError:
+        return merged
+    merged.update((current.get("exam_rules") or {}).get("type_formats") or {})
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # graph_invoke 包装：生产默认用真实图；测试注入 fixture。
 # ---------------------------------------------------------------------------
@@ -245,6 +267,11 @@ def _default_graph_invoke(
         catalog_version_id=catalog_version_id,
         slots=slots,
     )
+    type_formats = _course_type_formats(session, course_id)
+    if type_formats:
+        # 课程/类别题型格式覆盖：随知识卡字典注入（约定键），compile 装配任务卡时
+        # 逐题型替换默认档案；graph 内知识卡只按 card_id 精确取值，不受该键影响。
+        context_cards = {**context_cards, COURSE_TYPE_FORMATS_KEY: type_formats}
     plan_item_ids = _plan_item_ids_by_index(
         session,
         course_id=course_id,

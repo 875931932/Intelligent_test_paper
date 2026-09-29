@@ -60,6 +60,10 @@ const PROPOSAL_META: Record<string, { label: string; impact: string }> = {
     label: '确认合同（分配落库）',
     impact: '由既有确定性分配算法落库并冻结合同；冻结后只能新建版本继续修改。',
   },
+  update_question_type_format: {
+    label: '修改题型格式',
+    impact: '覆盖该题型的出题格式要求，之后的生成按新格式出题；不影响题型比例/难度/去重。',
+  },
 };
 
 /** 首屏空状态的引导问题（点击即发送） */
@@ -427,6 +431,16 @@ function proposalParamRows(tool: string, payload: AssistantActionPayload): Array
       ];
     case 'confirm_contract':
       return [['项目', payload.project_name || payload.project_id || '—']];
+    case 'update_question_type_format': {
+      const qt = typeof body.question_type === 'string' ? body.question_type : '';
+      const template = typeof body.template === 'string' ? body.template : '';
+      const brief = (text: string) => (text.length > 60 ? text.slice(0, 60) + '…' : text);
+      return [
+        ['题型', qlabel(qt)],
+        ['现格式', payload.current ? brief(payload.current) : '（系统默认）'],
+        ['新格式', template ? brief(template) : '（恢复默认）'],
+      ];
+    }
     default:
       return Object.entries(body).map(([k, v]) => [k, String(v)]);
   }
@@ -937,6 +951,22 @@ const AssistantPage: FC = () => {
           if (!payload.project_id) throw new Error('提案缺少项目 id');
           await api.examProjects.confirmContract(courseId, payload.project_id, {}, token ?? undefined);
           receipt = '合同已确认落库（分配由既有确定性算法执行）';
+          break;
+        }
+        case 'update_question_type_format': {
+          if (typeof body.question_type !== 'string') throw new Error('提案缺少题型');
+          await api.framework.setQuestionTypeFormat(
+            courseId,
+            {
+              question_type: body.question_type,
+              template: typeof body.template === 'string' ? body.template : '',
+            },
+            token ?? undefined,
+          );
+          const qtLabel = qlabel(body.question_type);
+          receipt = body.template
+            ? `已更新「${qtLabel}」出题格式（之后生成生效）`
+            : `已恢复「${qtLabel}」系统默认出题格式`;
           break;
         }
         default:

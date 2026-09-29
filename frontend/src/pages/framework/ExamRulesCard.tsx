@@ -203,7 +203,7 @@ export function ExamRulesCard({
       </div>
 
       {!editing ? (
-        hasRules || rules?.exam_form || rules?.total_score ? (
+        hasRules || rules?.exam_form || rules?.total_score || Object.keys(rules?.type_formats ?? {}).length > 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
               <span>考试形式：<strong style={{ color: 'var(--text)' }}>{rules?.exam_form || '—'}</strong></span>
@@ -240,6 +240,25 @@ export function ExamRulesCard({
                     </span>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {Object.keys(rules?.type_formats ?? {}).length > 0 && (
+              <div>
+                <p style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-tertiary)', marginBottom: '6px' }}>题型格式（已自定义）</p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
+                  {Object.entries(rules?.type_formats ?? {}).map(([qt, template]) => (
+                    <div key={qt} style={{ display: 'flex', gap: '8px', alignItems: 'baseline', minWidth: 0 }}>
+                      <span style={{ flexShrink: 0, fontWeight: 600, color: 'var(--text)' }}>{qlabel(qt)}</span>
+                      <span title={template} style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {template.length > 80 ? template.slice(0, 80) + '…' : template}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '4px', lineHeight: 1.6 }}>
+                  覆盖的题型出题时按此格式生成，未列出的题型用类别/系统默认；修改或恢复请在 AI 助手中说「把某题型格式改成…」。
+                </p>
               </div>
             )}
 

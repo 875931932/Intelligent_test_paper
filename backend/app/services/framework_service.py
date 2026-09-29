@@ -10,6 +10,7 @@ from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session
 
 from app.db.schema import (
+    Course,
     content_blocks,
     document_parse_runs,
     exam_points,
@@ -20,13 +21,14 @@ from app.db.schema import (
     material_versions,
     materials,
 )
+from app.domain.course.category_profiles import category_profile
 from app.domain.framework.exam_points import ExamPoint
 from app.domain.framework.exam_rules import (
-    DEFAULT_TYPE_RULES,
     canonical_question_type,
     normalize_exam_rules,
 )
 from app.domain.framework.models import FrameworkCandidate, FrameworkConfirmation
+from app.domain.generation.question_formats import QUESTION_TEMPLATES
 from app.services.course_service import get_course
 
 
@@ -69,6 +71,35 @@ def create_framework_run(
         "teaching_blocks": teaching_blocks,
         "assessment_blocks": assessment_blocks,
     }
+
+
+def _current_rules_row(session: Session, course_id: str, version_id: str | None):
+    """定位承载考核规则的框架行：已发布版本优先，其次候选/草稿版本。"""
+    row = session.execute(
+        select(framework_versions).where(
+            framework_versions.c.course_id == course_id,
+            framework_versions.c.status == "published",
+        ).order_by(framework_versions.c.version_no.desc()).limit(1)
+    ).mappings().one_or_none()
+    if row is None:
+        row = session.execute(
+            select(framework_versions).where(
+                framework_versions.c.course_id == course_id,
+                framework_versions.c.id == version_id,
+            )
+        ).mappings().one_or_none()
+    if row is None:
+        raise FrameworkNotFoundError
+    return row
+
+
+def _anchor_keys_of(payload: dict) -> list[str]:
+    """payload 中已有锚点 key 列表（归一化时用来过滤章节权重里的未知锚点）。"""
+    return [
+        str(anchor.get("key"))
+        for anchor in (payload.get("anchors") or [])
+        if isinstance(anchor, dict) and anchor.get("key")
+    ]
 
 
 class DatabaseFrameworkRepository:
@@ -263,28 +294,37 @@ class DatabaseFrameworkRepository:
         """
         course_id = state["course_id"]
         version_id = state.get("candidate_id") or state.get("current_version_id")
-        row = self.session.execute(
-            select(framework_versions).where(
-                framework_versions.c.course_id == course_id,
-                framework_versions.c.status == "published",
-            ).order_by(framework_versions.c.version_no.desc()).limit(1)
-        ).mappings().one_or_none()
-        if row is None:
-            row = self.session.execute(
-                select(framework_versions).where(
-                    framework_versions.c.course_id == course_id,
-                    framework_versions.c.id == version_id,
-                )
-            ).mappings().one_or_none()
-        if row is None:
-            raise FrameworkNotFoundError
+        row = _current_rules_row(self.session, course_id, version_id)
         payload = dict(row["payload"] or {})
-        anchor_keys = [
-            str(a.get("key"))
-            for a in (payload.get("anchors") or [])
-            if isinstance(a, dict) and a.get("key")
-        ]
-        payload["final_exam_rules"] = normalize_exam_rules(exam_rules, anchor_keys=anchor_keys)
+        anchors = _anchor_keys_of(payload)
+        payload["final_exam_rules"] = normalize_exam_rules(exam_rules, anchor_keys=anchors)
+        return self._write_exam_rules(row, course_id, payload)
+
+    def set_question_type_format(self, *, course_id: str, question_type: str, template: str) -> str:
+        """设置/修改单个题型的课程级出题格式（template 为空 = 删除覆盖、恢复默认）。
+
+        只动 ``type_formats`` 一个键：其余规则取已归一形态原样回写（章节权重按
+        既有锚点补齐语义不变）。生成装配时该覆盖逐题型压过类别预设与全局档案。
+        """
+        canonical = canonical_question_type(question_type)
+        if canonical not in QUESTION_TEMPLATES:
+            raise FrameworkInputError(f"未知题型：{question_type!r}")
+        row = _current_rules_row(self.session, course_id, None)
+        payload = dict(row["payload"] or {})
+        anchors = _anchor_keys_of(payload)
+        rules = normalize_exam_rules(payload.get("final_exam_rules"), anchor_keys=anchors)
+        formats = dict(rules.get("type_formats") or {})
+        text = str(template or "").strip()[:2000]
+        if text:
+            formats[canonical] = text
+        else:
+            formats.pop(canonical, None)
+        rules["type_formats"] = formats
+        # 空表时 normalize 不产出 type_formats 键（= 无任何覆盖，回落默认档案）
+        payload["final_exam_rules"] = normalize_exam_rules(rules, anchor_keys=anchors)
+        return self._write_exam_rules(row, course_id, payload)
+
+    def _write_exam_rules(self, row, course_id: str, payload: dict) -> str:
         self.session.execute(
             update(framework_versions)
             .where(framework_versions.c.id == row["id"], framework_versions.c.course_id == course_id)
@@ -495,10 +535,11 @@ def _exam_rules_of(payload) -> dict:
 def allowed_question_types(
     session: Session, *, course_id: str, framework_version_id: str
 ) -> list[str]:
-    """该框架版本已确认考点允许的题型并集（英文枚举、去重保序）；空则回退默认题型。
+    """该框架版本已确认考点允许的题型并集（英文枚举、去重保序）；空则按课程类别回退。
 
     考核规则 AI 助手与蓝图题位调整建议共用：提案给不了该课程根本出不了的题型，
-    否则要到蓝图/合同阶段才暴露不可行。所有查询带 course_id 过滤。
+    否则要到蓝图/合同阶段才暴露不可行。考点未声明时回退到**课程类别预设的
+    题型集合**（无类别则回退默认题型）。所有查询带 course_id 过滤。
     """
     rows = session.execute(
         select(exam_points.c.allowed_question_types).where(
@@ -512,7 +553,10 @@ def allowed_question_types(
             canonical = canonical_question_type(raw_type)
             if canonical and canonical not in allowed:
                 allowed.append(canonical)
-    return allowed or sorted(DEFAULT_TYPE_RULES.keys())
+    if allowed:
+        return allowed
+    category = session.scalar(select(Course.category).where(Course.id == course_id))
+    return list(category_profile(category)["question_types"])
 
 
 def _ready_blocks(session: Session, course_id: str, material_version_id: str, expected_type: str) -> list[str]:

@@ -272,6 +272,32 @@ def _migrate_knowledge_link_role(engine: Engine) -> None:
         )
 
 
+def _migrate_course_columns(engine: Engine) -> None:
+    """Idempotently add courses.category（课程类别 → 题型集合/格式预设的选取键）。
+
+    旧库无此列，create_all 不会 ALTER 已存在表，需显式迁移（与 evidence_chunks
+    各列同语义）；默认值 'general'（domain/course/category_profiles.DEFAULT_CATEGORY）。
+    """
+
+    try:
+        insp = inspect(engine)
+        if not insp.has_table("courses"):
+            return
+        existing = {c["name"] for c in insp.get_columns("courses")}
+    except Exception:
+        # 迁移是尽力而为的幂等维护：无法内省时不阻断启动（同 retrieval_score 口径）。
+        return
+    if "category" in existing:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE courses ADD COLUMN category VARCHAR(40) "
+                "NOT NULL DEFAULT 'general'"
+            )
+        )
+
+
 def _seed_dev_data(bind: Engine | Connection) -> None:
     """Upsert the admin test account and fold any legacy 'owner-dev' data into it."""
 
@@ -326,6 +352,12 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
 
     database_url = database_url or os.getenv("DATABASE_URL")
     if not database_url:
+        # 裸 CLI（`uv run python -m app.db.init_db`）没有调用方代为加载 .env：
+        # 回退到 pydantic settings——它按文件位置向上查找仓库根 .env（AGENTS §3.1 文档流程）。
+        from app.config import settings
+
+        database_url = settings.database_url or None
+    if not database_url:
         raise ValueError("DATABASE_URL is required")
     seed = bool(seed) if seed is not None else os.getenv("SEED_DEV_DATA", "false").lower() in {"1", "true", "yes", "on"}
     engine = _engine(database_url)
@@ -343,16 +375,22 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
                     ext_conn.commit()
                 except Exception:
                     ext_conn.rollback()
+            # create_all 必须先提交，再在**其它连接**上跑迁移：迁移会 ALTER 已有表
+            # （如 courses.category），而未提交的 create_all 事务因新表外键（_course_table
+            # 的 course_id → courses）持有父表锁——迁移等它提交、它等迁移结束，
+            # 即自死锁，init_db 会无限挂起。SQLite 分支本就是"先 create_all 后迁移"，此处对齐。
             with engine.begin() as conn:
                 Base.metadata.create_all(conn)
-                _migrate_user_columns(engine)
-                _migrate_evidence_link_fk(engine)
-                _migrate_evidence_chunk_columns(engine)
-                _migrate_evidence_link_score(engine)
-                _migrate_knowledge_link_role(engine)
-                _migrate_content_block_columns(engine)
-                _migrate_assistant_session(engine)
-                if seed:
+            _migrate_user_columns(engine)
+            _migrate_evidence_link_fk(engine)
+            _migrate_evidence_chunk_columns(engine)
+            _migrate_evidence_link_score(engine)
+            _migrate_knowledge_link_role(engine)
+            _migrate_content_block_columns(engine)
+            _migrate_assistant_session(engine)
+            _migrate_course_columns(engine)
+            if seed:
+                with engine.begin() as conn:
                     _seed_dev_data(conn)
         else:
             if drop:
@@ -365,6 +403,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             _migrate_knowledge_link_role(engine)
             _migrate_content_block_columns(engine)
             _migrate_assistant_session(engine)
+            _migrate_course_columns(engine)
             if seed:
                 _seed_dev_data(engine)
     finally:

@@ -6,7 +6,8 @@ from sqlalchemy.orm import Session
 from app.api.v1.auth import get_current_user
 from app.db.schema import User
 from app.db.session import get_session
-from app.domain.course.models import CourseCreate, CourseResponse, CourseUpdate
+from app.domain.course.category_profiles import available_categories
+from app.domain.course.models import CourseCategoryInfo, CourseCreate, CourseResponse, CourseUpdate
 from app.services import course_service
 
 router = APIRouter(prefix="/api/v1/courses", tags=["courses"])
@@ -36,6 +37,14 @@ def list_all(
     current_user: User = Depends(get_current_user),
 ) -> list[CourseResponse]:
     return course_service.list_courses(session, current_user.id)
+
+
+@router.get("/categories", response_model=list[CourseCategoryInfo])
+def list_categories(
+    current_user: User = Depends(get_current_user),
+) -> list[CourseCategoryInfo]:
+    """课程类别清单（创建课程时选择；必须注册在 /{course_id} 之前）。"""
+    return [CourseCategoryInfo(**item) for item in available_categories()]
 
 
 @router.get("/{course_id}", response_model=CourseResponse)

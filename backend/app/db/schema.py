@@ -49,6 +49,11 @@ class Course(Base):
     slug: Mapped[str] = mapped_column(String(120), nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
+    # 课程类别（题型集合/格式预设的选取键，见 domain/course/category_profiles.py）。
+    # server_default 与 DEFAULT_CATEGORY 同值："general"。
+    category: Mapped[str] = mapped_column(
+        String(40), nullable=False, default="general", server_default="general"
+    )
 
 
 def _course_table(name: str, *columns: Column, constraints: tuple = ()) -> Table:

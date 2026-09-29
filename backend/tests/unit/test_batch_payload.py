@@ -1,5 +1,10 @@
 from app.domain.generation.batching import split_contract_into_batches
 from app.domain.generation.contract import ContractSlot
+from app.domain.generation.question_formats import (
+    COURSE_TYPE_FORMATS_KEY,
+    QUESTION_SCHEMAS,
+    QUESTION_TEMPLATES,
+)
 from app.schemas.generation import compile_batch_generation_payload
 
 
@@ -119,3 +124,46 @@ def test_retry_revision_instruction_field_exists():
     payload = compile_batch_generation_payload(batch, {})
     retried = payload.model_copy(update={"teacher_revision_instruction": "只修复题1"})
     assert retried.teacher_revision_instruction == "只修复题1"
+
+
+def test_course_type_format_override_replaces_template_per_type():
+    """约定键覆盖逐题型生效：覆盖题型换任务卡，未覆盖题型与 schema 仍走全局档案。"""
+    batch = split_contract_into_batches(
+        [_slot(1), _slot(2, question_type="fill_blank")]
+    )[0]
+    payload = compile_batch_generation_payload(batch, {
+        COURSE_TYPE_FORMATS_KEY: {"single_choice": "课程自定义单选格式"},
+        "C1": {},
+    })
+    specs = {q.item_index: q for q in payload.questions}
+    assert specs[1].question_template == "课程自定义单选格式"
+    assert specs[2].question_template == QUESTION_TEMPLATES["fill_blank"]
+    # output_schema 恒用全局档案（JSON 字段形状与出题风格无关）
+    assert specs[1].output_schema == QUESTION_SCHEMAS["single_choice"]
+
+
+def test_course_type_format_override_ignores_malformed_entries():
+    """清洗后的输入仍可能来自手工 payload：非字符串/空白覆盖一律忽略。"""
+    batch = split_contract_into_batches([_slot(1)])[0]
+    payload = compile_batch_generation_payload(batch, {
+        COURSE_TYPE_FORMATS_KEY: {"single_choice": "   ", "true_false": 42},
+        "C1": {},
+    })
+    assert payload.questions[0].question_template == QUESTION_TEMPLATES["single_choice"]
+
+
+def test_course_type_format_override_never_touches_comprehensive():
+    """综合题走原型档案，即使约定键塞了 comprehensive 也不生效（上游已过滤）。"""
+    comp = _slot(
+        1, question_type="comprehensive", assessment_mode="application",
+        comprehensive_archetype="case_analysis", material_form="case_text",
+        cognitive_sequence=["understand", "apply"],
+        subquestion_count_range=[2, 3], subquestion_actions=["提取事实", "解释因果"],
+        answer_boundaries=["事实边界", "因果边界"],
+    )
+    batch = split_contract_into_batches([comp])[0]
+    payload = compile_batch_generation_payload(batch, {
+        COURSE_TYPE_FORMATS_KEY: {"comprehensive": "不应出现的覆盖"},
+        "C1": {},
+    })
+    assert "不应出现的覆盖" not in payload.questions[0].question_template

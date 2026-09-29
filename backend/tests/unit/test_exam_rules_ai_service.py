@@ -22,7 +22,7 @@ from app.db.schema import (
     task_runs,
 )
 from app.domain.blueprint.models import ASSESSMENT_MODES
-from app.domain.framework.exam_rules import DEFAULT_TYPE_RULES
+from app.domain.course.category_profiles import category_profile
 from app.services import exam_rules_ai_service
 from app.services.exam_rules_ai_service import (
     TASK_TYPE,
@@ -142,7 +142,7 @@ def test_load_propose_context_assembles_rules_anchors_and_types(session):
     assert list(context["assessment_modes"]) == list(ASSESSMENT_MODES)
 
 
-def test_load_propose_context_falls_back_to_default_types_when_no_points(session):
+def test_load_propose_context_falls_back_to_category_types_when_no_points(session):
     session.execute(
         exam_points.update()
         .where(exam_points.c.id == "ep1")
@@ -150,7 +150,8 @@ def test_load_propose_context_falls_back_to_default_types_when_no_points(session
     )
     session.commit()
     context = load_propose_context(session, course_id="c1")
-    assert context["allowed_question_types"] == sorted(DEFAULT_TYPE_RULES.keys())
+    # 考点未声明可用题型 → 回退到课程类别预设的题型集合（课程无类别 = 通用档）
+    assert context["allowed_question_types"] == list(category_profile("general")["question_types"])
 
 
 def test_load_propose_context_rejects_missing_framework(session):

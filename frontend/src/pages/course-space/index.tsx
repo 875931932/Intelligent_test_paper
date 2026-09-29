@@ -5,7 +5,8 @@ import { useCourseStore } from '@/stores/course';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { api } from '@/api/client';
-import { Modal, Input } from '@/components/ui';
+import { Modal, Input, Select } from '@/components/ui';
+import type { CourseCategoryInfo } from '@/types/api';
 
 export default function CourseSpacePage() {
   const navigate = useNavigate();
@@ -19,6 +20,30 @@ export default function CourseSpacePage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
+  // 课程类别：清单来自后端类别档案（单一来源）；空 = 尚未加载/加载失败，
+  // 此时不渲染下拉且创建请求不带 category（后端落默认 general）
+  const [categories, setCategories] = useState<CourseCategoryInfo[]>([]);
+  const [newCategory, setNewCategory] = useState('');
+
+  // 打开创建弹窗时懒加载类别清单（失败不阻塞创建，走默认类别）
+  useEffect(() => {
+    if (!createOpen) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const list = await api.courses.categories();
+        if (!cancelled && list.length) {
+          setCategories(list);
+          setNewCategory((cur) => (cur && list.some((c) => c.key === cur) ? cur : list[0].key));
+        }
+      } catch {
+        // 类别清单不可用时静默降级：仅用名称创建
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [createOpen]);
 
   // 挂载时从后端加载当前登录用户的课程（登录/刷新后也能看到历史课程）
   useEffect(() => {
@@ -51,7 +76,10 @@ export default function CourseSpacePage() {
     }
     setCreating(true);
     try {
-      const course = await api.courses.create({ name });
+      const course = await api.courses.create({
+        name,
+        ...(newCategory ? { category: newCategory } : {}),
+      });
       useCourseStore.getState().addCourse(course);
       setActiveCourse(course.id);
       addToast('课程创建成功', 'success');
@@ -203,6 +231,19 @@ export default function CourseSpacePage() {
           onChange={(e) => setNewName(e.target.value)}
           autoFocus
         />
+        {categories.length > 0 && (
+          <>
+            <Select
+              label="课程类别"
+              value={newCategory}
+              options={categories.map((c) => ({ value: c.key, label: c.label }))}
+              onChange={(e) => setNewCategory(e.target.value)}
+            />
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', margin: 0 }}>
+              {categories.find((c) => c.key === newCategory)?.description ?? ''}
+            </p>
+          </>
+        )}
       </Modal>
     </div>
   );

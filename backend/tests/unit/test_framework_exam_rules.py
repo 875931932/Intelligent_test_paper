@@ -215,3 +215,37 @@ def test_normalize_assessment_focus_empty_junk_and_all_zero_mean_balanced():
         {"assessment_focus": {"conceptual": 100}}, anchor_keys=[]
     )
     assert dict_rules["assessment_focus"] == [{"assessment_mode": "conceptual", "weight": 100.0}]
+
+
+def test_normalize_exam_rules_keeps_type_formats_for_registered_types():
+    rules = normalize_exam_rules(
+        {"type_formats": {"单选题": "  新的单选格式  ", "fill_blank": "填空新格式"}},
+        anchor_keys=[],
+    )
+    assert rules["type_formats"] == {
+        "single_choice": "新的单选格式",
+        "fill_blank": "填空新格式",
+    }
+
+
+def test_normalize_exam_rules_type_formats_drops_junk_and_comprehensive():
+    """综合题归原型档案、未知题型/非字符串/空串剔除；全空则不产出键。"""
+    rules = normalize_exam_rules(
+        {
+            "type_formats": {
+                "comprehensive": "原型驱动不接受覆盖",
+                "bogus_type": "x",
+                "essay": "",
+                "true_false": 42,
+            }
+        },
+        anchor_keys=[],
+    )
+    assert "type_formats" not in rules
+    # 无覆盖的常规规则同样不产出该键（消费方一律 or {}）
+    assert "type_formats" not in normalize_exam_rules(None, anchor_keys=[])
+
+
+def test_normalize_exam_rules_type_formats_truncates_oversize_template():
+    rules = normalize_exam_rules({"type_formats": {"essay": "x" * 3000}}, anchor_keys=[])
+    assert rules["type_formats"]["essay"] == "x" * 2000

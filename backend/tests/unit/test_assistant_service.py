@@ -314,6 +314,77 @@ def test_create_course_validates_and_builds_body():
         build_proposal_payload("create_course", {"name": "x", "slug": "Bad Slug"}, context=ctx)
 
 
+def test_create_course_accepts_valid_category_and_rejects_unknown():
+    ctx = _ctx()
+    ok = build_proposal_payload(
+        "create_course", {"name": "分布式系统", "category": "computer"}, context=ctx
+    )
+    assert ok["body"]["category"] == "computer"
+    # 未知类别走带反馈重试（不静默落默认，让模型改用 payload.course_categories 的 key）
+    with pytest.raises(AssistantError, match="未知课程类别"):
+        build_proposal_payload("create_course", {"name": "x", "category": "bogus"}, context=ctx)
+
+
+def test_update_question_type_format_payload_contract():
+    ctx = _ctx(framework={"exam_rules": {"type_formats": {"fill_blank": "旧格式"}}})
+    payload = build_proposal_payload(
+        "update_question_type_format",
+        {"question_type": "填空题", "template": "新的填空格式"},
+        context=ctx,
+    )
+    # body 即执行体：前端确认后原样 PATCH /rules/type-formats
+    assert payload["body"] == {"question_type": "fill_blank", "template": "新的填空格式"}
+    assert payload["current"] == "旧格式"  # 卡片对比展示现值
+    # 恢复默认 = 显式空串；现值取自上下文（未设置过 = 空）
+    restore = build_proposal_payload(
+        "update_question_type_format", {"question_type": "essay", "template": ""},
+        context=_ctx(),
+    )
+    assert restore["body"] == {"question_type": "essay", "template": ""}
+    assert restore["current"] == ""
+
+
+def test_update_question_type_format_rejects_bad_args():
+    ctx = _ctx()
+    # 综合题归原型档案，不接受格式覆盖
+    with pytest.raises(AssistantError, match="未知题型"):
+        build_proposal_payload(
+            "update_question_type_format",
+            {"question_type": "comprehensive", "template": "x"},
+            context=ctx,
+        )
+    with pytest.raises(AssistantError, match="未知题型"):
+        build_proposal_payload(
+            "update_question_type_format",
+            {"question_type": "变态题", "template": "x"},
+            context=ctx,
+        )
+    # template 整键缺失 ≠ 恢复默认（必须显式空串）
+    with pytest.raises(AssistantError, match="template"):
+        build_proposal_payload(
+            "update_question_type_format", {"question_type": "essay"}, context=ctx
+        )
+    with pytest.raises(AssistantError, match="超长"):
+        build_proposal_payload(
+            "update_question_type_format",
+            {"question_type": "essay", "template": "x" * 2001},
+            context=ctx,
+        )
+
+
+def test_route_update_question_type_format_as_proposal():
+    routed = route_intent(
+        _intent("", {"tool": "update_question_type_format",
+                     "args": {"question_type": "fill_blank", "template": "改后的格式"}}),
+        session=None, context=_ctx(),
+    )
+    assert routed["kind"] == "proposal"
+    assert routed["action"]["status"] == "proposed"
+    assert routed["payload"]["body"]["question_type"] == "fill_blank"
+    assert "提案" in routed["reply"]
+    assert "update_question_type_format" in assistant_service.PROPOSAL_TOOLS
+
+
 # ---------------------------------------------------------------------------
 # prompt 装配与纯函数
 # ---------------------------------------------------------------------------
@@ -335,6 +406,20 @@ def test_intent_prompt_carries_real_snapshot_and_ids():
 
     _sys2, payload2 = build_intent_prompt(context, "重试", previous_error="material_id 非法")
     assert payload2["previous_validation_error"] == "material_id 非法"
+
+
+def test_intent_prompt_carries_categories_and_format_tool():
+    """create_course 的 category 取值来源 + 题型格式工具的文档必须进段1提示。"""
+    system_prompt, payload = build_intent_prompt(_ctx(), "把填空题格式改成两空")
+    keys = {item["key"] for item in payload["course_categories"]}
+    assert {"general", "computer", "humanities"} <= keys
+    assert "update_question_type_format" in system_prompt
+    assert "category" in system_prompt
+    # 已设置的题型格式进快照（模型据此对比「现格式 → 新格式」）
+    _sys, snapshot_payload = build_intent_prompt(
+        _ctx(framework={"exam_rules": {"type_formats": {"fill_blank": "旧格式"}}}), "现在什么格式"
+    )
+    assert snapshot_payload["snapshot"]["framework"]["exam_rules"]["type_formats"] == {"fill_blank": "旧格式"}
 
 
 def test_route_unknown_kind_neutral():

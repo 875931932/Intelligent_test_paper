@@ -509,3 +509,91 @@ def test_repository_rejects_bypassed_underweight_confirmation_before_publishing(
     finally:
         session.close()
         engine.dispose()
+
+
+def _published_rules_session(tmp_path):
+    """已发布框架 + Repository：题型格式/规则写入测试的公共前置。"""
+    engine, session = _framework_session(tmp_path)
+    repository = DatabaseFrameworkRepository(session)
+    candidate_id = repository.persist_candidate(
+        {"course_id": "course", "run_id": "run-1"},
+        _candidate(conflict=False),
+    )
+    repository.publish(
+        {"course_id": "course", "candidate_id": candidate_id},
+        _valid_confirmation(),
+    )
+    return engine, session, repository, candidate_id
+
+
+def _final_rules(session, version_id) -> dict:
+    payload = session.scalar(
+        select(framework_versions.c.payload).where(framework_versions.c.id == version_id)
+    )
+    return payload["final_exam_rules"]
+
+
+def test_set_question_type_format_writes_updates_and_clears(tmp_path):
+    engine, session, repository, version_id = _published_rules_session(tmp_path)
+    try:
+        # 中文别名归英文枚举写入
+        repository.set_question_type_format(
+            course_id="course", question_type="单选题", template="自定义单选格式"
+        )
+        assert _final_rules(session, version_id)["type_formats"] == {"single_choice": "自定义单选格式"}
+
+        # 同题型再设 = 覆盖同键（不是追加第二条）
+        repository.set_question_type_format(
+            course_id="course", question_type="single_choice", template="第二版"
+        )
+        assert _final_rules(session, version_id)["type_formats"] == {"single_choice": "第二版"}
+
+        # 空 template = 删除覆盖（回落类别预设/全局默认），键随之消失
+        repository.set_question_type_format(
+            course_id="course", question_type="single_choice", template="   "
+        )
+        assert "type_formats" not in _final_rules(session, version_id)
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_set_question_type_format_rejects_unknown_types(tmp_path):
+    engine, session, repository, version_id = _published_rules_session(tmp_path)
+    try:
+        # 综合题归原型档案，不接受格式覆盖
+        with pytest.raises(FrameworkInputError, match="未知题型"):
+            repository.set_question_type_format(
+                course_id="course", question_type="comprehensive", template="x"
+            )
+        with pytest.raises(FrameworkInputError, match="未知题型"):
+            repository.set_question_type_format(
+                course_id="course", question_type="变态题", template="x"
+            )
+        assert "type_formats" not in _final_rules(session, version_id)
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_set_question_type_format_only_touches_type_formats(tmp_path):
+    """逐键更新不动其余规则：题型比例/考试形式原样保留。"""
+    engine, session, repository, version_id = _published_rules_session(tmp_path)
+    try:
+        repository.update_exam_rules(
+            {"course_id": "course"},
+            {
+                "exam_form": "闭卷",
+                "question_type_ratios": [{"question_type": "single_choice", "ratio": 100}],
+            },
+        )
+        repository.set_question_type_format(
+            course_id="course", question_type="fill_blank", template="填空新格式"
+        )
+        rules = _final_rules(session, version_id)
+        assert rules["exam_form"] == "闭卷"
+        assert rules["question_type_ratios"] == [{"question_type": "single_choice", "ratio": 100.0}]
+        assert rules["type_formats"] == {"fill_blank": "填空新格式"}
+    finally:
+        session.close()
+        engine.dispose()

@@ -457,3 +457,72 @@ def test_patch_exam_rules_round_trips_assessment_focus(tmp_path):
     finally:
         app.dependency_overrides.clear()
         engine.dispose()
+
+
+def test_type_formats_endpoint_sets_updates_and_clears(tmp_path):
+    """题型格式端点：中文别名写入 → 再设覆盖 → 空串恢复默认；其余规则不动。"""
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'typeformats.db'}", connect_args={"check_same_thread": False}
+    )
+    event.listen(engine, "connect", lambda connection, _: connection.execute("PRAGMA foreign_keys=ON"))
+    Base.metadata.create_all(engine)
+    with Session(engine) as setup:
+        setup.add(User(id="owner-dev", display_name="Owner", role="teacher"))
+        setup.flush()
+        setup.add(Course(id="course", owner_id="owner-dev", slug="course", name="Course"))
+        setup.flush()
+        setup.execute(
+            framework_versions.insert().values(
+                id="fv-tf",
+                course_id="course",
+                version_no=1,
+                status="published",
+                payload={"anchors": [{"key": "core-exam"}], "final_exam_rules": {}},
+                published_at=datetime.now(UTC),
+            )
+        )
+        setup.commit()
+
+    def session_override():
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = session_override
+    try:
+        with TestClient(app) as client:
+            path = "/api/v1/courses/course/framework-versions/current/rules/type-formats"
+            # 写入（中文题型名 → 英文枚举）
+            patched = client.patch(path, json={"question_type": "填空题", "template": "两个空的填空格式"})
+            assert patched.status_code == 200, patched.text
+            formats = patched.json()["exam_rules"]["type_formats"]
+            assert formats == {"fill_blank": "两个空的填空格式"}
+
+            # 同题型再改 = 覆盖同键；并存的第二题型不被清掉
+            client.patch(path, json={"question_type": "fill_blank", "template": "第二版"})
+            client.patch(path, json={"question_type": "single_choice", "template": "单选新格式"})
+            formats = client.get(
+                "/api/v1/courses/course/framework-versions/current"
+            ).json()["exam_rules"]["type_formats"]
+            assert formats == {"fill_blank": "第二版", "single_choice": "单选新格式"}
+
+            # 未知题型 / 综合题 → 422
+            assert client.patch(path, json={"question_type": "变态题", "template": "x"}).status_code == 422
+            assert client.patch(path, json={"question_type": "comprehensive", "template": "x"}).status_code == 422
+
+            # 整份规则 PATCH 不带 type_formats → 保留现值（防表单抹除）
+            rules = client.patch(
+                "/api/v1/courses/course/framework-versions/current/rules",
+                json={"exam_form": "闭卷", "question_type_ratios": [
+                    {"question_type": "single_choice", "ratio": 100}
+                ]},
+            )
+            assert rules.status_code == 200, rules.text
+            assert rules.json()["exam_rules"]["type_formats"] == formats
+
+            # 空串 = 恢复默认（键消失）
+            cleared = client.patch(path, json={"question_type": "fill_blank", "template": ""})
+            assert cleared.status_code == 200
+            assert cleared.json()["exam_rules"]["type_formats"] == {"single_choice": "单选新格式"}
+    finally:
+        app.dependency_overrides.clear()
+        engine.dispose()

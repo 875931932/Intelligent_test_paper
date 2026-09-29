@@ -13,8 +13,16 @@
 
 档案按题型键登记；未知题型由 ``_template_and_schema_for`` 报清晰错误
 （蓝图/合同层在上游过滤）。全部文本与学科无关：任何课程的同题型共用
-同一格式，换学科不需要改这里。
+同一格式，换学科不需要改这里——课程想换风格走**类别预设**
+（``domain/course/category_profiles.py``）与**考核规则 type_formats**，
+由生成 runner 随知识卡字典注入本模块定义的 ``COURSE_TYPE_FORMATS_KEY`` 键，
+``compile`` 装配时逐题型覆盖（未覆盖的题型仍回落本档案）。
 """
+
+# 课程级题型格式覆盖随知识卡字典注入的约定键（runner 组装 → compile 消费）。
+# 值形如 {question_type: 完整任务卡文本}；graph 内知识卡只按 card_id 精确取值
+# （uuid 键不会撞上本约定键），因此该约定不需要改已封存的 generation_graph。
+COURSE_TYPE_FORMATS_KEY = "__course_type_formats__"
 
 QUESTION_TEMPLATES = {
     "single_choice": (

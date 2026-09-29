@@ -43,6 +43,9 @@ from app.db.schema import (
     plan_items,
     task_runs,
 )
+from app.domain.course.category_profiles import available_categories, normalize_category
+from app.domain.framework.exam_rules import canonical_question_type
+from app.domain.generation.question_formats import QUESTION_TEMPLATES
 from app.domain.knowledge.relevance import StagingChunk
 from app.domain.model_calls import ModelCallContext
 from app.infrastructure.tasks.models import TERMINAL_TASK_STATUSES, create_task_run
@@ -97,6 +100,7 @@ PROPOSAL_TOOLS = (
     "start_parse",
     "enqueue_blueprint_suggest",
     "confirm_contract",
+    "update_question_type_format",
 )
 # 双保险：即使模型给出这些 tool，路由层也按确定性文案拒绝（prompt 另有指示）
 REFUSED_TOOLS = frozenset(
@@ -245,6 +249,8 @@ def _framework_summary(session: Session, course_id: str) -> dict | None:
             "duration_minutes": rules.get("duration_minutes"),
             "total_score": rules.get("total_score"),
             "question_type_ratios": rules.get("question_type_ratios") or [],
+            # 已设置的题型格式覆盖（教师/AI 助手此前提案落库的现值，供追问与对比）
+            "type_formats": rules.get("type_formats") or {},
         },
     }
 
@@ -494,11 +500,12 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 - answer_material_content：基于已解析资料正文回答问题/做总结。args={material_id?}——教师点名某份资料时必须传 material_id（取自 payload.ids.material_ids）；问全课程资料时不传。仅对 snapshot.materials 中 parse_status=="ready" 的资料使用；没有已解析资料时不使用本工具，回复引导教师先到「资料库」解析。回答正文由系统按检索片段生成，你的 reply 只给一句引导（如「已检索到相关资料，回答如下：」），不要复述片段。
 
 可用提案工具（action.args 只允许下述字段，id 必须取自 payload.ids 白名单）：
-- create_course：新建课程。args={name(必填,1~200字), slug?(小写字母数字连字符), description?}
+- create_course：新建课程。args={name(必填,1~200字), slug?(小写字母数字连字符), description?, category?(类别 key，取自 payload.course_categories)}
 - update_course：修改当前课程。args={name?, slug?, description?}（至少一个）
 - start_parse：启动某资料解析。args={material_id(取自 payload.ids.material_ids)}
 - enqueue_blueprint_suggest：发起蓝图调整建议。args={project_id(取自 payload.ids.project_ids), instruction?(一句话要求)}
 - confirm_contract：重新分配并确认合同。args={project_id(取自 payload.ids.project_ids)}（合同已确认冻结时不要选它）
+- update_question_type_format：设置/修改某题型的出题格式要求（影响之后的生成；已设置的格式见 snapshot.framework.exam_rules.type_formats）。args={question_type(single_choice/multiple_choice/true_false/fill_blank/short_answer/essay 或中文题型名), template(该题型**完整**的出题格式要求,1~2000字，须含该题型的结构与答案唯一性约束；传空串=恢复系统默认格式)}。综合题由原型档案驱动、不适用本工具——教师要改综合题格式时置 action null 并说明。
 
 拒绝并按标准话术回复（action 置 null，不要选任何工具）：
 1. 出题、改题、新增题目 → 「题目内容的新增与修改请到『试卷』页操作（选中题目后可用 AI 修改/创建）。」
@@ -514,7 +521,7 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 - 结果卡已结构化呈现数据：回复不要逐条复述卡内容，教师没点名的项目/资料不要罗列；状态以卡片标签为准，回复里不要自行转述另一套状态说法。
 - 你给的 id 必须来自 payload.ids 白名单；不确定教师指哪份资料/项目时，action 置 null 并在回复里追问。
 - 只依据 payload 中的真实数据回答，不臆造资料、项目、状态或数字。
-- 不承诺任何出题比例/难度/去重的调整——这些由系统确定性算法保证，不归对话管。
+- 不承诺任何出题比例/难度/去重的调整——这些由系统确定性算法保证，不归对话管；题型的出题格式要求除外，可用 update_question_type_format 提案修改。
 
 只返回严格 JSON 对象：
 {"reply": "给教师的回复文本", "action": {"tool": "list_materials", "args": {}}}
@@ -527,6 +534,11 @@ def build_intent_prompt(
     """组装段1的 (system_prompt, payload)。纯函数，便于断言真实数据进了 prompt。"""
     payload: dict = {
         "course": {"id": context["course_id"], "name": context["course_name"]},
+        # 课程类别清单（create_course 的 category 取值；只给 key/label，控制提示词体积）
+        "course_categories": [
+            {"key": item["key"], "label": item["label"]}
+            for item in available_categories()
+        ],
         "user_message": message,
         "history": context.get("history") or [],
         "snapshot": {
@@ -696,6 +708,12 @@ def build_proposal_payload(tool: str, args: dict, *, context: dict) -> dict:
             body["slug"] = slug
         if description:
             body["description"] = description
+        category = str(args.get("category") or "").strip()
+        if category:
+            # 未知类别走带反馈重试（而非静默回退），让模型改用 payload.course_categories 里的 key
+            if normalize_category(category) != category:
+                raise AssistantError(f"未知课程类别 {category}（可用 key 见 payload.course_categories）")
+            body["category"] = category
         return {"body": body}
 
     if tool == "update_course":
@@ -754,6 +772,24 @@ def build_proposal_payload(tool: str, args: dict, *, context: dict) -> dict:
             "project_id": project_id,
             "project_name": project["name"],
             "body": {},
+        }
+
+    if tool == "update_question_type_format":
+        canonical = canonical_question_type(args.get("question_type"))
+        if canonical not in QUESTION_TEMPLATES:
+            raise AssistantError(
+                f"未知题型：{args.get('question_type')!r}（可用：{', '.join(sorted(QUESTION_TEMPLATES))}）"
+            )
+        template = _require_str(args, "template", max_len=2000, allow_empty=True)
+        if template is None:
+            raise AssistantError("template 缺失（设置格式传完整要求，恢复默认传空串）")
+        exam_rules = (context.get("framework") or {}).get("exam_rules") or {}
+        current = (exam_rules.get("type_formats") or {}).get(canonical, "")
+        # body 即执行体：前端确认后原样 PATCH /rules/type-formats
+        return {
+            "body": {"question_type": canonical, "template": template},
+            # 现值供卡片对比展示（从未设置过 = 空串 = 系统/类别默认）
+            "current": current,
         }
 
     raise AssistantError(f"未知提案工具 {tool}")
@@ -911,6 +947,7 @@ _DEFAULT_PROPOSAL_REPLIES = {
     "start_parse": "已生成解析启动提案，确认后执行：",
     "enqueue_blueprint_suggest": "已生成蓝图调整建议任务的发起提案，确认后执行：",
     "confirm_contract": "已生成合同重新分配提案（确认合同落库），请核对参数后执行：",
+    "update_question_type_format": "已生成题型格式修改提案，确认后写入考核规则：",
 }
 
 

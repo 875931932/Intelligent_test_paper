@@ -35,3 +35,27 @@ def test_update_course_does_not_report_unrelated_integrity_error_as_slug_conflic
         with pytest.raises(IntegrityError):
             course_service.update_course(session, "owner", course.id, name="Changed")
     engine.dispose()
+
+
+def test_create_course_stores_and_normalizes_category():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    with Session(engine) as session:
+        styled = course_service.create_course(
+            session, owner_id="owner", name="分布式", slug="dist", description=None,
+            category="computer",
+        )
+        assert styled.category == "computer"
+
+        # 未知类别回退默认档（读侧 category_profile 同样兜底，双保险）
+        bogus = course_service.create_course(
+            session, owner_id="owner", name="未知类", slug="bogus", description=None,
+            category="bogus",
+        )
+        assert bogus.category == "general"
+
+        plain = course_service.create_course(
+            session, owner_id="owner", name="缺省类", slug="plain", description=None,
+        )
+        assert plain.category == "general"
+    engine.dispose()

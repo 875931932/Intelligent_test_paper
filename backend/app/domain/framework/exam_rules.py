@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 
 from app.domain.blueprint.models import ASSESSMENT_MODES
+from app.domain.generation.question_formats import QUESTION_TEMPLATES
 
 # 模型与教师都可能用中文题型名，统一映射到内部英文枚举
 QUESTION_TYPE_ALIASES: dict[str, str] = {
@@ -119,11 +120,34 @@ def _normalize_to_100(pairs: list[tuple[str, float]]) -> list[tuple[str, float]]
     return [(key, round(value * scale, 4)) for key, value in pairs]
 
 
+def _type_formats_dict(raw: object) -> dict[str, str]:
+    """题型出题格式覆盖 {question_type: template}：只认已登记题型，清洗留痕。
+
+    键统一英文枚举（中文别名可入），值剥空白后截断到 2000 字；空值/非字符串/
+    未知题型直接剔除。综合题由原型档案驱动，不进本覆盖表。
+    """
+    if not isinstance(raw, dict):
+        return {}
+    formats: dict[str, str] = {}
+    for raw_type, template in raw.items():
+        canonical = canonical_question_type(raw_type)
+        if not canonical or canonical not in QUESTION_TEMPLATES:
+            continue
+        if not isinstance(template, str):
+            continue
+        text = template.strip()
+        if not text:
+            continue
+        formats[canonical] = text[:2000]
+    return formats
+
+
 def normalize_exam_rules(raw: object, *, anchor_keys: list[str] | None = None) -> dict:
     """归一化考核大纲的考试规则。
 
     题型比例与章节权重都会剔除未知项并归一到 100；章节权重为空时回退为各锚点
     既有考试权重（anchor 的 exam_weight 之和已经是 100），保证蓝图永远有权重可用。
+    ``type_formats``（题型出题格式覆盖）同样清洗：键归英文枚举、只留已登记题型。
     """
     rules = raw if isinstance(raw, dict) else {}
     anchors = set(anchor_keys or [])
@@ -166,7 +190,9 @@ def normalize_exam_rules(raw: object, *, anchor_keys: list[str] | None = None) -
     if isinstance(total_score, bool) or not isinstance(total_score, (int, float)) or total_score <= 0:
         total_score = None
 
-    return {
+    type_formats = _type_formats_dict(rules.get("type_formats"))
+
+    result = {
         "exam_form": str(rules.get("exam_form") or "").strip(),
         "duration_minutes": int(duration) if duration is not None else None,
         "total_score": float(total_score) if total_score is not None else None,
@@ -176,6 +202,11 @@ def normalize_exam_rules(raw: object, *, anchor_keys: list[str] | None = None) -
             {"assessment_mode": key, "weight": value} for key, value in focus
         ],
     }
+    # 题型格式覆盖只在有值时出现（消费方一律 `or {}`），避免给全是覆盖空表的
+    # 旧消费方（表单、精确断言）凭空加键。
+    if type_formats:
+        result["type_formats"] = type_formats
+    return result
 
 
 def type_rules_from_ratios(

@@ -191,6 +191,9 @@ class ExamRulesUpdate(BaseModel):
     # 考试侧重点：各考查方式的权重偏好（蓝图创建时确定性折算成各题型的
     # 考查方式分布），保存时由 normalize_exam_rules 归一到 100
     assessment_focus: list[dict] = []
+    # 题型出题格式覆盖 {question_type: template}：None=未提供（保留现值，
+    # 防旧表单把 AI 助手设置的格式抹掉），{}=显式清空（恢复类别/全局默认）
+    type_formats: dict | None = None
 
 
 @router.patch("/framework-versions/current/rules")
@@ -198,9 +201,40 @@ def update_exam_rules(course_id: str, body: ExamRulesUpdate, session: Session = 
     """教师修改考核大纲的考试规则：题型比例、章节命题权重与考试侧重点。"""
     repo = framework_service.DatabaseFrameworkRepository(session)
     try:
-        version_id = repo.update_exam_rules({"course_id": course_id}, body.model_dump())
+        dumped = body.model_dump()
+        if dumped.get("type_formats") is None:
+            # 整份替换语义：请求未携带 type_formats 时保留现值（数据完整性防线）
+            current = framework_service.get_current_framework(session, course_id=course_id)
+            dumped["type_formats"] = (current.get("exam_rules") or {}).get("type_formats") or {}
+        version_id = repo.update_exam_rules({"course_id": course_id}, dumped)
     except framework_service.FrameworkNotFoundError:
         raise _not_found()
+    current = framework_service.get_current_framework(session, course_id=course_id)
+    return {"status": "ok", "framework_version_id": version_id, "exam_rules": current["exam_rules"]}
+
+
+class TypeFormatUpdate(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    question_type: str = ""
+    # 空串 = 删除该题型的课程级覆盖，回落类别预设/全局档案
+    template: str = ""
+
+
+@router.patch("/framework-versions/current/rules/type-formats")
+def update_type_format(course_id: str, body: TypeFormatUpdate, session: Session = Depends(get_session)) -> dict:
+    """设置/修改单个题型的出题格式要求（AI 助手提案的执行端点，逐键合并不动其余规则）。"""
+    repo = framework_service.DatabaseFrameworkRepository(session)
+    try:
+        version_id = repo.set_question_type_format(
+            course_id=course_id,
+            question_type=body.question_type,
+            template=body.template,
+        )
+    except framework_service.FrameworkNotFoundError:
+        raise _not_found()
+    except framework_service.FrameworkInputError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     current = framework_service.get_current_framework(session, course_id=course_id)
     return {"status": "ok", "framework_version_id": version_id, "exam_rules": current["exam_rules"]}
 

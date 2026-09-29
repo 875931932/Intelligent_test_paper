@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.schema import Course
+from app.domain.course.category_profiles import normalize_category
 
 
 class CourseNotFoundError(Exception):
@@ -37,10 +38,16 @@ def _name_is_taken(session: Session, owner_id: str, name: str, *, excluding_cour
     return session.scalar(statement) is not None
 
 
-def create_course(session: Session, *, owner_id: str, name: str, slug: str, description: str | None) -> Course:
+def create_course(
+    session: Session, *, owner_id: str, name: str, slug: str,
+    description: str | None, category: str = "general",
+) -> Course:
     if not slug:
         slug = f"course-{uuid4().hex[:8]}"
-    course = Course(id=str(uuid4()), owner_id=owner_id, name=name, slug=slug, description=description)
+    course = Course(
+        id=str(uuid4()), owner_id=owner_id, name=name, slug=slug,
+        description=description, category=normalize_category(category),
+    )
     session.add(course)
     try:
         session.commit()
