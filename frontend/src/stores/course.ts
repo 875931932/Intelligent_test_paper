@@ -23,5 +23,11 @@ export const useCourseStore = create<CourseState>((set) => ({
   activeCourseId: null,
   setCourses: (courses) => set({ courses, activeCourseId: courses[0]?.id ?? null }),
   setActiveCourse: (activeCourseId) => set({ activeCourseId }),
-  addCourse: (course) => set((s) => ({ courses: [...s.courses, course] })),
+  // 幂等 upsert：同 id 已存在则原位更新（Sidebar 补拉与课程空间列表并发时防重复条目）
+  addCourse: (course) =>
+    set((s) => ({
+      courses: s.courses.some((c) => c.id === course.id)
+        ? s.courses.map((c) => (c.id === course.id ? course : c))
+        : [...s.courses, course],
+    })),
 }));

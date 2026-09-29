@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { NavLink, useParams, useNavigate } from 'react-router-dom';
 import {
   BookOpen,
@@ -15,6 +15,7 @@ import {
   type LucideIcon,
 } from 'lucide-react';
 import { useCourseStore } from '@/stores/course';
+import { api } from '@/api/client';
 
 interface Props {
   onLogout: () => void;
@@ -32,7 +33,27 @@ export function Sidebar({ onLogout }: Props) {
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
   const courses = useCourseStore((s) => s.courses);
+  const addCourse = useCourseStore((s) => s.addCourse);
   const currentCourse = courses.find((c) => c.id === courseId);
+
+  // 课程名单一来源是 course store（此前只由课程空间页 setCourses 填充），
+  // 刷新/直达课程页时 store 为空 → 复用既有 get 接口补拉当前课程进 store；
+  // 拿不到则维持「未命名课程」兜底，不开第二条查询路线
+  useEffect(() => {
+    if (!courseId || courses.some((c) => c.id === courseId)) return;
+    let cancelled = false;
+    api.courses
+      .get(courseId)
+      .then((c) => {
+        if (!cancelled) addCourse(c);
+      })
+      .catch(() => {
+        // 静默兜底：名称维持「未命名课程」，不影响导航
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [courseId, courses, addCourse]);
 
   const base = courseId ? `/courses/${courseId}` : '/courses';
 
