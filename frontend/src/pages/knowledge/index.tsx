@@ -569,7 +569,8 @@ export default function KnowledgePage() {
             <GraphView
               examPoints={examPoints}
               units={units}
-              cards={filteredCards}
+              cardsDict={cardsDict}
+              filteredCardIds={filteredCardIds}
               onCardClick={handleCardClick}
             />
           )}

@@ -1,452 +1,209 @@
-import { useState, useEffect, useCallback, useMemo, useRef, memo } from 'react';
+import { useState, useMemo, memo } from 'react';
 import { Network } from 'lucide-react';
 import type { FrameworkExamPoint, AssessmentUnit, KnowledgeCard } from '@/types/api';
 import { truncate } from './knowledgeShared';
+import { formatPercent } from '@/lib/format';
 
-// ─── Graph View（星空图谱）───
+// ─── Radial Knowledge Graph（径向层级图谱）───
+//
+// 旧版「星空」把 500+ 节点撒在 4000×3000 画布上，螺线距离不编码语义，
+// 1400 颗星尘纯属噪音。新版语义优先：
+//   角度 = 章节命题权重（扇区大小即考纲占比）
+//   环层 = 层级：内环章节、外环考点
+//   弧线 = 考点间关系（先修 / 对比 / 等价，取卡片 relation_edges 归并）
+//   颜色 = 落地状态（全落地绿 / 部分落地橙 / 未落地玫瑰虚线）
+//   知识卡不占节点——收编进考点，hover 弹出该考点的卡片清单。
+// 布局全确定性（无力图、无随机），同数据永远同构图。
 
-// 画布比旧版（960×640）扩大十余倍：旧版把 62 考点钉死在 282px 外环、卡片绕单元
-// 小环，500+ 节点全糊成一个圆环；星空版摊开到整幅深空画布，靠 fitView 自适应取景。
-const GRAPH_W = 4000;
-const GRAPH_H = 3000;
-const GRAPH_CX = GRAPH_W / 2;
-const GRAPH_CY = GRAPH_H / 2;
-// 费马螺线间距（密度均匀不重叠）：星空的疏朗度由这三个数控制
-// 间距三件套（2026-09-25 反馈「挤成一团」两轮放宽）：
-// 考点 NN ≈ 1.7×SECT_SP；单元首环 0.71×UNIT_SP 让开「考点核+标题带」；
-// 卡片环受 CARD_RING_MAX 封顶——大单元（17 卡）不封顶时外环 190 会横穿
-// 邻座考点核（NN≈146），封顶 96 后最远触达 0.71×84+96=156 < NN-28。
-const SECT_SP = 118; // 星座内考点（86 时大单元卡环仍横穿邻座考点）
-const UNIT_SP = 84; // 单元绕考点（46 压核上、76 首环标题仍贴考点标题，84 才让开）
-const CARD_SP = 46; // 卡片绕单元（32 时首环贴着单元核）
-const CARD_RING_MAX = 96; // 卡片螺线半径上限（封顶后按黄金角继续铺开，不会堆点）
-// 缩放窗口：上限 12× 保证看清标签（画布 4000 宽缩进 ~1100px 容器后基础比例
-// 约 0.28，12× 时考点标签屏显约 30px）；下限允许退回全景。
-const ZOOM_MIN = 0.3;
-const ZOOM_MAX = 12;
-// 星图色板：kit 色彩家族亮调（蓝/紫/绿/橙/青/粉/黄/石板），白底锌灰画布上
-// 以低透明径向晕染表现节点光晕
-const GRAPH_PALETTE = ['#3b82f6', '#8b5cf6', '#22c55e', '#f97316', '#06b6d4', '#ec4899', '#eab308', '#64748b'];
+const W = 1160;
+const H = 700;
+const CX = W / 2;
+const CY = H / 2 - 10;
+const RC = 132; // 章节环半径
+const RP = 292; // 考点环半径
+const GAP_DEG = 1.6; // 章节扇区间隔（度）
 
-function hashStr(s: string | null | undefined): number {
-  if (!s) return 0;
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  return h;
+/** 章节色板（kit 色系，固定顺序分配，保证同章节同色） */
+const CHAPTER_COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f97316', '#22c55e', '#06b6d4', '#eab308', '#64748b'];
+
+/** 关系边样式：先修/特化 实线，对比 虚线，等价 粗线 */
+const RELATION_STYLES: Record<string, { color: string; width: number; dash?: string }> = {
+  requires: { color: '#3b82f6', width: 1.4 },
+  specializes: { color: '#3b82f6', width: 1.4 },
+  contrasts: { color: '#8b5cf6', width: 1.2, dash: '5 4' },
+  equivalent: { color: '#22c55e', width: 2.2 },
+};
+
+interface ChapterArc {
+  key: string;
+  title: string;
+  weight: number;
+  points: FrameworkExamPoint[];
+  a0: number; // 扇区起始角（弧度）
+  a1: number; // 扇区结束角
+  color: string;
 }
 
-interface GraphNode {
-  key: string;
-  kind: 'point' | 'unit' | 'card';
+interface PointNode {
+  point: FrameworkExamPoint;
+  angle: number;
   x: number;
   y: number;
-  angle: number;
+  chapter: ChapterArc;
+  cardCount: number;
+  groundedCount: number;
   r: number;
-  label: string;
-  /** 完整可读标题（hover 时展示；label 是截断短名） */
-  full?: string;
-  sub: string;
-  color: string;
-  grounded: boolean;
-  cardId?: string;
-  unitId?: string;
 }
 
-interface GraphEdge {
-  id: string;
-  from: string;
-  to: string;
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-  kind: string;
+const polar = (cx: number, cy: number, r: number, angle: number) => ({
+  x: cx + r * Math.cos(angle),
+  y: cy + r * Math.sin(angle),
+});
+
+/** 扇区路径（环带：r0→r1，a0→a1） */
+function sectorPath(cx: number, cy: number, r0: number, r1: number, a0: number, a1: number): string {
+  const p0 = polar(cx, cy, r1, a0);
+  const p1 = polar(cx, cy, r1, a1);
+  const p2 = polar(cx, cy, r0, a1);
+  const p3 = polar(cx, cy, r0, a0);
+  const large = a1 - a0 > Math.PI ? 1 : 0;
+  return [
+    `M ${p0.x.toFixed(1)} ${p0.y.toFixed(1)}`,
+    `A ${r1} ${r1} 0 ${large} 1 ${p1.x.toFixed(1)} ${p1.y.toFixed(1)}`,
+    `L ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`,
+    `A ${r0} ${r0} 0 ${large} 0 ${p3.x.toFixed(1)} ${p3.y.toFixed(1)}`,
+    'Z',
+  ].join(' ');
+}
+
+/** 关系弧：两点间的二次贝塞尔，控制点拉向圆心产生弧感 */
+function arcPath(a: PointNode, b: PointNode): string {
+  const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  const pull = 0.32;
+  const c = { x: CX + (mid.x - CX) * pull, y: CY + (mid.y - CY) * pull };
+  return `M ${a.x.toFixed(1)} ${a.y.toFixed(1)} Q ${c.x.toFixed(1)} ${c.y.toFixed(1)} ${b.x.toFixed(1)} ${b.y.toFixed(1)}`;
 }
 
 export const GraphView = memo(function GraphView(props: {
   examPoints: FrameworkExamPoint[];
   units: AssessmentUnit[];
-  cards: KnowledgeCard[];
+  cardsDict: Record<string, KnowledgeCard>;
+  filteredCardIds: Set<string>;
   onCardClick: (id: string) => void;
 }) {
-  const { examPoints, units, cards, onCardClick } = props;
-  const svgRef = useRef<SVGSVGElement | null>(null);
-  const [zoom, setZoom] = useState(0.8);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [hoverKey, setHoverKey] = useState<string | null>(null);
-  const [dragging, setDragging] = useState<{ key: string; dx: number; dy: number } | null>(null);
-  const [panning, setPanning] = useState(false);
-  const [draggedPos, setDraggedPos] = useState<Record<string, { x: number; y: number }>>({});
-  const zoomRef = useRef(zoom);
-  const panRef = useRef(pan);
-  const panStart = useRef({ cx: 0, cy: 0, px: 0, py: 0 });
-  const movedRef = useRef(false);
-  zoomRef.current = zoom;
-  panRef.current = pan;
+  const { examPoints, units, cardsDict, filteredCardIds, onCardClick } = props;
+  const [hoverPoint, setHoverPoint] = useState<string | null>(null);
 
-  const unitOfCard = useMemo(() => {
-    const m = new Map<string, AssessmentUnit>();
-    units.forEach((u) => u.card_ids.forEach((cid) => m.set(cid, u)));
+  // 卡片 → 考点（经单元归组）；统计仅算过滤后可见卡片
+  const cardsByPoint = useMemo(() => {
+    const unitToPoint = new Map<string, string>();
+    const cardToUnit = new Map<string, AssessmentUnit>();
+    units.forEach((u) => {
+      if (u.exam_point_id) unitToPoint.set(u.unit_id, u.exam_point_id);
+      u.card_ids.forEach((cid) => cardToUnit.set(cid, u));
+    });
+    const m = new Map<string, KnowledgeCard[]>();
+    Object.values(cardsDict).forEach((c) => {
+      if (!filteredCardIds.has(c.id)) return;
+      const u = cardToUnit.get(c.id);
+      const pid = (u && u.exam_point_id) || '';
+      if (!pid) return;
+      const arr = m.get(pid) ?? [];
+      arr.push(c);
+      m.set(pid, arr);
+    });
     return m;
-  }, [units]);
+  }, [cardsDict, units, filteredCardIds]);
 
-  // ── 星空布局：章节(anchor_key)为「星座」，黄金角费马螺线逐层错落散布 ──
-  // 旧版把 62 考点钉死在 282px 外环、卡片绕单元小环，500+ 节点糊成一个圆环；
-  // 新版按章节分星座 → 星座内考点螺线 → 单元绕考点 → 卡片绕单元，sqrt 半径
-  // 保证密度均匀不重叠，星团自然疏开。
-  const layout = useMemo(() => {
-    const spiral = (i: number, sp: number) => ({ rad: sp * Math.sqrt(i + 0.5), ang: i * 2.39996323 });
-
-    const sections = new Map<string, FrameworkExamPoint[]>();
+  // 章节扇区：角度 ∝ 章节权重和（无权重时等分）；考点在扇区内等距铺开
+  const { chapters, pointNodes, arcs } = useMemo(() => {
+    const byChapter = new Map<string, FrameworkExamPoint[]>();
     examPoints.forEach((p) => {
       const k = p.anchor_key || '未分章';
-      const arr = sections.get(k);
-      if (arr) arr.push(p); else sections.set(k, [p]);
-    });
-    const sectKeys = [...sections.keys()];
-
-    const unitsOfPoint = new Map<string, AssessmentUnit[]>();
-    units.forEach((u) => {
-      if (!u.exam_point_id) return;
-      const arr = unitsOfPoint.get(u.exam_point_id);
-      if (arr) arr.push(u); else unitsOfPoint.set(u.exam_point_id, [u]);
+      const arr = byChapter.get(k) ?? [];
+      arr.push(p);
+      byChapter.set(k, arr);
     });
 
-    // 星座容量半径 = 考点螺线外沿 + 最大单元数外扩 + 最大卡数外扩
-    const sectRadius = (pts: FrameworkExamPoint[]) => {
-      let uMax = 1;
-      let cMax = 1;
-      pts.forEach((p) => {
-        const us = unitsOfPoint.get(p.id) || [];
-        uMax = Math.max(uMax, us.length);
-        us.forEach((u) => { cMax = Math.max(cMax, u.card_ids?.length || 1); });
-      });
-      return SECT_SP * Math.sqrt(pts.length) + UNIT_SP * Math.sqrt(uMax) + CARD_SP * Math.sqrt(cMax) + 96;
-    };
-    const globalRS = Math.max(140, ...sectKeys.map((k) => sectRadius(sections.get(k)!)));
-
-    // 星座中心：黄金角螺线摊开（i=0 居中）。间距系数 1.75×半径保证相邻星座
-    // 不相切（1.5 时纵向对会压到 0.66 缩放后 < 2RS，挤成一团）；y 压扁 0.78。
-    const sectCenter = new Map<string, { x: number; y: number }>();
-    sectKeys.forEach((k, i) => {
-      const rad = globalRS * 1.75 * Math.sqrt(i);
-      const ang = i * 2.39996323;
-      sectCenter.set(k, { x: GRAPH_CX + rad * Math.cos(ang), y: GRAPH_CY + rad * Math.sin(ang) * 0.78 });
+    const raw: Array<{ key: string; title: string; weight: number; points: FrameworkExamPoint[] }> = [];
+    byChapter.forEach((points, key) => {
+      const weight = points.reduce((s, p) => s + (Number(p.weight_value) || 0), 0);
+      raw.push({ key, title: key, weight, points: [...points].sort((a, b) => (Number(b.weight_value) || 0) - (Number(a.weight_value) || 0)) });
     });
+    raw.sort((a, b) => b.weight - a.weight || a.key.localeCompare(b.key));
 
-    const pointNodes: GraphNode[] = [];
-    const pointPos = new Map<string, { x: number; y: number }>();
-    sectKeys.forEach((sk) => {
-      const center = sectCenter.get(sk)!;
-      sections.get(sk)!.forEach((p, pi) => {
-        const { rad, ang } = spiral(pi, SECT_SP);
-        const x = center.x + rad * Math.cos(ang);
-        const y = center.y + rad * Math.sin(ang);
-        pointPos.set(p.id, { x, y });
-        pointNodes.push({
-          key: 'p-' + p.id, kind: 'point',
-          x, y, angle: ang, r: 21,
-          // 节点文字要「看得懂」：显示考点标题而非 CH4-EP01 序号（2026-09-25 反馈）
-          label: truncate(p.title || p.code, 6),
-          full: p.title || p.code,
-          sub: '',
-          color: '#3b82f6', grounded: true,
+    const totalWeight = raw.reduce((s, c) => s + c.weight, 0);
+    const useWeight = totalWeight > 0;
+    const gap = (GAP_DEG * Math.PI) / 180;
+    const usable = raw.length > 1 ? Math.PI * 2 - gap * raw.length : Math.PI * 2;
+    const spanOf = (c: (typeof raw)[number]) =>
+      useWeight ? (c.weight / totalWeight) * usable : usable / raw.length;
+
+    const chapterArcs: ChapterArc[] = [];
+    const nodes: PointNode[] = [];
+    let angle = -Math.PI / 2; // 12 点方向起笔
+
+    raw.forEach((c, ci) => {
+      const span = spanOf(c);
+      const arc: ChapterArc = { ...c, a0: angle, a1: angle + span, color: CHAPTER_COLORS[ci % CHAPTER_COLORS.length] };
+      chapterArcs.push(arc);
+
+      const pts = c.points;
+      pts.forEach((p, pi) => {
+        // 扇区内等距，避开边缘留白
+        const inner = span * 0.12;
+        const t = pts.length === 1 ? 0.5 : pi / (pts.length - 1);
+        const a = angle + inner + span * (1 - inner * 2 / span) * t;
+        const { x, y } = polar(CX, CY, RP, a);
+        const cards = cardsByPoint.get(p.id) ?? [];
+        const grounded = cards.filter((c2) => c2.grounded).length;
+        nodes.push({
+          point: p,
+          angle: a,
+          x,
+          y,
+          chapter: arc,
+          cardCount: cards.length,
+          groundedCount: grounded,
+          r: 5 + Math.min(7, cards.length * 0.35),
         });
       });
-    });
-    const unitNodes: GraphNode[] = [];
-    const unitPos = new Map<string, { x: number; y: number }>();
-    units.forEach((u) => {
-      const base = pointPos.get(u.exam_point_id);
-      const siblings = unitsOfPoint.get(u.exam_point_id) || [u];
-      const idx = Math.max(0, siblings.findIndex((it) => it.unit_id === u.unit_id));
-      const { rad, ang } = spiral(idx, UNIT_SP);
-      const x = (base?.x ?? GRAPH_CX) + rad * Math.cos(ang);
-      const y = (base?.y ?? GRAPH_CY) + rad * Math.sin(ang);
-      unitPos.set(u.unit_id, { x, y });
-      unitNodes.push({
-        key: 'u-' + u.unit_id, kind: 'unit',
-        x, y, angle: ang, r: 16,
-        // 同考点：标题优先于 code 序号
-        label: truncate(u.title || u.code, 6),
-        full: u.title || u.code,
-        sub: String(u.card_ids?.length || 0) + '卡',
-        color: '#8b5cf6', grounded: true, unitId: u.unit_id,
-      });
-    });
-    const cardsByUnit = new Map<string, KnowledgeCard[]>();
-    const orphans: KnowledgeCard[] = [];
-    cards.forEach((c) => {
-      const u = unitOfCard.get(c.id);
-      if (u) {
-        const arr = cardsByUnit.get(u.unit_id) || [];
-        arr.push(c);
-        cardsByUnit.set(u.unit_id, arr);
-      } else {
-        orphans.push(c);
-      }
+      angle += span + (raw.length > 1 ? gap : 0);
     });
 
-    const cardColor = (c: KnowledgeCard, salt: string) =>
-      c.concept_cluster
-        ? GRAPH_PALETTE[hashStr(c.concept_cluster) % GRAPH_PALETTE.length]
-        : GRAPH_PALETTE[hashStr(salt) % GRAPH_PALETTE.length];
+    // 关系弧：卡片 relation_edges 归并到考点对，去重（每对保留首个关系类型）
+    const nodeById = new Map(nodes.map((n) => [n.point.id, n]));
+    const cardToPoint = new Map<string, string>();
+    cardsByPoint.forEach((cards, pid) => cards.forEach((c) => cardToPoint.set(c.id, pid)));
 
-    const cardNodes: GraphNode[] = [];
-    cardsByUnit.forEach((list, uid) => {
-      const un = unitPos.get(uid);
-      if (!un) return;
-      list.forEach((c, i) => {
-        const { rad, ang } = spiral(i, CARD_SP);
-        const rr = Math.min(rad, CARD_RING_MAX);
-        cardNodes.push({
-          key: 'c-' + c.id, kind: 'card',
-          x: un.x + rr * Math.cos(ang),
-          y: un.y + rr * Math.sin(ang),
-          angle: ang,
-          r: 4.5 + (c.importance || 1) * 2.2,
-          label: String(c.name || ''), sub: '',
-          color: cardColor(c, uid),
-          grounded: c.grounded, cardId: c.id,
-        });
-      });
-    });
-    // 未归属单元的卡片作为无主星尘散落在中心
-    orphans.forEach((c, i) => {
-      const { rad, ang } = spiral(i, CARD_SP + 8);
-      const rr = Math.min(rad, CARD_RING_MAX);
-      cardNodes.push({
-        key: 'c-' + c.id, kind: 'card',
-        x: GRAPH_CX + rr * Math.cos(ang),
-        y: GRAPH_CY + rr * Math.sin(ang),
-        angle: ang,
-        r: 4.5 + (c.importance || 1) * 2.2,
-        label: c.name, sub: '',
-        color: cardColor(c, c.id),
-        grounded: c.grounded, cardId: c.id,
-      });
-    });
-    return { pointNodes, unitNodes, cardNodes };
-  }, [examPoints, units, cards, unitOfCard]);
-
-  // 背景星尘：确定性伪随机（LCG），三组错相闪烁。
-  // 覆盖范围外扩 ±3000：SECT_SP 放宽后节点框远超 4000×3000 画布，星尘须
-  // 同步铺到画布外，否则 fitView 取景时画缘出现「无星空带」。
-  const bgStars = useMemo(() => {
-    let s = 987654321;
-    const rnd = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
-    return Array.from({ length: 1400 }, () => {
-      const bucket = rnd();
-      const warm = rnd();
-      return {
-        x: rnd() * (GRAPH_W + 6000) - 3000,
-        y: rnd() * (GRAPH_H + 6000) - 3000,
-        r: 0.5 + rnd() * 1.7,
-        big: rnd() < 0.1,
-        // 三档静态透明度分层代替旧版循环闪烁：1400 颗常驻星的无限动画是白耗的 GPU 负担
-        opacity: bucket < 0.34 ? 0.35 : bucket < 0.67 ? 0.6 : 0.9,
-        hue: warm < 0.22 ? '#bfdbfe' : warm < 0.4 ? '#fed7aa' : '#ffffff',
-      };
-    });
-  }, []);
-
-  // 从属边（卡→单元→考点）+ 卡片关系边（relation_edges）
-  const { edges, relEdges } = useMemo(() => {
-    const out: GraphEdge[] = [];
-    const rel: GraphEdge[] = [];
-    const nodeByKey = new Map<string, GraphNode>();
-    [...layout.cardNodes, ...layout.unitNodes, ...layout.pointNodes].forEach((n) => nodeByKey.set(n.key, n));
-    const unitByCardKey = new Map<string, GraphNode>();
-    layout.cardNodes.forEach((n) => {
-      const u = unitOfCard.get(n.cardId || '');
-      if (u) {
-        const un = nodeByKey.get('u-' + u.unit_id);
-        if (un) unitByCardKey.set(n.key, un);
-      }
-    });
-    layout.cardNodes.forEach((n) => {
-      const un = unitByCardKey.get(n.key);
-      if (un) out.push({ id: n.key + '->u-' + un.key, from: n.key, to: un.key, x1: n.x, y1: n.y, x2: un.x, y2: un.y, kind: 'card-unit' });
-    });
-    layout.unitNodes.forEach((n) => {
-      const u = units.find((it) => it.unit_id === n.unitId);
-      if (u && u.exam_point_id) {
-        const pn = nodeByKey.get('p-' + u.exam_point_id);
-        if (pn) out.push({ id: n.key + '->p-' + pn.key, from: n.key, to: pn.key, x1: n.x, y1: n.y, x2: pn.x, y2: pn.y, kind: 'unit-point' });
-      }
-    });
-    const cardNodeByCardId = new Map(layout.cardNodes.map((n) => [n.cardId, n]));
-    cards.forEach((c) => {
-      const arr = c.relation_edges;
-      if (!Array.isArray(arr)) return;
-      const src = cardNodeByCardId.get(c.id);
-      if (!src) return;
-      arr.forEach((edge, idx) => {
+    const pairRel = new Map<string, { a: PointNode; b: PointNode; kind: string }>();
+    Object.values(cardsDict).forEach((c) => {
+      const from = cardToPoint.get(c.id);
+      if (!from || !Array.isArray(c.relation_edges)) return;
+      c.relation_edges.forEach((edge) => {
         const obj = (edge && typeof edge === 'object' ? edge : {}) as { target?: string; relation?: string; kind?: string };
-        const target = (obj.target || (typeof edge === 'string' ? edge : '') || '').trim();
-        const relKind = (obj.relation || obj.kind || '').toLowerCase();
-        const tgt = cardNodeByCardId.get(target);
-        if (src && tgt) {
-          rel.push({ id: 'r-' + c.id + '-' + target + '-' + idx, from: src.key, to: tgt.key, x1: src.x, y1: src.y, x2: tgt.x, y2: tgt.y, kind: relKind });
-        }
+        const target = (obj.target || (typeof edge === 'string' ? edge : '')).trim();
+        const to = cardToPoint.get(target);
+        if (!to || to === from) return;
+        const na = nodeById.get(from);
+        const nb = nodeById.get(to);
+        if (!na || !nb) return;
+        const key = [from, to].sort().join('|');
+        if (pairRel.has(key)) return;
+        pairRel.set(key, { a: na, b: nb, kind: (obj.relation || obj.kind || 'requires').toLowerCase() });
       });
     });
-    return { edges: out, relEdges: rel };
-  }, [layout, units, cards, unitOfCard]);
 
-  // hover 邻接表：高亮节点与其直接关联的节点/边
-  const adjacency = useMemo(() => {
-    const adj = new Map<string, Set<string>>();
-    const add = (a: string, b: string) => {
-      if (!adj.has(a)) adj.set(a, new Set());
-      if (!adj.has(b)) adj.set(b, new Set());
-      adj.get(a)!.add(b);
-      adj.get(b)!.add(a);
-    };
-    [...edges, ...relEdges].forEach((e) => add(e.from, e.to));
-    return adj;
-  }, [edges, relEdges]);
+    return { chapters: chapterArcs, pointNodes: nodes, arcs: [...pairRel.values()] };
+  }, [examPoints, units, cardsByPoint, cardsDict]);
 
-  const activeSet = useMemo(() => {
-    if (!hoverKey) return null;
-    const s = adjacency.get(hoverKey) || new Set();
-    return new Set([hoverKey, ...s]);
-  }, [hoverKey, adjacency]);
+  const totalCards = useMemo(() => [...cardsByPoint.values()].reduce((s, a) => s + a.length, 0), [cardsByPoint]);
+  const hovered = hoverPoint ? pointNodes.find((n) => n.point.id === hoverPoint) : null;
+  const hoveredCards = hovered ? (cardsByPoint.get(hovered.point.id) ?? []) : [];
 
-  useEffect(() => {
-    const svg = svgRef.current;
-    if (!svg) return;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      // 光标 → viewBox 走 CTM 反变换：rect 线性映射忽略了 preserveAspectRatio
-      // 的 letterbox（元素 4:3 之外的左右留白），会横向偏最多几十 px。
-      const ctm = svg.getScreenCTM();
-      if (!ctm) return;
-      const v = new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
-      const factor = e.deltaY > 0 ? 0.88 : 1.12;
-      const z0 = zoomRef.current;
-      const z1 = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z0 * factor));
-      const p0 = panRef.current;
-      const k = z1 / z0;
-      // 锚点公式须与 transform 的「绕画布中心缩放」一致：
-      //   v = (n−c)·z + c + pan  ⟹  pan₁ = (m−c) − (m−c−pan₀)·k
-      // 旧式 m − (m−pan₀)·k 是绕原点缩放的写法，每步多漂 c·(1−k)
-      // （约 −240/−180 viewBox 单位），连续滚动会把视图斜着带出内容区。
-      const dx = v.x - GRAPH_CX;
-      const dy = v.y - GRAPH_CY;
-      setPan({ x: dx - (dx - p0.x) * k, y: dy - (dy - p0.y) * k });
-      setZoom(z1);
-    };
-    svg.addEventListener('wheel', onWheel, { passive: false });
-    return () => svg.removeEventListener('wheel', onWheel);
-  }, []);
-
-  // 自适应取景：把全部节点框进画布并居中（星空画布远大于内容，靠它开局给全景）
-  const fitView = useCallback(() => {
-    const all = [...layout.pointNodes, ...layout.unitNodes, ...layout.cardNodes];
-    if (all.length === 0) return;
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    all.forEach((n) => {
-      minX = Math.min(minX, n.x - n.r); maxX = Math.max(maxX, n.x + n.r);
-      minY = Math.min(minY, n.y - n.r); maxY = Math.max(maxY, n.y + n.r);
-    });
-    const pad = 140;
-    const z = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.min(
-      GRAPH_W / (maxX - minX + pad * 2),
-      GRAPH_H / (maxY - minY + pad * 2),
-    )));
-    setZoom(z);
-    setPan({
-      x: -z * ((minX + maxX) / 2 - GRAPH_CX),
-      y: -z * ((minY + maxY) / 2 - GRAPH_CY),
-    });
-    setDraggedPos({});
-  }, [layout]);
-
-  // 数据加载/更新时自动取景一次（不干扰用户随后的拖拽/缩放）
-  useEffect(() => { fitView(); }, [fitView]);
-
-  const toCanvas = useCallback((clientX: number, clientY: number) => {
-    // CTM 反变换拿精确 viewBox 坐标（含 letterbox 校正），再逆掉内层
-    // 缩放平移得到画布坐标——与 onWheel 同一套映射，拖拽/缩放才一致。
-    const ctm = svgRef.current?.getScreenCTM();
-    if (!ctm) return { x: GRAPH_CX, y: GRAPH_CY };
-    const v = new DOMPoint(clientX, clientY).matrixTransform(ctm.inverse());
-    const z = zoomRef.current;
-    const p = panRef.current;
-    return {
-      x: (v.x - (GRAPH_CX + p.x)) / z + GRAPH_CX,
-      y: (v.y - (GRAPH_CY + p.y)) / z + GRAPH_CY,
-    };
-  }, []);
-
-  const nodePos = useCallback((n: GraphNode) => draggedPos[n.key] || { x: n.x, y: n.y }, [draggedPos]);
-
-  const onNodePointerDown = (e: React.PointerEvent, n: GraphNode) => {
-    e.stopPropagation();
-    if (e.button !== 0) return;
-    movedRef.current = false;
-    const c = toCanvas(e.clientX, e.clientY);
-    const p = nodePos(n);
-    setDragging({ key: n.key, dx: c.x - p.x, dy: c.y - p.y });
-    e.currentTarget.setPointerCapture(e.pointerId);
-  };
-
-  const onSvgPointerMove = (e: React.PointerEvent) => {
-    if (dragging) {
-      const c = toCanvas(e.clientX, e.clientY);
-      const p = { x: c.x - dragging.dx, y: c.y - dragging.dy };
-      const prev = draggedPos[dragging.key] || { x: 0, y: 0 };
-      if (Math.abs(p.x - prev.x) + Math.abs(p.y - prev.y) > 2) movedRef.current = true;
-      setDraggedPos((prev2) => ({ ...prev2, [dragging.key]: p }));
-    } else if (panning) {
-      // 屏幕像素差换算成 viewBox 单位（÷CTM 缩放），内容才严格跟手；
-      // 旧写法把 px 直接当 viewBox 单位，恒慢 ~4× 且缩放级别越高越钝。
-      const s = svgRef.current?.getScreenCTM()?.a || 1;
-      setPan({
-        x: panStart.current.px + (e.clientX - panStart.current.cx) / s,
-        y: panStart.current.py + (e.clientY - panStart.current.cy) / s,
-      });
-    }
-  };
-
-  const onSvgPointerUp = (e: React.PointerEvent) => {
-    e.currentTarget.releasePointerCapture?.(e.pointerId);
-    setDragging(null);
-    setPanning(false);
-  };
-
-  const onBgPointerDown = (e: React.PointerEvent) => {
-    if (e.button !== 0) return;
-    movedRef.current = false;
-    panStart.current = { cx: e.clientX, cy: e.clientY, px: pan.x, py: pan.y };
-    setPanning(true);
-    e.currentTarget.setPointerCapture(e.pointerId);
-  };
-
-  const transform = `translate(${GRAPH_CX + pan.x} ${GRAPH_CY + pan.y}) scale(${zoom}) translate(${-GRAPH_CX} ${-GRAPH_CY})`;
-
-  const allNodes = useMemo(
-    () => [...layout.pointNodes, ...layout.unitNodes, ...layout.cardNodes],
-    [layout]
-  );
-  void allNodes;
-
-  // 白底上的「星座连线」：从属边走锌灰淡染，关系边保留彩色但收敛
-  const edgeStyle = (kind: string) => {
-    if (kind === 'specializes' || kind === 'requires') return { stroke: '#3b82f6', width: 1.6, dash: undefined, opacity: 0.75, marker: true };
-    if (kind === 'contrasts') return { stroke: '#8b5cf6', width: 1.3, dash: '5 4', opacity: 0.7, marker: false };
-    if (kind === 'equivalent') return { stroke: '#22c55e', width: 2.6, dash: undefined, opacity: 0.7, marker: false };
-    if (kind === 'card-unit') return { stroke: 'rgba(24,24,27,0.1)', width: 1, dash: undefined, opacity: 1, marker: false };
-    if (kind === 'unit-point') return { stroke: 'rgba(139,92,246,0.2)', width: 1.2, dash: undefined, opacity: 1, marker: false };
-    return { stroke: 'rgba(24,24,27,0.22)', width: 1.2, dash: undefined, opacity: 0.7, marker: false };
-  };
-
-  const isDimmed = (key: string) => activeSet !== null && !activeSet.has(key);
-
-  if (cards.length === 0 && units.length === 0 && examPoints.length === 0) {
+  if (examPoints.length === 0 && totalCards === 0) {
     return (
-      <div style={{ padding: '40px 0', textAlign: 'center', color: 'var(--text-tertiary)' }}>
+      <div style={{ padding: '48px 0', textAlign: 'center', color: 'var(--text-tertiary)' }}>
         <Network size={40} style={{ margin: '0 auto 12px', opacity: 0.4 }} />
         <p style={{ fontSize: '0.875rem' }}>图谱暂无节点</p>
       </div>
@@ -454,223 +211,178 @@ export const GraphView = memo(function GraphView(props: {
   }
 
   return (
-    <div>
-      <div style={{ position: 'relative', userSelect: 'none' }}>
-        <svg
-          ref={svgRef}
-          viewBox={`0 0 ${GRAPH_W} ${GRAPH_H}`}
-          style={{
-            width: '100%', maxHeight: '760px',
-            background: 'radial-gradient(ellipse at 50% 38%, #ffffff 0%, #fafafa 55%, #f4f4f5 100%)',
-            cursor: panning ? 'grabbing' : 'grab', touchAction: 'none',
-          }}
-          onPointerMove={onSvgPointerMove}
-          onPointerUp={onSvgPointerUp}
-          onPointerCancel={onSvgPointerUp}
-          onPointerDown={onBgPointerDown}
-        >
-          <defs>
-            <marker id="gh-arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-              <path d="M0,0 L8,3 L0,6 Z" fill="#3b82f6" />
-            </marker>
-            {/* 节点晕染：径向渐变模拟颜料在湿纸上洇开，避免逐节点 SVG 滤镜的性能开销 */}
-            {GRAPH_PALETTE.map((c, i) => (
-              <radialGradient key={'g' + i} id={'glow-' + i}>
-                <stop offset="0%" stopColor={c} stopOpacity="0.5" />
-                <stop offset="42%" stopColor={c} stopOpacity="0.16" />
-                <stop offset="100%" stopColor={c} stopOpacity="0" />
-              </radialGradient>
-            ))}
-            <radialGradient id="glow-pt">
-              <stop offset="0%" stopColor="#60a5fa" stopOpacity="0.5" />
-              <stop offset="45%" stopColor="#3b82f6" stopOpacity="0.2" />
-              <stop offset="100%" stopColor="#3b82f6" stopOpacity="0" />
-            </radialGradient>
-            <radialGradient id="glow-un">
-              <stop offset="0%" stopColor="#a78bfa" stopOpacity="0.5" />
-              <stop offset="45%" stopColor="#8b5cf6" stopOpacity="0.2" />
-              <stop offset="100%" stopColor="#8b5cf6" stopOpacity="0" />
-            </radialGradient>
-            <radialGradient id="glow-star">
-              <stop offset="0%" stopColor="#ffffff" stopOpacity="0.9" />
-              <stop offset="100%" stopColor="#ffffff" stopOpacity="0" />
-            </radialGradient>
-          </defs>
-          <g transform={transform}>
-            {/* 背景星尘：坐标在画布系随缩放平移，三档静态透明度分层 */}
-            <g>
-              {bgStars.map((st, i) => (
-                <g key={'st' + i} opacity={st.opacity}>
-                  {st.big && <circle cx={st.x} cy={st.y} r={st.r * 5} fill="url(#glow-star)" opacity={0.5} />}
-                  <circle cx={st.x} cy={st.y} r={st.r} fill={st.hue} />
-                </g>
-              ))}
+    <div style={{ position: 'relative' }}>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        style={{ width: '100%', maxHeight: 760, display: 'block', background: 'transparent' }}
+        role="img"
+        aria-label="知识图谱：章节权重扇区与考点关系"
+      >
+        <defs>
+          <marker id="rg-arrow" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto">
+            <path d="M0,0 L6,2.5 L0,5 Z" fill="#3b82f6" />
+          </marker>
+        </defs>
+
+        {/* 章节扇区（权重角度化） */}
+        {chapters.map((c) => (
+          <path key={'sec-' + c.key} d={sectorPath(CX, CY, RC - 26, RC + 26, c.a0, c.a1)} fill={c.color} opacity={0.1} />
+        ))}
+
+        {/* 章节标签：沿角平分线外置，按方位自动锚点 */}
+        {chapters.map((c) => {
+          const mid = (c.a0 + c.a1) / 2;
+          const p = polar(CX, CY, RC + 44, mid);
+          const anchor = Math.cos(mid) > 0.25 ? 'start' : Math.cos(mid) < -0.25 ? 'end' : 'middle';
+          return (
+            <g key={'lab-' + c.key}>
+              <text x={p.x} y={p.y - 4} textAnchor={anchor} fontSize="12.5" fontWeight="600" fill={c.color}>
+                {truncate(c.title, 10)}
+              </text>
+              <text x={p.x} y={p.y + 12} textAnchor={anchor} fontSize="10.5" fill="#a1a1aa">
+                {c.points.length} 考点 · {formatPercent(c.weight)}
+              </text>
             </g>
-            {/* 边 */}
-            <g>
-              {[...edges, ...relEdges].map((e) => {
-                const dim = activeSet !== null && !(activeSet.has(e.from) && activeSet.has(e.to));
-                const st = edgeStyle(e.kind);
-                return (
-                  <line
-                    key={e.id}
-                    x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2}
-                    stroke={st.stroke}
-                    strokeWidth={st.width}
-                    strokeDasharray={st.dash}
-                    opacity={dim ? 0.06 : st.opacity}
-                    markerEnd={st.marker ? 'url(#gh-arrowhead)' : undefined}
-                  />
-                );
-              })}
-            </g>
+          );
+        })}
 
-            {/* 考点 = 恒星：星芒 + 蓝白光晕 + 白核 */}
-            {layout.pointNodes.map((n) => {
-              const p = nodePos(n);
-              const dim = isDimmed(n.key);
-              const hov = hoverKey === n.key;
-              return (
-                <g
-                  key={n.key}
-                  opacity={dim ? 0.12 : 1}
-                  onPointerEnter={() => setHoverKey(n.key)}
-                  onPointerLeave={() => setHoverKey(null)}
-                  onPointerDown={(e) => onNodePointerDown(e, n)}
-                  style={{ cursor: 'grab' }}
-                >
-                  <line x1={p.x - n.r * 2.4} y1={p.y} x2={p.x + n.r * 2.4} y2={p.y} stroke="rgba(24,24,27,0.3)" strokeWidth={1} style={{ pointerEvents: 'none' }} />
-                  <line x1={p.x} y1={p.y - n.r * 2.4} x2={p.x} y2={p.y + n.r * 2.4} stroke="rgba(24,24,27,0.3)" strokeWidth={1} style={{ pointerEvents: 'none' }} />
-                  <circle cx={p.x} cy={p.y} r={hov ? n.r * 3.1 : n.r * 2.6} fill="url(#glow-pt)" style={{ transition: 'r 0.15s' }} />
-                  <circle cx={p.x} cy={p.y} r={n.r + (hov ? 3 : 0)} fill="#ffffff" stroke="#3b82f6" strokeWidth={1.6} style={{ transition: 'r 0.15s' }} />
-                  {/* 标题挂核外纸底：蓝墨字 + 暖白描边与纸面天然高对比；hover 展开全名 */}
-                  <text x={p.x} y={p.y + n.r + (hov ? 6 : 0) + 12} textAnchor="middle" fontSize={hov ? 10.5 : 9} fontWeight="600" fill="#1e3a8a"
-                    style={{ paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 3, strokeLinejoin: 'round', pointerEvents: 'none' }}>
-                    {hov ? n.full : n.label}
-                  </text>
-                </g>
-              );
-            })}
+        {/* 中心摘要 */}
+        <text x={CX} y={CY - 8} textAnchor="middle" fontSize="15" fontWeight="600" fill="#18181b">
+          知识图谱
+        </text>
+        <text x={CX} y={CY + 14} textAnchor="middle" fontSize="11.5" fill="#8a8a8a">
+          {chapters.length} 章 · {pointNodes.length} 考点 · {totalCards} 卡
+        </text>
+        <text x={CX} y={CY + 32} textAnchor="middle" fontSize="10.5" fill="#a1a1aa">
+          扇区角度 = 章节权重 · 弧线 = 考点关系
+        </text>
 
-            {/* 单元 = 卫星星：紫晕 + 淡紫白核 */}
-            {layout.unitNodes.map((n) => {
-              const p = nodePos(n);
-              const dim = isDimmed(n.key);
-              const hov = hoverKey === n.key;
-              return (
-                <g
-                  key={n.key}
-                  opacity={dim ? 0.12 : 1}
-                  onPointerEnter={() => setHoverKey(n.key)}
-                  onPointerLeave={() => setHoverKey(null)}
-                  onPointerDown={(e) => onNodePointerDown(e, n)}
-                  style={{ cursor: 'grab' }}
-                >
-                  <circle cx={p.x} cy={p.y} r={hov ? n.r * 2.9 : n.r * 2.4} fill="url(#glow-un)" style={{ transition: 'r 0.15s' }} />
-                  <circle cx={p.x} cy={p.y} r={n.r + (hov ? 2.5 : 0)} fill="#ffffff" stroke="#8b5cf6" strokeWidth={1.4} style={{ transition: 'r 0.15s' }} />
-                  {/* 核内只留「N卡」计数；标题挂核外纸底（蓝墨字暖白描边高对比），
-                      hover 展开全名。 */}
-                  <text x={p.x} y={p.y + 2.5} textAnchor="middle" fontSize="6.5" fontWeight="600" fill="#6d28d9"
-                    style={{ paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 1.4, strokeLinejoin: 'round', pointerEvents: 'none' }}>{n.sub}</text>
-                  <text x={p.x} y={p.y + n.r + (hov ? 5 : 0) + 11} textAnchor="middle" fontSize={hov ? 10 : 8.5} fontWeight="600" fill="#6d28d9"
-                    style={{ paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 3, strokeLinejoin: 'round', pointerEvents: 'none' }}>
-                    {hov ? n.full : n.label}
-                  </text>
-                </g>
-              );
-            })}
+        {/* 关系弧（先画线，节点压上层） */}
+        {arcs.map(({ a, b, kind }) => {
+          const st = RELATION_STYLES[kind] ?? RELATION_STYLES.requires;
+          const dim = hoverPoint && a.point.id !== hoverPoint && b.point.id !== hoverPoint;
+          return (
+            <path
+              key={`arc-${a.point.id}-${b.point.id}-${kind}`}
+              d={arcPath(a, b)}
+              fill="none"
+              stroke={st.color}
+              strokeWidth={st.width}
+              strokeDasharray={st.dash}
+              opacity={dim ? 0.06 : 0.5}
+              markerEnd={kind === 'requires' ? 'url(#rg-arrow)' : undefined}
+              style={{ transition: 'opacity .2s' }}
+            />
+          );
+        })}
 
-            {/* 卡片 = 星尘：色晕 + 核；默认不挂标签（503 个标签就是旧版糊成团的元凶），hover 才显名 */}
-            {layout.cardNodes.map((n) => {
-              const p = nodePos(n);
-              const dim = isDimmed(n.key);
-              const hovered = hoverKey === n.key;
-              const gi = GRAPH_PALETTE.indexOf(n.color);
-              return (
-                <g
-                  key={n.key}
-                  opacity={dim ? 0.1 : 1}
-                  onPointerEnter={() => setHoverKey(n.key)}
-                  onPointerLeave={() => setHoverKey(null)}
-                  onPointerDown={(e) => onNodePointerDown(e, n)}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (movedRef.current) { movedRef.current = false; return; }
-                    if (n.cardId) onCardClick(n.cardId);
-                  }}
-                  style={{ cursor: 'pointer' }}
-                >
-                  <circle
-                    cx={p.x} cy={p.y}
-                    r={hovered ? n.r * 3.4 : n.r * 2.7}
-                    fill={`url(#glow-${gi < 0 ? 0 : gi})`}
-                    opacity={n.grounded ? 0.95 : 0.4}
-                    style={{ transition: 'r 0.15s' }}
-                  />
-                  <circle
-                    cx={p.x} cy={p.y}
-                    r={n.r + (hovered ? 3 : 0)}
-                    fill={n.color}
-                    fillOpacity={n.grounded ? 0.95 : 0.35}
-                    stroke={n.grounded ? 'rgba(255,255,255,0.9)' : '#f43f5e'}
-                    strokeWidth={n.grounded ? 0.8 : 1.6}
-                    strokeDasharray={n.grounded ? undefined : '3 2'}
-                    style={{ transition: 'r 0.15s, fill-opacity 0.15s' }}
-                  />
-                  {hovered && (
-                    <text x={p.x} y={p.y - n.r - 8} textAnchor="middle" fontSize="9.5" fontWeight="600" fill="#18181b"
-                      style={{ paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 3.5, strokeLinejoin: 'round', pointerEvents: 'none' }}>
-                      {truncate(n.label, 18)}
-                    </text>
-                  )}
-                </g>
-              );
-            })}
-          </g>
-        </svg>
-
-        {/* 缩放控件（暖纸玻璃，浮在星图上） */}
-        <div style={{ position: 'absolute', right: 10, top: 10, display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {[
-            { label: '+', fn: () => setZoom((z) => Math.min(ZOOM_MAX, z * 1.45)) },
-            { label: '−', fn: () => setZoom((z) => Math.max(ZOOM_MIN, z / 1.45)) },
-            { label: '⟲', fn: fitView },
-          ].map((b) => (
-            <button
-              key={b.label}
-              onClick={b.fn}
-              style={{
-                width: 30, height: 30, borderRadius: 'var(--radius-sm)', border: '1px solid var(--line)',
-                background: 'var(--surface-elevated)', boxShadow: 'var(--shadow-1)',
-                cursor: 'pointer', fontSize: '0.9rem', color: 'var(--text-secondary)',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}
+        {/* 考点节点：大小 = 卡片数，颜色 = 落地状态 */}
+        {pointNodes.map((n) => {
+          const allGrounded = n.cardCount > 0 && n.groundedCount === n.cardCount;
+          const someGrounded = n.groundedCount > 0 && n.groundedCount < n.cardCount;
+          const hov = hoverPoint === n.point.id;
+          const dim = hoverPoint && !hov;
+          return (
+            <g
+              key={n.point.id}
+              opacity={dim ? 0.25 : 1}
+              onPointerEnter={() => setHoverPoint(n.point.id)}
+              onPointerLeave={() => setHoverPoint((h) => (h === n.point.id ? null : h))}
+              style={{ cursor: 'pointer', transition: 'opacity .2s' }}
             >
-              {b.label}
-            </button>
-          ))}
-        </div>
-        <div style={{ position: 'absolute', left: 10, top: 10, fontSize: '0.72rem', color: 'var(--text-secondary)', background: 'var(--surface-elevated)', padding: '4px 8px', borderRadius: 'var(--radius-sm)', border: '1px solid var(--line)' }}>
-          滚轮缩放 · 拖拽画布平移 · 拖动节点调整 · 点击卡片看详情
-        </div>
-      </div>
+              <circle cx={n.x} cy={n.y} r={n.r + (hov ? 4 : 0)} fill={n.chapter.color} opacity={0.16} />
+              <circle
+                cx={n.x}
+                cy={n.y}
+                r={n.r + (hov ? 2 : 0)}
+                fill={allGrounded ? n.chapter.color : someGrounded ? '#ffffff' : '#ffffff'}
+                fillOpacity={allGrounded ? 0.92 : 1}
+                stroke={allGrounded ? n.chapter.color : someGrounded ? '#ea580c' : '#f43f5e'}
+                strokeWidth={allGrounded ? 0 : someGrounded ? 1.4 : 1.4}
+                strokeDasharray={allGrounded ? undefined : '3 2'}
+                style={{ transition: 'r .15s' }}
+              />
+              {hov && (
+                <text x={n.x} y={n.y - n.r - 8} textAnchor="middle" fontSize="10.5" fontWeight="600" fill="#18181b"
+                  style={{ paintOrder: 'stroke', stroke: '#ffffff', strokeWidth: 3, strokeLinejoin: 'round', pointerEvents: 'none' }}>
+                  {truncate(n.point.title || n.point.code, 12)}
+                </text>
+              )}
+            </g>
+          );
+        })}
+      </svg>
 
-      {/* Legend */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '16px', padding: '12px 8px 0', flexWrap: 'wrap' }}>
-        <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-          <span style={{ width: 12, height: 12, borderRadius: '50%', border: '2px dashed #f43f5e', background: 'var(--error-subtle)' }} /> 未落地
+      {/* 考点详情浮层：该考点下的卡片清单（点击卡片进详情抽屉） */}
+      {hovered && (
+        <div
+          style={{
+            position: 'absolute',
+            left: `${(hovered.x / W) * 100}%`,
+            top: `${(hovered.y / H) * 100}%`,
+            transform: 'translate(-50%, calc(-100% - 14px))',
+            width: 260,
+            background: 'var(--surface-solid)',
+            border: '1px solid var(--line)',
+            borderRadius: 'var(--radius-md)',
+            boxShadow: 'var(--shadow-3)',
+            padding: '12px 14px',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 8,
+            zIndex: 5,
+          }}
+          onPointerLeave={() => setHoverPoint(null)}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: hovered.chapter.color, flexShrink: 0 }} />
+            <strong style={{ fontSize: '0.85rem', lineHeight: 1.35 }}>{hovered.point.title || hovered.point.code}</strong>
+          </div>
+          <div style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>
+            {hovered.point.code} · {truncate(hovered.chapter.title, 12)} · 权重 {formatPercent(hovered.point.weight_value)} · {hovered.cardCount} 卡（已落地 {hovered.groundedCount}）
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 180, overflowY: 'auto' }}>
+            {hoveredCards.length === 0 && (
+              <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>当前过滤下无可见卡片</p>
+            )}
+            {hoveredCards.slice(0, 20).map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                onClick={() => onCardClick(c.id)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6, padding: '5px 8px',
+                  border: 'none', borderRadius: 'var(--radius-sm)', background: 'var(--fill)',
+                  cursor: 'pointer', textAlign: 'left', fontSize: '0.78rem',
+                }}
+              >
+                <span style={{ width: 6, height: 6, borderRadius: '50%', flexShrink: 0, background: c.grounded ? 'var(--success)' : 'var(--error)' }} />
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 图例 */}
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', padding: '10px 4px 0', fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 10, height: 10, borderRadius: '50%', background: '#3b82f6' }} /> 全落地考点
         </span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#3b82f6' }} /> 已落地卡
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 10, height: 10, borderRadius: '50%', border: '1.5px solid #ea580c', background: '#ffffff' }} /> 部分落地
         </span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#ffffff', border: '1.5px solid #3b82f6' }} /> 考点（恒星）
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 10, height: 10, borderRadius: '50%', border: '1.5px dashed #f43f5e', background: '#ffffff' }} /> 未落地
         </span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-          <span style={{ width: 12, height: 12, borderRadius: '50%', background: '#ffffff', border: '1.5px solid #8b5cf6' }} /> 单元（卫星）
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 18, height: 0, borderTop: '1.5px solid #3b82f6' }} /> 先修 / 特化
         </span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.75rem', color: 'var(--text-secondary)' }}>
-          <span style={{ width: 18, height: 0, borderTop: '2px solid rgba(24,24,27,0.35)' }} /> 星座连线
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 18, height: 0, borderTop: '1.5px dashed #8b5cf6' }} /> 对比
+        </span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span style={{ width: 18, height: 0, borderTop: '2.5px solid #22c55e' }} /> 等价
         </span>
       </div>
     </div>
