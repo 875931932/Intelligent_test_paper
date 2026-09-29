@@ -434,19 +434,26 @@ export default function MaterialsPage() {
     }
   }, [materials, startPolling]);
 
-  // 解析结果提示：跟踪上一次“是否有解析中”的状态，一次完成态变化只提示一次
-  const hadParsingRef = useRef(false);
+  // 解析结果提示：记录本批次进入“解析中”的资料 id，全部终态后只对本批次判定成败。
+  // 若按全课程 any(failed) 判定，历史遗留的失败资料会污染本批次的成功提示。
+  const batchParseIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
-    const hasParsing = materials.some(isParsing);
-    if (hadParsingRef.current && !hasParsing) {
-      const anyFailed = materials.some((m) => m.parse_status?.status === 'failed');
-      addToast(anyFailed ? '部分文件解析失败' : '全部解析完成', anyFailed ? 'error' : 'success');
+    const parsing = materials.filter(isParsing);
+    if (parsing.length > 0) {
+      parsing.forEach((m) => batchParseIdsRef.current.add(m.id));
+      return;
     }
-    hadParsingRef.current = hasParsing;
+    if (batchParseIdsRef.current.size === 0) return;
+    const batch = materials.filter((m) => batchParseIdsRef.current.has(m.id));
+    batchParseIdsRef.current.clear();
+    if (batch.length === 0) return;
+    const failedCount = batch.filter((m) => m.parse_status?.status === 'failed').length;
+    if (failedCount > 0) {
+      addToast(`部分文件解析失败（${failedCount}/${batch.length} 份）`, 'error');
+    } else {
+      addToast(`全部解析完成（${batch.length} 份）`, 'success');
+    }
   }, [materials, addToast]);
-
-  // 标记是否已发起过解析，供批量完成提示判断（避免页面加载后默认弹出的“全部解析完成”）
-  const handleParseAllStarted = useRef(false);
 
   const handleParse = async (material: MaterialResponse) => {
     // 记住乐观覆盖前的原始状态，请求失败时回退，避免卡死在 running
@@ -469,11 +476,11 @@ export default function MaterialsPage() {
         )
       );
       await api.materials.parse(courseId, material.id);
-      handleParseAllStarted.current = true;
       // 由统一 effect 根据“是否有解析中”启动单个批量轮询，一次查询全部状态
       startPolling();
     } catch {
       // 触发失败：恢复原状态，避免残留“解析中”
+      batchParseIdsRef.current.delete(material.id);
       setMaterials((prev) =>
         prev.map((m) => (m.id === material.id ? { ...m, parse_status: prevStatus } : m))
       );
