@@ -19,7 +19,9 @@ from app.db.schema import (
     materials,
     task_runs,
 )
+from app.domain.knowledge.relevance import StagingChunk
 from app.services import assistant_service
+from app.services.staging_retrieval_service import RankedChunk
 from app.services.assistant_service import (
     AssistantError,
     MemoryTurnEventSink,
@@ -612,6 +614,70 @@ def test_rag_query_variants_strip_frames_and_leading_verbs():
     assert assistant_service._rag_query_variants("数据归一化的方法") == ["数据归一化的方法"]
     # 削空后不追加空串
     assert assistant_service._rag_query_variants("总结一下") == ["总结一下"]
+
+
+def _rag_chunk(cid: str, page: int | None, content: str, *, material: str = "m1") -> StagingChunk:
+    return StagingChunk(
+        id=cid,
+        material_version_id="v1",
+        content=content,
+        locator={
+            "material_id": material,
+            "material_name": "资料",
+            "page_index": page,
+            "heading_path": [],
+        },
+    )
+
+
+def _rag_hit(chunk: StagingChunk) -> RankedChunk:
+    return RankedChunk(chunk=chunk, score=0.45, lexical_score=0.05, semantic_score=0.67)
+
+
+def test_expand_rag_neighborhood_attaches_body_and_respects_rules():
+    """邻域扩展：同/邻页正文进上下文；同页优先、跨资料与短块排除、分数继承锚点。"""
+    hit = _rag_hit(_rag_chunk("h1", 2, "（一）考核成绩构成"))
+    body_same = _rag_chunk("b1", 2, "同" * 300)       # 同页正文
+    short_same = _rag_chunk("b2", 2, "短" * 20)       # 同页但 <60 → 又一个标题，排除
+    body_adj = _rag_chunk("b3", 3, "邻" * 100)        # 邻页正文
+    other = _rag_chunk("x1", 2, "外" * 200, material="m2")  # 跨资料，排除
+
+    out = assistant_service._expand_rag_neighborhood(
+        [hit], [hit.chunk, body_same, short_same, body_adj, other]
+    )
+
+    assert [item.chunk.id for item in out] == ["h1", "b1", "b3"]
+    assert out[1].score == 0.45 and out[1].semantic_score == 0.67  # 继承锚点分数
+
+
+def test_expand_rag_neighborhood_dedup_cap_and_degenerate():
+    """已命中长块去重、总扩封顶、无页码锚点跳过、空排名直通。"""
+    # 命中 h5 自身是长正文（与 h4 同页且是其最优邻域候选）→ 已命中必须去重
+    hits = [
+        _rag_hit(
+            _rag_chunk(f"h{i}", 4 if i == 5 else i, ("长" * 200) if i == 5 else f"标题{i}")
+        )
+        for i in range(6)
+    ]
+    no_page_hit = RankedChunk(
+        chunk=_rag_chunk("hN", None, "无页码标题"),
+        score=0.4,
+        lexical_score=0.0,
+        semantic_score=0.6,
+    )
+    bodies = [_rag_chunk(f"b{i}", i, "文" * 80) for i in range(7)]
+    ranked = [no_page_hit, *hits]
+
+    out = assistant_service._expand_rag_neighborhood(
+        ranked, [item.chunk for item in ranked] + bodies
+    )
+
+    # 无页码锚点跳过；6 个有页码锚点各带邻域，总数被 _RAG_EXPAND_MAX_TOTAL 封顶
+    assert [item.chunk.id for item in out[:7]] == ["hN", "h0", "h1", "h2", "h3", "h4", "h5"]
+    assert len(out) == len(ranked) + assistant_service._RAG_EXPAND_MAX_TOTAL
+    assert "h5" not in [item.chunk.id for item in out[len(ranked):]]  # 已命中不重复带
+    # 空排名直通
+    assert assistant_service._expand_rag_neighborhood([], bodies) == []
 
 
 def test_rag_route_targets_named_material_lexical_mode(monkeypatch):

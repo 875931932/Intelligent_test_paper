@@ -883,6 +883,10 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
     （原问题 + 去问句框架的主题核心，如「总结教学大纲讲了什么？」→「教学大纲」），一次批量嵌入，
     各变体独立打分（混合 `0.35 词面 + 0.65 语义`，`top_k=6`、hybrid min 0.15），合并期按归一文本
     折叠近重复（跨文档同文模板碎片只留得分最高一份，正文块才进得了 top_k；单变体退化为既有单查询）；
+    命中后**邻域扩展**（`_expand_rag_neighborhood`）：每个命中附带同资料同/邻页的正文块
+    （len≥60 排除又一个标题；同页优先、长块优先，轮转分配保证后位命中不吃光预算，
+    同块只带一次、单轮封顶 6 块）进段2 与来源卡——「总结类」问题与正文天然低相似、
+    短标题必胜（实测正文表 rank #291），据此把被短块洪泛淹没的正文表/长段确定性捞回；
     嵌入未配置/失败/向量缺失 → 纯词面降级（Jaccard 2/3-gram，min 0.2）；
   - 段2 流式用 `answer_material_content` 专用 grounding prompt（temperature 0.3，只依据片段作答，
     找不到就说找不到；拒绝话术第 6 条：全文照抄/朗读仍拒，`read_material_content` 保持在 `REFUSED_TOOLS`）；
@@ -893,6 +897,11 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
     无命中 → `action={}`（普通问答形态，正文说明没找到，不落卡）。
 - **语料向量列（v2）**：`content_blocks` 增 `embedding`(JSON，可空) + `embedding_model`
   (VARCHAR(64))——换嵌入模型时按 `embedding_model != settings.embedding_model` 重嵌；
+  `embedding_text_version`(INTEGER，非空默认 0) 记录**嵌入输入清洗版本**：嵌入走
+  `_embedding_text` 提取（嵌套表格 HTML → 「表头 | 单元格」平铺文本、剥标签、实体反转义，
+  只作用于嵌入输入，生成上下文仍用原块 HTML），清洗逻辑 bump `EMBEDDING_TEXT_VERSION`
+  后按 `embedding_text_version < 当前版本` 自动重嵌（全库重嵌跑
+  `scripts/reembed_content_blocks.py`，已实测：清洗对排序无增益，捞回正文靠邻域扩展）；
   由 `app/db/init_db.py` 幂等迁移（无 Alembic）。索引任务 `task_runs(material_index)`
   （幂等键 `material_index:{run_id}`，lease 300s）在 worker 内调嵌入，端点只入队（§3.5/§3.6）。
 

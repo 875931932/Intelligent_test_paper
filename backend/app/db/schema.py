@@ -193,10 +193,13 @@ content_blocks = _course_table(
     Column("reading_order", Integer, nullable=False),
     Column("content_hash", String(64), nullable=False),
     # RAG 语料向量（助手 v2 资料内容问答）：与 evidence_chunks 同语义——JSON 存
-    # 向量（pgvector 可选），embedding_model 记录生成模型，换模型后旧向量不可比，
-    # 嵌入过滤条件为 embedding IS NULL OR embedding_model != settings.embedding_model
+    # 向量（pgvector 可选），embedding_model 记录生成模型，换模型后旧向量不可比；
+    # embedding_text_version 记录嵌入输入的清洗版本（清洗逻辑变更 bump 后按版本
+    # 自动重嵌）。嵌入过滤条件为 embedding IS NULL OR embedding_model != 当前模型
+    # OR embedding_text_version < 当前清洗版本
     Column("embedding", JSON),
     Column("embedding_model", String(64)),
+    Column("embedding_text_version", Integer, nullable=False, default=0),
     constraints=(UniqueConstraint("document_parse_run_id", "block_index", name="uq_content_blocks_run_index"),),
 )
 Index("ix_content_blocks_course_material_block", content_blocks.c.course_id, content_blocks.c.material_version_id, content_blocks.c.block_index)

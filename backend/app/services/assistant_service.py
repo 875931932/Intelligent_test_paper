@@ -127,6 +127,9 @@ _RAG_TOP_K = 6
 _RAG_HYBRID_MIN_SCORE = 0.15
 _RAG_LEXICAL_MIN_SCORE = 0.2
 _RAG_SNIPPET_CHARS = 160        # 来源卡摘要长度
+_RAG_EXPAND_MIN_CHARS = 60      # 邻域扩展的正文下限（低于此为又一个标题）
+_RAG_EXPAND_PER_HIT = 2         # 每个命中最多带几个邻域正文块
+_RAG_EXPAND_MAX_TOTAL = 6       # 单轮邻域扩展总块数封顶（生成上下文可控）
 _RAG_BLOCK_PROMPT_CHARS = 1500  # 单块进段2 prompt 的上限
 _RAG_FALLBACK_REPLY = "已检索到相关资料，回答见下："
 
@@ -869,6 +872,71 @@ def _rank_rag_chunks(question: str, chunks: list[StagingChunk]) -> tuple[str, li
     )
 
 
+def _expand_rag_neighborhood(
+    ranked: list[RankedChunk], chunks: list[StagingChunk]
+) -> list[RankedChunk]:
+    """命中块邻域扩展：排序不变，每个命中附带同资料同/邻页的正文块。
+
+    「总结/讲了什么」类查询与正文天然低相似（实测正文表 rank #291），而命中
+    标题的同/邻页恰好是被短块洪泛淹没的正文表——确定性地把它们带回生成上下文
+    与来源卡：
+    - 同资料、页码差 ≤1、正文（len ≥ _RAG_EXPAND_MIN_CHARS，排除又一个标题）；
+    - 同页优先于邻页，同页内正文越长信息量越大；同块只带一次（多命中共享
+      邻域去重，命中本身永不重复带入）；
+    - **轮转分配**：每轮每个命中取一个最优未选邻域（预算 _RAG_EXPAND_MAX_TOTAL
+      内保证每个命中至少贡献一块，前位命中不吃光预算），轮数封顶
+      _RAG_EXPAND_PER_HIT；
+    - 扩展块分数继承锚点（分数只用于召回排序，扩展按附着顺序进入段2与来源卡）。
+    """
+
+    if not ranked:
+        return ranked
+    picked = {item.chunk.id for item in ranked}
+    candidate_lists: list[tuple[RankedChunk, list[StagingChunk]]] = []
+    for anchor in ranked:
+        anchor_page = anchor.chunk.locator.get("page_index")
+        if anchor_page is None:
+            continue
+        material_id = anchor.chunk.locator.get("material_id")
+        candidates = [
+            chunk
+            for chunk in chunks
+            if chunk.id not in picked
+            and chunk.locator.get("material_id") == material_id
+            and chunk.locator.get("page_index") is not None
+            and abs(chunk.locator["page_index"] - anchor_page) <= 1
+            and len(chunk.content) >= _RAG_EXPAND_MIN_CHARS
+        ]
+        candidates.sort(
+            key=lambda chunk: (
+                abs(chunk.locator["page_index"] - anchor_page),
+                -len(chunk.content),
+            )
+        )
+        candidate_lists.append((anchor, candidates))
+
+    expanded: list[RankedChunk] = []
+    for _round in range(_RAG_EXPAND_PER_HIT):
+        if len(expanded) >= _RAG_EXPAND_MAX_TOTAL:
+            break
+        for anchor, candidates in candidate_lists:
+            if len(expanded) >= _RAG_EXPAND_MAX_TOTAL:
+                break
+            target = next((c for c in candidates if c.id not in picked), None)
+            if target is None:
+                continue
+            picked.add(target.id)
+            expanded.append(
+                RankedChunk(
+                    chunk=target,
+                    score=anchor.score,
+                    lexical_score=anchor.lexical_score,
+                    semantic_score=anchor.semantic_score,
+                )
+            )
+    return ranked + expanded
+
+
 def execute_rag(
     session: Session, *, context: dict, args: dict, question: str
 ) -> tuple[dict, dict]:
@@ -906,6 +974,7 @@ def execute_rag(
         raise AssistantError("该范围没有可检索的资料内容")
 
     mode, ranked = _rank_rag_chunks(question, chunks)
+    ranked = _expand_rag_neighborhood(ranked, chunks)
     payload = {
         "question": question,
         "material_id": material_id,

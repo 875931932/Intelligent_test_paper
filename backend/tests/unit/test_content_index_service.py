@@ -178,6 +178,26 @@ def _vector_rows(session) -> dict:
     return {row[0]: (row[1], row[2]) for row in rows}
 
 
+def test_embedding_text_flattens_nested_table_to_readable_lines():
+    """嵌套表格 HTML → 表头/行平铺文本；任意嵌套深度由正则逐段替换天然处理。"""
+    raw = (
+        "<table><tr><td>成绩构成</td><td>成绩比例</td></tr>"
+        "<tr><td>平时成绩</td><td>30%</td></tr></table>"
+    )
+    assert content_index_service._embedding_text(raw) == "成绩构成 | 成绩比例\n平时成绩 | 30%"
+
+    nested = "<table><tr><td>A<table><tr><td>B</td></tr></table></td></tr></table>"
+    assert content_index_service._embedding_text(nested) == "A B"
+
+
+def test_embedding_text_plain_text_is_normalized_only():
+    """无标签纯文本只做空白规范化；`a < b` 不被当标签剥掉，实体正常反转义。"""
+    extract = content_index_service._embedding_text
+    assert extract("《大模型调优与部署技术》课程教学大纲") == "《大模型调优与部署技术》课程教学大纲"
+    assert extract("当  a  < b  时") == "当 a < b 时"
+    assert extract("&nbsp;平时成绩&nbsp;30%") == "平时成绩 30%"
+
+
 def test_ensure_embedded_fills_missing_vectors_and_is_idempotent(session, monkeypatch):
     _configured(monkeypatch)
     gateway = StubGateway()
@@ -225,6 +245,39 @@ def test_ensure_embedded_reembeds_on_model_change(session, monkeypatch):
     assert content_index_service.ensure_embedded(session, course_id="c1") == 2
     rows = _vector_rows(session)
     assert rows["b1"] == ([0.1, 0.2], "emb-v1")
+
+
+def test_ensure_embedded_reembeds_on_text_version_change(session, monkeypatch):
+    _configured(monkeypatch)
+    gateway = StubGateway()
+    monkeypatch.setattr(content_index_service, "build_embedder", lambda: gateway)
+    # 预置同模型、旧清洗版本的向量：清洗逻辑 bump 后旧输入的向量作废 → 必须重嵌
+    session.execute(
+        content_blocks.update()
+        .where(content_blocks.c.id == "b1")
+        .values(
+            embedding=[9.0, 9.0],
+            embedding_model="emb-v1",
+            embedding_text_version=content_index_service.EMBEDDING_TEXT_VERSION - 1,
+        )
+    )
+    session.commit()
+
+    # b1 版本落后 + b2 缺失 → 都重嵌，落库带当前清洗版本
+    assert content_index_service.ensure_embedded(session, course_id="c1") == 2
+    versions = dict(
+        session.execute(
+            select(
+                content_blocks.c.id,
+                content_blocks.c.embedding_text_version,
+            ).where(content_blocks.c.course_id == "c1")
+        ).all()
+    )
+    assert versions["b1"] == content_index_service.EMBEDDING_TEXT_VERSION
+    assert versions["b2"] == content_index_service.EMBEDDING_TEXT_VERSION
+    # 幂等：版本追平后不再重嵌
+    assert content_index_service.ensure_embedded(session, course_id="c1") == 0
+    assert len(gateway.calls) == 1
 
 
 def test_ensure_embedded_gateway_failure_returns_zero_without_partial_writes(

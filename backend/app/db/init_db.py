@@ -140,6 +140,13 @@ def _migrate_content_block_columns(engine: Engine) -> None:
             conn.execute(text("ALTER TABLE content_blocks ADD COLUMN embedding JSON"))
         if "embedding_model" not in existing:
             conn.execute(text("ALTER TABLE content_blocks ADD COLUMN embedding_model VARCHAR(64)"))
+        if "embedding_text_version" not in existing:
+            conn.execute(
+                text(
+                    "ALTER TABLE content_blocks ADD COLUMN embedding_text_version "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+            )
 
 
 def _backfill_assistant_sessions(conn: Connection) -> None:

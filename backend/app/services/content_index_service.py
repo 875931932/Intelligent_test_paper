@@ -1,7 +1,8 @@
 """解析块（content_blocks）的向量索引与 RAG 语料装载——助手 v2 资料内容问答底座。
 
 职责：
-- ensure_embedded：把缺当前模型向量的解析块嵌入落库（幂等，换模型自动重嵌）；
+- ensure_embedded：把缺当前模型向量或清洗版本落后的解析块嵌入落库
+ （幂等，换模型 / bump EMBEDDING_TEXT_VERSION 自动重嵌）；
 - load_content_chunks：装载可检索语料（staged 资料最新版本的最新 ready run）；
 - enqueue_index_task：解析转 ready 时入队 material_index 任务（transactional outbox）。
 
@@ -11,7 +12,9 @@
 
 from __future__ import annotations
 
+import html
 import logging
+import re
 
 from sqlalchemy import bindparam, or_, select, update
 from sqlalchemy.orm import Session
@@ -26,6 +29,37 @@ logger = logging.getLogger("services.content_index")
 
 TASK_TYPE = "material_index"
 _INPUT_VERSION = "material_index_v1"
+
+# 嵌入输入清洗版本：清洗逻辑（_embedding_text）每次变更必须 bump——版本落后于
+# 常量的向量由 ensure_embedded 自动重嵌（与换模型自动重嵌同款机制）。
+EMBEDDING_TEXT_VERSION = 1
+
+_CELL_END_RE = re.compile(r"(?i)</\s*(td|th)\s*>")
+_BLOCK_END_RE = re.compile(r"(?i)</\s*(tr|p|div|li|h[1-6])\s*>")
+_TAG_RE = re.compile(r"</?[a-zA-Z][^>]*>")  # 只剥「<字母」开头的真标签，保住 a < b
+_TRAIL_CELL_SEP_RE = re.compile(r"\s*\|\s*$")
+
+
+def _embedding_text(content: str) -> str:
+    """嵌入输入的正文提取：嵌套表格 HTML → 平铺可读文本，其余标签剥除。
+
+    - `</td>`/`</th>` → 单元格以「 | 」分隔（表头与单元格值进入嵌入语义），
+      `</tr>`/`</p>`/`</li>` → 换行保留结构；正则逐段替换天然处理任意嵌套深度；
+    - 其余标签剥成空格，HTML 实体反转义，连续空白压成单空格、逐行去尾部残留分隔符；
+    - 无标签纯文本恒等（仅空白规范化）。
+
+    只用于嵌入输入：检索结果卡与生成上下文仍用原始块正文（表格 HTML 对 LLM 可读）。
+    """
+
+    text = content
+    if "<" in text:
+        text = _CELL_END_RE.sub(" | ", text)
+        text = _BLOCK_END_RE.sub("\n", text)
+        text = _TAG_RE.sub(" ", text)
+    text = html.unescape(text)
+    lines = [" ".join(line.split()) for line in text.split("\n")]
+    lines = [_TRAIL_CELL_SEP_RE.sub("", line) for line in lines]
+    return "\n".join(line for line in lines if line)
 
 
 def embedding_configured() -> bool:
@@ -115,13 +149,15 @@ def ensure_embedded(
     material_ids: list[str] | None = None,
     run_ids: list[str] | None = None,
 ) -> int:
-    """把缺当前模型向量的解析块嵌入落库（幂等），返回本次新嵌入的块数。
+    """把缺当前模型向量或清洗版本落后的解析块嵌入落库（幂等），返回本次新嵌入的块数。
 
     - 未配置 EMBEDDING_* → 返回 0（检索层据 NULL 向量退化纯词面，不算错误）；
     - 嵌入调用失败 → 记日志返回已成数量：索引是尽力而为的派生数据，故障不打断
       整轮对话，剩余 NULL 向量由检索层判定降级；
-    - 过滤条件 embedding IS NULL OR embedding_model != 当前模型：换模型旧向量
-      不可比，命中即重嵌（与 evidence_chunks 同语义）。本函数自行 commit。
+    - 过滤条件 embedding IS NULL OR embedding_model != 当前模型 OR
+      embedding_text_version < EMBEDDING_TEXT_VERSION：换模型旧向量不可比、
+      清洗逻辑 bump 后旧输入的向量作废，命中即重嵌（与 evidence_chunks 同语义）。
+      嵌入输入走 _embedding_text 清洗（嵌套表格 HTML → 平铺文本）。本函数自行 commit。
     """
 
     if not embedding_configured():
@@ -146,12 +182,17 @@ def ensure_embedded(
             or_(
                 content_blocks.c.embedding.is_(None),
                 content_blocks.c.embedding_model != settings.embedding_model,
+                content_blocks.c.embedding_text_version.is_(None),
+                content_blocks.c.embedding_text_version < EMBEDDING_TEXT_VERSION,
             ),
         )
         .order_by(content_blocks.c.document_parse_run_id, content_blocks.c.block_index)
     ).all()
     pairs = [
-        (str(row[0]), _block_text(text=row[1], latex=row[2], markdown=row[3]))
+        (
+            str(row[0]),
+            _embedding_text(_block_text(text=row[1], latex=row[2], markdown=row[3])),
+        )
         for row in missing
     ]
     pairs = [(block_id, content) for block_id, content in pairs if content]
@@ -178,12 +219,17 @@ def ensure_embedded(
     session.execute(
         update(content_blocks)
         .where(content_blocks.c.id == bindparam("block_id"))
-        .values(embedding=bindparam("embedding"), embedding_model=bindparam("embedding_model")),
+        .values(
+            embedding=bindparam("embedding"),
+            embedding_model=bindparam("embedding_model"),
+            embedding_text_version=bindparam("embedding_text_version"),
+        ),
         [
             {
                 "block_id": block_id,
                 "embedding": vector,
                 "embedding_model": settings.embedding_model,
+                "embedding_text_version": EMBEDDING_TEXT_VERSION,
             }
             for (block_id, _), vector in zip(pairs, vectors, strict=True)
         ],
