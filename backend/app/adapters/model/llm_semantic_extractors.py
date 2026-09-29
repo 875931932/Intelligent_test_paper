@@ -159,6 +159,15 @@ def _normalize_assessment_outline(raw: dict[str, Any]) -> dict[str, Any]:
     # 舍入误差触发 weight:total 冲突，卡住框架发布；章权重随考点同比例推导。
     points_norm = normalized.get("exam_points")
     if isinstance(points_norm, list) and points_norm:
+        # operational_detail_policy 的取值在校验后由确定性规则整体重算
+        # （extract_assessment 尾部逐点覆盖），模型取值本就不参与结果；提示词
+        # 又声明"由系统判定、无需填写"，模型照做输出 null/占位文本会让整份响应
+        # 撞 Literal 校验、4 次重试同因全败、整个框架构建 502。这里把缺失/非法
+        # 取值收敛到场内合法占位值；严格校验保留给真正由模型负责的字段。
+        _valid_policies = {"forbidden", "supporting_only", "directly_assessable"}
+        for p in points_norm:
+            if isinstance(p, dict) and p.get("operational_detail_policy") not in _valid_policies:
+                p["operational_detail_policy"] = "supporting_only"
         _numeric_weights = [
             float(p["weight_value"])
             for p in points_norm

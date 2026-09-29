@@ -909,7 +909,6 @@ def test_syllabus_extractor_rejects_unknown_teaching_topic_fields():
         {"weight_source": "teacher_confirmed"},
         {"cognitive_targets": None},
         {"assessment_orientations": None},
-        {"operational_detail_policy": None},
         {"teaching_anchor_keys": None},
     ],
 )
@@ -956,6 +955,55 @@ def test_assessment_response_requires_strict_exam_point_fields(point_override):
         extractor.extract_assessment(["期末考试"])
 
     assert caught.value.error_code == "model_schema_validation_failed"
+
+
+@pytest.mark.parametrize(
+    "policy_value",
+    [
+        None,  # 提示词声明"无需填写"，模型听话地整个省略
+        "由系统判定",  # 模型把提示词原话当占位值填回来
+        "",  # 空字符串占位
+    ],
+)
+def test_assessment_response_tolerates_missing_or_placeholder_policy(policy_value):
+    """operational_detail_policy 由系统重算，模型没填/乱填不该卡死整个框架构建。
+
+    回归 2026-09-29 生产故障：提示词说"无需填写"，schema 却要求 Literal 枚举，
+    模型 4 次重试同因全败 → assessment_syllabus_extraction 失败 → 整个 run 502。
+    """
+    point = {
+        "code": "rag-diagnosis",
+        "anchor_key": "rag",
+        "title": "检索效果诊断",
+        "assessment_requirement": "使用LangChain完成检索评测",
+        "weight_value": 100,
+        "weight_source": "assessment_syllabus",
+        "weight_group_id": "rag",
+        "cognitive_targets": ["analyze"],
+        "assessment_orientations": ["diagnostic"],
+        "retrieval_intent": "检索偏差及诊断依据",
+        "teaching_anchor_keys": ["rag-teaching"],
+    }
+    if policy_value is not None:
+        point["operational_detail_policy"] = policy_value
+    extractor = LLMSyllabusExtractor(
+        RecordingJsonClient(
+            [
+                {
+                    "anchors": [{"key": "rag", "title": "RAG", "exam_weight": 100}],
+                    "exam_points": [point],
+                    "final_exam_rules": {},
+                }
+            ]
+        )
+    )
+
+    result = extractor.extract_assessment(["期末考试"])
+
+    # 非法占位先收敛到合法值，随后被确定性规则整体重算（要求含"使用…完成…评测"→直考）
+    assert result.exam_points[0].operational_detail_policy is (
+        OperationalDetailPolicy.DIRECTLY_ASSESSABLE
+    )
 
 
 def test_database_model_call_recorder_persists_only_redacted_metadata(tmp_path):
