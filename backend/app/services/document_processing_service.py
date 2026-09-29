@@ -17,6 +17,7 @@ from uuid import uuid4
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
+from app.adapters.document.local_text_parser import parse_local_text
 from app.adapters.document.protocol import ContentBlock, DocumentParser, DocumentProtocolError, ParseRequest, ParseState
 from app.db.schema import content_blocks, document_artifacts, document_parse_runs, material_versions
 
@@ -231,6 +232,57 @@ async def poll_parse_run(
             update(document_parse_runs)
             .where(document_parse_runs.c.id == run_id, document_parse_runs.c.course_id == course_id)
             .values(status="ready", trace_id=progress.trace_id, error_code=None, error_summary=None, updated_at=now, completed_at=now)
+        )
+    return "ready"
+
+
+def finalize_local_text_parse(
+    session: Session,
+    *,
+    course_id: str,
+    run_id: str,
+    material_version_id: str,
+    content: bytes,
+    markdown: bool,
+) -> str:
+    """本地文本链路（md/txt）：不经 MinerU，确定性切块后直接置 ready。
+
+    MinerU 拒收 text/markdown、text/plain（"unsupported file type"），而这两类
+    本身就是结构化文本——按行切块、标题进 heading_path。落块形状与 MinerU 路径
+    同构（content_blocks + document_parse_runs 置 ready），下游向量索引与知识
+    目录无需任何特判；不产生 provider_run_id，故不会再进入 MinerU 轮询。
+    """
+    blocks = parse_local_text(content, markdown=markdown)
+    now = datetime.now(UTC)
+    with session.begin():
+        if blocks:
+            session.execute(
+                content_blocks.insert(),
+                [
+                    {
+                        "id": uuid4().hex,
+                        "course_id": course_id,
+                        "document_parse_run_id": run_id,
+                        "material_version_id": material_version_id,
+                        "block_index": block.block_index,
+                        "block_type": block.block_type,
+                        "text": block.text,
+                        "markdown": block.markdown,
+                        "latex": block.latex,
+                        "page_index": block.page_index,
+                        "bbox": block.bbox,
+                        "heading_path": block.heading_path,
+                        "asset_reference": block.asset_reference,
+                        "reading_order": block.reading_order,
+                        "content_hash": block.content_hash,
+                    }
+                    for block in blocks
+                ],
+            )
+        session.execute(
+            update(document_parse_runs)
+            .where(document_parse_runs.c.id == run_id, document_parse_runs.c.course_id == course_id)
+            .values(status="ready", error_code=None, error_summary=None, updated_at=now, completed_at=now)
         )
     return "ready"
 

@@ -3,6 +3,8 @@
 教师控制台的解析驱动：上传完成后教师显式触发解析（或复用同哈希的
 ready 结果），前端轮询 poll 端点推进状态机直至 ready/failed。刻意不
 做后台自动触发——教师主动确认"整理"边界（设计文档 §4.7 主动整理）。
+
+纯文本资料（md/txt）MinerU 拒收，走本地确定性解析：提交阶段即置 ready。
 """
 
 from __future__ import annotations
@@ -18,7 +20,10 @@ from app.adapters.document.protocol import DocumentParserError, ParseRequest
 from app.config import settings
 from app.db.schema import document_parse_runs, material_versions, materials, parser_profiles
 from app.services import material_service
-from app.services.document_processing_service import create_parse_run, poll_parse_run, submit_parse_run
+from app.services.document_processing_service import create_parse_run, finalize_local_text_parse, poll_parse_run, submit_parse_run
+
+# MinerU 拒收的纯文本格式（"unsupported file type"）：走本地确定性解析链路
+_LOCAL_TEXT_MIMES = {"text/markdown", "text/x-markdown", "text/plain"}
 
 
 def _ensure_parser_profile(session: Session, *, course_id: str) -> str:
@@ -137,6 +142,23 @@ def start_parse(
     # 先提交 parse run 再提交 MinerU：submit_parse_run 内部以 rollback
     # 开场清理会话状态，未提交的插入会被丢弃
     session.commit()
+    mime_type = version["mime_type"] or ""
+    if mime_type in _LOCAL_TEXT_MIMES:
+        # md/txt 是纯文本，MinerU 拒收：本地确定性解析直出块并置 ready。
+        # 不产生 provider_run_id，前端轮询首帧即拿到终态，不碰 MinerU 网络。
+        try:
+            content = b"".join(storage.stream_object(version["object_key"]))
+            finalize_local_text_parse(
+                session,
+                course_id=course_id,
+                run_id=run_id,
+                material_version_id=version["id"],
+                content=content,
+                markdown=mime_type != "text/plain",
+            )
+        except DocumentParserError as exc:
+            raise ParseError(f"local text parse failed: {exc}") from exc
+        return {"run_id": run_id, "status": "ready", "reused": False}
     parser = build_mineru_client()
 
     def content_factory():

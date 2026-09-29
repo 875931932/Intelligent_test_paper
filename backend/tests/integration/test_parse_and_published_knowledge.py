@@ -120,7 +120,7 @@ def _course(client, slug="parse-course"):
     return response.json()
 
 
-def _upload_material(client, course_id, *, material_type="teaching_syllabus", filename="lesson.pdf", body=b"pdf-bytes"):
+def _upload_material(client, course_id, *, material_type="teaching_syllabus", filename="lesson.pdf", body=b"pdf-bytes", mime_type="application/pdf"):
     import hashlib
 
     storage = client.app.state.storage
@@ -131,14 +131,14 @@ def _upload_material(client, course_id, *, material_type="teaching_syllabus", fi
             "material_type": material_type,
             "size_bytes": len(body),
             "sha256": hashlib.sha256(body).hexdigest(),
-            "mime_type": "application/pdf",
+            "mime_type": mime_type,
         },
     )
     assert created.status_code == 201
     session_payload = created.json()
     storage.objects[session_payload["object_key"]] = {
         "size": len(body),
-        "content_type": "application/pdf",
+        "content_type": mime_type,
         "metadata": {},
         "body": body,
         "etag": '"etag-1"',
@@ -209,6 +209,82 @@ def test_parse_reuses_ready_result_for_same_hash(client, monkeypatch):
     assert reused.json()["status"] == "ready"
     # 复用不产生第二次 MinerU 提交
     assert len(parser.submitted) == 1
+
+
+def test_parse_markdown_and_text_use_local_path_without_mineru(client, monkeypatch):
+    """md/txt 不经 MinerU：提交即 ready、落块带 heading_path、同哈希可复用。"""
+
+    storage = FakeStorage()
+    client.app.state.storage = storage
+    course = _course(client, slug="local-text-course")
+    md = _upload_material(
+        client,
+        course["id"],
+        filename="考核大纲.md",
+        body="# 第一章 绪论\n\n检索增强生成把检索与生成结合。\n## 1.1 背景\n正文\n".encode(),
+        mime_type="text/markdown",
+    )
+    txt = _upload_material(client, course["id"], filename="notes.txt", body="纯文本笔记\n".encode(), mime_type="text/plain")
+
+    def _no_mineru():
+        raise AssertionError("md/txt 不应构建 MinerU 客户端")
+
+    monkeypatch.setattr(parse_service, "build_mineru_client", _no_mineru)
+
+    started = client.post(f"/api/v1/courses/{course['id']}/materials/{md['material_id']}/parse")
+    assert started.status_code == 202
+    assert started.json()["status"] == "ready"
+    assert started.json()["reused"] is False
+
+    # 已 ready 的轮询是幂等空转，不会落到 MinerU 分支
+    polled = client.post(f"/api/v1/courses/{course['id']}/materials/{md['material_id']}/parse/poll")
+    assert polled.status_code == 200
+    assert polled.json()["status"] == "ready"
+
+    listed = client.get(f"/api/v1/courses/{course['id']}/materials")
+    item = next(m for m in listed.json() if m["id"] == md["material_id"])
+    assert item["parse_status"]["status"] == "ready"
+
+    txt_started = client.post(f"/api/v1/courses/{course['id']}/materials/{txt['material_id']}/parse")
+    assert txt_started.status_code == 202
+    assert txt_started.json()["status"] == "ready"
+    assert txt_started.json()["reused"] is False
+
+    with client.app.state.test_engine.begin() as connection:
+        rows = connection.execute(
+            text(
+                "SELECT block_index, block_type, text, heading_path, markdown FROM content_blocks "
+                "WHERE material_version_id = :v ORDER BY block_index"
+            ),
+            {"v": md["id"]},
+        ).fetchall()
+        provider_runs = connection.execute(text("SELECT provider_run_id FROM document_parse_runs")).fetchall()
+        txt_blocks = connection.execute(
+            text("SELECT COUNT(*), MIN(markdown) FROM content_blocks WHERE material_version_id = :v"),
+            {"v": txt["id"]},
+        ).one()
+    # 标题去 # 存 title 块，正文存 paragraph 块，顺序与源文件一致
+    assert [(r.block_index, r.block_type, r.text) for r in rows] == [
+        (0, "title", "第一章 绪论"),
+        (1, "paragraph", "检索增强生成把检索与生成结合。"),
+        (2, "title", "1.1 背景"),
+        (3, "paragraph", "正文"),
+    ]
+    heading_path = rows[3].heading_path
+    if isinstance(heading_path, str):
+        heading_path = json.loads(heading_path)
+    assert heading_path == ["第一章 绪论", "1.1 背景"]
+    assert rows[3].markdown == "正文"
+    # 本地链路没有 MinIO provider 句柄，轮询状态机不会再去碰 MinerU
+    assert all(r.provider_run_id is None for r in provider_runs)
+    # txt 走同一分支，只是不带 markdown 源行
+    assert txt_blocks[0] == 1
+    assert txt_blocks[1] is None
+
+    reused = client.post(f"/api/v1/courses/{course['id']}/materials/{md['material_id']}/parse")
+    assert reused.status_code == 202
+    assert reused.json()["reused"] is True
+    assert reused.json()["status"] == "ready"
 
 
 def test_parse_poll_without_run_returns_404(client, monkeypatch):
