@@ -21,7 +21,8 @@ const CX = W / 2;
 const CY = H / 2 - 10;
 const RC = 132; // 章节环半径
 const RP = 292; // 考点环半径
-const GAP_DEG = 1.6; // 章节扇区间隔（度）
+const GAP_DEG = 3.2; // 章节扇区间隔（度）：大了才能把边界邻点推开
+const MIN_INNER = 0.05; // 章内边距下限（弧度）：叠加扇区间隔后，同环跨章边界净空 ≈45px
 
 /** 章节色板（kit 色系，固定顺序分配，保证同章节同色） */
 const CHAPTER_COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f97316', '#22c55e', '#06b6d4', '#eab308', '#64748b'];
@@ -163,12 +164,17 @@ export const GraphView = memo(function GraphView(props: {
       chapterArcs.push(arc);
 
       const pts = c.points;
+      // 密章防挤：自适应多环锯齿。弧上中心间距不足 70px 时按需分 2~3 环
+      // （隔点内缩 46px 换 Functional 间距），稀疏章保持单环不抖。
+      const arcSpacing = pts.length > 1 ? (span * RP) / (pts.length - 1) : Infinity;
+      const rings = pts.length > 2 ? Math.min(3, Math.max(1, Math.ceil(70 / arcSpacing))) : 1;
       pts.forEach((p, pi) => {
-        // 扇区内等距，避开边缘留白
-        const inner = span * 0.12;
+        // 扇区内等距，避开边缘留白（下限保证跨章边界也有净空）
+        const inner = Math.max(span * 0.12, MIN_INNER);
         const t = pts.length === 1 ? 0.5 : pi / (pts.length - 1);
         const a = angle + inner + span * (1 - inner * 2 / span) * t;
-        const { x, y } = polar(CX, CY, RP, a);
+        // 章间奇偶错环：相邻章的点尽量落在不同半径，边界邻点径向分离
+        const { x, y } = polar(CX, CY, RP - ((pi + ci) % rings) * 46, a);
         const cards = cardsByPoint.get(p.id) ?? [];
         const grounded = cards.filter((c2) => c2.grounded).length;
         nodes.push({
