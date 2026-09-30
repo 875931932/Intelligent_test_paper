@@ -77,14 +77,15 @@ def test_docx_builds_regions_from_data(monkeypatch):
     assert "大模型调优与部署技术" in text
     assert "学号" in text and "座位号" in text
     assert "题次" in text and "总 分" in text and "评卷人" in text
-    # 客观题格子表：单选、判断各一节 → 两张 2×2 格子（题号行 + 空白答案格）
+    # 客观题格子表：单选、判断各一节 → 两张 2×2 格子（题号行 + 空白答案格），
+    # 每节题号各自从 1 起
     grids = [t for t in doc.tables if len(t.rows) == 2 and len(t.columns) == 2 and t.cell(0, 0).text == "题号"]
     assert len(grids) == 2
-    assert [g.cell(0, 1).text for g in grids] == ["1", "2"]
+    assert [g.cell(0, 1).text for g in grids] == ["1", "1"]
     assert all(g.cell(1, 1).text == "" for g in grids)
-    # 填空题一题一线（题号 + 下划线）
-    fills = [p.text for p in doc.paragraphs if p.text.startswith("3. ")]
-    assert fills and fills[0].startswith("3. _")
+    # 填空题一题一线（题号 + 下划线；填空节第 1 题）
+    fills = [p.text for p in doc.paragraphs if p.text.startswith("1. _")]
+    assert fills and fills[0].startswith("1. _")
     # 5 节标题 + 得分/评卷人小格（无框 1×2 布局表，仅小格描边）
     heads = [t for t in doc.tables if len(t.rows) == 2 and len(t.columns) == 3 and t.cell(0, 0).text != "题号"]
     assert len(heads) == 5
@@ -119,8 +120,11 @@ def test_docx_boxes_are_exact_height_and_comprehensive_pages_break(monkeypatch):
     assert len(full) == 2
     # 首题随节标题（扣掉标题高），第二题整页铺满 → 首题框更矮
     assert full[0].rows[0].height.cm < full[1].rows[0].height.cm
-    # 题号行：综合第二题另起一页，简答题不换页；题号行与所属大框不拆页
-    labels = {p.text: p for p in doc.paragraphs if p.text.endswith(".")}
-    assert labels["6."]._p.get_or_add_pPr().find(qn("w:pageBreakBefore")) is not None
-    assert labels["4."]._p.get_or_add_pPr().find(qn("w:pageBreakBefore")) is None
-    assert labels["5."]._p.get_or_add_pPr().find(qn("w:keepNext")) is not None
+    # 题号行（每类型从 1：简答=1.、综合首题=1.、综合第二题=2.）：综合第二题另起一页，
+    # 简答题不换页；综合首题题号行与所属大框不拆页。答题卡正文的顶层层段只有这三行题号，
+    # 文档序 = 节序（简答在综合之前）
+    label_ps = [p for p in doc.paragraphs if p.text.endswith(".")]
+    assert [p.text for p in label_ps] == ["1.", "1.", "2."]
+    assert label_ps[0]._p.get_or_add_pPr().find(qn("w:pageBreakBefore")) is None
+    assert label_ps[1]._p.get_or_add_pPr().find(qn("w:keepNext")) is not None
+    assert label_ps[2]._p.get_or_add_pPr().find(qn("w:pageBreakBefore")) is not None

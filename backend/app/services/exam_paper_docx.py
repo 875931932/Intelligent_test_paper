@@ -45,6 +45,7 @@ from app.services.paper_version_service import (
     _answer_blank,
     _answer_hint,
     _paper_meta,
+    _q_no,
     _section_caption,
     _section_groups,
     _stem_blocks,
@@ -185,7 +186,7 @@ def _add_question(doc, q: dict, *, width_cm: float) -> None:
     suffix = _answer_blank(qtype) if qtype in _OBJECTIVE_TYPES and not _ANSWER_BLANK_RE.search(stem) else ""
     _add_blocks(
         doc, _stem_blocks(stem), width_cm=width_cm,
-        prefix=f"{q.get('item_index', 0)}. ", suffix=suffix,
+        prefix=f"{_q_no(q)}. ", suffix=suffix,
     )
 
     for i, opt in enumerate(q.get("options") or []):

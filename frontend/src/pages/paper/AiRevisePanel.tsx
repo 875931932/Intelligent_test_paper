@@ -40,11 +40,13 @@ function sameValue(a: unknown, b: unknown): boolean {
  * 确认后走既有 PATCH teacher_override 落库；应用后可一键撤销。
  */
 export function AiRevisePanel({
-  courseId, pvId, item, onApplied,
+  courseId, pvId, item, no, onApplied,
 }: {
   courseId: string;
   pvId: string;
   item: PaperVersionItem;
+  /** 卷面题号（每题型从 1）；item_index 仍作提案/端点的稳定 id */
+  no: number;
   /** 应用/撤销后通知父级刷新试卷 */
   onApplied: () => void;
 }) {
@@ -117,7 +119,7 @@ export function AiRevisePanel({
     try {
       await api.paperVersions.patchItem(courseId, pvId, item.item_index, { teacher_override_patch: patch }, token ?? undefined);
       setSnapshot(prev);
-      addToast(`第 ${item.item_index} 题已应用 AI 修改`, 'success');
+      addToast(`第 ${no} 题已应用 AI 修改`, 'success');
       onApplied();
     } catch (e) {
       addToast('应用失败: ' + getErrorMessage(e), 'error');

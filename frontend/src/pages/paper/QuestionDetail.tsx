@@ -14,10 +14,12 @@ import {
 // ─── 右栏：当前题目详情 / 编辑器 ───
 
 export function QuestionDetail({
-  item, examPointName, editing, readonly, submitting,
+  item, no, examPointName, editing, readonly, submitting,
   hasPrev, hasNext, onEdit, onAiRevise, onCancelEdit, onSave, onDelete, onMove, onPrev, onNext, onDirtyChange,
 }: {
   item: PaperVersionItem;
+  /** 卷面题号（每题型从 1）；item_index 仍作编辑/删除端点的稳定 id */
+  no: number;
   examPointName?: string;
   editing: boolean;
   readonly: boolean;
@@ -46,7 +48,7 @@ export function QuestionDetail({
   const hasMeta = !!(epText || item.cognitive_level || (flagged && item.needs_review_reason));
   const headerBadges = (
     <>
-      <span style={{ fontSize: '1.05rem', fontWeight: 600, color: 'var(--text-tertiary)' }}>{item.item_index}.</span>
+      <span style={{ fontSize: '1.05rem', fontWeight: 600, color: 'var(--text-tertiary)' }}>{no}.</span>
       <Badge variant="info">{qlabel(item.question_type)}</Badge>
       <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>{formatScore(item.score)} 分</span>
       {item.difficulty && <Badge variant="default">{dlabel(item.difficulty)}</Badge>}

@@ -41,6 +41,7 @@ from app.services.docx_kit import (
 from app.services.paper_version_service import (
     _OBJECTIVE_TYPES,
     _paper_meta,
+    _q_no,
     _section_caption,
     _section_groups,
     get_paper_version,
@@ -114,7 +115,7 @@ def _add_answer_grid(doc, items: list[dict], width_cm: float) -> None:
         cell_w = width_cm / cols  # 整表铺满内容宽、格子等宽（HTML 版 width:100%）
         _set_col_widths(table, [cell_w] * cols)
         rows = (
-            [("题号" if start == 0 else "")] + [str(q["item_index"]) for q in chunk],
+            [("题号" if start == 0 else "")] + [str(_q_no(q)) for q in chunk],
             [("答案" if start == 0 else "")] + ["" for _ in chunk],
         )
         for r, values in enumerate(rows):
@@ -129,7 +130,7 @@ def _add_fill_lines(doc, items: list[dict]) -> None:
     for i, q in enumerate(items):
         _para(
             doc,
-            f"{q['item_index']}. " + "_" * _FILL_UNDERSCORES,
+            f"{_q_no(q)}. " + "_" * _FILL_UNDERSCORES,
             size=12, font=_FONT_LINE, line_pt=23,
             space_before=6 if i == 0 else 0,
         )
@@ -147,7 +148,7 @@ def _add_answer_box(
     """主观题矩形大框：题号行 + 1×1 描边表格（EXACTLY 行高、整行不跨页）。
     综合题整页大框；page_break=True 时题号行另起一页（对应 HTML 的逐题换页）。"""
     label = _para(
-        doc, f"{q['item_index']}.", size=12, font=_FONT_LINE,
+        doc, f"{_q_no(q)}.", size=12, font=_FONT_LINE,
         space_before=gap_before, space_after=2, keep_next=True,
     )
     if page_break:

@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Modal, FloatingPanel } from '@/components/ui';
 import { useNameMaps } from '@/hooks/useNameMaps';
-import { QUESTION_TYPE_ORDER, sectionLabel } from '@/lib/examDisplay';
+import { QUESTION_TYPE_ORDER, questionNumbers, sectionLabel } from '@/lib/examDisplay';
 import type { ExamProject, PaperVersion, PaperVersionItem } from '@/types/api';
 import { AiCreatePanel } from './AiCreatePanel';
 import { AiRevisePanel } from './AiRevisePanel';
@@ -125,6 +125,10 @@ export default function PaperPanel({
       .map(([t, items]) => ({ key: t, label: sectionLabel(t), items }));
   }, [questions, onlyNeedsReview]);
 
+  // 卷面题号（每题型从 1）：对完整 questions 计算，「仅看待审核」筛选后编号不失真
+  const nos = useMemo(() => questionNumbers(questions), [questions]);
+  const displayNo = (itemIndex: number) => nos.get(itemIndex) ?? itemIndex;
+
   // 上一题/下一题与键盘导航一律按「卷面顺序」走（不是左栏的分组顺序），
   // 否则从简答下一题会跳到另一节的简答，看着像漏了一题。
   const navList = useMemo(
@@ -200,7 +204,7 @@ export default function PaperPanel({
   };
 
   const handleDelete = async (idx: number) => {
-    if (!window.confirm(`确认删除第 ${idx} 题？删除后其后的题目题号会前移。`)) return;
+    if (!window.confirm(`确认删除第 ${displayNo(idx)} 题？删除后该题型后续题目的题号会前移。`)) return;
     setSaving(true);
     try {
       await api.paperVersions.deleteItem(courseId, pv.id, idx, token ?? undefined);
@@ -549,7 +553,7 @@ export default function PaperPanel({
           pillLabel="AI 质量评审"
           onClose={() => setReviewOpen(false)}
         >
-          <PaperReviewPanel courseId={courseId} pvId={pv.id} />
+          <PaperReviewPanel courseId={courseId} pvId={pv.id} nos={nos} />
         </FloatingPanel>
       )}
 
@@ -586,6 +590,7 @@ export default function PaperPanel({
           ) : (
             <QuestionIndex
               groups={groups}
+              nos={nos}
               selected={selected}
               onSelect={(idx) => {
                 // 同题重复点击不弹确认；换题才过脏检查（换题会让编辑器重挂载）
@@ -617,6 +622,7 @@ export default function PaperPanel({
             <QuestionDetail
               key={current.item_index}
               item={current}
+              no={displayNo(current.item_index)}
               examPointName={
                 current.exam_point_title ||
                 (current.exam_point_id ? maps.examPoints[current.exam_point_id] : undefined)
@@ -651,8 +657,8 @@ export default function PaperPanel({
               悬浮于右下角，不占双栏布局 */}
           {current && !editing && aiOpen && (
             <FloatingPanel
-              title={<>AI 改题 · 第 {current.item_index} 题 <Badge variant="purple">提案需确认</Badge></>}
-              pillLabel={`AI 改题 · 第 ${current.item_index} 题`}
+              title={<>AI 改题 · 第 {displayNo(current.item_index)} 题 <Badge variant="purple">提案需确认</Badge></>}
+              pillLabel={`AI 改题 · 第 ${displayNo(current.item_index)} 题`}
               onClose={() => setAiOpen(false)}
             >
               <AiRevisePanel
@@ -660,6 +666,7 @@ export default function PaperPanel({
                 courseId={courseId}
                 pvId={pv.id}
                 item={current}
+                no={displayNo(current.item_index)}
                 onApplied={onChanged}
               />
             </FloatingPanel>
@@ -697,7 +704,7 @@ export default function PaperPanel({
                     background: 'var(--warning-subtle)', color: 'var(--warning)', border: 'none', cursor: 'pointer',
                   }}
                 >
-                  第 {q.item_index} 题
+                  第 {displayNo(q.item_index)} 题
                 </button>
               ))}
             </div>
@@ -721,7 +728,7 @@ export default function PaperPanel({
                     background: 'var(--error-subtle)', color: 'var(--error)', border: 'none', cursor: 'pointer',
                   }}
                 >
-                  第 {q.item_index} 题
+                  第 {displayNo(q.item_index)} 题
                 </button>
               ))}
             </div>

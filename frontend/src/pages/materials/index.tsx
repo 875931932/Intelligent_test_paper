@@ -13,7 +13,7 @@ import { Button, Modal, Badge, SkeletonCardGrid } from '@/components/ui';
 import { computeSha256 } from '@/lib/sha256';
 import { downloadBlob } from '@/lib/download';
 import { PARSE_STATUS_LABELS } from '@/utils/format';
-import { qlabel } from '@/lib/examDisplay';
+import { qlabel, questionNumbers } from '@/lib/examDisplay';
 import type { PaperExportKind } from '@/api/domains/paperVersions';
 import type { MaterialResponse, PaperArchiveDetail, PaperArchiveSummary } from '@/types/api';
 
@@ -172,6 +172,11 @@ export default function MaterialsPage() {
   const [archiveBusy, setArchiveBusy] = useState(false);
   // 「存回试卷区」确认弹窗（会成为项目当前卷，必须先说清后果）
   const [restoreOpen, setRestoreOpen] = useState(false);
+  // 归档预览列表的卷面题号（每题型从 1），与试卷页/导出同口径
+  const archiveNos = useMemo(
+    () => (archiveDetail ? questionNumbers(archiveDetail.questions) : new Map<number, number>()),
+    [archiveDetail],
+  );
 
   // 单一批量轮询定时器：多文件解析共享一个定时器，一次静默 list 返回全部状态，避免 N 个定时器各查一次库
   const pollingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -948,7 +953,7 @@ export default function MaterialsPage() {
                   }}
                 >
                   <div style={{ display: 'flex', gap: '8px', alignItems: 'center', fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
-                    <span>{q.item_index}.</span>
+                    <span>{archiveNos.get(q.item_index) ?? q.item_index}.</span>
                     <Badge variant="default">{qlabel(q.question_type)}</Badge>
                     <span>{q.score} 分</span>
                   </div>

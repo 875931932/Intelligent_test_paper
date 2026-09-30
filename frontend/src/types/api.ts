@@ -531,7 +531,8 @@ export interface PaperVersion {
   total_score: number;
   status: string;
   project_status?: string;
-  /** 逐题数组，按题号升序；item_index 与 PATCH items/{item_index} 同源 */
+  /** 逐题数组，按卷面顺序；item_index 为全局稳定序号（与 PATCH items/{item_index} 同源），
+   *  卷面展示题号按题型从 1 重编（questionNumbers），两者不必相同 */
   questions: PaperVersionItem[];
   created_at: string;
   confirmed_at?: string | null;
@@ -648,7 +649,7 @@ export interface PaperReviewSection {
   finding: string;
   /** 教师下一步怎么做（只引导试卷页既有功能） */
   suggestion: string;
-  /** 引用的真实题号（与 item_index 同源）；不指向具体题为空数组 */
+  /** 引用的真实 item_index（展示时经 questionNumbers 映射为题型内题号）；不指向具体题为空数组 */
   item_indexes: number[];
 }
 

@@ -79,9 +79,10 @@ def test_docx_renders_stems_options_sections_like_html(monkeypatch):
     assert "大模型调优与部署技术" in text
     score_tables = [t for t in doc.tables if t.cell(0, 0).text == "题次"]
     assert len(score_tables) == 1 and len(score_tables[0].rows) == 3
-    # 题干自带编号/分值已剥，题号只出现一次；客观题补作答括号（单选宽、判断窄）
+    # 题干自带编号/分值已剥，题号只出现一次；题号按类型从 1（单选 1.、判断 1.、综合 1.）；
+    # 客观题补作答括号（单选宽、判断窄）
     assert "1. 题干一（  ）" in paragraphs
-    assert "2. 乙（ ）" in paragraphs
+    assert "1. 乙（ ）" in paragraphs
     assert "1. 1." not in text
     assert paragraphs.count("（  ）" ) == 0  # 括号并进题号段，不独立成段
     # 选项独立成段并缩进（≈HTML padding-left）
@@ -91,8 +92,8 @@ def test_docx_renders_stems_options_sections_like_html(monkeypatch):
     # 分节标题带学生卷去向提示
     assert "一、单选题（共1题，每题2分，共2分）（将答案写在答题纸上）" in paragraphs
     assert "（将答案写在答题纸上，对的打钩 √ ，错的打叉 ×）" in text
-    # 综合题：题干首段挂题号，分问（1）…（6分）（2）…（4分）
-    assert "3. 补全下面的加载代码。" in paragraphs
+    # 综合题：题干首段挂题号（综合题第 1 题），分问（1）…（6分）（2）…（4分）
+    assert "1. 补全下面的加载代码。" in paragraphs
     assert "（1）请在不改变整体结构的前提下补全代码（6分）" in paragraphs
     assert "（2）可以从哪些方向优化？（4分）" in paragraphs
     # 学生卷不出答案与难度

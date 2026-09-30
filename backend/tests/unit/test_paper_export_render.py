@@ -1,4 +1,4 @@
-"""导出渲染：题号去重、答案规范化、分节与缺答案标注、综合题分问与答题卡。"""
+"""导出渲染：题号按类型从 1 重新计数、题干自带编号去重、答案规范化、分节与缺答案标注、综合题分问与答题卡。"""
 import app.services.paper_version_service as pvs
 from app.services.paper_version_service import (
     _answer_text,
@@ -12,6 +12,7 @@ from app.services.paper_version_service import (
     _strip_stem_noise,
     _sub_prompt,
     export_answer_card_html,
+    export_answer_detail_json,
     export_answer_key_html,
     export_student_paper_html,
 )
@@ -70,16 +71,30 @@ def test_section_caption_omits_per_score_when_scores_differ():
     assert _section_caption(mixed[0]) == "一、简答题（共2题，共13分）"
 
 
-def test_render_sections_has_single_continuous_numbering():
+def test_section_groups_attaches_per_type_numbers_and_keeps_item_index():
+    """卷面题号按题型从 1 重新计数；item_index 保持全局唯一作内部 id 不动。"""
+    items = [
+        {"item_index": 1, "question_type": "single_choice", "score": 2, "stem": "甲", "answer": "A"},
+        {"item_index": 2, "question_type": "true_false", "score": 2, "stem": "乙", "answer": True},
+        {"item_index": 3, "question_type": "single_choice", "score": 2, "stem": "丙", "answer": "B"},
+        {"item_index": 4, "question_type": "single_choice", "score": 2, "stem": "丁", "answer": "C"},
+    ]
+    _section_groups(items)
+    assert {q["item_index"]: q["no"] for q in items} == {1: 1, 2: 1, 3: 2, 4: 3}
+
+
+def test_render_sections_numbers_restart_per_type():
     groups = _section_groups([
         {"item_index": 1, "question_type": "single_choice", "score": 2, "stem": "1. 题干一", "answer": "A",
          "options": ["甲", "乙", "丙", "丁"]},
         {"item_index": 2, "question_type": "true_false", "score": 2, "stem": "2. 题干二", "answer": True},
     ])
     html = _render_sections(groups, with_answer=False)
-    # 题号只出现一次，且题干里的自带编号已被剥离
+    # 每种题型从 1：单选第 1 题、判断也第 1 题（不再跨类型续号）
     assert '<span class="q-no">1.</span> 题干一' in html
-    assert '<span class="q-no">2.</span> 题干二' in html
+    assert '<span class="q-no">1.</span> 题干二' in html
+    assert '<span class="q-no">2.</span>' not in html
+    # 题干里的自带编号已被剥离，不与导出题号叠成「1.1.」
     assert "1. 1." not in html and "2. 2." not in html
     # 分节标题
     assert "一、单选题" in html and "二、判断题" in html
@@ -209,9 +224,10 @@ def test_student_paper_adds_answer_blank_and_section_hint():
         {"item_index": 3, "question_type": "short_answer", "score": 5, "stem": "丙", "answer": "x"},
     ])
     html = _render_sections(groups, with_answer=False)
+    # 每种题型从 1 重新计数：单选 1.、判断 1.、简答 1.
     assert '<span class="q-no">1.</span> 甲（  ）' in html
-    assert '<span class="q-no">2.</span> 乙（ ）' in html
-    assert '<span class="q-no">3.</span> 丙' in html and "丙（" not in html  # 主观题不补括号
+    assert '<span class="q-no">1.</span> 乙（ ）' in html
+    assert '<span class="q-no">1.</span> 丙' in html and "丙（" not in html  # 主观题不补括号
     assert "（将答案写在答题纸上）" in html
     assert "对的打钩 √" in html
     assert "难度：" not in html
@@ -289,8 +305,9 @@ def test_answer_card_renders_grid_lines_and_boxes(monkeypatch):
     monkeypatch.setattr(pvs, "get_paper_version", lambda *a, **k: pv)
     html = export_answer_card_html(_FakeSession(), "pv1", course_id="c1")
     assert "答题卡" in html
-    # 客观题 → 空白格子表
-    assert "<th>题号</th>" in html and "<th>1</th>" in html and "<th>2</th>" in html
+    # 客观题 → 空白格子表；单选、判断两节各自从 1 起编号
+    assert "<th>题号</th>" in html and html.count("<th>1</th>") == 2
+    assert "<th>2</th>" not in html
     assert '<td class="blank-cell"></td>' in html
     # 填空题一题一线；简答题一个矩形大框（不按分值铺横线）
     assert html.count('class="fill-line"') == 1
@@ -317,3 +334,15 @@ def test_answer_card_comprehensive_gets_full_page_boxes(monkeypatch):
     assert "补全下面的加载代码" not in html
     assert "请在不改变整体结构" not in html and "可以从哪些方向优化" not in html
     assert "（6分）" not in html and "（4分）" not in html
+
+
+def test_answer_detail_json_carries_per_type_no():
+    """答案细则 JSON：no 为卷面题号（每类型从 1），item_index 保持全局稳定序号。"""
+    pv = dict(_SAMPLE_PV)
+    pv["questions"] = _SAMPLE_PV["questions"] + [
+        {"item_index": 3, "question_type": "single_choice", "stem": "题干三", "answer": "B", "score": 2,
+         "options": ["甲", "乙"], "difficulty": "medium"},
+    ]
+    data = export_answer_detail_json(_FakeSession(), "pv1", course_id="c1", pv=pv)
+    assert data["answer_detail_schema_version"] == "1.2.0"
+    assert [(q["item_index"], q["no"]) for q in data["questions"]] == [(1, 1), (2, 1), (3, 2)]

@@ -556,7 +556,8 @@ body 可选 `{ "mock_graph": false }`；生产必须配置 LLM，否则 503。�
 
 字段约定：
 
-- `questions`（不是 `items`）为逐题数组，按题号升序；`item_index` 即 `paper_items.display_order`（题号，从 1 起），与 `PATCH /items/{item_index}` 同源。
+- `questions`（不是 `items`）为逐题数组，按卷面顺序；`item_index` 即 `paper_items.display_order`（全局稳定序号，从 1 起），与 `PATCH /items/{item_index}` 同源。
+  **卷面展示题号每种题型从 1 重新计数**（前端与全部导出同口径，见 §9.7）；`item_index` 只作内部 id，不直接上卷面。
 - `score` 取 `plan_items.score`（合同同口径），逐题之和恒等于 `total_score`；`paper_versions` 表本身不存分值列。
 - `exam_point_id` 以生成载荷盖章值为准，缺失时退回 `plan_items.exam_point_id`。
 - `explanation` 由模型产出，部分题型（如单选）可能为 `null`，前端需对空值降级。
@@ -710,7 +711,8 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
 → 附件下载（`Content-Disposition: attachment; filename="answer_detail_v{n}.json"`）。
 需 `Authorization: Bearer <token>`；401 时不会下发文件。
 含 `missing_answer_count` 与逐题 `answer_missing` 标记；`stem` 已剥离题干自带的编号/分值前缀。
-逐题带 `rubric`（主观题评分细则：要点数组或文本，无则 `null`），schema 自 `1.1.0` 起新增该字段。
+逐题带 `no`（卷面题号：每种题型从 1 重新计数，与学生卷/答卷/答题卡一致；`item_index` 保持全局稳定序号），
+schema 自 `1.2.0` 起新增该字段；逐题带 `rubric`（主观题评分细则：要点数组或文本，无则 `null`），schema 自 `1.1.0` 起新增该字段。
 
 ### 9.7 导出：学生卷 HTML / docx
 `GET /api/v1/courses/{course_id}/exam-projects/{project_id}/paper-versions/{pv_id}/export/student`
@@ -718,7 +720,8 @@ body 可选 `{ "force_ignore_needs_review":false }`。有未审核项返回 409�
 需 `Authorization: Bearer <token>`（§9.7–9.9 各导出 docx 变体同规则）。
 
 **format=html** → `text/html`（无答案，可打印 PDF）。正式卷面：信息头（课程名称/总分/题量，考试时间/形式/
-试卷类型/学分留空待填）+ 题次表 + 按题型分节（一、单选题（共N题，每题X分，共Y分））+ 连续题号。
+试卷类型/学分留空待填）+ 题次表 + 按题型分节（一、单选题（共N题，每题X分，共Y分））+ 分节题号
+（**每种题型从 1 重新计数**：单选 1…n、判断 1…n，不跨类型续号；docx 与其余导出同口径）。
 
 卷面细节（对齐命题范本）：
 

@@ -109,6 +109,24 @@ export function sectionLabel(t: string): string {
   return QUESTION_TYPE_SECTION_LABELS[t] ?? qlabel(t);
 }
 
+/**
+ * 卷面题号：每种题型从 1 重新计数（题型组内按卷面顺序），返回 item_index → 题号。
+ * 与后端导出同一口径（paper_version_service._attach_type_numbers）；
+ * item_index 仍是全局稳定 id（选中/编辑/换序/提案都引用它），展示一律改走这里。
+ */
+export function questionNumbers(
+  questions: Array<{ item_index: number; question_type: string }>,
+): Map<number, number> {
+  const seen = new Map<string, number>();
+  const nos = new Map<number, number>();
+  for (const q of questions) {
+    const n = (seen.get(q.question_type) ?? 0) + 1;
+    seen.set(q.question_type, n);
+    nos.set(q.item_index, n);
+  }
+  return nos;
+}
+
 export function dlabel(d: string): string {
   return DIFFICULTY_LABELS[d] ?? d;
 }

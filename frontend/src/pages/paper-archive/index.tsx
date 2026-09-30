@@ -9,7 +9,7 @@ import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import { Modal } from '@/components/ui';
-import { QUESTION_TYPE_ORDER, sectionLabel } from '@/lib/examDisplay';
+import { QUESTION_TYPE_ORDER, questionNumbers, sectionLabel } from '@/lib/examDisplay';
 import type { PaperArchiveDetail, PaperVersionItem } from '@/types/api';
 import { QuestionDetail } from '@/pages/paper/QuestionDetail';
 import { QuestionIndex } from '@/pages/paper/QuestionIndex';
@@ -85,6 +85,10 @@ export default function PaperArchivePage() {
       .map(([t, items]) => ({ key: t, label: sectionLabel(t), items }));
   }, [questions]);
 
+  // 卷面题号（每题型从 1），与试卷页同口径
+  const nos = useMemo(() => questionNumbers(questions), [questions]);
+  const displayNo = (itemIndex: number) => nos.get(itemIndex) ?? itemIndex;
+
   const navIdx = questions.findIndex((q) => q.item_index === selected);
   const current = navIdx >= 0 ? questions[navIdx] : undefined;
   const missingCount = useMemo(() => questions.filter((q) => !normalizeAnswer(q.answer)).length, [questions]);
@@ -116,7 +120,7 @@ export default function PaperArchivePage() {
     setSaving(true);
     try {
       setDetail(await api.paperArchives.patchQuestion(courseId, archiveId, idx, { ...v }, token ?? undefined));
-      addToast(`第 ${idx} 题已保存`, 'success');
+      addToast(`第 ${displayNo(idx)} 题已保存`, 'success');
       setEditing(false);
       setDirty(false);
     } catch (e) {
@@ -127,7 +131,7 @@ export default function PaperArchivePage() {
   };
 
   const handleDelete = async (idx: number) => {
-    if (!window.confirm(`确认删除第 ${idx} 题？删除后其后的题目题号会前移。`)) return;
+    if (!window.confirm(`确认删除第 ${displayNo(idx)} 题？删除后该题型后续题目的题号会前移。`)) return;
     setSaving(true);
     try {
       setDetail(await api.paperArchives.deleteQuestion(courseId, archiveId, idx, token ?? undefined));
@@ -285,6 +289,7 @@ export default function PaperArchivePage() {
           </div>
           <QuestionIndex
             groups={groups}
+            nos={nos}
             selected={selected}
             onSelect={(idx) => {
               if (idx === selected || !guardDirty()) return;
@@ -300,6 +305,7 @@ export default function PaperArchivePage() {
             <QuestionDetail
               key={current.item_index}
               item={current}
+              no={displayNo(current.item_index)}
               examPointName={current.exam_point_title || undefined}
               editing={editing}
               readonly={false}

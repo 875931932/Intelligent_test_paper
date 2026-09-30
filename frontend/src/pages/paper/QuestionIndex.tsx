@@ -7,9 +7,11 @@ import { normalizeAnswer } from './questionShared';
 // ─── 左栏：题号索引 ───
 
 export function QuestionIndex({
-  groups, selected, onSelect,
+  groups, nos, selected, onSelect,
 }: {
   groups: Array<{ key: string; label: string; items: PaperVersionItem[] }>;
+  /** item_index → 卷面题号（每题型从 1，由父级对完整题目列表计算，筛选态不失真） */
+  nos: Map<number, number>;
   selected: number;
   onSelect: (itemIndex: number) => void;
 }) {
@@ -50,7 +52,7 @@ export function QuestionIndex({
                   fontSize: '0.8rem', fontWeight: 600, minWidth: 22,
                   color: active ? 'var(--accent)' : 'var(--text-tertiary)',
                 }}>
-                  {item.item_index}
+                  {nos.get(item.item_index) ?? item.item_index}
                 </span>
                 <span style={{ fontSize: '0.8rem', color: active ? 'var(--accent)' : 'var(--text-secondary)', minWidth: 28 }}>
                   {qlabel(item.question_type)}

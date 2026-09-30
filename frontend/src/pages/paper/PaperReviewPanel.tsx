@@ -19,10 +19,12 @@ const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
  * 修复问题由教师走试卷页既有编辑/AI 改题/重新生成功能。
  */
 export function PaperReviewPanel({
-  courseId, pvId,
+  courseId, pvId, nos,
 }: {
   courseId: string;
   pvId: string;
+  /** item_index → 卷面题号（每题型从 1）；提案引用的 item_index 展示时经此映射 */
+  nos: Map<number, number>;
 }) {
   const token = useAuthStore((s) => s.token);
   const addToast = useToastStore((s) => s.addToast);
@@ -129,7 +131,7 @@ export function PaperReviewPanel({
                             background: 'var(--accent-subtle)', color: 'var(--accent)',
                           }}
                         >
-                          第 {idx} 题
+                          第 {nos.get(idx) ?? idx} 题
                         </span>
                       ))}
                     </span>

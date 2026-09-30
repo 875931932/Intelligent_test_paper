@@ -1486,8 +1486,27 @@ def _cn_ordinal(index: int) -> str:
     return _CN_NUMERALS[index] if 0 <= index < len(_CN_NUMERALS) else str(index + 1)
 
 
+def _attach_type_numbers(questions: list[dict]) -> None:
+    """给每题挂卷面题号 no：每种题型从 1 重新计数（题型组内按卷面顺序，不跨类型续号）。
+
+    item_index 保持全局唯一，继续充当内部稳定 id（PATCH/选中/换序/提案引用它）；
+    展示层（前端与全部导出）一律改读 no。"""
+    seen: dict[str, int] = {}
+    for q in questions:
+        qt = q.get("question_type") or "short_answer"
+        seen[qt] = seen.get(qt, 0) + 1
+        q["no"] = seen[qt]
+
+
+def _q_no(q: dict) -> Any:
+    """渲染用题号：优先取挂载好的组内序号；未挂载（直接单题渲染）退回 item_index。"""
+    no = q.get("no")
+    return q.get("item_index", 0) if no is None else no
+
+
 def _section_groups(questions: list[dict]) -> list[dict]:
     """按题型分节，节内保持卷面顺序；计算节总分与（Uniform 时的）每题分值。"""
+    _attach_type_numbers(questions)
     position: dict[str, int] = {}
     groups: list[dict] = []
     for q in questions:
@@ -1693,7 +1712,7 @@ def _sections_table_html(groups: list[dict], with_reviewer: bool = True) -> str:
 
 def _answer_grid_html(questions: list[dict]) -> str:
     """客观题答案速查表（题号横向排列，与命题范本的评分表一致）。"""
-    cells = "".join(f"<th>{q['item_index']}</th>" for q in questions)
+    cells = "".join(f"<th>{_q_no(q)}</th>" for q in questions)
     answers = "".join(f"<td>{_esc(_answer_display(q) or '—')}</td>" for q in questions)
     return f'<table class="answer-grid"><tr><th>题号</th>{cells}</tr><tr><th>答案</th>{answers}</tr></table>'
 
@@ -1878,7 +1897,7 @@ def _render_question_html(q: dict, *, with_answer: bool) -> str:
     if not with_answer and qtype in _OBJECTIVE_TYPES and not _ANSWER_BLANK_RE.search(stem_html):
         stem_html += _answer_blank(qtype)
 
-    parts = [f'<div class="q-stem"><span class="q-no">{q.get("item_index", 0)}.</span> {stem_html}</div>']
+    parts = [f'<div class="q-stem"><span class="q-no">{_q_no(q)}.</span> {stem_html}</div>']
 
     if options:
         option_html = []
@@ -1948,6 +1967,10 @@ def export_answer_detail_json(
 ) -> dict:
     """答案细则 JSON：每题含题干/选项/答案/评分细则/难度/认知层级/质量审计。
 
+    逐题 ``no`` 为卷面题号（每种题型从 1 重新计数，与学生卷/答卷/答题卡一致）；
+    ``item_index`` 保持全局稳定序号（与 PATCH items/{item_index} 同源）。
+    schema 自 ``1.2.0`` 起新增 ``no`` 字段。
+
     ``pv`` 可传入预加载的试卷 dict（与 get_paper_version 同构）：资料库归档
     导出没有 paper_versions 行，用快照构造的 dict 走同一套渲染。
     ``paper_version_id`` 此时填归档 id（作 JSON 里的来源标识）。
@@ -1955,8 +1978,9 @@ def export_answer_detail_json(
     if pv is None:
         pv = get_paper_version(session, paper_version_id, course_id=course_id)
     questions = pv.get("questions", [])
+    _attach_type_numbers(questions)
     return {
-        "answer_detail_schema_version": "1.1.0",
+        "answer_detail_schema_version": "1.2.0",
         "paper_version_id": paper_version_id,
         "version_no": pv.get("version_no"),
         "exam_project_id": pv.get("exam_project_id"),
@@ -1965,6 +1989,7 @@ def export_answer_detail_json(
         "questions": [
             {
                 "item_index": q["item_index"],
+                "no": _q_no(q),
                 "question_type": q.get("question_type"),
                 "question_type_label": _q_type_label(q.get("question_type")),
                 "stem": _strip_stem_noise(str(q.get("stem", ""))),
@@ -2045,7 +2070,7 @@ def _answer_card_grid(questions: list[dict], *, per_row: int = 10) -> str:
     rows: list[str] = []
     for start in range(0, len(questions), per_row):
         chunk = questions[start : start + per_row]
-        nums = "".join(f"<th>{q['item_index']}</th>" for q in chunk)
+        nums = "".join(f"<th>{_q_no(q)}</th>" for q in chunk)
         cells = "".join('<td class="blank-cell"></td>' for _ in chunk)
         rows.append(f'<tr><th>{"题号" if start == 0 else ""}</th>{nums}</tr>')
         rows.append(f'<tr><th>{"答案" if start == 0 else ""}</th>{cells}</tr>')
@@ -2055,7 +2080,7 @@ def _answer_card_grid(questions: list[dict], *, per_row: int = 10) -> str:
 def _render_card_fill(q: dict) -> str:
     """填空题作答位（范本样式）：题号 + 一条横线，一题一线。"""
     return (
-        f'<div class="card-fill"><span class="q-no">{q.get("item_index", 0)}.</span>'
+        f'<div class="card-fill"><span class="q-no">{_q_no(q)}.</span>'
         '<span class="fill-line"></span></div>'
     )
 
@@ -2067,7 +2092,7 @@ def _render_card_box(q: dict, *, full_page: bool, page_break: bool) -> str:
     item_cls = "card-box-item card-box-item--page" if page_break else "card-box-item"
     return (
         f'<div class="{item_cls}">'
-        f'<span class="q-no">{q.get("item_index", 0)}.</span>'
+        f'<span class="q-no">{_q_no(q)}.</span>'
         f'<div class="{box_cls}"></div></div>'
     )
 
