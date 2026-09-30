@@ -130,7 +130,7 @@ export function BlueprintSuggestPanel({
   // 刚点上的「已应用」标记），改为每次同步到 ref 读最新值
   const planItemsRef = useRef(planItems);
   useEffect(() => { planItemsRef.current = planItems; }, [planItems]);
-  /** 每个项目只恢复一次（token 刷新重跑 effect 时不再发请求） */
+  /** 恢复守卫：同一段 effect 生命周期内只恢复一次；清理时归位（见下方恢复 effect 的说明），使 StrictMode 二跑与项目切换都能正常恢复 */
   const restoredForRef = useRef<string | null>(null);
   /** 教师已在本面板发起新建议——慢一步返回的恢复结果不得覆盖新任务 */
   const startedRef = useRef(false);
@@ -203,7 +203,14 @@ export function BlueprintSuggestPanel({
         /* 无历史/瞬时错误 → 静默跳过恢复，不打扰教师 */
       }
     })();
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      // StrictMode dev 下 effect 会挂载→清理→再挂载：首跑请求被 cancelled
+      // 作废、restoredForRef 已置位会让二跑直接 return，恢复请求等于永远
+      // 发不出去（dev 里刷新页面后建议清单消失）。清理时归位守卫，二跑照常
+      // 恢复；多出的一次 GET 由 startedRef 兜底，不会覆盖教师新发起的任务。
+      restoredForRef.current = null;
+    };
   }, [courseId, projectId, token]);
 
   const handleGenerate = async () => {
