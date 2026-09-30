@@ -21,9 +21,7 @@ export function Card({ title, subtitle, className = '', style, actions, children
           {actions && <div style={{ display: 'flex', gap: '8px' }}>{actions}</div>}
         </div>
       )}
-      <div style={title || subtitle ? {} : undefined}>
-        {children}
-      </div>
+      {children}
     </div>
   );
 }

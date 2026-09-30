@@ -13,6 +13,14 @@ import { SkeletonCardGrid } from '@/components/ui/Skeleton';
 import { EXAM_PROJECT_STATUS_META } from '@/lib/examDisplay';
 import type { MaterialResponse, CurrentFrameworkResponse, PublishedKnowledgeResponse, ExamProject } from '@/types/api';
 
+/** 资料类型中文名（与资料库页一致；hero 分布条展示用） */
+const MATERIAL_TYPE_LABELS: Record<string, string> = {
+  teaching_syllabus: '教学大纲',
+  assessment_syllabus: '考核大纲',
+  teaching_material: '教材',
+  exercise: '习题',
+};
+
 const DashboardPage: FC = () => {
   const navigate = useNavigate();
   const { courseId: routeCourseId } = useParams<{ courseId: string }>();
@@ -74,15 +82,13 @@ const DashboardPage: FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeCourseId, token]);
 
-  // hero 卡「最近上传」：按创建时间取最近 3 份（与顶部统计瓦片不重复的新信息）。
+  // hero 卡「按类型分布」：只列有数的类型，条长 ∝ 占比（与顶部统计瓦片不重复）。
   // Hook 必须置于 loading 早返回之前——不允许条件调用。
-  const recentMaterials = useMemo(
-    () =>
-      [...materials]
-        .sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''))
-        .slice(0, 3),
-    [materials]
-  );
+  const typeCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    materials.forEach((m) => counts.set(m.material_type, (counts.get(m.material_type) ?? 0) + 1));
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  }, [materials]);
 
   // ── 加载中 ──
   if (loading) {
@@ -125,12 +131,6 @@ const DashboardPage: FC = () => {
     : 0;
 
   const recentProjects = examProjects.slice(-3);
-
-  // 解析状态短文案与状态点色（深色底用 -400 亮色系）
-  const parseLabel = (status?: string) =>
-    status === 'ready' ? '已解析' : status === 'failed' ? '解析失败' : status ? '解析中' : '未解析';
-  const parseDot = (status?: string) =>
-    status === 'ready' ? '#4ade80' : status === 'failed' ? '#f87171' : status ? '#fb923c' : 'rgba(255,255,255,0.32)';
 
   // ── 导航 ──
   const handleCardNavigate = (path: string) => navigate(path);
@@ -208,6 +208,9 @@ const DashboardPage: FC = () => {
               flex: 1,
               display: 'flex',
               flexDirection: 'column',
+              // 余量均摊到每个内容带之间（space-between），不让 auto 边距
+              // 把虚空堆在一处——bento hero 的均匀呼吸感
+              justifyContent: 'space-between',
               gap: 18,
               padding: 28,
               // 主卡内一层极淡的蓝色径向光：深色瓦片的层次感，不破坏 bento 的干净
@@ -230,7 +233,7 @@ const DashboardPage: FC = () => {
 
             {/* Hero 大数字 */}
             <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-              <span style={{ fontSize: '2.5rem', fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1, color: '#ffffff' }}>
+              <span style={{ fontSize: '2.75rem', fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1, color: '#ffffff' }}>
                 {materialStats.total}
               </span>
               <span style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.72)' }}>
@@ -238,32 +241,33 @@ const DashboardPage: FC = () => {
               </span>
             </div>
 
-            {/* 最近上传：与顶部统计瓦片不重复的新信息，替代原三口径小统计 */}
-            {recentMaterials.length > 0 && (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <span style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.6)' }}>最近上传</span>
-                {recentMaterials.map((m) => (
-                  <div key={m.id} style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                    <span style={{
-                      width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
-                      background: parseDot(m.parse_status?.status),
-                    }} />
-                    <span style={{
-                      flex: 1, minWidth: 0, fontSize: '0.8rem', color: 'rgba(255,255,255,0.88)',
-                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                    }} title={m.logical_name}>
-                      {m.logical_name}
+            {/* 按类型分布：小条形图（bento hero 的多条进度模式），
+                与顶部统计瓦片不重复 */}
+            {typeCounts.length > 0 && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)' }}>按类型分布</span>
+                {typeCounts.map(([type, count]) => (
+                  <div key={type} style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+                    <span style={{ fontSize: '0.78rem', color: 'rgba(255,255,255,0.72)', width: 58, flexShrink: 0 }}>
+                      {MATERIAL_TYPE_LABELS[type] ?? type}
                     </span>
-                    <span style={{ fontSize: '0.72rem', color: 'rgba(255,255,255,0.6)', flexShrink: 0 }}>
-                      {parseLabel(m.parse_status?.status)}
+                    <div style={{ flex: 1, height: 6, borderRadius: 999, background: 'rgba(255,255,255,0.12)', overflow: 'hidden' }}>
+                      <div style={{
+                        width: materialStats.total ? Math.round((count / materialStats.total) * 100) + '%' : '0%',
+                        height: '100%', borderRadius: 999, background: 'rgba(255,255,255,0.85)',
+                        transition: 'width 0.3s var(--ease-snappy)',
+                      }} />
+                    </div>
+                    <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.72)', width: 24, textAlign: 'right', flexShrink: 0, fontVariantNumeric: 'tabular-nums' }}>
+                      {count}
                     </span>
                   </div>
                 ))}
               </div>
             )}
 
-            {/* 解析进度：auto 边距把底部组压到卡底 */}
-            <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {/* 解析进度：紧随分布块，CTA 之前 */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
                 <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)' }}>解析进度</span>
                 <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.72)', fontVariantNumeric: 'tabular-nums' }}>
@@ -306,7 +310,7 @@ const DashboardPage: FC = () => {
           style={{ cursor: 'pointer', display: 'flex' }}
           className="stagger-item bento-col-2"
         >
-          <Card className="card-hover" style={{ flex: 1 }}>
+          <Card className="card-hover" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px', marginBottom: '16px' }}>
               <div className="icon-box" style={{ width: 44, height: 44, flexShrink: 0 }}>
                 <ClipboardList size={22} />
@@ -324,7 +328,7 @@ const DashboardPage: FC = () => {
               )}
               <span className="badge badge-default">{examPointCount} 个考核点</span>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 'auto' }}>
               <Button
                 size="sm"
                 onClick={(e) => handleButtonClick(e, `/courses/${activeCourseId}/framework`)}
@@ -350,7 +354,7 @@ const DashboardPage: FC = () => {
           style={{ cursor: 'pointer', display: 'flex' }}
           className="stagger-item bento-col-2"
         >
-          <Card className="card-hover" style={{ flex: 1 }}>
+          <Card className="card-hover" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px', marginBottom: '16px' }}>
               <div className="icon-box" style={{ width: 44, height: 44, flexShrink: 0 }}>
                 <Network size={22} />
@@ -364,7 +368,7 @@ const DashboardPage: FC = () => {
               <BadgePurple>{knowledgeCardCount} 张知识卡</BadgePurple>
               <span className="badge badge-default">{evidenceCount} 条关联关系</span>
             </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 'auto' }}>
               <Button
                 variant="secondary"
                 size="sm"
@@ -391,7 +395,7 @@ const DashboardPage: FC = () => {
           style={{ cursor: 'pointer', display: 'flex' }}
           className="stagger-item bento-col-4"
         >
-          <Card className="card-hover" style={{ flex: 1 }}>
+          <Card className="card-hover" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: '16px', marginBottom: '16px' }}>
               <div className="icon-box" style={{ width: 44, height: 44, flexShrink: 0 }}>
                 <FileQuestion size={22} />
@@ -423,7 +427,7 @@ const DashboardPage: FC = () => {
                 ))
               )}
             </div>
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 'auto' }}>
               <Button
                 size="sm"
                 onClick={(e) => handleButtonClick(e, `/courses/${activeCourseId}/paper`)}
