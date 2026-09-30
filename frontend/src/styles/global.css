@@ -818,6 +818,72 @@ body > .floating-pill:nth-of-type(2) { top: 112px; }
 }
 @keyframes caretBlink { 50% { opacity: 0; } }
 
+/* 模型返回的 Markdown 正文（react-markdown + GFM）：气泡内排版——
+   首尾块贴边、段落轻隔、列表/表格/围栏代码可读；正文与思考区共用。
+   pre-wrap：保留模型单换行分点的聊天习惯（与原 StemBlocks 断行语义一致） */
+.md-body { line-height: 1.65; word-break: break-word; white-space: pre-wrap; }
+.md-body > :first-child { margin-top: 0; }
+.md-body > :last-child { margin-bottom: 0; }
+.md-body p { margin: 6px 0; }
+.md-body h1, .md-body h2, .md-body h3,
+.md-body h4, .md-body h5, .md-body h6 {
+  margin: 10px 0 6px;
+  line-height: 1.4;
+  font-weight: 650;
+}
+.md-body h1 { font-size: 1.1em; }
+.md-body h2 { font-size: 1.05em; }
+.md-body h3 { font-size: 1em; }
+.md-body h4, .md-body h5, .md-body h6 { font-size: 0.95em; }
+.md-body ul, .md-body ol { margin: 6px 0; padding-left: 1.5em; }
+.md-body li { margin: 2px 0; }
+.md-body li > p { margin: 0; }
+.md-body a { color: var(--brand); text-decoration: underline; text-underline-offset: 2px; }
+.md-body hr { border: none; border-top: 1px solid var(--line); margin: 10px 0; }
+.md-body blockquote {
+  border-left: 3px solid var(--line-strong);
+  padding-left: 10px;
+  margin: 6px 0;
+  color: var(--text-secondary);
+}
+.md-body code {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 0.85em;
+  background: var(--fill);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 5px;
+  word-break: break-word;
+}
+.md-body pre {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 0.82rem;
+  line-height: 1.6;
+  background: var(--fill);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin: 8px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+.md-body pre code { background: none; border: none; padding: 0; font-size: inherit; }
+.md-body table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 8px 0;
+  font-size: 0.85rem;
+}
+.md-body th, .md-body td {
+  border: 1px solid var(--line-strong);
+  padding: 5px 9px;
+  text-align: left;
+  line-height: 1.6;
+}
+.md-body th { background: var(--fill); font-weight: 600; }
+.md-body img { max-width: 100%; }
+
 /* ═══════════════════════════════════════════════
    Keyframe Animations（200~300ms 短促）
    ═══════════════════════════════════════════════ */

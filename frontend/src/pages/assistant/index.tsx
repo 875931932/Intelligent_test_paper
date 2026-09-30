@@ -7,8 +7,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useCourseStore } from '@/stores/course';
 import { useToastStore } from '@/stores/toast';
 import { useAssistantStore } from '@/stores/assistantStore';
-import { Badge, Button } from '@/components/ui';
-import { StemBlocks } from '@/pages/paper/StemBlocks';
+import { Badge, Button, MarkdownText } from '@/components/ui';
 import { assembleBlueprintRequestBody } from '@/pages/paper/blueprintAssembly';
 import {
   ASSESSMENT_MODE_LABELS,
@@ -95,6 +94,23 @@ const SUGGESTIONS = [
   '总结教学大纲讲了什么？',
   '有哪些试卷项目？',
 ];
+
+/**
+ * 确认成功后自动接力追问的工具：出卷主线逐级推进（一次确认 → 自动出下一张
+ * 确认卡）。课程级一次性操作（新建课程/改课程/发解析）不接力，避免空追问。
+ * 是否再出卡由后端按快照判断——需教师线下操作或流程到终点时它只回文字，
+ * 接力自然停止；教师点「取消」不接力。
+ */
+const RELAY_TOOLS = new Set([
+  'create_exam_project',
+  'update_exam_rules',
+  'create_blueprint',
+  'confirm_blueprint',
+  'enqueue_blueprint_suggest',
+  'confirm_contract',
+  'start_generation',
+  'update_question_type_format',
+]);
 
 /** 综合题原型词表（与后端 ARCHETYPE_CONTRACTS 同键；裸英文不进卡片） */
 const ARCHETYPE_LABELS: Record<string, string> = {
@@ -467,7 +483,7 @@ function GuideCard({
 
 /**
  * 来源引用卡：资料内容问答的命中片段（资料名 + 页/章节 + 摘要）。
- * 正文（模型基于片段的回答）由上方 StemBlocks 渲染，本卡只负责可追溯性：
+ * 正文（模型基于片段的回答）由上方 MarkdownText 渲染，本卡只负责可追溯性：
  * 教师据此可到资料库核对原文；score 不展示（避免把相关度当可信度）。
  */
 function SourcesCard({
@@ -635,6 +651,68 @@ function proposalParamRows(tool: string, payload: AssistantActionPayload): Array
       return Object.entries(body).map(([k, v]) => [k, String(v)]);
   }
 }
+
+/**
+ * 思考过程块：思考模型推理的独立展示区——与正式回复气泡分离，绝不混入正文。
+ * live（流式）：始终展开，column-reverse 自动尾随最新推理；落库消息默认折叠、点击展开。
+ */
+function ThinkingBlock({ text, live = false }: { text: string; live?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const expanded = live || open;
+  if (!text) return null;
+  return (
+    <div style={{ marginLeft: 23, maxWidth: '85%', marginBottom: 4 }}>
+      <button
+        type="button"
+        onClick={() => !live && setOpen((v) => !v)}
+        style={{
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 4,
+          fontSize: '0.72rem',
+          color: 'var(--text-tertiary)',
+          background: 'none',
+          border: 'none',
+          padding: 0,
+          cursor: live ? 'default' : 'pointer',
+        }}
+      >
+        <Sparkles size={11} />
+        {live ? 'AI 思考中…' : '思考过程'}
+        {!live && (
+          <ChevronDown
+            size={11}
+            style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform .15s' }}
+          />
+        )}
+      </button>
+      {expanded && (
+        <div
+          style={{
+            marginTop: 4,
+            background: 'var(--fill)',
+            border: '1px solid var(--line)',
+            borderRadius: 10,
+            padding: '8px 11px',
+            fontSize: '0.78rem',
+            lineHeight: 1.6,
+            color: 'var(--text-secondary)',
+            maxHeight: 200,
+            overflowY: 'auto',
+            // reverse：内容从底部生长，滚动始终锚定最新推理
+            display: 'flex',
+            flexDirection: 'column-reverse',
+            whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word',
+          }}
+        >
+          <MarkdownText text={text} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 /**
  * 提案卡：操作名 + 参数预览 + 影响说明 + 确认/取消。
@@ -1031,6 +1109,7 @@ const AssistantPage: FC = () => {
   const restoring = useAssistantStore((s) => s.restoring);
   const sending = useAssistantStore((s) => s.sending);
   const streamText = useAssistantStore((s) => s.streamText);
+  const streamThink = useAssistantStore((s) => s.streamThink);
   const streamHint = useAssistantStore((s) => s.streamHint);
   const restore = useAssistantStore((s) => s.restore);
   const send = useAssistantStore((s) => s.send);
@@ -1068,7 +1147,7 @@ const AssistantPage: FC = () => {
   useEffect(() => {
     if (sending && streamSessionId && streamSessionId !== activeSessionId) return;
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' });
-  }, [messages.length, streamText, streamHint, sending, streamSessionId, activeSessionId]);
+  }, [messages.length, streamText, streamThink, streamHint, sending, streamSessionId, activeSessionId]);
 
   const handleSend = async () => {
     const text = input.trim();
@@ -1220,6 +1299,14 @@ const AssistantPage: FC = () => {
       }
       await patchProposal(m.id, 'executed', receipt);
       addToast(receipt, 'success');
+      // 逐级接力：确认成功即自动追问，让下一张提案卡自动弹出成为教师的下一个
+      // 确认框；send 有 sending 并发守卫，中途教师点「取消」则链在此断开
+      if (RELAY_TOOLS.has(m.action.tool ?? '')) {
+        // send 失败会回滚乐观气泡并 rethrow：提示教师手动补「继续」
+        void send('继续').catch(() =>
+          addToast('自动追问失败，请手动输入「继续」', 'error'),
+        );
+      }
     } catch (err) {
       // 执行失败：卡片保持 proposed（回写只在成功后发生），教师可重试或取消
       addToast('执行失败: ' + getErrorMessage(err), 'error');
@@ -1359,6 +1446,7 @@ const AssistantPage: FC = () => {
             </div>
           ) : (
             <div key={m.id} className="msg-in" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+              {m.thinking && <ThinkingBlock text={m.thinking} />}
               <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, maxWidth: '88%' }}>
                 <span className="chat-avatar" style={{ marginTop: 2 }} aria-hidden>
                   <Bot size={15} />
@@ -1390,11 +1478,11 @@ const AssistantPage: FC = () => {
                   />
                 ) : m.action.kind === 'sources' ? (
                   <>
-                    <StemBlocks text={m.content} />
+                    <MarkdownText text={m.content} />
                     <SourcesCard message={m} courseId={courseId} navigate={navigate} />
                   </>
                 ) : (
-                  <StemBlocks text={m.content} />
+                  <MarkdownText text={m.content} />
                 )}
                 {(m.action.kind === undefined || m.action.kind === 'sources') &&
                   m.stream_status === 'failed' && (
@@ -1420,7 +1508,13 @@ const AssistantPage: FC = () => {
 
         {/* 在途轮次的流式占位（只在归属本会话时显示；POST 瞬态 session 未知也显示） */}
         {sending && (!streamSessionId || streamSessionId === activeSessionId) && (
-          <div className="msg-in" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
+          <>
+            {streamThink && (
+              <div className="msg-in">
+                <ThinkingBlock text={streamThink} live />
+              </div>
+            )}
+            <div className="msg-in" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
             <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, maxWidth: '88%' }}>
               <span className="chat-avatar" style={{ marginTop: 2 }} aria-hidden>
                 <Bot size={15} />
@@ -1439,7 +1533,7 @@ const AssistantPage: FC = () => {
               >
                 {streamText ? (
                   <span>
-                    <StemBlocks text={streamText} />
+                    <MarkdownText text={streamText} />
                     <span className="caret">▍</span>
                   </span>
                 ) : (
@@ -1460,6 +1554,7 @@ const AssistantPage: FC = () => {
               </div>
             </div>
           </div>
+          </>
         )}
 
         <div ref={bottomRef} />

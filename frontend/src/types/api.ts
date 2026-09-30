@@ -922,6 +922,8 @@ export interface AssistantMessage {
   task_run_id: string;
   role: AssistantRole;
   content: string;
+  /** 思考模型推理全文：与 content 分离，前端渲染成独立思考区（不进正文气泡） */
+  thinking?: string;
   action: AssistantAction;
   stream_status: AssistantStreamStatus;
   created_at: string | null;

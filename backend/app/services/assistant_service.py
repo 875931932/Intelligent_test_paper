@@ -538,13 +538,18 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 - start_generation：发起 AI 分批生成。args={project_id(取自 payload.ids.project_ids)}（合同未确认时不要选它）
 - update_question_type_format：设置/修改某题型的出题格式要求（影响之后的生成；已设置的格式见 snapshot.framework.exam_rules.type_formats）。args={question_type(single_choice/multiple_choice/true_false/fill_blank/short_answer/essay 或中文题型名), template(该题型**完整**的出题格式要求,1~2000字，须含该题型的结构与答案唯一性约束；传空串=恢复系统默认格式)}。综合题由原型档案驱动、不适用本工具——教师要改综合题格式时改用 create_blueprint 的 comprehensive_archetypes。
 
-出卷主线推进（教师要出卷、继续出卷、或直接给出出卷要求时，先看 snapshot.projects 状态选**下一步**的提案，一次一张卡；回复里说明整体计划，并请教师确认卡片后回复「继续」推进下一步）：
+出卷主线推进（教师要出卷、继续出卷、或直接给出出卷要求时，先看 snapshot.projects 状态选**下一步**的提案，一次一张卡；回复里说明整体计划。教师点「确认执行」成功后，前端会自动替教师追问「继续」——收到这类追问就按本阶梯推进，**不要**在回复里要求教师手动输入「继续」）：
 1. 没有试卷项目 → create_exam_project
 2. 项目没有蓝图（blueprint 为 null）→ 先把教师的规则要求落成提案（偏理论/题型比例/章节权重 → update_exam_rules；综合题原型偏好 → 并进 create_blueprint 的 args），再 create_blueprint
 3. 蓝图已有但未确认（blueprint.confirmed=false）→ 需要调整题位或难度分布 → enqueue_blueprint_suggest（指令带上教师原话的比例要求）；不需调整 → confirm_blueprint
 4. 合同未确认（contract.confirmed=false）→ confirm_contract
 5. 合同已确认 → start_generation
 教师具体要求的落点：难度比例（如5:3:2）→ enqueue_blueprint_suggest 的 instruction（系统确定性换算）；偏理论/侧重理解 → update_exam_rules 的 assessment_focus；题型比例/章节权重 → update_exam_rules；综合题不出代码题、多场景应用题 → create_blueprint 的 comprehensive_archetypes；单题型出题格式 → update_question_type_format。
+
+接力停点——以下情况**不出提案卡**（action 置 null），用一两句话说明现状与教师接下来要做什么，然后停下等教师回复：
+1. 蓝图建议已发起、但 blueprint.by_type 的难度分布还没体现教师要求（例如全是 medium 而教师要求 5:3:2）→ 教师需先到『试卷』页点「全部应用」再回来，此时禁止 confirm_blueprint，也不重复发起建议。
+2. 项目 status=generating → 生成任务进行中，引导到试卷页看进度，不要重复发起生成。
+3. 项目 status=review 或 exported → 出卷主线已完成，引导教师到试卷页审核编辑；定稿与导出仍按下方拒绝清单回复。
 
 拒绝并按标准话术回复（action 置 null，不要选任何工具）：
 1. 出题、改题、新增题目 → 「题目内容的新增与修改请到『试卷』页操作（选中题目后可用 AI 修改/创建）。」
@@ -617,7 +622,13 @@ def _normalize_intent(raw) -> dict:
 
 
 def parse_intent(
-    client, context: dict, message: str, *, call_context: ModelCallContext, previous_error: str = ""
+    client,
+    context: dict,
+    message: str,
+    *,
+    call_context: ModelCallContext,
+    previous_error: str = "",
+    on_think=None,
 ) -> dict:
     system_prompt, payload = build_intent_prompt(context, message, previous_error=previous_error)
     raw = client.request_json(
@@ -625,6 +636,7 @@ def parse_intent(
         payload=payload,
         temperature=0.0,
         call_context=call_context,
+        on_think=on_think,
     )
     return _normalize_intent(raw)
 
@@ -1371,10 +1383,21 @@ _ANSWER_SYSTEM_PROMPT = """你是高校课程「{course_name}」工作台内的 
 
 
 class _DeltaBuffer:
-    """把流式 delta 聚批后再发布：避免每 token 一次 XADD。"""
+    """把流式 delta 聚批后再发布：避免每 token 一次 XADD。
 
-    def __init__(self, sink: TurnEventSink, *, min_chars: int = 24, min_interval: float = 0.12) -> None:
+    event 可换 "think"——思考增量与正文增量分通道聚批，语义与正文一致。
+    """
+
+    def __init__(
+        self,
+        sink: TurnEventSink,
+        *,
+        event: str = "delta",
+        min_chars: int = 24,
+        min_interval: float = 0.12,
+    ) -> None:
         self.sink = sink
+        self.event = event
         self.min_chars = min_chars
         self.min_interval = min_interval
         self._parts: list[str] = []
@@ -1390,7 +1413,7 @@ class _DeltaBuffer:
     def flush(self) -> None:
         if not self._parts:
             return
-        self.sink.publish("delta", {"text": "".join(self._parts)})
+        self.sink.publish(self.event, {"text": "".join(self._parts)})
         self._parts = []
         self._size = 0
         self._last = time.monotonic()
@@ -1402,9 +1425,10 @@ def stream_answer(
     message: str,
     *,
     on_delta,
+    on_think=None,
     call_context: ModelCallContext,
 ) -> str:
-    """段2：流式生成纯问答正文。"""
+    """段2：流式生成纯问答正文（on_think 透传思考增量，与正文分通道）。"""
     system_prompt = _ANSWER_SYSTEM_PROMPT.replace("{course_name}", context["course_name"])
     payload = {
         "course": {"id": context["course_id"], "name": context["course_name"]},
@@ -1422,6 +1446,7 @@ def stream_answer(
         payload=payload,
         temperature=0.6,
         on_delta=on_delta,
+        on_think=on_think,
         call_context=call_context,
     )
 
@@ -1442,6 +1467,7 @@ def stream_rag_answer(
     *,
     retrieval: dict,
     on_delta,
+    on_think=None,
     call_context: ModelCallContext,
 ) -> str:
     """段2（RAG）：以检索片段为依据流式生成回答。"""
@@ -1466,6 +1492,7 @@ def stream_rag_answer(
         payload=payload,
         temperature=0.3,
         on_delta=on_delta,
+        on_think=on_think,
         call_context=call_context,
     )
 
@@ -1486,6 +1513,7 @@ def _insert_message(
     stream_status: str = "complete",
     message_id: str | None = None,
     session_id: str | None = None,
+    thinking: str = "",
 ) -> str:
     new_id = message_id or uuid4().hex
     session.execute(
@@ -1497,6 +1525,8 @@ def _insert_message(
             session_id=session_id,
             role=role,
             content=content,
+            # 思考模型的推理全文：与 content 分离落列，绝不混进正式回复
+            thinking=thinking,
             action=action or {},
             stream_status=stream_status,
             # 显式带微秒的时间戳：server_default 在 SQLite 无微秒，同秒的
@@ -1514,6 +1544,8 @@ def message_view(row) -> dict:
         "task_run_id": row["task_run_id"],
         "role": row["role"],
         "content": row["content"],
+        # 思考全文（模型推理）：随消息持久化，前端渲染成独立思考区
+        "thinking": row["thinking"] or "",
         "action": row["action"] or {},
         "stream_status": row["stream_status"],
         "created_at": row["created_at"].isoformat() if row["created_at"] else None,
@@ -1667,6 +1699,22 @@ def _guarded_delta(buffer: _DeltaBuffer, probe: _CancelProbe, partial: list[str]
     return _on_delta
 
 
+def _guarded_think(buffer: _DeltaBuffer, probe: _CancelProbe, parts: list[str]):
+    """思考增量：收集全文 → 入思考缓冲聚批发射 → 节流探测取消。
+
+    与 _guarded_delta 同款穿透语义，但取消时不带正文 partial——思考阶段
+    正文尚未开始，收口文案走「（已停止）」；已流出的思考照样随 parts 落库。
+    """
+
+    def _on_think(text: str) -> None:
+        parts.append(text)
+        buffer.add(text)
+        if probe.cancelled():
+            raise TurnCancelled("")
+
+    return _on_think
+
+
 # ---------------------------------------------------------------------------
 # 主执行
 # ---------------------------------------------------------------------------
@@ -1695,7 +1743,17 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
     )
     call_context = ModelCallContext(course_id=course_id, stage=TASK_TYPE)
 
-    intent = parse_intent(client, context, message, call_context=call_context)
+    # 思考模型的推理内容：全程与正文通道分离——意图阶段（非流式）整段一次
+    # 推、段2（流式）聚批推；全文收集后随消息落库，刷新/切会话仍可见。
+    thinking_parts: list[str] = []
+
+    def _collect_think(text: str) -> None:
+        thinking_parts.append(text)
+        sink.publish("think", {"text": text})
+
+    intent = parse_intent(
+        client, context, message, call_context=call_context, on_think=_collect_think
+    )
     try:
         routed = route_intent(intent, session=session, context=context, message=message)
     except AssistantError as first_error:
@@ -1706,6 +1764,7 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
             message,
             call_context=call_context,
             previous_error=str(first_error),
+            on_think=_collect_think,
         )
         try:
             routed = route_intent(intent, session=session, context=context, message=message)
@@ -1722,12 +1781,14 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
     if routed["kind"] == "chat":
         if routed.get("stream"):
             buffer = _DeltaBuffer(sink)
+            think_buffer = _DeltaBuffer(sink, event="think")
             try:
                 content = stream_answer(
                     client,
                     context,
                     message,
                     on_delta=_guarded_delta(buffer, probe, partial),
+                    on_think=_guarded_think(think_buffer, probe, thinking_parts),
                     call_context=call_context,
                 )
             except TurnCancelled as stopped:
@@ -1741,6 +1802,7 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
                 content = routed.get("reply") or "（回答生成失败，请重试）"
                 stream_status = "failed"
             buffer.flush()
+            think_buffer.flush()
         else:
             # 拒绝/兜底等确定性文案：整段一次推，不再进模型改写
             content = routed["reply"]
@@ -1749,6 +1811,7 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
     elif routed["kind"] == "rag":
         # 资料内容问答：检索片段驱动的流式正文 + 命中时来源引用卡
         buffer = _DeltaBuffer(sink)
+        think_buffer = _DeltaBuffer(sink, event="think")
         try:
             content = stream_rag_answer(
                 client,
@@ -1756,6 +1819,7 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
                 message,
                 retrieval=routed["retrieval"],
                 on_delta=_guarded_delta(buffer, probe, partial),
+                on_think=_guarded_think(think_buffer, probe, thinking_parts),
                 call_context=call_context,
             )
         except TurnCancelled as stopped:
@@ -1769,6 +1833,7 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
             content = routed.get("reply") or "（回答生成失败，请重试）"
             stream_status = "failed"
         buffer.flush()
+        think_buffer.flush()
         if routed["payload"].get("sources"):
             action = dict(routed["action"])
             action["payload"] = routed["payload"]
@@ -1815,6 +1880,7 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
         action=action,
         stream_status=stream_status,
         session_id=session_id,
+        thinking="".join(thinking_parts),
     )
     # 先落库再发 done：前端收到 done 立即拉 messages 必须可见（避免时序竞态）
     session.commit()

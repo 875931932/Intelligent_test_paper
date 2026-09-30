@@ -162,6 +162,77 @@ def test_chat_intent_streams_answer(session):
     assert row.stream_status == "complete"
 
 
+class ThinkingStubClient(StubClient):
+    """思考模型桩：意图解析与正文流式都先出推理，再出正文。"""
+
+    def request_json(self, *, system_prompt, payload, temperature, call_context, **kwargs):
+        result = super().request_json(
+            system_prompt=system_prompt,
+            payload=payload,
+            temperature=temperature,
+            call_context=call_context,
+            **kwargs,
+        )
+        on_think = kwargs.get("on_think")
+        if on_think is not None:
+            on_think("【意图推理】先看课程有没有试卷项目。")
+        return result
+
+    def stream_text(self, *, system_prompt, payload, temperature, on_delta, call_context, **kwargs):
+        on_think = kwargs.get("on_think")
+        if on_think is not None:
+            on_think("【正文推理】组织一段简洁回答。")
+        return super().stream_text(
+            system_prompt=system_prompt,
+            payload=payload,
+            temperature=temperature,
+            on_delta=on_delta,
+            call_context=call_context,
+            **kwargs,
+        )
+
+
+def test_turn_thinking_streamed_and_persisted_separate_from_content(session):
+    """思考模型：推理走独立 think 事件 + thinking 列，正文通道与落库正文不含思考。"""
+    client = ThinkingStubClient([_intent("这条不需要工具。")])
+    task_id = _new_turn(session, "t-think")
+    sink = MemoryTurnEventSink(task_id)
+
+    result = run_turn(
+        session,
+        payload={"course_id": "c1", "task_run_id": task_id, "message": "你是谁"},
+        client=client,
+        sink=sink,
+    )
+
+    assert result["kind"] == "chat"
+    events = [(e["event"], e["data"]) for e in sink.registry[task_id]]
+    think_texts = "".join(d["text"] for ev, d in events if ev == "think")
+    delta_texts = "".join(d["text"] for ev, d in events if ev == "delta")
+    # 意图阶段（非流式整段一次推）与段2（流式聚批）的推理都进 think 通道
+    assert "【意图推理】" in think_texts
+    assert "【正文推理】" in think_texts
+    # 正文通道绝不混入思考
+    assert "【" not in delta_texts
+    first_think = next(i for i, (ev, _) in enumerate(events) if ev == "think")
+    first_delta = next(i for i, (ev, _) in enumerate(events) if ev == "delta")
+    assert first_think < first_delta  # 意图推理先于正文增量
+    assert events[-1][0] == "done"
+
+    row = session.execute(
+        select(assistant_messages.c.content, assistant_messages.c.thinking)
+        .where(assistant_messages.c.task_run_id == task_id)
+    ).one()
+    assert row.content == "你好，这是流式回答。"  # 正式回复 = 纯正文
+    assert "【意图推理】" in row.thinking
+    assert "【正文推理】" in row.thinking
+
+    # 视图带出 thinking，前端据此渲染独立思考区
+    view = assistant_service.list_messages(session, course_id="c1")[-1]
+    assert view["thinking"] == row.thinking
+    assert view["content"] == row.content
+
+
 def test_read_tool_returns_result_card_without_stream(session):
     client = StubClient([_intent("资料清单见下表：", {"tool": "list_materials", "args": {}})])
     task_id = _new_turn(session, "t-read")
@@ -590,6 +661,15 @@ def test_prompt_documents_paper_pipeline_ladder():
     ):
         assert tool in system_prompt
     assert "出卷主线推进" in system_prompt
+    # 接力交互：确认成功由前端自动追问，助手不再要求教师手动打字
+    assert "自动替教师追问" in system_prompt
+    assert "要求教师手动输入" in system_prompt
+    assert "请教师确认卡片后回复" not in system_prompt
+    # 接力停点：建议未应用不出确认卡（防未调难度就冻结蓝图）、生成中不重复
+    # 发起、主线完成引导审核
+    assert "全部应用" in system_prompt
+    assert "禁止 confirm_blueprint" in system_prompt
+    assert "status=generating" in system_prompt
     # 旧拒绝文案（蓝图确认一并拒绝）不再出现；定稿/导出仍拒绝
     assert "蓝图确认、试卷定稿、导出" not in system_prompt
     assert "试卷定稿、导出" in system_prompt

@@ -31,6 +31,8 @@ interface AssistantState {
   streamSessionId: string | null;
   /** 打字机累积文本（done 刷新拿到落库消息后清空） */
   streamText: string;
+  /** 思考模型推理累积（与正文分通道；done 后由消息 thinking 列接管展示） */
+  streamThink: string;
   /** 流过程提示（正在思考 / 生成卡片 / 连接中断等待） */
   streamHint: string | null;
   /** 已收口轮次 id（防「只剩提问」的会话在每次进入时反复重连，内存态即可） */
@@ -88,6 +90,7 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
       streamTaskId: null,
       streamSessionId: null,
       streamText: '',
+      streamThink: '',
       streamHint: null,
     });
 
@@ -134,6 +137,7 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
         streamTaskId: last.task_run_id,
         streamSessionId: sid,
         streamText: '',
+        streamThink: '',
         streamHint: '正在思考…',
       });
       openStream(courseId, last.task_run_id);
@@ -215,6 +219,12 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
           set((s) => ({ streamText: s.streamText + text, streamHint: null }));
           return;
         }
+        if (event === 'think') {
+          // 思考增量：独立通道累积，绝不进 streamText（正式气泡只收正文）
+          const text = typeof data.text === 'string' ? data.text : '';
+          if (text) set((s) => ({ streamThink: s.streamThink + text }));
+          return;
+        }
         if (event === 'card') {
           set({
             streamHint:
@@ -256,6 +266,7 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
     streamTaskId: null,
     streamSessionId: null,
     streamText: '',
+    streamThink: '',
     streamHint: null,
     settledTaskIds: [],
 
@@ -273,6 +284,7 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
         streamTaskId: null,
         streamSessionId: null,
         streamText: '',
+        streamThink: '',
         streamHint: null,
         settledTaskIds: [],
       });
@@ -321,34 +333,52 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
       const text = message.trim();
       const courseId = get().courseId;
       if (!courseId || !text || get().sending) return;
-      set({ sending: true, streamTaskId: null, streamSessionId: null, streamText: '', streamHint: '正在思考…' });
+      // 乐观落泡：用户消息与思考提示同帧渲染，绝不等 POST 往返——后端再慢，
+      // 「继续」/提问气泡也必须立刻出现（气泡先于「正在思考…」同帧可见）。
+      // POST 返回后对齐服务端 id；失败整条撤下并复位在途态。
+      const optimisticId = `local-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const optimisticUser: AssistantMessage = {
+        id: optimisticId,
+        task_run_id: '',
+        role: 'user',
+        content: text,
+        action: {},
+        stream_status: 'complete',
+        created_at: new Date().toISOString(),
+      };
+      set((s) => ({
+        sending: true,
+        streamTaskId: null,
+        streamSessionId: null,
+        streamText: '',
+        streamThink: '',
+        streamHint: '正在思考…',
+        messages: [...s.messages, optimisticUser],
+        restored: true,
+      }));
       try {
         // 无会话先建（单路径：不在 UI 上设禁用态，缺省标题由首条消息自动改题）
         let sid = get().activeSessionId;
         if (!sid) {
           const created = await api.assistant.createSession(courseId);
-          set((s) => ({ sessions: [created, ...s.sessions], activeSessionId: created.id, messages: [] }));
+          // messages 不动：乐观气泡已在其中（新会话本无历史，清空会把它冲掉）
+          set((s) => ({ sessions: [created, ...s.sessions], activeSessionId: created.id }));
           persistActive(courseId, created.id);
           sid = created.id;
         }
         const turn = await api.assistant.createTurn(courseId, text, sid);
-        const localUser: AssistantMessage = {
-          id: turn.user_message_id,
-          task_run_id: turn.task_run_id,
-          role: 'user',
-          content: text,
-          action: {},
-          stream_status: 'complete',
-          created_at: new Date().toISOString(),
-        };
         set((s) => ({
-          messages: [...s.messages, localUser],
-          restored: true,
+          messages: s.messages.map((m) =>
+            m.id === optimisticId
+              ? { ...m, id: turn.user_message_id, task_run_id: turn.task_run_id }
+              : m,
+          ),
           streamTaskId: turn.task_run_id,
           streamSessionId: turn.session_id,
         }));
         openStream(courseId, turn.task_run_id);
       } catch (err) {
+        set((s) => ({ messages: s.messages.filter((m) => m.id !== optimisticId) }));
         clearTurnState();
         throw err;
       }

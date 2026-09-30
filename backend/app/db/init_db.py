@@ -207,6 +207,15 @@ def _migrate_assistant_session(engine: Engine) -> None:
     with engine.begin() as conn:
         if "session_id" not in existing:
             conn.execute(text("ALTER TABLE assistant_messages ADD COLUMN session_id VARCHAR(64)"))
+        if "thinking" not in existing:
+            # 思考模型推理列：NOT NULL DEFAULT 与 create_all 新库同口径
+            #（AGENTS：空库与既有库执行后 schema 一致）
+            conn.execute(
+                text(
+                    "ALTER TABLE assistant_messages "
+                    "ADD COLUMN thinking TEXT NOT NULL DEFAULT ''"
+                )
+            )
         conn.execute(
             text(
                 "CREATE INDEX IF NOT EXISTS ix_assistant_messages_course_session "

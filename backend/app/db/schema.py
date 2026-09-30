@@ -718,6 +718,9 @@ assistant_messages = _course_table(
     Column("session_id", String(64), ForeignKey("assistant_sessions.id"), nullable=True),
     Column("role", String(20), nullable=False),
     Column("content", Text, nullable=False, default="", server_default=""),
+    # 思考模型的推理全文：与 content 分列（SSE 走独立 think 事件，前端渲染
+    # 成独立思考区），正式回复气泡只显示 content
+    Column("thinking", Text, nullable=False, default="", server_default=""),
     Column("action", JSON, nullable=False, default=dict, server_default="{}"),
     # stopped（v3）：教师停止生成——已落库的部分正文 + 「已停止」徽标
     Column("stream_status", String(20), nullable=False, default="complete", server_default="complete"),

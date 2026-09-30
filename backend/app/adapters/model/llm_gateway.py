@@ -199,6 +199,7 @@ class LLMJsonClient:
         max_tokens: int | None = None,
         reasoning_effort: str | None = None,
         response_schema: dict[str, Any] | None = None,
+        on_think: Callable[[str], None] | None = None,
     ) -> dict:
         prompt = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else dict(payload)
         canonical_prompt = json.dumps(prompt, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -319,6 +320,16 @@ class LLMJsonClient:
                     )
                 if response_validator is not None:
                     response_validator(result)
+                if on_think is not None:
+                    # 非流式响应里的整段推理（思考模型在 message 上带
+                    # reasoning_content）：成功解析后一次性回调，让等待期
+                    # （意图解析等 JSON 调用）也能把推理交给调用方展示。
+                    # 放在校验之后：任何校验/解析失败走重试，不会推半截思考。
+                    reasoning = message.get("reasoning_content") or message.get(
+                        "reasoning"
+                    )
+                    if isinstance(reasoning, str) and reasoning.strip():
+                        on_think(reasoning)
             except httpx.HTTPStatusError as exc:
                 status_code = exc.response.status_code
                 hint = _HTTP_STATUS_HINTS.get(status_code)
@@ -573,6 +584,7 @@ class LLMJsonClient:
         payload: Any,
         temperature: float,
         on_delta: Callable[[str], None] | None = None,
+        on_think: Callable[[str], None] | None = None,
         call_context: ModelCallContext | None = None,
         max_tokens: int | None = None,
         reasoning_effort: str | None = None,
@@ -640,7 +652,18 @@ class LLMJsonClient:
                             continue
                         first = choices[0] if isinstance(choices[0], dict) else {}
                         delta = first.get("delta")
-                        text = delta.get("content") if isinstance(delta, dict) else None
+                        if isinstance(delta, dict):
+                            # 思考模型的推理增量（OpenAI 兼容 reasoning_content，
+                            # 少数档案用 reasoning）：独立回调给调用方展示，
+                            # 不混入 parts——拼装出的正文全文仍是纯回答。
+                            think = delta.get("reasoning_content") or delta.get(
+                                "reasoning"
+                            )
+                            if isinstance(think, str) and think and on_think is not None:
+                                on_think(think)
+                            text = delta.get("content")
+                        else:
+                            text = None
                         if isinstance(text, str) and text:
                             parts.append(text)
                             if on_delta is not None:
