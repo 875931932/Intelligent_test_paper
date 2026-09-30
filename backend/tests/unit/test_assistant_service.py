@@ -55,6 +55,7 @@ class StubClient:
                 "payload": payload,
                 "temperature": temperature,
                 "previous_error": payload.get("previous_validation_error"),
+                "stream": kwargs.get("stream", False),
             }
         )
         return self._responses.pop(0)
@@ -209,9 +210,10 @@ def test_turn_thinking_streamed_and_persisted_separate_from_content(session):
     events = [(e["event"], e["data"]) for e in sink.registry[task_id]]
     think_texts = "".join(d["text"] for ev, d in events if ev == "think")
     delta_texts = "".join(d["text"] for ev, d in events if ev == "delta")
-    # 意图阶段（非流式整段一次推）与段2（流式聚批）的推理都进 think 通道
+    # 意图阶段（流式、经 think 缓冲聚批）与段2（流式聚批）的推理都进 think 通道
     assert "【意图推理】" in think_texts
     assert "【正文推理】" in think_texts
+    assert client.calls[0]["stream"] is True  # 意图解析启用流式，等待期实时推思考
     # 正文通道绝不混入思考
     assert "【" not in delta_texts
     first_think = next(i for i, (ev, _) in enumerate(events) if ev == "think")

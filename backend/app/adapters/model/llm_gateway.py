@@ -200,6 +200,7 @@ class LLMJsonClient:
         reasoning_effort: str | None = None,
         response_schema: dict[str, Any] | None = None,
         on_think: Callable[[str], None] | None = None,
+        stream: bool = False,
     ) -> dict:
         prompt = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else dict(payload)
         canonical_prompt = json.dumps(prompt, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -256,6 +257,11 @@ class LLMJsonClient:
                 self.max_attempts, self.large_prompt_max_attempts
             )
 
+        # 流式 JSON（意图解析等）：推理增量在 SSE 里实时回调 on_think，正文
+        # JSON 增量只在服务端拼装、不对外回调；解析/校验/重试语义与非流式
+        # 一致。tool 调用没有流式 tool_calls 解析，带 tool 时回落非流式。
+        use_stream = stream and tool is None
+
         for attempt in range(1, effective_max_attempts + 1):
             attempt_count = attempt
             request_id = None
@@ -265,23 +271,42 @@ class LLMJsonClient:
             raw_snapshot = None
             should_retry = True
             try:
-                with _LLM_SEMAPHORE:
-                    response = self._post(
+                if use_stream:
+                    # 流式 JSON：推理增量已在 helper 内实时回调 on_think，
+                    # 正文 JSON 服务端拼装成非流式同构的 body，下面的
+                    # 解析/校验/重试逻辑两条路径完全共用。HTTP/传输异常
+                    # 由 helper 内 raise_for_status 抛出，走同一重试环
+                    # （罕见路径：重试会重新流式请求，思考可能重复推送）。
+                    body, stream_meta = self._stream_json_once(
                         system_prompt,
                         canonical_prompt,
                         temperature,
-                        tool,
-                        max_tokens,
-                        reasoning_effort,
-                        response_schema,
+                        max_tokens=max_tokens,
+                        reasoning_effort=reasoning_effort,
+                        response_schema=response_schema,
+                        on_think=on_think,
                     )
-                headers = getattr(response, "headers", {})
-                request_id = headers.get("x-request-id") if hasattr(headers, "get") else None
-                status_code = getattr(response, "status_code", None)
-                final_http_status = status_code if isinstance(status_code, int) else 200
-                response.raise_for_status()
-                raw_snapshot = response.content.decode("utf-8", errors="replace")[:2000]
-                body = response.json()
+                    request_id = stream_meta["request_id"]
+                    final_http_status = stream_meta["status_code"]
+                    raw_snapshot = stream_meta["raw_snapshot"]
+                else:
+                    with _LLM_SEMAPHORE:
+                        response = self._post(
+                            system_prompt,
+                            canonical_prompt,
+                            temperature,
+                            tool,
+                            max_tokens,
+                            reasoning_effort,
+                            response_schema,
+                        )
+                    headers = getattr(response, "headers", {})
+                    request_id = headers.get("x-request-id") if hasattr(headers, "get") else None
+                    status_code = getattr(response, "status_code", None)
+                    final_http_status = status_code if isinstance(status_code, int) else 200
+                    response.raise_for_status()
+                    raw_snapshot = response.content.decode("utf-8", errors="replace")[:2000]
+                    body = response.json()
                 if not isinstance(body, dict):
                     raise LLMModelError("model_invalid_envelope", "model response envelope is invalid")
                 request_id = request_id or _optional_text(body.get("id"))
@@ -325,6 +350,8 @@ class LLMJsonClient:
                     # reasoning_content）：成功解析后一次性回调，让等待期
                     # （意图解析等 JSON 调用）也能把推理交给调用方展示。
                     # 放在校验之后：任何校验/解析失败走重试，不会推半截思考。
+                    # 流式分支的思考在 _stream_json_once 里已实时回调，其
+                    # message 不带 reasoning_content，此处天然不再重复推。
                     reasoning = message.get("reasoning_content") or message.get(
                         "reasoning"
                     )
@@ -332,6 +359,7 @@ class LLMJsonClient:
                         on_think(reasoning)
             except httpx.HTTPStatusError as exc:
                 status_code = exc.response.status_code
+                final_http_status = status_code
                 hint = _HTTP_STATUS_HINTS.get(status_code)
                 message = f"LLM request failed with HTTP status {status_code}"
                 if hint:
@@ -491,6 +519,7 @@ class LLMJsonClient:
         temperature: float,
         *,
         stream: bool = False,
+        json_mode: bool = False,
         tool: dict[str, Any] | None = None,
         max_tokens: int | None = None,
         reasoning_effort: str | None = None,
@@ -512,10 +541,11 @@ class LLMJsonClient:
         if max_tokens is not None:
             json_body["max_tokens"] = max_tokens
         if stream:
-            # 流式正文走自由文本：response_format 会把输出锁死成 JSON，而打字机
-            # 回调的是人读的对话正文，两者互斥；工具/schema 调用不参与流式路径。
+            # stream 与 response_format 相互独立：打字机正文（stream_text）只
+            # 下发 stream 走自由文本；流式 JSON（意图解析思考实时推）则 stream
+            # + response_format 同时下发（provider 已实测兼容 json_object）。
             json_body["stream"] = True
-        elif tool is not None:
+        if tool is not None:
             json_body["tools"] = [{"type": "function", "function": tool}]
             if profile.supports_tool_choice:
                 json_body["tool_choice"] = "required"
@@ -530,7 +560,7 @@ class LLMJsonClient:
                     "schema": response_schema,
                 },
             }
-        else:
+        elif json_mode:
             json_body["response_format"] = {"type": "json_object"}
         if profile.thinking_style == "reasoning_effort":
             requested = reasoning_effort or (
@@ -557,6 +587,7 @@ class LLMJsonClient:
             system_prompt,
             canonical_prompt,
             temperature,
+            json_mode=True,
             tool=tool,
             max_tokens=max_tokens,
             reasoning_effort=reasoning_effort,
@@ -576,6 +607,114 @@ class LLMJsonClient:
         if self.client is not None:
             return self.client.post(f"{self.base_url}/chat/completions", **request)
         return httpx.post(f"{self.base_url}/chat/completions", **request)
+
+    def _stream_json_once(
+        self,
+        system_prompt: str,
+        canonical_prompt: str,
+        temperature: float,
+        *,
+        max_tokens: int | None = None,
+        reasoning_effort: str | None = None,
+        response_schema: dict[str, Any] | None = None,
+        on_think: Callable[[str], None] | None = None,
+    ) -> tuple[dict, dict[str, Any]]:
+        """单次流式 JSON 请求：SSE 推理增量实时回调，正文拼装成非流式同构 body。
+
+        与 ``stream_text`` 的分工：正文 JSON 增量不对外回调（意图 JSON 对教师
+        无可读价值），只有 reasoning 增量即时 ``on_think``——意图解析等待期
+        一开始就能看到思考过程。返回 ``(body, meta)``：body 形如非流式响应
+        ``{"choices": [{"message": {"content": 拼装全文}}]}``，交回
+        ``request_json`` 的既有解析/校验/重试环统一处理；meta 带
+        request_id / status_code / raw_snapshot 供观测。**本方法不重试**：
+        HTTP/传输异常原样上抛由外层重试环接管（重试会重发流式请求，思考
+        可能重复推送——罕见路径，可接受）；错误响应体先 read 再
+        raise_for_status，保住 HTTPStatusError 的 body_tag 白名单匹配。
+        """
+        json_body = self._build_body(
+            system_prompt,
+            canonical_prompt,
+            temperature,
+            stream=True,
+            json_mode=True,
+            max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
+            response_schema=response_schema,
+        )
+        request = {
+            "headers": {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            "json": json_body,
+            "timeout": httpx.Timeout(self.timeout, connect=15.0),
+        }
+        parts: list[str] = []
+        usage: dict[str, Any] = {}
+        request_id: str | None = None
+        status_code = 200
+        with _LLM_SEMAPHORE:
+            if self.client is not None:
+                stream_cm = self.client.stream(
+                    "POST", f"{self.base_url}/chat/completions", **request
+                )
+            else:
+                stream_cm = httpx.stream(
+                    "POST", f"{self.base_url}/chat/completions", **request
+                )
+            with stream_cm as response:
+                request_id = response.headers.get("x-request-id")
+                status_code = response.status_code
+                if status_code >= 400:
+                    # 错误体读全再抛：流式响应默认未读，直接 raise 会让
+                    # except 里 response.text 抛 ResponseNotRead，丢掉
+                    # insufficient_balance 这类白名单标识。
+                    response.read()
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except ValueError:
+                        continue
+                    if not isinstance(chunk, dict):
+                        continue
+                    request_id = request_id or _optional_text(chunk.get("id"))
+                    # usage 通常挂在末尾 chunk（本 provider 免 stream_options
+                    # 即返回）：先于 choices 判断取，空 choices 的 usage 块不丢。
+                    if isinstance(chunk.get("usage"), dict):
+                        usage = chunk["usage"]
+                    choices = chunk.get("choices")
+                    if not isinstance(choices, list) or not choices:
+                        continue
+                    first = choices[0] if isinstance(choices[0], dict) else {}
+                    delta = first.get("delta")
+                    if not isinstance(delta, dict):
+                        continue
+                    # 推理增量独立回调（OpenAI 兼容 reasoning_content，少数
+                    # 档案用 reasoning）：与正文通道分离，等待期实时展示。
+                    think = delta.get("reasoning_content") or delta.get("reasoning")
+                    if isinstance(think, str) and think and on_think is not None:
+                        on_think(think)
+                    text = delta.get("content")
+                    if isinstance(text, str) and text:
+                        parts.append(text)
+        content = "".join(parts)
+        body: dict[str, Any] = {
+            "id": request_id,
+            "choices": [{"message": {"content": content}}],
+            "usage": usage,
+        }
+        meta = {
+            "request_id": request_id,
+            "status_code": status_code if isinstance(status_code, int) else 200,
+            "raw_snapshot": content[:2000],
+        }
+        return body, meta
 
     def stream_text(
         self,

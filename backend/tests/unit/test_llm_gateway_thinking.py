@@ -2,8 +2,11 @@
 
 - stream_text：SSE chunk 的 reasoning_content / reasoning 增量回调 on_think，
   不混入正文 parts（返回全文仍是纯回答）。
-- request_json：非流式响应 message 上的整段推理在校验成功后一次性回调；
+- request_json 非流式：响应 message 上的整段推理在校验成功后一次性回调；
   校验失败走重试路径时不推半截思考。
+- request_json(stream=True)：SSE 推理增量实时回调（等待期即可见思考），
+  正文 JSON 增量只在服务端拼装；请求体同时下发 stream 与 response_format。
+  流式固有取舍：解析/校验失败重试时思考可能已推出甚至重复推送。
 """
 
 from __future__ import annotations
@@ -51,6 +54,9 @@ class _FakeStreamResponse:
     def raise_for_status(self) -> None:
         return None
 
+    def read(self) -> bytes:
+        return b""
+
     def iter_lines(self) -> list[str]:
         return list(self._lines)
 
@@ -67,22 +73,41 @@ class _FakeStreamCM:
 
 
 class _FakeHttpClient:
-    """httpx.Client 替身：非流式 post 与流式 stream 都按预置返回。"""
+    """httpx.Client 替身：非流式 post 与流式 stream 都按预置返回。
 
-    def __init__(self, *, response: _FakeResponse | None = None, lines: list[str] | None = None) -> None:
+    line_sets：按 stream 调用次序逐次弹出（用于重试场景，弹完复用最后一组）；
+    lines：每次 stream 都返回同一组（缺省）。
+    """
+
+    def __init__(
+        self,
+        *,
+        response: _FakeResponse | None = None,
+        lines: list[str] | None = None,
+        line_sets: list[list[str]] | None = None,
+    ) -> None:
         self._response = response
         self._lines = lines or []
+        self._line_sets = [list(s) for s in (line_sets or [])]
         self.post_calls: list[str] = []
+        self.post_bodies: list[dict] = []
         self.stream_calls: list[str] = []
+        self.stream_bodies: list[dict] = []
 
-    def post(self, url: str, **_kwargs) -> _FakeResponse:
+    def post(self, url: str, **kwargs) -> _FakeResponse:
         self.post_calls.append(url)
+        self.post_bodies.append(kwargs.get("json"))
         assert self._response is not None
         return self._response
 
-    def stream(self, _method: str, url: str, **_kwargs) -> _FakeStreamCM:
+    def stream(self, _method: str, url: str, **kwargs) -> _FakeStreamCM:
         self.stream_calls.append(url)
-        return _FakeStreamCM(_FakeStreamResponse(self._lines))
+        self.stream_bodies.append(kwargs.get("json"))
+        if self._line_sets:
+            lines = self._line_sets.pop(0) if len(self._line_sets) > 1 else self._line_sets[0]
+        else:
+            lines = self._lines
+        return _FakeStreamCM(_FakeStreamResponse(lines))
 
 
 def _client(http_client) -> LLMJsonClient:
@@ -177,7 +202,7 @@ def test_request_json_no_reasoning_means_no_callback():
 
 
 def test_request_json_failed_validation_does_not_report_reasoning():
-    """内容为空 → 解析失败重试 → 最终失败：一次思考都不推（防半截内容）。"""
+    """非流式：内容为空 → 解析失败重试 → 最终失败：一次思考都不推。"""
     empty_body = _completion_body({"content": "   ", "reasoning_content": "没想完"})
     client = LLMJsonClient(
         api_key="sk-test",
@@ -196,3 +221,118 @@ def test_request_json_failed_validation_does_not_report_reasoning():
             on_think=thinks.append,
         )
     assert thinks == []
+
+
+# ----------------------
+# 流式 JSON（意图解析）
+# ----------------------
+
+
+def test_request_json_stream_forwards_reasoning_live_and_parses_json():
+    """stream=True：推理增量实时回调、正文 JSON 拼装后解析，请求体带
+    stream + response_format（json_object 不因流式丢失）。"""
+    lines = [
+        'data: ' + json.dumps({"choices": [{"delta": {"reasoning_content": "先想"}}]}),
+        'data: ' + json.dumps({"choices": [{"delta": {"reasoning": "再想"}}]}),
+        'data: ' + json.dumps({"choices": [{"delta": {"content": '{"reply": '}}]}),
+        'data: ' + json.dumps({"choices": [{"delta": {"content": '"ok", "action": {}}'}}]}),
+        'data: ' + json.dumps({"id": "cmpl-s", "choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5}}),
+        "data: [DONE]",
+    ]
+    http = _FakeHttpClient(lines=lines)
+    client = _client(http)
+    thinks: list[str] = []
+
+    result = client.request_json(
+        system_prompt="sys",
+        payload={"q": "hi"},
+        temperature=0.0,
+        call_context=_ctx(),
+        on_think=thinks.append,
+        stream=True,
+    )
+
+    assert result == {"reply": "ok", "action": {}}
+    assert thinks == ["先想", "再想"]
+    assert http.post_calls == []  # 走了流式，没退化到非流式
+    body = http.stream_bodies[0]
+    assert body["stream"] is True
+    assert body["response_format"] == {"type": "json_object"}
+
+
+def test_request_json_stream_retry_may_repush_thinking(monkeypatch):
+    """流式重试语义：第一次正文为空失败、第二次成功——思考可能重复推送
+    （流式固有取舍，罕见路径可接受，见 _stream_json_once 注释）。"""
+    monkeypatch.setattr("app.adapters.model.llm_gateway.time.sleep", lambda _: None)
+    empty_lines = [
+        'data: ' + json.dumps({"choices": [{"delta": {"reasoning_content": "第一遍思考"}}]}),
+        "data: [DONE]",
+    ]
+    ok_lines = [
+        'data: ' + json.dumps({"choices": [{"delta": {"reasoning_content": "第一遍思考"}}]}),
+        'data: ' + json.dumps({"choices": [{"delta": {"content": '{"reply": "ok"}'}}]}),
+        "data: [DONE]",
+    ]
+    http = _FakeHttpClient(line_sets=[empty_lines, ok_lines])
+    client = LLMJsonClient(
+        api_key="sk-test",
+        base_url="https://api.stepfun.com/v1",
+        model="step-3.7-flash",
+        max_attempts=2,
+        client=http,
+    )
+    thinks: list[str] = []
+
+    result = client.request_json(
+        system_prompt="sys",
+        payload={"q": "hi"},
+        temperature=0.0,
+        call_context=_ctx(),
+        on_think=thinks.append,
+        stream=True,
+    )
+
+    assert result == {"reply": "ok"}
+    assert thinks == ["第一遍思考", "第一遍思考"]
+
+
+def test_stream_text_body_keeps_stream_without_response_format():
+    """stream_text（自由文本打字机）：只下发 stream，不带 response_format
+    ——_build_body 解耦后不得把 json_object 锁到正文流式上。"""
+    lines = [
+        'data: ' + json.dumps({"choices": [{"delta": {"content": "你好"}}]}),
+        "data: [DONE]",
+    ]
+    http = _FakeHttpClient(lines=lines)
+    client = _client(http)
+
+    text = client.stream_text(
+        system_prompt="sys",
+        payload={"q": "hi"},
+        temperature=0.6,
+        call_context=_ctx(),
+    )
+
+    assert text == "你好"
+    body = http.stream_bodies[0]
+    assert body["stream"] is True
+    assert "response_format" not in body
+
+
+def test_request_json_non_stream_body_keeps_json_object():
+    """非流式 JSON（_post）：json_mode 显式下发后行为不变——带
+    response_format json_object、不带 stream。"""
+    body = _completion_body({"content": '{"reply": "ok"}'})
+    http = _FakeHttpClient(response=_FakeResponse(body))
+    client = _client(http)
+
+    client.request_json(
+        system_prompt="sys",
+        payload={"q": "hi"},
+        temperature=0.0,
+        call_context=_ctx(),
+    )
+
+    sent = http.post_bodies[0]
+    assert sent["response_format"] == {"type": "json_object"}
+    assert "stream" not in sent

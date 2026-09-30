@@ -631,12 +631,15 @@ def parse_intent(
     on_think=None,
 ) -> dict:
     system_prompt, payload = build_intent_prompt(context, message, previous_error=previous_error)
+    # stream=True：意图解析也走 SSE——推理增量在等待期实时回调 on_think
+    # （前端思考块先动起来），正文 JSON 服务端拼装后按既有重试环解析。
     raw = client.request_json(
         system_prompt=system_prompt,
         payload=payload,
         temperature=0.0,
         call_context=call_context,
         on_think=on_think,
+        stream=True,
     )
     return _normalize_intent(raw)
 
@@ -1743,13 +1746,16 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
     )
     call_context = ModelCallContext(course_id=course_id, stage=TASK_TYPE)
 
-    # 思考模型的推理内容：全程与正文通道分离——意图阶段（非流式）整段一次
+    # 思考模型的推理内容：全程与正文通道分离——意图阶段（流式）增量聚批
     # 推、段2（流式）聚批推；全文收集后随消息落库，刷新/切会话仍可见。
     thinking_parts: list[str] = []
+    # 意图阶段思考聚批：SSE 增量小而密，直接 publish 会每 token 一次 XADD；
+    # 意图结束后 flush 收口，残余小增量不滞留（与段2 的 think_buffer 独立）。
+    intent_think_buffer = _DeltaBuffer(sink, event="think")
 
     def _collect_think(text: str) -> None:
         thinking_parts.append(text)
-        sink.publish("think", {"text": text})
+        intent_think_buffer.add(text)
 
     intent = parse_intent(
         client, context, message, call_context=call_context, on_think=_collect_think
@@ -1774,6 +1780,9 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
                 "stream": False,  # 确定性失败文案，不再问模型
                 "reply": f"我没能处理这个请求（{second_error}）。请换个说法，或到对应页面操作。",
             }
+
+    # 意图阶段思考收口：聚批缓冲残余增量全部推出，再进入段2
+    intent_think_buffer.flush()
 
     stream_status = "complete"
     probe = _CancelProbe(session, course_id=course_id, task_run_id=task_run_id)
