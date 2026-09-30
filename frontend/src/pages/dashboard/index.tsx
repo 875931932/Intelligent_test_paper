@@ -186,9 +186,20 @@ const DashboardPage: FC = () => {
           style={{ cursor: 'pointer', display: 'flex' }}
           className="stagger-item bento-col-2 bento-row-2"
         >
-          <Card className="card-hover tile-dark" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+          <Card
+            className="card-hover tile-dark"
+            style={{
+              flex: 1,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 18,
+              padding: 28,
+              // 主卡内一层极淡的蓝色径向光：深色瓦片的层次感，不破坏 bento 的干净
+              backgroundImage: 'radial-gradient(420px 200px at 88% -10%, rgba(59,130,246,0.22), transparent 70%)',
+            }}
+          >
             {/* 头部：品牌蓝图标牌 + 标题 */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 24 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
               <span style={{
                 width: 48, height: 48, borderRadius: 14, background: 'var(--brand)', color: '#ffffff',
                 display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
@@ -201,17 +212,42 @@ const DashboardPage: FC = () => {
               </div>
             </div>
 
-            {/* 单一焦点：大数字 + 解析进度条（取代旧的徽章行+分布条堆叠） */}
-            <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
-                <span style={{ fontSize: '2.5rem', fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1, color: '#ffffff' }}>
-                  {materialStats.total}
-                </span>
-                <span style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.72)' }}>份资料</span>
-              </div>
-              <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)' }}>
-                已解析 {materialStats.parsed} · 未解析 {materialStats.unparsed}
+            {/* 大数字：页面唯一 Hero 数字 */}
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+              <span style={{ fontSize: '2.75rem', fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1, color: '#ffffff' }}>
+                {materialStats.total}
               </span>
+              <span style={{ fontSize: '0.85rem', color: 'rgba(255,255,255,0.72)' }}>
+                份资料 · {materialStats.categories} 类
+              </span>
+            </div>
+
+            {/* 三口径小统计：白透明盒，深色卡上的信息密度来源 */}
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 8 }}>
+              {[
+                { label: '已解析', value: materialStats.parsed },
+                { label: '未解析', value: materialStats.unparsed },
+                { label: '资料类型', value: materialStats.categories },
+              ].map((s) => (
+                <div key={s.label} style={{
+                  padding: '10px 12px', borderRadius: 'var(--radius-sm)',
+                  background: 'rgba(255,255,255,0.08)', border: '1px solid rgba(255,255,255,0.1)',
+                  display: 'flex', flexDirection: 'column', gap: 2,
+                }}>
+                  <span style={{ fontSize: '1.125rem', fontWeight: 600, color: '#ffffff', lineHeight: 1.2 }}>{s.value}</span>
+                  <span style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.6)' }}>{s.label}</span>
+                </div>
+              ))}
+            </div>
+
+            {/* 解析进度：label + 百分比 + 细条（auto 边距把底部组压到卡底） */}
+            <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)' }}>解析进度</span>
+                <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.72)', fontVariantNumeric: 'tabular-nums' }}>
+                  {materialStats.total ? Math.round((materialStats.parsed / materialStats.total) * 100) : 0}%
+                </span>
+              </div>
               <div style={{ height: 6, borderRadius: 999, background: 'rgba(255,255,255,0.14)', overflow: 'hidden' }}>
                 <div style={{
                   width: materialStats.total ? Math.round((materialStats.parsed / materialStats.total) * 100) + '%' : '0%',
@@ -221,7 +257,7 @@ const DashboardPage: FC = () => {
               </div>
             </div>
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 20 }}>
+            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <Button
                 variant="secondary"
                 size="sm"
