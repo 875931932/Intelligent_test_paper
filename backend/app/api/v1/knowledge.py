@@ -665,16 +665,21 @@ def _apply_auto_supplement(
     }
 
     # 保留教师已提交的操作（手填补证据、排除、改名等），只追加自动推荐。
-    existing = [
-        op
-        for op in confirmation.operations
-        if not (
+    # 手动 supplement 是教师的显式裁决，必须整条保留：此前过滤条件恰好丢弃
+    # 全部有效手动补证据（与本注释意图相反），教师手填补的考点在 auto 模式下
+    # 被静默清空、发布 409。预播种 added_by_point 使自动推荐对教师已选 chunk
+    # 去重，且手动补过的考点并入已审集合（补证据即审阅，与前端语义一致）。
+    existing = list(confirmation.operations)
+    added_by_point: dict[str, set[str]] = {}
+    for op in confirmation.operations:
+        if (
             op.operation == "supplement_direct_evidence"
             and op.target_code.strip()
             and (op.value or "").strip()
-        )
-    ]
-    added_by_point: dict[str, set[str]] = {}
+        ):
+            added_by_point.setdefault(op.target_code, set()).add(
+                (op.value or "").strip()
+            )
     for code in targets:
         point = points_by_code.get(code)
         if point is None:
@@ -714,13 +719,24 @@ def _apply_auto_supplement(
             # 推荐器对 A 类考点 0 采纳：改判后仍拿不到可考核（answer/rubric 依据）
             # 的直接证据，等同于"无 supporting 候选"的材料覆盖缺口，自动排除，
             # 避免该考点既补不上又在 answer/rubric 闸处永久拦死发布。
-            auto_exclusions.add(code)
-            _logger.info(
-                "auto supplement no adoption for %s -> auto exclude course=%s run=%s",
-                code,
-                course_id,
-                run_id,
-            )
+            # 教师已手动补证据的考点除外：教师显式裁决优先于推荐器判断，且树内
+            # 有活跃卡链时该手动改判在发布端可直接转 sufficient 正常发布；无卡链
+            # 者补证据救不回（发布卡链闸），维持排除以保证一键可发布。
+            if code in added_by_point and code in active_card_chains:
+                _logger.info(
+                    "auto supplement keep teacher-supplemented %s course=%s run=%s",
+                    code,
+                    course_id,
+                    run_id,
+                )
+            else:
+                auto_exclusions.add(code)
+                _logger.info(
+                    "auto supplement no adoption for %s -> auto exclude course=%s run=%s",
+                    code,
+                    course_id,
+                    run_id,
+                )
             continue
         for item in recommended:
             chunk_id = str(item.get("evidence_chunk_id") or "").strip()

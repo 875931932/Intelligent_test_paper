@@ -433,3 +433,150 @@ def test_auto_keeps_point_when_recommender_accepts_some():
         and op.value == "c1"
         for op in result.operations
     )
+
+
+def test_auto_preserves_manual_supplement_ops():
+    """教师手动 supplement 必须整条保留（回归：此前被过滤静默丢弃）。
+    手动补过的考点并入已审集合，其余自动追加照常执行。"""
+    recommender = _Recommender(accepted={"p1": ["c1"]})
+    coverage = [
+        _coverage("p1", "insufficient", ["no_direct_evidence"]),
+        # B 类：failed 残因但有活跃卡链，走发布端救回，不进推荐器
+        _coverage("p2", "insufficient", ["classification_failed"]),
+    ]
+    sources = [_candidate("p1", "c1")]
+    confirmation = KnowledgeTreeConfirmation(
+        operations=[
+            TreeOperation(operation="exclude_topic", target_code="t1", value="t1"),
+            TreeOperation(
+                operation="supplement_direct_evidence", target_code="p2", value="c9"
+            ),
+        ],
+        reviewed_topic_codes=["t1"],
+        reviewed_exam_point_codes=[],
+        teacher_exclusions=[],
+        auto_supplement_direct_evidence=True,
+    )
+    result = _apply_auto_supplement(
+        course_id="course",
+        run_id="run",
+        candidate={"payload": _payload(coverage, sources, _tree_with_card("p2"))},
+        confirmation=confirmation,
+        session=_FakeSession([_point_row("p1")]),
+        recommender=recommender,
+    )
+    supplement_ops = {
+        (op.target_code, op.value)
+        for op in result.operations
+        if op.operation == "supplement_direct_evidence"
+    }
+    assert ("p2", "c9") in supplement_ops  # 手动补证据不再被丢弃
+    assert ("p1", "c1") in supplement_ops  # 自动推荐照常追加
+    assert any(
+        op.operation == "exclude_topic" for op in result.operations
+    )  # 其余教师操作同样保留
+    assert "p2" in result.reviewed_exam_point_codes  # 手动补证据即审阅
+    assert "p1" in result.reviewed_exam_point_codes
+
+
+def test_auto_dedupes_recommendation_against_manual_supplement():
+    """教师已手动补 p1-c1，推荐器又推荐同一 chunk：不产生重复操作。"""
+    recommender = _Recommender(accepted={"p1": ["c1"]})
+    coverage = [_coverage("p1", "insufficient", ["no_direct_evidence"])]
+    sources = [_candidate("p1", "c1")]
+    confirmation = KnowledgeTreeConfirmation(
+        operations=[
+            TreeOperation(
+                operation="supplement_direct_evidence", target_code="p1", value="c1"
+            )
+        ],
+        reviewed_topic_codes=[],
+        reviewed_exam_point_codes=[],
+        teacher_exclusions=[],
+        auto_supplement_direct_evidence=True,
+    )
+    result = _apply_auto_supplement(
+        course_id="course",
+        run_id="run",
+        candidate={"payload": _payload(coverage, sources)},
+        confirmation=confirmation,
+        session=_FakeSession([_point_row("p1")]),
+        recommender=recommender,
+    )
+    supplement_ops = [
+        (op.target_code, op.value)
+        for op in result.operations
+        if op.operation == "supplement_direct_evidence"
+    ]
+    assert supplement_ops == [("p1", "c1")]
+    assert "p1" not in result.teacher_exclusions
+
+
+def test_auto_keeps_manual_supplement_when_recommender_accepts_nothing():
+    """教师已手动补证据且树内有活跃卡链：推荐器 0 采纳不得覆盖教师裁决，
+    该手动改判在发布端可转 sufficient 正常发布，不应被自动排除。"""
+    recommender = _Recommender(accepted={})
+    coverage = [_coverage("p1", "insufficient", ["no_direct_evidence"])]
+    sources = [_candidate("p1", "c1")]
+    confirmation = KnowledgeTreeConfirmation(
+        operations=[
+            TreeOperation(
+                operation="supplement_direct_evidence", target_code="p1", value="c1"
+            )
+        ],
+        reviewed_topic_codes=[],
+        reviewed_exam_point_codes=[],
+        teacher_exclusions=[],
+        auto_supplement_direct_evidence=True,
+    )
+    result = _apply_auto_supplement(
+        course_id="course",
+        run_id="run",
+        candidate={"payload": _payload(coverage, sources, _tree_with_card("p1"))},
+        confirmation=confirmation,
+        session=_FakeSession([_point_row("p1")]),
+        recommender=recommender,
+    )
+    assert recommender.called == ["p1"]
+    assert "p1" not in result.teacher_exclusions
+    assert "p1" in result.reviewed_exam_point_codes
+    assert any(
+        op.operation == "supplement_direct_evidence"
+        and op.target_code == "p1"
+        and op.value == "c1"
+        for op in result.operations
+    )
+
+
+def test_auto_still_excludes_manual_supplement_without_active_chain():
+    """教师手动补了证据但树内无活跃卡链：补证据救不回发布卡链闸，
+    仍自动排除（无卡考点唯一可发布路径），手动操作本身保留不丢。"""
+    recommender = _Recommender(accepted={})
+    coverage = [_coverage("p1", "insufficient", ["no_direct_evidence"])]
+    sources = [_candidate("p1", "c1")]
+    confirmation = KnowledgeTreeConfirmation(
+        operations=[
+            TreeOperation(
+                operation="supplement_direct_evidence", target_code="p1", value="c1"
+            )
+        ],
+        reviewed_topic_codes=[],
+        reviewed_exam_point_codes=[],
+        teacher_exclusions=[],
+        auto_supplement_direct_evidence=True,
+    )
+    result = _apply_auto_supplement(
+        course_id="course",
+        run_id="run",
+        candidate={"payload": _payload(coverage, sources)},
+        confirmation=confirmation,
+        session=_FakeSession([_point_row("p1")]),
+        recommender=recommender,
+    )
+    assert "p1" in result.teacher_exclusions
+    assert any(
+        op.operation == "supplement_direct_evidence"
+        and op.target_code == "p1"
+        and op.value == "c1"
+        for op in result.operations
+    )
