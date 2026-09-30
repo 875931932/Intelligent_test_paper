@@ -11,7 +11,7 @@ worker 调 ``execute_turn_task``：装配确定性上下文快照 → 段1（非
   本模块不碰任何业务写路径（消息表与 task_runs 除外）；
 - LLM 调用只发生在 worker（本模块被 handler 调用），不进请求线程；
 - 模型回传的 id 必须命中上下文白名单、参数过显式校验（带反馈重试一次）；
-- prompt 不含出题比例/难度/去重规则（助手职责不涉及出题约束，禁止入 prompt）；
+- prompt 不含出题比例/难度/去重的约束规则本身（教师的比例要求只作为蓝图建议指令或考核规则提案转交确定性机制，助手不换算、不承诺结果）；
 - 消息读写全部带 course_id。
 
 结构镜像 exam_rules_ai_service 的既定套路（上下文装配 / prompt 纯函数 /
@@ -44,7 +44,9 @@ from app.db.schema import (
     task_runs,
 )
 from app.domain.course.category_profiles import available_categories, normalize_category
+from app.domain.blueprint.models import ASSESSMENT_MODES
 from app.domain.framework.exam_rules import canonical_question_type
+from app.domain.generation.archetypes import ARCHETYPE_CONTRACTS
 from app.domain.generation.question_formats import QUESTION_TEMPLATES
 from app.domain.knowledge.relevance import StagingChunk
 from app.domain.model_calls import ModelCallContext
@@ -94,31 +96,37 @@ READ_TOOLS = (
     "list_exam_projects",
     "usage_guide",
 )
-# 提案工具：只组装提案卡（执行契约在 payload），确认由前端调既有业务 API
+# 提案工具：只组装提案卡（执行契约在 payload），确认由前端调既有业务 API。
+# 出卷主线（创建项目/更新考核规则/创建蓝图/确认蓝图/确认合同/发起生成）整体
+# 提案化——每个里程碑仍是教师点「确认」才执行，只是不必切页面。
 PROPOSAL_TOOLS = (
     "create_course",
     "update_course",
     "start_parse",
+    "create_exam_project",
+    "update_exam_rules",
+    "create_blueprint",
+    "confirm_blueprint",
     "enqueue_blueprint_suggest",
     "confirm_contract",
+    "start_generation",
     "update_question_type_format",
 )
-# 双保险：即使模型给出这些 tool，路由层也按确定性文案拒绝（prompt 另有指示）
+# 双保险：即使模型给出这些 tool，路由层也按确定性文案拒绝（prompt 另有指示）。
+# 蓝图确认与发起生成已移入提案（教师卡上确认即教师确认），定稿/导出仍拒绝。
 REFUSED_TOOLS = frozenset(
     {
         "delete_material",
         "remove_material",
-        "confirm_blueprint",
         "finalize_paper",
         "export_paper",
-        "start_generation",
         "read_material_content",  # 全文照抄/朗读仍拒绝；问答与总结走 RAG_TOOL（v2）
         "online_exam",
         "grading",
     }
 )
 REFUSED_REPLY = (
-    "这类操作需要你亲自到对应页面完成：出题/改题去「试卷」页，蓝图确认与试卷定稿导出"
+    "这类操作需要你亲自到对应页面完成：出题/改题去「试卷」页，试卷定稿与导出"
     "是里程碑操作不代劳，删除资料去「资料库」页，在线考试与阅卷不在本系统范围内。"
 )
 
@@ -253,6 +261,10 @@ def _framework_summary(session: Session, course_id: str) -> dict | None:
             "duration_minutes": rules.get("duration_minutes"),
             "total_score": rules.get("total_score"),
             "question_type_ratios": rules.get("question_type_ratios") or [],
+            # 章节命题权重与考试侧重点：update_exam_rules 是整份替换语义，
+            # 提案合并必须以快照现值兜底，未改动的字段不能被抹掉
+            "chapter_weights": rules.get("chapter_weights") or [],
+            "assessment_focus": rules.get("assessment_focus") or [],
             # 已设置的题型格式覆盖（教师/AI 助手此前提案落库的现值，供追问与对比）
             "type_formats": rules.get("type_formats") or {},
         },
@@ -507,19 +519,36 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 产品能力地图（回答「这个网站能做什么/怎么操作/流程是什么」时的依据；结构化步骤与跳转按钮由 usage_guide 引导卡呈现）：
 - 页面模块：课程概览（全阶段状态）、资料库（上传/解析/索引资料，四分区展示）、命题框架（双大纲→考点与考核规则，确认后冻结）、知识目录（分类→事实→画像→知识卡）、试卷（试卷项目工作区）。
 - 出卷主线：上传并解析资料 → 构建并冻结命题框架 → 生成知识目录 → 创建试卷项目并确认蓝图 → 确认合同（系统逐题位确定性分配）→ AI 生成 → 审核编辑 → 定稿导出学生卷/答卷/答题卡/答案细则四份产物。
-- 助手边界：只读查询、资料内容问答与总结、写操作提案（教师点确认后由既有接口执行）可由我代劳；出题改题、蓝图确认、定稿导出、删除资料需引导教师到对应页面亲自完成；在线考试与阅卷不在本系统范围内。
+- 助手边界：只读查询、资料内容问答与总结、写操作提案（教师点确认后由既有接口执行）可由我代劳——出卷主线的创建项目/修改考核规则/创建与确认蓝图/确认合同/发起生成均可提案代劳；出题改题、试卷定稿导出、删除资料需引导教师到对应页面亲自完成；在线考试与阅卷不在本系统范围内。
 
 可用提案工具（action.args 只允许下述字段，id 必须取自 payload.ids 白名单）：
 - create_course：新建课程。args={name(必填,1~200字), slug?(小写字母数字连字符), description?, category?(类别 key，取自 payload.course_categories)}
 - update_course：修改当前课程。args={name?, slug?, description?}（至少一个）
 - start_parse：启动某资料解析。args={material_id(取自 payload.ids.material_ids)}
-- enqueue_blueprint_suggest：发起蓝图调整建议。args={project_id(取自 payload.ids.project_ids), instruction?(一句话要求)}
+- create_exam_project：创建试卷项目。args={name(必填,1~200字，从教师原话取，如「期末考试卷」)}
+- update_exam_rules：修改考核规则（题型比例/章节权重/考试侧重点；蓝图创建时按新规则确定性折算，你只提方案、不做换算）。args 至少给一个：
+  - question_type_ratios?: [{question_type(可用中文题型名), ratio(百分比,>0)}]
+  - chapter_weights?: [{anchor_key(章节锚点), weight(>0)}]
+  - assessment_focus?: [{assessment_mode(theory_recall理论记忆/conceptual概念理解/application应用/problem_solving问题求解/practical_operation实操), weight(>0)}]——教师说「偏理论」即提高 theory_recall 与 conceptual 的权重
+  各字段已有现值见 snapshot.framework.exam_rules（question_type_ratios/chapter_weights/assessment_focus），未给出的字段保持原值。
+- create_blueprint：创建草稿蓝图（按考核规则与知识目录确定性生成题位、难度分布与章节权重）。args={project_id(取自 payload.ids.project_ids), comprehensive_archetypes?(综合题原型白名单，顺序即偏好序；合法值8个：code_completion_scenario(代码补全场景)/case_analysis(案例分析)/fault_diagnosis(故障诊断)/comparative_decision(比较决策)/solution_design(方案设计)/process_optimization(流程优化)/critique_correction(评析纠错)/integrated_explanation(综合阐释)；教师要求综合题不出代码题时排除 code_completion_scenario，并把场景分析/方案设计类排前)}。前提：命题框架已冻结且知识目录已发布，否则不要选它。
+- confirm_blueprint：确认当前草稿蓝图（里程碑确认，教师点提案卡「确认」即为教师确认）。args={project_id}（仅一个项目时可省略）。蓝图不存在或已确认时不要选它。
+- enqueue_blueprint_suggest：发起蓝图调整建议。args={project_id(取自 payload.ids.project_ids), instruction?(一句话要求)——教师的难度比例要求（如「难度按5简单3中等2难」「5:3:2」）原样放进 instruction，由系统确定性换算成目标分布，建议仍需教师逐条确认后应用}
 - confirm_contract：重新分配并确认合同。args={project_id(取自 payload.ids.project_ids)}（合同已确认冻结时不要选它）
-- update_question_type_format：设置/修改某题型的出题格式要求（影响之后的生成；已设置的格式见 snapshot.framework.exam_rules.type_formats）。args={question_type(single_choice/multiple_choice/true_false/fill_blank/short_answer/essay 或中文题型名), template(该题型**完整**的出题格式要求,1~2000字，须含该题型的结构与答案唯一性约束；传空串=恢复系统默认格式)}。综合题由原型档案驱动、不适用本工具——教师要改综合题格式时置 action null 并说明。
+- start_generation：发起 AI 分批生成。args={project_id(取自 payload.ids.project_ids)}（合同未确认时不要选它）
+- update_question_type_format：设置/修改某题型的出题格式要求（影响之后的生成；已设置的格式见 snapshot.framework.exam_rules.type_formats）。args={question_type(single_choice/multiple_choice/true_false/fill_blank/short_answer/essay 或中文题型名), template(该题型**完整**的出题格式要求,1~2000字，须含该题型的结构与答案唯一性约束；传空串=恢复系统默认格式)}。综合题由原型档案驱动、不适用本工具——教师要改综合题格式时改用 create_blueprint 的 comprehensive_archetypes。
+
+出卷主线推进（教师要出卷、继续出卷、或直接给出出卷要求时，先看 snapshot.projects 状态选**下一步**的提案，一次一张卡；回复里说明整体计划，并请教师确认卡片后回复「继续」推进下一步）：
+1. 没有试卷项目 → create_exam_project
+2. 项目没有蓝图（blueprint 为 null）→ 先把教师的规则要求落成提案（偏理论/题型比例/章节权重 → update_exam_rules；综合题原型偏好 → 并进 create_blueprint 的 args），再 create_blueprint
+3. 蓝图已有但未确认（blueprint.confirmed=false）→ 需要调整题位或难度分布 → enqueue_blueprint_suggest（指令带上教师原话的比例要求）；不需调整 → confirm_blueprint
+4. 合同未确认（contract.confirmed=false）→ confirm_contract
+5. 合同已确认 → start_generation
+教师具体要求的落点：难度比例（如5:3:2）→ enqueue_blueprint_suggest 的 instruction（系统确定性换算）；偏理论/侧重理解 → update_exam_rules 的 assessment_focus；题型比例/章节权重 → update_exam_rules；综合题不出代码题、多场景应用题 → create_blueprint 的 comprehensive_archetypes；单题型出题格式 → update_question_type_format。
 
 拒绝并按标准话术回复（action 置 null，不要选任何工具）：
 1. 出题、改题、新增题目 → 「题目内容的新增与修改请到『试卷』页操作（选中题目后可用 AI 修改/创建）。」
-2. 蓝图确认、试卷定稿、导出 → 「这是需要你亲自确认的里程碑操作，请到『试卷』页完成。」
+2. 试卷定稿、导出 → 「这是需要你亲自确认的里程碑操作，请到『试卷』页完成。」（蓝图确认与发起生成**不再**拒绝——用 confirm_blueprint / start_generation 提案）
 3. 删除资料 → 「删除资料请到『资料库』页操作。」
 4. 在线考试、阅卷、评分 → 「在线考试与阅卷不在本系统范围内——本系统止于导出纸质试卷产物。」
 5. 操作其它课程 → 「我只能操作当前课程空间内的数据。」
@@ -531,7 +560,7 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 - 结果卡已结构化呈现数据：回复不要逐条复述卡内容，教师没点名的项目/资料不要罗列；状态以卡片标签为准，回复里不要自行转述另一套状态说法。
 - 你给的 id 必须来自 payload.ids 白名单；不确定教师指哪份资料/项目时，action 置 null 并在回复里追问。
 - 只依据 payload 中的真实数据回答，不臆造资料、项目、状态或数字。
-- 不承诺任何出题比例/难度/去重的调整——这些由系统确定性算法保证，不归对话管；题型的出题格式要求除外，可用 update_question_type_format 提案修改。
+- 难度要求的处理：比例/难度/去重的**结果**由系统确定性算法保证，你可以把教师的比例要求转成蓝图建议指令或考核规则提案，但不自己做换算、不承诺达标结果；题型的出题格式要求可用 update_question_type_format 提案修改。
 
 只返回严格 JSON 对象：
 {"reply": "给教师的回复文本", "action": {"tool": "list_materials", "args": {}}}
@@ -666,7 +695,7 @@ _GUIDE_STEPS = (
         "key": "blueprint",
         "label": "创建项目并确认蓝图",
         "nav": "paper",
-        "hint": "试卷页新建项目，AI 给蓝图调整建议，教师逐条确认题位",
+        "hint": "可提案创建项目与蓝图，AI 给蓝图调整建议，教师逐条确认题位",
     },
     {
         "key": "contract_generate",
@@ -786,6 +815,43 @@ def _validate_slug(slug: str | None) -> str | None:
     return slug
 
 
+def _target_project(allowed: dict, context: dict, args: dict) -> dict:
+    """提案的项目定位：给定必须命中白名单；缺省且仅一个项目时自动取之。"""
+    project_id = str(args.get("project_id") or "").strip()
+    ids = allowed["project_ids"]
+    if not project_id:
+        if not ids:
+            raise AssistantError("当前课程还没有试卷项目，请先用 create_exam_project 创建")
+        if len(ids) > 1:
+            raise AssistantError("需要指定 project_id（当前课程有多个试卷项目）")
+        project_id = ids[0]
+    elif project_id not in ids:
+        raise AssistantError("project_id 不在当前课程项目白名单内")
+    project = next((p for p in context["projects"] if p["id"] == project_id), None)
+    if project is None:
+        raise AssistantError("项目不存在")
+    return project
+
+
+def _validate_overrides(args: dict, key: str, *, entries) -> list | None:
+    """比例/权重类覆盖列表的统一校验：非空列表、逐项过 entries 校验器。
+
+    entries(item) 返回归一化后的条目；抛 AssistantError 即带反馈重试。
+    返回 None 表示教师没给这个字段（保持现值）。
+    """
+    raw = args.get(key)
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not raw:
+        raise AssistantError(f"{key} 需要非空列表")
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            raise AssistantError(f"{key} 每项需为对象")
+        out.append(entries(item))
+    return out
+
+
 def build_proposal_payload(tool: str, args: dict, *, context: dict) -> dict:
     """白名单硬校验并组装提案执行契约；非法参数抛 AssistantError（上层重试一次）。"""
     allowed = context["allowed_ids"]
@@ -833,6 +899,131 @@ def build_proposal_payload(tool: str, args: dict, *, context: dict) -> dict:
             "body": {},
         }
 
+    if tool == "create_exam_project":
+        name = _require_str(args, "name", max_len=200)
+        if not name:
+            raise AssistantError("创建试卷项目缺少 name")
+        return {"body": {"name": name}}
+
+    if tool == "update_exam_rules":
+        # PATCH /rules 是整份替换语义：教师只给要改的字段，其余按本轮快照
+        # 现值合并回填，未涉及的题型比例/章节权重不能被默认值抹掉。
+        framework = context.get("framework")
+        if framework is None:
+            raise AssistantError("尚未构建命题框架，无法修改考核规则")
+        current = framework.get("exam_rules") or {}
+
+        def _ratio_entry(item: dict) -> dict:
+            canonical = canonical_question_type(item.get("question_type"))
+            if not canonical:
+                raise AssistantError(f"未知题型：{item.get('question_type')!r}")
+            value = item.get("ratio")
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+                raise AssistantError("题型比例 ratio 必须为正数")
+            return {"question_type": canonical, "ratio": float(value)}
+
+        def _weight_entry(item: dict) -> dict:
+            anchor = str(item.get("anchor_key") or "").strip()
+            if not anchor:
+                raise AssistantError("章节权重缺少 anchor_key")
+            value = item.get("weight")
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+                raise AssistantError("章节权重 weight 必须为正数")
+            return {"anchor_key": anchor, "weight": float(value)}
+
+        def _focus_entry(item: dict) -> dict:
+            mode = str(item.get("assessment_mode") or "").strip()
+            if mode not in ASSESSMENT_MODES:
+                raise AssistantError(
+                    f"未知考查方式 {mode}（可用：{', '.join(ASSESSMENT_MODES)}）"
+                )
+            value = item.get("weight")
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+                raise AssistantError("考试侧重点 weight 必须为正数")
+            return {"assessment_mode": mode, "weight": float(value)}
+
+        ratios = _validate_overrides(args, "question_type_ratios", entries=_ratio_entry)
+        chapters = _validate_overrides(args, "chapter_weights", entries=_weight_entry)
+        focus = _validate_overrides(args, "assessment_focus", entries=_focus_entry)
+        if ratios is None and chapters is None and focus is None:
+            raise AssistantError(
+                "至少给一个要修改的字段（question_type_ratios/chapter_weights/assessment_focus）"
+            )
+        body = {
+            "exam_form": current.get("exam_form") or "",
+            "duration_minutes": current.get("duration_minutes"),
+            "total_score": current.get("total_score"),
+            "question_type_ratios": (
+                ratios if ratios is not None else current.get("question_type_ratios") or []
+            ),
+            "chapter_weights": (
+                chapters if chapters is not None else current.get("chapter_weights") or []
+            ),
+            "assessment_focus": (
+                focus if focus is not None else current.get("assessment_focus") or []
+            ),
+        }
+        # before 供提案卡做「现值 → 新值」对比展示
+        return {
+            "body": body,
+            "before": {
+                "question_type_ratios": current.get("question_type_ratios") or [],
+                "chapter_weights": current.get("chapter_weights") or [],
+                "assessment_focus": current.get("assessment_focus") or [],
+            },
+        }
+
+    if tool == "create_blueprint":
+        project = _target_project(allowed, context, args)
+        if context.get("framework") is None:
+            raise AssistantError("尚未构建命题框架：创建蓝图前请先到命题框架页确认冻结")
+        if context.get("catalog") is None:
+            raise AssistantError("知识目录尚未发布：创建蓝图前请先发布知识目录")
+        archetypes = args.get("comprehensive_archetypes")
+        if archetypes is not None:
+            if not isinstance(archetypes, list) or not archetypes:
+                raise AssistantError("comprehensive_archetypes 需要非空列表（顺序即偏好序）")
+            pool: list[str] = []
+            for raw in archetypes:
+                key = str(raw or "").strip()
+                if key not in ARCHETYPE_CONTRACTS:
+                    raise AssistantError(
+                        f"未知综合题原型 {key}（可用：{', '.join(ARCHETYPE_CONTRACTS)}）"
+                    )
+                if key not in pool:
+                    pool.append(key)
+            # 题型构成归考核规则：比例已声明却不含综合题时蓝图根本不会出
+            # 综合题，先引导改比例而不是创建后再报错
+            ratios = (context.get("framework") or {}).get("exam_rules", {}).get(
+                "question_type_ratios"
+            ) or []
+            if ratios and not any(
+                canonical_question_type(r.get("question_type")) == "comprehensive"
+                for r in ratios
+                if isinstance(r, dict)
+            ):
+                raise AssistantError(
+                    "考核规则的题型比例未包含综合题，蓝图不会出综合题——"
+                    "请先用 update_exam_rules 在 question_type_ratios 中加入综合题比例"
+                )
+            archetypes = pool
+        # body 只带原型池（蓝图主体由前端确认时按考核规则+知识目录组装，
+        # 与试卷页创建蓝图同一条组装路径，无第二套写入逻辑）
+        return {
+            "project_id": project["id"],
+            "project_name": project["name"],
+            "body": {"comprehensive_archetypes": archetypes} if archetypes else {},
+        }
+
+    if tool == "confirm_blueprint":
+        project = _target_project(allowed, context, args)
+        blueprint = project.get("blueprint")
+        if blueprint is None:
+            raise AssistantError("该项目还没有蓝图，先用 create_blueprint 创建")
+        if blueprint.get("confirmed"):
+            raise AssistantError("蓝图已确认，无需再次确认（要调整可发起蓝图建议或新建蓝图版本）")
+        return {"project_id": project["id"], "project_name": project["name"], "body": {}}
+
     if tool == "enqueue_blueprint_suggest":
         project_id = str(args.get("project_id") or "").strip()
         if project_id not in allowed["project_ids"]:
@@ -846,26 +1037,20 @@ def build_proposal_payload(tool: str, args: dict, *, context: dict) -> dict:
         }
 
     if tool == "confirm_contract":
-        project_id = str(args.get("project_id") or "").strip()
-        if not project_id:
-            # 仅一个项目时允许省略
-            ids = allowed["project_ids"]
-            if len(ids) == 1:
-                project_id = ids[0]
-            else:
-                raise AssistantError("需要指定 project_id（当前课程有多个试卷项目）")
-        elif project_id not in allowed["project_ids"]:
-            raise AssistantError("project_id 不在当前课程项目白名单内")
-        project = next((p for p in context["projects"] if p["id"] == project_id), None)
-        if project is None:
-            raise AssistantError("项目不存在")
+        project = _target_project(allowed, context, args)
         if project["contract"].get("confirmed"):
             raise AssistantError("该项目合同已确认冻结，不能重新分配（可新建试卷项目或蓝图版本）")
         return {
-            "project_id": project_id,
+            "project_id": project["id"],
             "project_name": project["name"],
             "body": {},
         }
+
+    if tool == "start_generation":
+        project = _target_project(allowed, context, args)
+        if not (project.get("contract") or {}).get("confirmed"):
+            raise AssistantError("合同尚未确认：先用 confirm_contract 确认合同再发起生成")
+        return {"project_id": project["id"], "project_name": project["name"], "body": {}}
 
     if tool == "update_question_type_format":
         canonical = canonical_question_type(args.get("question_type"))
@@ -1105,8 +1290,13 @@ _DEFAULT_PROPOSAL_REPLIES = {
     "create_course": "已生成新建课程提案，确认后执行：",
     "update_course": "已生成课程信息修改提案，确认后执行：",
     "start_parse": "已生成解析启动提案，确认后执行：",
+    "create_exam_project": "已生成试卷项目创建提案，确认后执行：",
+    "update_exam_rules": "已生成考核规则修改提案，确认后写入（蓝图创建时按新规则确定性生成）：",
+    "create_blueprint": "已生成蓝图创建提案，确认后按考核规则与知识目录生成草稿蓝图：",
+    "confirm_blueprint": "已生成蓝图确认提案，确认后落库冻结题位计划，请核对参数：",
     "enqueue_blueprint_suggest": "已生成蓝图调整建议任务的发起提案，确认后执行：",
     "confirm_contract": "已生成合同重新分配提案（确认合同落库），请核对参数后执行：",
+    "start_generation": "已生成 AI 生成任务的发起提案，确认后按已确认合同分批生成：",
     "update_question_type_format": "已生成题型格式修改提案，确认后写入考核规则：",
 }
 

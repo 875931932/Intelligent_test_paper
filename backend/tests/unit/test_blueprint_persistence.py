@@ -317,6 +317,58 @@ def test_create_draft_blueprint_persists_items_with_correct_fields(session):
         assert it.get("knowledge_card_id") in {"c1a", "c1b", "c2a", "c2b"}
 
 
+def _draft_params_with_comprehensive(**overrides):
+    """含综合题题型的参数：卡槽归属检查需要 comprehensive 可选卡片。"""
+    params = _draft_params()
+    params["type_rules"] = {
+        "single_choice": {"count": 8, "score": 10},
+        "comprehensive": {"count": 2, "score": 10},
+    }
+    params["card_question_types"] = {
+        cid: ["single_choice", "comprehensive"]
+        for cid in params["card_question_types"]
+    }
+    params.update(overrides)
+    return params
+
+
+def test_create_draft_merges_comprehensive_archetype_pool(session):
+    """教师显式原型池落进 type_rules.comprehensive.archetypes（顺序保留）。"""
+    bv_id, _ = create_draft_blueprint(
+        session,
+        **_draft_params_with_comprehensive(
+            comprehensive_archetypes=["case_analysis", "solution_design"]
+        ),
+    )
+    row = session.execute(
+        select(blueprint_versions.c.type_rules).where(
+            blueprint_versions.c.id == bv_id
+        )
+    ).one()
+    rules = row[0]
+    assert rules["comprehensive"]["archetypes"] == ["case_analysis", "solution_design"]
+    # 原有 count/score 不被原型池覆盖
+    assert rules["comprehensive"]["count"] == 2
+    assert rules["comprehensive"]["score"] == 10
+    assert "archetypes" not in rules["single_choice"]
+
+
+def test_create_draft_archetype_pool_guards(session):
+    # 考核规则没声明综合题：无法兑现原型池 → 显式报错而非静默忽略
+    no_comp = _draft_params()
+    no_comp["comprehensive_archetypes"] = ["case_analysis"]
+    with pytest.raises(BlueprintValidationError, match="未声明 comprehensive"):
+        create_draft_blueprint(session, **no_comp)
+    # 全部非法名 → 报错（默认轮换池不接黑名）
+    with pytest.raises(BlueprintValidationError, match="无合法原型名"):
+        create_draft_blueprint(
+            session,
+            **_draft_params_with_comprehensive(
+                comprehensive_archetypes=["not_an_archetype"]
+            ),
+        )
+
+
 def test_list_plan_items_resolves_exam_point_name_and_anchor(session):
     """考点名/章节按蓝图自己的框架版本解析：id 精确取名，NULL 安全。
 

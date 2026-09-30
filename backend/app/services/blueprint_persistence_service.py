@@ -35,6 +35,7 @@ from app.domain.framework.exam_rules import (
     rules_have_type_ratios,
     type_rules_from_ratios,
 )
+from app.domain.generation.archetypes import ARCHETYPE_CONTRACTS
 from app.services.blueprint_service import (
     BlueprintValidationError,
     allocate_plan_items,
@@ -408,6 +409,7 @@ def create_draft_blueprint(
     units_payload: list[dict],
     card_semantic_profiles: dict[str, dict],
     card_question_types: dict[str, list[str]],
+    comprehensive_archetypes: list[str] | None = None,
 ) -> tuple[str, BlueprintPlan]:
     """创建草稿蓝图版本：分配计划 → 持久化 blueprint_version + sections + plan_items。"""
     # 0. 实操考核政策按考点行回填：前端 units 载荷不含该字段，缺失会让实操
@@ -432,6 +434,26 @@ def create_draft_blueprint(
             course_id=course_id,
             framework_version_id=framework_version_id,
         )
+    # 教师显式综合题原型池（顺序即偏好序）：合同分配读取的是
+    # type_rules.comprehensive.archetypes，这里在推导结果上合并注入，
+    # 非编程课程可排除 code_completion_scenario（非法名在此过滤，
+    # 调用方——AI 助手提案——已按 ARCHETYPE_CONTRACTS 严格校验）。
+    # 只合入已声明的综合题规则：注入无 count 的新键会让分配算法按
+    # "题数必须为正"报错——题型构成归考核规则，这里不擅自补题型。
+    if comprehensive_archetypes:
+        pool = [name for name in comprehensive_archetypes if name in ARCHETYPE_CONTRACTS]
+        if not pool:
+            raise BlueprintValidationError("comprehensive_archetypes 无合法原型名")
+        existing = type_rules.get("comprehensive")
+        if not isinstance(existing, dict):
+            raise BlueprintValidationError(
+                "type_rules 未声明 comprehensive 题型（考核规则的题型比例未含综合题），"
+                "无法设置综合题原型池"
+            )
+        type_rules = {
+            **type_rules,
+            "comprehensive": {**existing, "archetypes": pool},
+        }
     # 章节权重可能来自考核大纲的原始 weight_value，未必归一化到 100。
     # 蓝图引擎要求各章权重合计 100，这里统一缩放。
     if chapter_weights:

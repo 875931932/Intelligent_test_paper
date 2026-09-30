@@ -389,6 +389,217 @@ def test_route_update_question_type_format_as_proposal():
 
 
 # ---------------------------------------------------------------------------
+# 出卷主线提案（创建项目/考核规则/蓝图/蓝图确认/发起生成）
+# ---------------------------------------------------------------------------
+
+
+def test_paper_pipeline_tools_whitelisted_and_unrefused():
+    for tool in (
+        "create_exam_project",
+        "update_exam_rules",
+        "create_blueprint",
+        "confirm_blueprint",
+        "start_generation",
+    ):
+        assert tool in assistant_service.PROPOSAL_TOOLS
+        assert tool not in assistant_service.REFUSED_TOOLS
+    # 定稿/导出仍是里程碑拒绝项
+    assert "finalize_paper" in assistant_service.REFUSED_TOOLS
+    assert "export_paper" in assistant_service.REFUSED_TOOLS
+
+
+def _paper_ctx(**overrides) -> dict:
+    """有框架+已发布目录+单项目（蓝图草稿/合同未确认）的上下文。"""
+    framework = {
+        "version_no": 1,
+        "status": "confirmed",
+        "exam_rules": {
+            "exam_form": "闭卷",
+            "duration_minutes": 120,
+            "total_score": 100,
+            "question_type_ratios": [
+                {"question_type": "single_choice", "ratio": 40},
+                {"question_type": "comprehensive", "ratio": 20},
+            ],
+            "chapter_weights": [{"anchor_key": "ch1", "weight": 100}],
+            "assessment_focus": [{"assessment_mode": "conceptual", "weight": 60}],
+            "type_formats": {},
+        },
+    }
+    base = _ctx(
+        framework=framework,
+        catalog={"version_no": 1, "status": "published"},
+        projects=[
+            {
+                "id": "p1",
+                "name": "期末卷",
+                "blueprint": {"status": "draft", "confirmed": False},
+                "contract": {"exists": True, "confirmed": False},
+                "paper": {"exists": False},
+            }
+        ],
+    )
+    base.update(overrides)
+    return base
+
+
+def test_create_exam_project_payload_and_guards():
+    payload = build_proposal_payload(
+        "create_exam_project", {"name": "期末考试卷"}, context=_ctx()
+    )
+    assert payload == {"body": {"name": "期末考试卷"}}
+    with pytest.raises(AssistantError, match="name"):
+        build_proposal_payload("create_exam_project", {"name": "   "}, context=_ctx())
+
+
+def test_update_exam_rules_merges_untouched_current_values():
+    focus = [
+        {"assessment_mode": "theory_recall", "weight": 50},
+        {"assessment_mode": "conceptual", "weight": 30},
+        {"assessment_mode": "application", "weight": 20},
+    ]
+    payload = build_proposal_payload(
+        "update_exam_rules", {"assessment_focus": focus}, context=_paper_ctx()
+    )
+    body = payload["body"]
+    # 只改 assessment_focus：题型比例/章节权重按快照现值合并（整份替换不抹现值）
+    assert body["question_type_ratios"] == [
+        {"question_type": "single_choice", "ratio": 40},
+        {"question_type": "comprehensive", "ratio": 20},
+    ]
+    assert body["chapter_weights"] == [{"anchor_key": "ch1", "weight": 100}]
+    assert body["assessment_focus"][0] == {"assessment_mode": "theory_recall", "weight": 50.0}
+    # before 供提案卡做「现值 → 新值」对比
+    assert payload["before"]["assessment_focus"] == [
+        {"assessment_mode": "conceptual", "weight": 60}
+    ]
+
+
+def test_update_exam_rules_rejects_bad_args():
+    with pytest.raises(AssistantError, match="命题框架"):
+        build_proposal_payload(
+            "update_exam_rules",
+            {"assessment_focus": [{"assessment_mode": "theory_recall", "weight": 1}]},
+            context=_ctx(),  # framework=None
+        )
+    with pytest.raises(AssistantError, match="未知考查方式"):
+        build_proposal_payload(
+            "update_exam_rules",
+            {"assessment_focus": [{"assessment_mode": "brain_memory", "weight": 1}]},
+            context=_paper_ctx(),
+        )
+    with pytest.raises(AssistantError, match="未知题型"):
+        build_proposal_payload(
+            "update_exam_rules",
+            {"question_type_ratios": [{"question_type": "变态题", "ratio": 10}]},
+            context=_paper_ctx(),
+        )
+    with pytest.raises(AssistantError, match="至少给一个"):
+        build_proposal_payload("update_exam_rules", {}, context=_paper_ctx())
+
+
+def test_create_blueprint_guards_and_archetypes_pool():
+    with pytest.raises(AssistantError, match="知识目录"):
+        build_proposal_payload(
+            "create_blueprint", {"project_id": "p1"}, context=_paper_ctx(catalog=None)
+        )
+    with pytest.raises(AssistantError, match="命题框架"):
+        build_proposal_payload(
+            "create_blueprint", {"project_id": "p1"}, context=_paper_ctx(framework=None)
+        )
+    payload = build_proposal_payload(
+        "create_blueprint",
+        {
+            "project_id": "p1",
+            "comprehensive_archetypes": [
+                "case_analysis",
+                "solution_design",
+                "case_analysis",  # 去重
+            ],
+        },
+        context=_paper_ctx(),
+    )
+    assert payload["project_id"] == "p1"
+    assert payload["body"] == {
+        "comprehensive_archetypes": ["case_analysis", "solution_design"]
+    }
+    # 不带原型池 = 走默认轮换池，body 为空
+    plain = build_proposal_payload(
+        "create_blueprint", {"project_id": "p1"}, context=_paper_ctx()
+    )
+    assert plain["body"] == {}
+    with pytest.raises(AssistantError, match="未知综合题原型"):
+        build_proposal_payload(
+            "create_blueprint",
+            {"project_id": "p1", "comprehensive_archetypes": ["code_xxx"]},
+            context=_paper_ctx(),
+        )
+    # 比例已声明却没综合题：蓝图不会出综合题 → 先改比例，不创建后报错
+    ctx = _paper_ctx()
+    ctx["framework"]["exam_rules"]["question_type_ratios"] = [
+        {"question_type": "single_choice", "ratio": 100}
+    ]
+    with pytest.raises(AssistantError, match="未包含综合题"):
+        build_proposal_payload(
+            "create_blueprint",
+            {"project_id": "p1", "comprehensive_archetypes": ["case_analysis"]},
+            context=ctx,
+        )
+
+
+def test_confirm_blueprint_guards():
+    ctx = _paper_ctx()
+    ctx["projects"][0]["blueprint"] = None
+    with pytest.raises(AssistantError, match="还没有蓝图"):
+        build_proposal_payload("confirm_blueprint", {"project_id": "p1"}, context=ctx)
+
+    ctx = _paper_ctx()
+    ctx["projects"][0]["blueprint"] = {"status": "confirmed", "confirmed": True}
+    with pytest.raises(AssistantError, match="已确认"):
+        build_proposal_payload("confirm_blueprint", {"project_id": "p1"}, context=ctx)
+
+    payload = build_proposal_payload(
+        "confirm_blueprint", {"project_id": "p1"}, context=_paper_ctx()
+    )
+    assert payload["project_name"] == "期末卷"
+
+
+def test_start_generation_requires_confirmed_contract():
+    with pytest.raises(AssistantError, match="合同尚未确认"):
+        build_proposal_payload(
+            "start_generation", {"project_id": "p1"}, context=_paper_ctx()
+        )
+    ctx = _paper_ctx()
+    ctx["projects"][0]["contract"]["confirmed"] = True
+    payload = build_proposal_payload(
+        "start_generation", {"project_id": "p1"}, context=ctx
+    )
+    assert payload["project_id"] == "p1"
+    assert payload["project_name"] == "期末卷"
+
+
+def test_prompt_documents_paper_pipeline_ladder():
+    """prompt 装配出卷主线阶梯与五个新工具；蓝图确认/发起生成移出拒绝话术。"""
+    system_prompt, _payload = build_intent_prompt(_paper_ctx(), "我需要出一张试卷")
+    for tool in (
+        "create_exam_project",
+        "update_exam_rules",
+        "create_blueprint",
+        "confirm_blueprint",
+        "start_generation",
+    ):
+        assert tool in system_prompt
+    assert "出卷主线推进" in system_prompt
+    # 旧拒绝文案（蓝图确认一并拒绝）不再出现；定稿/导出仍拒绝
+    assert "蓝图确认、试卷定稿、导出" not in system_prompt
+    assert "试卷定稿、导出" in system_prompt
+    # 教师的难度比例说法要进蓝图建议指令
+    assert "5简单3中等2难" in system_prompt
+    # 红线不回退：助手不换算不承诺
+    assert "比例/难度/去重" in system_prompt
+
+
+# ---------------------------------------------------------------------------
 # prompt 装配与纯函数
 # ---------------------------------------------------------------------------
 

@@ -9,7 +9,9 @@ import { useToastStore } from '@/stores/toast';
 import { useAssistantStore } from '@/stores/assistantStore';
 import { Badge, Button } from '@/components/ui';
 import { StemBlocks } from '@/pages/paper/StemBlocks';
+import { assembleBlueprintRequestBody } from '@/pages/paper/blueprintAssembly';
 import {
+  ASSESSMENT_MODE_LABELS,
   EXAM_PROJECT_STATUS_META,
   PAPER_STATUS_META,
   qlabel,
@@ -25,6 +27,7 @@ import type {
   AssistantMessage,
   CourseCreate,
   CourseUpdate,
+  ExamRules,
 } from '@/types/api';
 
 /** 只读工具 → 卡片标题与跳转（结果卡 = 确定性查询，CTA 指向同源页面） */
@@ -52,6 +55,22 @@ const PROPOSAL_META: Record<string, { label: string; impact: string }> = {
     label: '发起资料解析',
     impact: '对所选资料执行解析流程；已有解析结果将被覆盖。',
   },
+  create_exam_project: {
+    label: '创建试卷项目',
+    impact: '在当前课程新增一个试卷项目；不影响既有项目的数据。',
+  },
+  update_exam_rules: {
+    label: '修改考核规则',
+    impact: '覆盖题型比例 / 章节权重 / 考试侧重点；蓝图创建时按新规则确定性生成，已存在的蓝图不受影响。',
+  },
+  create_blueprint: {
+    label: '创建草稿蓝图',
+    impact: '按考核规则与知识目录确定性生成题位计划（含难度分布）；已有合同将随蓝图重建失效。',
+  },
+  confirm_blueprint: {
+    label: '确认蓝图（里程碑）',
+    impact: '确认后蓝图题位计划冻结，作为合同分配依据；要调整需新建蓝图版本或先发起 AI 建议。',
+  },
   enqueue_blueprint_suggest: {
     label: '发起蓝图 AI 建议',
     impact: '创建调整建议任务；建议仍需你在试卷页逐条确认后应用。',
@@ -59,6 +78,10 @@ const PROPOSAL_META: Record<string, { label: string; impact: string }> = {
   confirm_contract: {
     label: '确认合同（分配落库）',
     impact: '由既有确定性分配算法落库并冻结合同；冻结后只能新建版本继续修改。',
+  },
+  start_generation: {
+    label: '发起 AI 生成',
+    impact: '按已确认合同分批生成题目；生成期间可在试卷页查看进度。',
   },
   update_question_type_format: {
     label: '修改题型格式',
@@ -72,6 +95,18 @@ const SUGGESTIONS = [
   '总结教学大纲讲了什么？',
   '有哪些试卷项目？',
 ];
+
+/** 综合题原型词表（与后端 ARCHETYPE_CONTRACTS 同键；裸英文不进卡片） */
+const ARCHETYPE_LABELS: Record<string, string> = {
+  code_completion_scenario: '代码补全场景',
+  case_analysis: '案例分析',
+  fault_diagnosis: '故障诊断',
+  comparative_decision: '比较决策',
+  solution_design: '方案设计',
+  process_optimization: '流程优化',
+  critique_correction: '评析纠错',
+  integrated_explanation: '综合阐释',
+};
 
 const thStyle: CSSProperties = {
   border: '1px solid var(--line-strong)',
@@ -508,6 +543,72 @@ function proposalParamRows(tool: string, payload: AssistantActionPayload): Array
     }
     case 'start_parse':
       return [['资料', payload.material_name || payload.material_id || '—']];
+    case 'create_exam_project':
+      return [['项目名称', typeof body.name === 'string' ? body.name : '—']];
+    case 'update_exam_rules': {
+      const before = payload.before ?? {};
+      const fmtRatios = (v: unknown): string =>
+        Array.isArray(v) && v.length > 0
+          ? v
+              .map((r) => {
+                const rec = (r ?? {}) as Record<string, unknown>;
+                const t = typeof rec.question_type === 'string' ? rec.question_type : '';
+                return `${qlabel(t)} ${Number(rec.ratio) || 0}%`;
+              })
+              .join('、')
+          : '（空）';
+      const fmtChapters = (v: unknown): string =>
+        Array.isArray(v) && v.length > 0
+          ? v
+              .map((r) => {
+                const rec = (r ?? {}) as Record<string, unknown>;
+                return `${String(rec.anchor_key ?? '')} ${Number(rec.weight) || 0}`;
+              })
+              .join('、')
+          : '（空）';
+      const fmtFocus = (v: unknown): string =>
+        Array.isArray(v) && v.length > 0
+          ? v
+              .map((r) => {
+                const rec = (r ?? {}) as Record<string, unknown>;
+                const m = typeof rec.assessment_mode === 'string' ? rec.assessment_mode : '';
+                return `${ASSESSMENT_MODE_LABELS[m] ?? m} ${Number(rec.weight) || 0}`;
+              })
+              .join('、')
+          : '（空）';
+      const fields: Array<[string, string, (v: unknown) => string]> = [
+        ['题型比例', 'question_type_ratios', fmtRatios],
+        ['章节权重', 'chapter_weights', fmtChapters],
+        ['考试侧重点', 'assessment_focus', fmtFocus],
+      ];
+      const rows: Array<[string, string]> = [];
+      for (const [label, key, fmt] of fields) {
+        const b = before[key];
+        const a = body[key];
+        if (JSON.stringify(b ?? null) !== JSON.stringify(a ?? null)) {
+          rows.push([label, `${fmt(b)} → ${fmt(a)}`]);
+        }
+      }
+      if (rows.length === 0) rows.push(['说明', '（未检测到变化）']);
+      return rows;
+    }
+    case 'create_blueprint': {
+      const pool = body.comprehensive_archetypes;
+      return [
+        ['项目', payload.project_name || payload.project_id || '—'],
+        [
+          '综合题原型',
+          Array.isArray(pool) && pool.length > 0
+            ? pool
+                .map((a) => {
+                  const key = String(a);
+                  return ARCHETYPE_LABELS[key] ?? key;
+                })
+                .join('、')
+            : '（默认轮换池）',
+        ],
+      ];
+    }
     case 'enqueue_blueprint_suggest':
       return [
         ['项目', payload.project_name || payload.project_id || '—'],
@@ -516,6 +617,8 @@ function proposalParamRows(tool: string, payload: AssistantActionPayload): Array
           typeof body.instruction === 'string' && body.instruction ? body.instruction : '（常规检查）',
         ],
       ];
+    case 'confirm_blueprint':
+    case 'start_generation':
     case 'confirm_contract':
       return [['项目', payload.project_name || payload.project_id || '—']];
     case 'update_question_type_format': {
@@ -1032,6 +1135,47 @@ const AssistantPage: FC = () => {
           receipt = '已发起解析，进度见资料库';
           break;
         }
+        case 'create_exam_project': {
+          if (typeof body.name !== 'string' || !body.name.trim()) throw new Error('提案缺少项目名称');
+          const created = await api.examProjects.create(
+            courseId,
+            { name: body.name.trim() },
+            token ?? undefined,
+          );
+          receipt = `已创建试卷项目「${created.name}」`;
+          break;
+        }
+        case 'update_exam_rules': {
+          // body 由后端按现值合并成完整规则（整份替换语义，未涉及字段不丢）
+          await api.framework.updateExamRules(courseId, body as unknown as ExamRules, token ?? undefined);
+          receipt = '考核规则已更新（蓝图创建时按新规则确定性生成）';
+          break;
+        }
+        case 'create_blueprint': {
+          if (!payload.project_id) throw new Error('提案缺少项目 id');
+          // 与试卷页同一条组装路径（共享 blueprintAssembly），不开第二套写路径
+          const assembly = await assembleBlueprintRequestBody(courseId);
+          if (!assembly.ok) throw new Error('请先发布知识目录');
+          const pool = Array.isArray(body.comprehensive_archetypes)
+            ? body.comprehensive_archetypes
+            : [];
+          await api.examProjects.createBlueprint(
+            courseId,
+            payload.project_id,
+            pool.length > 0
+              ? { ...assembly.body, comprehensive_archetypes: pool }
+              : assembly.body,
+            token ?? undefined,
+          );
+          receipt = `已为「${payload.project_name || payload.project_id}」创建草稿蓝图，确认题位后可确认蓝图`;
+          break;
+        }
+        case 'confirm_blueprint': {
+          if (!payload.project_id) throw new Error('提案缺少项目 id');
+          await api.examProjects.confirmBlueprint(courseId, payload.project_id, {}, token ?? undefined);
+          receipt = '蓝图已确认冻结，可进入合同分配';
+          break;
+        }
         case 'enqueue_blueprint_suggest': {
           if (!payload.project_id) throw new Error('提案缺少项目 id');
           await api.examProjects.suggestBlueprintAdjustments(
@@ -1047,6 +1191,12 @@ const AssistantPage: FC = () => {
           if (!payload.project_id) throw new Error('提案缺少项目 id');
           await api.examProjects.confirmContract(courseId, payload.project_id, {}, token ?? undefined);
           receipt = '合同已确认落库（分配由既有确定性算法执行）';
+          break;
+        }
+        case 'start_generation': {
+          if (!payload.project_id) throw new Error('提案缺少项目 id');
+          await api.examProjects.startGeneration(courseId, payload.project_id, undefined, token ?? undefined);
+          receipt = '已发起 AI 生成任务，进度见试卷页';
           break;
         }
         case 'update_question_type_format': {

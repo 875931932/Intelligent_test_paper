@@ -786,8 +786,14 @@ export type AssistantProposalTool =
   | 'create_course'
   | 'update_course'
   | 'start_parse'
+  | 'create_exam_project'
+  | 'update_exam_rules'
+  | 'create_blueprint'
+  | 'confirm_blueprint'
   | 'enqueue_blueprint_suggest'
-  | 'confirm_contract';
+  | 'confirm_contract'
+  | 'start_generation'
+  | 'update_question_type_format';
 
 export interface AssistantMaterialRow {
   id: string;
@@ -856,6 +862,8 @@ export interface AssistantActionPayload {
   project_name?: string;
   /** update_question_type_format：题型现格式（空 = 从未设置，走类别/全局默认） */
   current?: string;
+  /** update_exam_rules：修改前的现值（卡片做「现值 → 新值」对比展示） */
+  before?: Record<string, unknown>;
   // 结果卡
   course_name?: string;
   materials?: AssistantMaterialRow[] | { count: number; parse_status: Record<string, number> };
