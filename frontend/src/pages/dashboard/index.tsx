@@ -266,22 +266,8 @@ const DashboardPage: FC = () => {
               </div>
             )}
 
-            {/* 解析进度：紧随分布块，CTA 之前 */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-                <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.6)' }}>解析进度</span>
-                <span style={{ fontSize: '0.75rem', color: 'rgba(255,255,255,0.72)', fontVariantNumeric: 'tabular-nums' }}>
-                  {materialStats.total ? Math.round((materialStats.parsed / materialStats.total) * 100) : 0}%
-                </span>
-              </div>
-              <div style={{ height: 6, borderRadius: 999, background: 'rgba(255,255,255,0.14)', overflow: 'hidden' }}>
-                <div style={{
-                  width: materialStats.total ? Math.round((materialStats.parsed / materialStats.total) * 100) + '%' : '0%',
-                  height: '100%', borderRadius: 999, background: '#ffffff',
-                  transition: 'width 0.3s var(--ease-snappy)',
-                }} />
-              </div>
-            </div>
+            {/* 解析进度不再单列：与顶部统计瓦片「已解析 x · 未解析 y」
+                是同一份数据，重复堆叠正是 hero 卡拥挤感的来源 */}
 
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
               <Button
