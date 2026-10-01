@@ -1,5 +1,6 @@
 import { ChevronRight, RefreshCw, PlayCircle } from 'lucide-react';
 import { api } from '@/api/client';
+import { isApiError } from '@/api/errors';
 import { Button } from '@/components/ui/Button';
 import type { NameMaps } from '@/hooks/useNameMaps';
 import { qlabel, dlabel, clabel, mlabel, PLAN_DIFFICULTY_OPTIONS } from '@/lib/examDisplay';
@@ -50,7 +51,7 @@ function planDifficultyOptions(current: string) {
 }
 
 export function renderBlueprint({
-  sp, courseId, setStep, bpCreating, handleCreateBlueprint, loadPlanItems, planItems, maps, examRules, addToast,
+  sp, courseId, setStep, bpCreating, handleCreateBlueprint, loadPlanItems, planItems, maps, examRules, addToast, onProjectChanged,
 }: {
   sp: ExamProject; courseId: string; setStep: (s: StageKey) => void;
   bpCreating: boolean; handleCreateBlueprint: () => Promise<void>;
@@ -58,6 +59,7 @@ export function renderBlueprint({
   maps: NameMaps;
   examRules: ExamRules | null;
   addToast: ToastFn;
+  onProjectChanged: () => void;
 }) {
   if (sp.active_blueprint_version_id) {
     // 题位编辑（难度/分值）：后端只允许 draft 蓝图原地改（已确认 → 409），
@@ -78,6 +80,26 @@ export function renderBlueprint({
       }
     };
     const totalScore = planItems.reduce((s, i) => s + (i.score || 0), 0);
+    // 「进入合同阶段」= 蓝图里程碑确认（题位冻结）+ 推进阶段，两步都落库。
+    // 早先只切本地 step：蓝图/项目状态滞留 draft/blueprint，刷新页面即退回
+    // 蓝图步，助手阶梯也一直误报「蓝图未确认」。409 是该端点唯一语义
+    // 「只能确认 draft」（已确认过），幂等放行照常推进。
+    let entering = false;
+    const enterContract = async () => {
+      if (entering) return;
+      entering = true;
+      try {
+        await api.examProjects.confirmBlueprint(courseId, sp.id);
+        addToast('蓝图已确认冻结', 'success');
+        onProjectChanged();
+        setStep('contract');
+      } catch (err) {
+        if (isApiError(err) && err.status === 409) setStep('contract');
+        else addToast(err instanceof Error ? err.message : '确认蓝图失败', 'error');
+      } finally {
+        entering = false;
+      }
+    };
     const typeAcc = new Map<string, { score: number; count: number }>();
     const chapterAcc = new Map<string, number>();
     planItems.forEach((i) => {
@@ -215,7 +237,7 @@ export function renderBlueprint({
           <p style={{ textAlign: 'center', padding: '24px 0', color: 'var(--text-tertiary)', fontSize: '0.875rem' }}>暂无计划项，请点击「刷新」加载</p>
         )}
         <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-          <Button onClick={() => setStep('contract')} icon={<ChevronRight size={16} />}>进入合同阶段</Button>
+          <Button onClick={() => void enterContract()} icon={<ChevronRight size={16} />}>进入合同阶段</Button>
         </div>
       </div>
     );

@@ -680,6 +680,10 @@ def test_prompt_documents_paper_pipeline_ladder():
     )
     # 停点判定看「建议是否已应用」，不许拿分布反推教师比例要求是否达标
     assert "建议是否已应用" in system_prompt
+    # review 引导给固定话术：不列导出格式、不摆选项让教师点单（曾回「导出
+    # 试卷（Word/PDF 等格式）/发布/查看详情」三选一，格式与顺序均属臆造）
+    assert "请到『试卷』页审核编辑，定稿与导出也在该页完成" in system_prompt
+    assert "不列举导出格式" in system_prompt
     # 指令粒度保真：「每个题型」级限定词原样保留，防丢词改变逐题型/整卷换算口径
     assert "每个题型" in system_prompt
     # 旧拒绝文案（蓝图确认一并拒绝）不再出现；定稿/导出仍拒绝

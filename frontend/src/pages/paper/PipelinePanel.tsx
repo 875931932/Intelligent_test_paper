@@ -356,7 +356,7 @@ export default function PipelinePanel({
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       <StageStepper current={currentStage} onSelect={setCurrentStage} />
       {currentStage === 'blueprint' && renderBlueprint({
-        sp, courseId, setStep: setCurrentStage, bpCreating, handleCreateBlueprint, loadPlanItems, planItems, maps, examRules, addToast,
+        sp, courseId, setStep: setCurrentStage, bpCreating, handleCreateBlueprint, loadPlanItems, planItems, maps, examRules, addToast, onProjectChanged,
       })}
       {currentStage === 'contract' && renderContract({
         sp, courseId, setStep: setCurrentStage, contractVariant, setContractVariant,
