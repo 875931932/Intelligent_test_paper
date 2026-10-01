@@ -16,7 +16,9 @@ from app.db.schema import (
     Course,
     User,
     assistant_messages,
+    exam_projects,
     materials,
+    paper_versions,
     task_runs,
 )
 from app.domain.knowledge.relevance import StagingChunk
@@ -473,6 +475,7 @@ def test_paper_pipeline_tools_whitelisted_and_unrefused():
         "create_blueprint",
         "confirm_blueprint",
         "start_generation",
+        "enqueue_paper_review",
     ):
         assert tool in assistant_service.PROPOSAL_TOOLS
         assert tool not in assistant_service.REFUSED_TOOLS
@@ -649,6 +652,58 @@ def test_start_generation_requires_confirmed_contract():
     )
     assert payload["project_id"] == "p1"
     assert payload["project_name"] == "期末卷"
+
+
+def test_enqueue_paper_review_payload_and_guards():
+    """整卷评审提案：有试卷才放行，目标卷取自 paper 快照（active 优先解析）。"""
+    ctx = _paper_ctx()
+    ctx["projects"][0]["paper"] = {
+        "exists": True,
+        "paper_version_id": "pv9",
+        "version_no": 3,
+        "status": "candidate",
+        "needs_review_count": 2,
+    }
+    payload = build_proposal_payload(
+        "enqueue_paper_review",
+        {"project_id": "p1", "instruction": "重点看填空题答案唯一性"},
+        context=ctx,
+    )
+    assert payload["paper_version_id"] == "pv9"
+    assert payload["paper_version_no"] == 3
+    assert payload["project_name"] == "期末卷"
+    assert payload["body"] == {"instruction": "重点看填空题答案唯一性"}
+    # instruction 可省略 = 常规评审
+    assert build_proposal_payload(
+        "enqueue_paper_review", {"project_id": "p1"}, context=ctx
+    )["body"] == {"instruction": ""}
+    # 没有试卷 → 拦下并引导先走生成
+    with pytest.raises(AssistantError, match="还没有试卷"):
+        build_proposal_payload(
+            "enqueue_paper_review", {"project_id": "p1"}, context=_paper_ctx()
+        )
+    # 白名单外项目 → 拒绝
+    with pytest.raises(AssistantError, match="白名单"):
+        build_proposal_payload(
+            "enqueue_paper_review", {"project_id": "evil"}, context=ctx
+        )
+
+
+def test_prompt_documents_paper_review_tool():
+    """整卷 AI 评审接入助手：工具描述、质量检查落点与 review 停点例外齐备。"""
+    system_prompt, _payload = build_intent_prompt(_paper_ctx(), "帮我检查一下试卷")
+    assert "enqueue_paper_review" in system_prompt
+    # 卡片开场白有专属文案（非通用兜底）
+    assert "整卷 AI 评审任务的发起提案" in (
+        assistant_service._DEFAULT_PROPOSAL_REPLIES["enqueue_paper_review"]
+    )
+    # 落点：「试卷有没有问题/帮我检查」这类问法指向评审工具
+    assert "整卷质量检查" in system_prompt
+    # review/exported 停点放行评审卡（停点只拦出卷主线推进）
+    assert "例外：教师明确要求检查/评审试卷" in system_prompt
+    # 前提与防重复：以 paper.exists 为判据、报告回试卷页看
+    assert "paper.exists=true" in system_prompt
+    assert "不要重复发起" in system_prompt
 
 
 def test_prompt_documents_paper_pipeline_ladder():
@@ -1796,3 +1851,49 @@ def test_load_context_lists_materials_with_whitelist(session):
 def test_load_context_rejects_missing_course(session):
     with pytest.raises(AssistantError, match="课程不存在"):
         load_turn_context(session, course_id="nope")
+
+
+def test_paper_summary_prefers_active_version(session):
+    """试卷摘要取 active_paper_version_id（教师所见版本）；无激活记录回退最新。
+
+    历史版本被重新激活后 active ≠ 最新版本号，评审提案与引导必须与试卷页同源。
+    """
+    session.execute(
+        exam_projects.insert().values(
+            id="proj1",
+            course_id="c1",
+            name="评审目标",
+            status="review",
+        )
+    )
+    session.execute(
+        paper_versions.insert().values(
+            id="pv1", course_id="c1", exam_project_id="proj1",
+            version_no=1, status="review",
+        )
+    )
+    session.execute(
+        paper_versions.insert().values(
+            id="pv2", course_id="c1", exam_project_id="proj1",
+            version_no=2, status="review",
+        )
+    )
+    # 激活指针在版本行落库后回填（FK 逐句校验，前置引用会撞 FOREIGN KEY）
+    session.execute(
+        exam_projects.update()
+        .where(exam_projects.c.id == "proj1", exam_projects.c.course_id == "c1")
+        .values(active_paper_version_id="pv1")
+    )
+    session.commit()
+
+    summary = assistant_service._paper_summary(
+        session, course_id="c1", project={"id": "proj1", "active_paper_version_id": "pv1"}
+    )
+    assert summary["exists"] is True
+    assert summary["paper_version_id"] == "pv1"
+    assert summary["version_no"] == 1
+
+    fallback = assistant_service._paper_summary(
+        session, course_id="c1", project={"id": "proj1"}
+    )
+    assert fallback["paper_version_id"] == "pv2"

@@ -117,6 +117,7 @@ PROPOSAL_TOOLS = (
     "enqueue_blueprint_suggest",
     "confirm_contract",
     "start_generation",
+    "enqueue_paper_review",
     "update_question_type_format",
 )
 # 双保险：即使模型给出这些 tool，路由层也按确定性文案拒绝（prompt 另有指示）。
@@ -370,19 +371,27 @@ def _contract_summary(session: Session, *, course_id: str, project_id: str) -> d
 
 
 def _paper_summary(session: Session, *, course_id: str, project: dict) -> dict:
-    row = session.execute(
-        select(
-            paper_versions.c.id,
-            paper_versions.c.version_no,
-            paper_versions.c.status,
-        )
-        .where(
-            paper_versions.c.course_id == course_id,
-            paper_versions.c.exam_project_id == project["id"],
-        )
-        .order_by(paper_versions.c.version_no.desc())
-        .limit(1)
-    ).one_or_none()
+    """项目当前试卷摘要：优先 active_paper_version_id（教师在试卷页看到的那份
+    卷——历史版本被重新激活时与最新版本号不同，评审/引导都以它为准），
+    无激活记录或指向失效时回退最新版本。"""
+    stmt = select(
+        paper_versions.c.id,
+        paper_versions.c.version_no,
+        paper_versions.c.status,
+    ).where(
+        paper_versions.c.course_id == course_id,
+        paper_versions.c.exam_project_id == project["id"],
+    )
+    row = None
+    active_id = project.get("active_paper_version_id")
+    if active_id:
+        row = session.execute(
+            stmt.where(paper_versions.c.id == active_id)
+        ).one_or_none()
+    if row is None:
+        row = session.execute(
+            stmt.order_by(paper_versions.c.version_no.desc()).limit(1)
+        ).one_or_none()
     if row is None:
         return {"exists": False}
     needs_review = session.execute(
@@ -525,8 +534,8 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 
 产品能力地图（回答「这个网站能做什么/怎么操作/流程是什么」时的依据；结构化步骤与跳转按钮由 usage_guide 引导卡呈现）：
 - 页面模块：课程概览（全阶段状态）、资料库（上传/解析/索引资料，四分区展示）、命题框架（双大纲→考点与考核规则，确认后冻结）、知识目录（分类→事实→画像→知识卡）、试卷（试卷项目工作区）。
-- 出卷主线：上传并解析资料 → 构建并冻结命题框架 → 生成知识目录 → 创建试卷项目并确认蓝图 → 确认合同（系统逐题位确定性分配）→ AI 生成 → 审核编辑 → 定稿导出学生卷/答卷/答题卡/答案细则四份产物。
-- 助手边界：只读查询、资料内容问答与总结、写操作提案（教师点确认后由既有接口执行）可由我代劳——出卷主线的创建项目/修改考核规则/创建与确认蓝图/确认合同/发起生成均可提案代劳；出题改题、试卷定稿导出、删除资料需引导教师到对应页面亲自完成；在线考试与阅卷不在本系统范围内。
+- 出卷主线：上传并解析资料 → 构建并冻结命题框架 → 生成知识目录 → 创建试卷项目并确认蓝图 → 确认合同（系统逐题位确定性分配）→ AI 生成 → 审核编辑（可发起整卷 AI 质量评审）→ 定稿导出学生卷/答卷/答题卡/答案细则四份产物。
+- 助手边界：只读查询、资料内容问答与总结、写操作提案（教师点确认后由既有接口执行）可由我代劳——出卷主线的创建项目/修改考核规则/创建与确认蓝图/确认合同/发起生成与整卷质量评审均可提案代劳；出题改题、试卷定稿导出、删除资料需引导教师到对应页面亲自完成；在线考试与阅卷不在本系统范围内。
 
 可用提案工具（action.args 只允许下述字段，id 必须取自 payload.ids 白名单）：
 - create_course：新建课程。args={name(必填,1~200字), slug?(小写字母数字连字符), description?, category?(类别 key，取自 payload.course_categories)}
@@ -544,6 +553,7 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 - confirm_contract：重新分配并确认合同。args={project_id(取自 payload.ids.project_ids)}（合同已确认冻结时不要选它）
 - start_generation：发起 AI 分批生成。args={project_id(取自 payload.ids.project_ids)}（合同未确认时不要选它）
 - update_question_type_format：设置/修改某题型的出题格式要求（影响之后的生成；已设置的格式见 snapshot.framework.exam_rules.type_formats）。args={question_type(single_choice/multiple_choice/true_false/fill_blank/short_answer/essay 或中文题型名), template(该题型**完整**的出题格式要求,1~2000字，须含该题型的结构与答案唯一性约束；传空串=恢复系统默认格式)}。综合题由原型档案驱动、不适用本工具——教师要改综合题格式时改用 create_blueprint 的 comprehensive_archetypes。
+- enqueue_paper_review：发起整卷 AI 质量评审（只读报告，不改任何数据；教师要「检查试卷」「看看有没有不好的地方」时用）。args={project_id(取自 payload.ids.project_ids), instruction?(教师关注点原话，如「重点看填空题答案是否唯一」；没有就省略=常规评审)}。前提：该项目已有试卷（snapshot 里 paper.exists=true）；课程有多份试卷且教师没点名时先列出项目名问教师评哪一份。已发起过就引导教师到试卷页看报告，不要重复发起。
 
 出卷主线推进（教师要出卷、继续出卷、或直接给出出卷要求时，先看 snapshot.projects 状态选**下一步**的提案，一次一张卡；回复里说明整体计划。教师点「确认执行」成功后，前端会自动替教师追问「继续」——收到这类追问就按本阶梯推进，**不要**在回复里要求教师手动输入「继续」）：
 1. 没有试卷项目 → create_exam_project
@@ -551,10 +561,10 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 3. 蓝图已有但未确认（blueprint.confirmed=false）→ 需要调整题位或难度分布 → enqueue_blueprint_suggest（指令带上教师原话的比例要求）；不需调整 → confirm_blueprint
 4. 合同未确认（contract.confirmed=false）→ confirm_contract
 5. 合同已确认 → start_generation
-教师具体要求的落点：难度比例（如5:3:2）→ enqueue_blueprint_suggest 的 instruction（系统确定性换算）；偏理论/侧重理解 → update_exam_rules 的 assessment_focus；题型比例/章节权重 → update_exam_rules；综合题不出代码题、多场景应用题 → create_blueprint 的 comprehensive_archetypes；单题型出题格式 → update_question_type_format。
+教师具体要求的落点：难度比例（如5:3:2）→ enqueue_blueprint_suggest 的 instruction（系统确定性换算）；偏理论/侧重理解 → update_exam_rules 的 assessment_focus；题型比例/章节权重 → update_exam_rules；综合题不出代码题、多场景应用题 → create_blueprint 的 comprehensive_archetypes；单题型出题格式 → update_question_type_format；整卷质量检查（「试卷有没有问题」「帮我检查一下」）→ enqueue_paper_review（只读报告，试卷生成后可用）。
 
 接力停点——以下情况**不出提案卡**（action 置 null），用一两句话说明现状与教师接下来要做什么，然后停下等教师回复。**先按项目 status 判定，命中即停、不再往下看**：
-1. 项目 status=review 或 exported → 出卷主线已完成。固定话术：先一句现状（试卷已生成、待审核），再引导「请到『试卷』页审核编辑，定稿与导出也在该页完成」；不列举导出格式、不把导出/发布摆成选项让教师点单，教师点名定稿/导出按下方拒绝清单回复。
+1. 项目 status=review 或 exported → 出卷主线已完成。固定话术：先一句现状（试卷已生成、待审核），再引导「请到『试卷』页审核编辑，定稿与导出也在该页完成」；不列举导出格式、不把导出/发布摆成选项让教师点单，教师点名定稿/导出按下方拒绝清单回复。例外：教师明确要求检查/评审试卷 → 照发 enqueue_paper_review（只读报告不改数据），本停点只拦出卷主线的后续推进卡。
 2. 项目 status=generating → 生成任务进行中，引导到试卷页看进度，不要重复发起生成。
 3. 蓝图建议已发起、但还没在试卷页「全部应用」 → 教师需先到『试卷』页点「全部应用」再回来，此时禁止 confirm_blueprint，也不重复发起建议。判定依据是**建议是否已应用**（试卷页仍有未应用条目即为未应用），不是教师的比例要求达没达标——达标与否由系统确定性算法保证，不由你判断。
 
@@ -1074,6 +1084,24 @@ def build_proposal_payload(tool: str, args: dict, *, context: dict) -> dict:
             raise AssistantError("合同尚未确认：先用 confirm_contract 确认合同再发起生成")
         return {"project_id": project["id"], "project_name": project["name"], "body": {}}
 
+    if tool == "enqueue_paper_review":
+        project = _target_project(allowed, context, args)
+        paper = project.get("paper") or {}
+        if not paper.get("exists"):
+            raise AssistantError("该项目还没有试卷：先确认合同并发起生成，试卷生成后才能发起评审")
+        instruction = _require_str(args, "instruction", max_len=500, allow_empty=True) or ""
+        pv_id = str(paper.get("paper_version_id") or "").strip()
+        if not pv_id:
+            raise AssistantError("该项目没有可评审的试卷版本")
+        # paper_version_id 已按 active_paper_version_id 解析（与试卷页所见同源）
+        return {
+            "project_id": project["id"],
+            "project_name": project["name"],
+            "paper_version_id": pv_id,
+            "paper_version_no": paper.get("version_no"),
+            "body": {"instruction": instruction},
+        }
+
     if tool == "update_question_type_format":
         canonical = canonical_question_type(args.get("question_type"))
         if canonical not in QUESTION_TEMPLATES:
@@ -1369,6 +1397,7 @@ _DEFAULT_PROPOSAL_REPLIES = {
     "enqueue_blueprint_suggest": "已生成蓝图调整建议任务的发起提案，确认后执行：",
     "confirm_contract": "已生成合同重新分配提案（确认合同落库），请核对参数后执行：",
     "start_generation": "已生成 AI 生成任务的发起提案，确认后按已确认合同分批生成：",
+    "enqueue_paper_review": "已生成整卷 AI 评审任务的发起提案，确认后执行（只读报告，不改数据）：",
     "update_question_type_format": "已生成题型格式修改提案，确认后写入考核规则：",
 }
 

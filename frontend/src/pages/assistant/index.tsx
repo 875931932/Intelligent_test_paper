@@ -82,6 +82,10 @@ const PROPOSAL_META: Record<string, { label: string; impact: string }> = {
     label: '发起 AI 生成',
     impact: '按已确认合同分批生成题目；生成期间可在试卷页查看进度。',
   },
+  enqueue_paper_review: {
+    label: '发起整卷 AI 评审',
+    impact: '创建只读质量评审任务（不修改任何数据）；报告生成后在试卷页查看。',
+  },
   update_question_type_format: {
     label: '修改题型格式',
     impact: '覆盖该题型的出题格式要求，之后的生成按新格式出题；不影响题型比例/难度/去重。',
@@ -631,6 +635,18 @@ function proposalParamRows(tool: string, payload: AssistantActionPayload): Array
         [
           '要求',
           typeof body.instruction === 'string' && body.instruction ? body.instruction : '（常规检查）',
+        ],
+      ];
+    case 'enqueue_paper_review':
+      return [
+        ['项目', payload.project_name || payload.project_id || '—'],
+        [
+          '试卷',
+          typeof payload.paper_version_no === 'number' ? `v${payload.paper_version_no}` : '—',
+        ],
+        [
+          '关注点',
+          typeof body.instruction === 'string' && body.instruction ? body.instruction : '（常规评审）',
         ],
       ];
     case 'confirm_blueprint':
@@ -1276,6 +1292,17 @@ const AssistantPage: FC = () => {
           if (!payload.project_id) throw new Error('提案缺少项目 id');
           await api.examProjects.startGeneration(courseId, payload.project_id, undefined, token ?? undefined);
           receipt = '已发起 AI 生成任务，进度见试卷页';
+          break;
+        }
+        case 'enqueue_paper_review': {
+          if (!payload.paper_version_id) throw new Error('提案缺少试卷版本 id');
+          await api.paperVersions.aiReview(
+            courseId,
+            payload.paper_version_id,
+            typeof body.instruction === 'string' ? body.instruction : '',
+            token ?? undefined,
+          );
+          receipt = '已发起整卷 AI 评审任务，完成后在试卷页查看报告';
           break;
         }
         case 'update_question_type_format': {
