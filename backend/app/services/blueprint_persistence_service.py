@@ -770,7 +770,11 @@ def confirm_blueprint(
     project_id: str,
     blueprint_version_id: str,
 ) -> dict:
-    """确认蓝图：重跑分配校验 → 标记已确认 → 关联项目，旧版本置为 superseded。"""
+    """确认蓝图：重跑分配校验 → 标记已确认 → 关联项目，旧版本置为 superseded。
+
+    项目状态只进不退：仅 draft/blueprint 推进到 contract，已越过合同阶段
+    （generating/review/exported）的项目补记确认时保持现值。
+    """
     try:
         # 1. 加载 blueprint_version，校验归属与状态
         bv = session.execute(
@@ -930,7 +934,17 @@ def confirm_blueprint(
             .values(status="confirmed", confirmed_at=func.now())
         )
 
-        # 5. 更新 exam_projects: 设置 active_blueprint_version_id, status='contract'
+        # 5. 更新 exam_projects: 设置 active_blueprint_version_id；状态只进不退——
+        # 仅 draft/blueprint 阶段推进到 contract；项目已越过合同阶段（generating/
+        # review/exported，如生成完成后才补记蓝图确认）时保持现值，否则确认动作会把
+        # 已完成的项目打回合同阶段，助手阶梯随之倒发 start_generation 提案。
+        current_status = session.execute(
+            select(exam_projects.c.status)
+            .where(
+                exam_projects.c.id == project_id,
+                exam_projects.c.course_id == course_id,
+            )
+        ).scalar_one()
         session.execute(
             exam_projects.update()
             .where(
@@ -939,7 +953,11 @@ def confirm_blueprint(
             )
             .values(
                 active_blueprint_version_id=blueprint_version_id,
-                status="contract",
+                status=(
+                    "contract"
+                    if current_status in ("draft", "blueprint")
+                    else current_status
+                ),
             )
         )
 

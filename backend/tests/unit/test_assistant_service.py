@@ -672,6 +672,16 @@ def test_prompt_documents_paper_pipeline_ladder():
     assert "全部应用" in system_prompt
     assert "禁止 confirm_blueprint" in system_prompt
     assert "status=generating" in system_prompt
+    # 停点优先级：review/exported 与 generating 是终态判定先命中即停，
+    # 防主线走完后被「难度停点」误拦（曾在 review 阶段误报「建议未应用」）
+    assert "先按项目 status 判定，命中即停、不再往下看" in system_prompt
+    assert system_prompt.index("status=review 或 exported") < system_prompt.index(
+        "还没在试卷页「全部应用」"
+    )
+    # 停点判定看「建议是否已应用」，不许拿分布反推教师比例要求是否达标
+    assert "建议是否已应用" in system_prompt
+    # 指令粒度保真：「每个题型」级限定词原样保留，防丢词改变逐题型/整卷换算口径
+    assert "每个题型" in system_prompt
     # 旧拒绝文案（蓝图确认一并拒绝）不再出现；定稿/导出仍拒绝
     assert "蓝图确认、试卷定稿、导出" not in system_prompt
     assert "试卷定稿、导出" in system_prompt

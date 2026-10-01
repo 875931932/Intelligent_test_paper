@@ -208,6 +208,32 @@ def test_confirm_creates_version_and_supersedes_old(session):
     assert proj2._mapping["status"] == "contract"
 
 
+def test_confirm_blueprint_keeps_status_past_contract_stage(session):
+    """状态只进不退：已越过合同阶段的项目补记蓝图确认不被打回 contract。
+
+    回归：生成完成后（status=review）经助手补记 confirm_blueprint 曾把项目
+    打回 contract，助手阶梯随之倒发 start_generation 提案。
+    """
+    bv, _ = create_draft_blueprint(session, **_draft_params(count=10, per=10))
+    session.execute(
+        exam_projects.update()
+        .where(exam_projects.c.id == "ep1")
+        .values(status="review")
+    )
+    session.commit()
+
+    r = confirm_blueprint(session, course_id="c1", project_id="ep1", blueprint_version_id=bv)
+    assert r["status"] == "confirmed"
+
+    proj = session.execute(select(exam_projects).where(exam_projects.c.id == "ep1")).one()
+    assert proj._mapping["status"] == "review"
+    assert proj._mapping["active_blueprint_version_id"] == bv
+    bp_status = session.execute(
+        select(blueprint_versions.c.status).where(blueprint_versions.c.id == bv)
+    ).scalar_one()
+    assert bp_status == "confirmed"
+
+
 # --- TR-2.2 ---
 
 def test_update_plan_item_score_causes_total_mismatch_raises_and_rolls_back(session):
