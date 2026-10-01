@@ -425,6 +425,55 @@ def test_retrieve_multi_for_question_rejects_unsafe_configuration():
         )
 
 
+def test_retrieve_multi_uses_precomputed_semantic_scores_without_embedder():
+    """SQL 下推分：给定即完全不调嵌入，打分/量化/决胜与 Python cosine 路径同款。"""
+    chunks = _question_chunks()
+
+    # 等值对照：预计算分取 cosine([1,0], chunk) 的精确值（q1=1.0、q2=0.6）
+    scores = [{"q1": 1.0, "q2": 0.6}, {"q1": 1.0, "q2": 0.6}]
+    via_scores = retrieve_multi_for_question(
+        ["监督学习有哪些任务", "监督学习"], chunks, None,
+        top_k=4, minimum_score=0.0, semantic_scores=scores,
+    )
+    via_vectors = retrieve_multi_for_question(
+        ["监督学习有哪些任务", "监督学习"], chunks, StaticEmbedder([[1.0, 0.0], [1.0, 0.0]]),
+        top_k=4, minimum_score=0.0,
+    )
+
+    assert via_scores  # 双路径都召回
+    assert [
+        (item.chunk.id, item.score, item.lexical_score, item.semantic_score)
+        for item in via_scores
+    ] == [
+        (item.chunk.id, item.score, item.lexical_score, item.semantic_score)
+        for item in via_vectors
+    ]
+    assert via_scores[0].chunk.id == "q1"
+
+
+def test_retrieve_multi_single_variant_uses_scores_without_embedder():
+    chunks = _question_chunks()
+    direct = retrieve_for_question(
+        "监督学习有哪些任务", chunks, None,
+        top_k=2, minimum_score=0.0, semantic_scores={"q1": 1.0, "q2": 0.6},
+    )
+    via_multi = retrieve_multi_for_question(
+        ["监督学习有哪些任务"], chunks, None,
+        top_k=2, minimum_score=0.0, semantic_scores=[{"q1": 1.0, "q2": 0.6}],
+    )
+    assert [item.chunk.id for item in via_multi] == [item.chunk.id for item in direct]
+    assert direct and direct[0].chunk.id == "q1"
+
+
+def test_retrieve_multi_rejects_scores_variant_count_mismatch():
+    """预计算分与去重后变体数量不一致是编程错误，立即抛配置错误（上层降级词面）。"""
+    with pytest.raises(RetrievalConfigurationError, match="语义分与查询变体数量不一致"):
+        retrieve_multi_for_question(
+            ["问题", "题"], _question_chunks(), None,
+            top_k=2, minimum_score=0.05, semantic_scores=[{"q1": 1.0}],
+        )
+
+
 def test_lexical_rank_for_question_orders_by_overlap_without_embedder():
     chunks = [
         StagingChunk(id="a", material_version_id="v1", content="监督学习分为分类与回归。"),

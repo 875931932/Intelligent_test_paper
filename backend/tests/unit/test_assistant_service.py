@@ -986,13 +986,15 @@ def _patch_rag(monkeypatch, chunks=None, *, configured: bool = False):
         calls["ensure"].append((course_id, material_ids))
         return 0
 
-    def fake_load(session, *, course_id, material_ids=None):
-        calls["load"].append((course_id, material_ids))
+    def fake_load(session, *, course_id, material_ids=None, include_embedding=True):
+        calls["load"].append((course_id, material_ids, include_embedding))
         return _rag_chunks() if chunks is None else chunks
 
     monkeypatch.setattr(assistant_service, "ensure_embedded", fake_ensure)
     monkeypatch.setattr(assistant_service, "load_content_chunks", fake_load)
     monkeypatch.setattr(assistant_service, "embedding_configured", lambda: configured)
+    # 夹具无真实库：默认不走 PG 下推（下推专项用例再覆盖为 True）
+    monkeypatch.setattr(assistant_service, "supports_semantic_pushdown", lambda session: False)
     return calls
 
 
@@ -1116,7 +1118,7 @@ def test_rag_route_targets_named_material_lexical_mode(monkeypatch):
     assert routed["stream"] is True
     assert routed["retrieval"]["mode"] == "lexical"
     assert calls["ensure"] == [("c1", ["m1"])]  # 自愈索引按点名范围
-    assert calls["load"] == [("c1", ["m1"])]
+    assert calls["load"] == [("c1", ["m1"], True)]
 
     payload = routed["payload"]
     assert payload["question"] == "监督学习的分类与回归是什么"  # 教师原话，不经模型转述
@@ -1198,6 +1200,83 @@ def test_rag_route_embedder_failure_degrades_to_lexical(monkeypatch):
     )
     assert routed["retrieval"]["mode"] == "lexical"
     assert routed["payload"]["sources"]
+
+
+def test_rag_route_pushdown_scores_without_loading_embeddings(monkeypatch):
+    """PG 方言语义下推：向量列不装载（59MB → ~4MB 文本），SQL 预计算分直进混合检索。"""
+
+    class QueryEmbedder:
+        def embed(self, texts):
+            # 双变体一次批量嵌入 → 只为 SQL 下推取查询向量（打分不再调嵌入）
+            assert texts == ["监督学习的分类与回归是什么", "监督学习的分类与回归"]
+            return [[1.0, 0.0], [1.0, 0.0]]
+
+    calls = _patch_rag(monkeypatch, _rag_chunks(), configured=True)  # 无向量语料
+    monkeypatch.setattr(assistant_service, "supports_semantic_pushdown", lambda session: True)
+    monkeypatch.setattr(assistant_service, "build_embedder", lambda: QueryEmbedder())
+    monkeypatch.setattr(
+        assistant_service,
+        "load_semantic_scores",
+        lambda *a, **kw: [{"blk-1": 1.0, "blk-2": 0.0}, {"blk-1": 1.0, "blk-2": 0.0}],
+    )
+
+    routed = route_intent(
+        _intent("", {"tool": assistant_service.RAG_TOOL, "args": {}}),
+        session=None,
+        context=_rag_ctx(),
+        message="监督学习的分类与回归是什么",
+    )
+
+    assert routed["retrieval"]["mode"] == "hybrid"
+    # 语义分与 Python cosine 同款过滤：blk-1 命中、blk-2 语义 0 被滤
+    assert [s["block_id"] for s in routed["payload"]["sources"]] == ["blk-1"]
+    # 向量列不选出（include_embedding=False）
+    assert calls["load"] and calls["load"][0][2] is False
+
+
+def test_rag_route_pushdown_incomplete_coverage_degrades_to_lexical(monkeypatch):
+    """下推分缺块（旧模型向量被过滤等）→ 覆盖不全，降级词面不断轮。"""
+
+    class StubEmbedder:
+        def embed(self, texts):
+            return [[1.0, 0.0], [1.0, 0.0]]
+
+    _patch_rag(monkeypatch, _rag_chunks(), configured=True)
+    monkeypatch.setattr(assistant_service, "supports_semantic_pushdown", lambda session: True)
+    monkeypatch.setattr(assistant_service, "build_embedder", lambda: StubEmbedder())
+    monkeypatch.setattr(
+        assistant_service,
+        "load_semantic_scores",
+        lambda *a, **kw: [{"blk-1": 1.0}, {"blk-1": 1.0}],  # 变体齐但缺 blk-2
+    )
+
+    routed = route_intent(
+        _intent("", {"tool": assistant_service.RAG_TOOL, "args": {}}),
+        session=None,
+        context=_rag_ctx(),
+        message="监督学习的分类与回归是什么",
+    )
+    assert routed["retrieval"]["mode"] == "lexical"
+
+
+def test_rag_route_pushdown_failure_degrades_to_lexical(monkeypatch):
+    """SQL 下推任一环失败（嵌入/查询）→ 降级词面，不上抛断轮。"""
+
+    class BrokenEmbedder:
+        def embed(self, texts):
+            raise RuntimeError("embedding down")
+
+    _patch_rag(monkeypatch, _rag_chunks(), configured=True)
+    monkeypatch.setattr(assistant_service, "supports_semantic_pushdown", lambda session: True)
+    monkeypatch.setattr(assistant_service, "build_embedder", lambda: BrokenEmbedder())
+
+    routed = route_intent(
+        _intent("", {"tool": assistant_service.RAG_TOOL, "args": {}}),
+        session=None,
+        context=_rag_ctx(),
+        message="监督学习的分类与回归是什么",
+    )
+    assert routed["retrieval"]["mode"] == "lexical"
 
 
 def test_rag_route_rejects_foreign_material_id(monkeypatch):

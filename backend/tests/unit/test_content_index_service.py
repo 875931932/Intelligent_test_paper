@@ -34,7 +34,7 @@ def session(tmp_path):
         s.add(Course(id="c1", owner_id="u1", slug="cs101", name="CS101"))
         s.add(Course(id="c2", owner_id="u1", slug="cs201", name="CS201"))
         s.flush()
-        # c1：m1 已解析（3 块：文本/公式/空图），m2 未解析，m3 解析失败
+        # c1：m1 已解析（4 块：文本/公式/空图/结构残片），m2 未解析，m3 解析失败
         s.execute(
             materials.insert().values(
                 id="m1", course_id="c1", logical_name="教学大纲",
@@ -110,6 +110,12 @@ def session(tmp_path):
                  text="失败解析的内容不应出现。", latex=None, markdown=None,
                  heading_path=[], page_index=None,
                  reading_order=0, content_hash="4" * 64),
+            # b5：结构残片（纯标签，清洗后无正文 → 不可嵌入也不进语料）
+            dict(id="b5", course_id="c1", document_parse_run_id="r1",
+                 material_version_id="v1", block_index=3, block_type="text",
+                 text="<details>", latex=None, markdown=None,
+                 heading_path=[], page_index=None,
+                 reading_order=3, content_hash="5" * 64),
         ]
         s.execute(content_blocks.insert(), blocks)
         # c2：另一课程的 ready 块（course_id 隔离）
@@ -359,6 +365,51 @@ def test_load_content_chunks_targets_material_and_ignores_unparsed(session):
     )
     assert [c.id for c in chunks] == ["b1", "b2"]
     assert content_index_service.load_content_chunks(session, course_id="c2")[0].id == "b9"
+
+
+def test_load_content_chunks_include_embedding_false_skips_vectors(session, monkeypatch):
+    monkeypatch.setattr(settings, "embedding_model", "emb-v1")
+    session.execute(
+        content_blocks.update()
+        .where(content_blocks.c.id == "b1")
+        .values(embedding=[0.5, 0.5], embedding_model="emb-v1")
+    )
+    session.commit()
+
+    chunks = content_index_service.load_content_chunks(
+        session, course_id="c1", include_embedding=False
+    )
+    # 文本/定位器照常装载，向量列不选出（PG 下推路径：55MB 向量不过网络）
+    assert [c.id for c in chunks] == ["b1", "b2"]
+    assert all(c.embedding is None for c in chunks)
+
+    # 缺省行为不变：带当前模型向量
+    loaded = {
+        c.id: c
+        for c in content_index_service.load_content_chunks(session, course_id="c1")
+    }
+    assert loaded["b1"].embedding == [0.5, 0.5]
+
+
+def test_load_content_chunks_skips_structural_fragments(session):
+    """纯标签残片（清洗后无正文）不进语料：不可嵌入的块混入会让混合检索的
+    「全部块带向量」门永远为假、整轮打回词面（线上 137 块 <details> 实例）。"""
+    ids = [
+        c.id
+        for c in content_index_service.load_content_chunks(session, course_id="c1")
+    ]
+    assert ids == ["b1", "b2"]  # b3 空图、b5 结构残片都被剔除；b4 属失败 run
+
+
+def test_semantic_pushdown_rejected_off_postgres(session):
+    """非 PG 方言不支持下推（PG 专用 SQL），load_semantic_scores 返回 None。"""
+    assert content_index_service.supports_semantic_pushdown(session) is False
+    assert (
+        content_index_service.load_semantic_scores(
+            session, course_id="c1", material_ids=None, query_vectors=[[1.0, 0.0]]
+        )
+        is None
+    )
 
 
 def test_enqueue_index_task_is_idempotent(session):

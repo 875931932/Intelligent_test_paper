@@ -176,19 +176,24 @@ def retrieve_for_exam_point(
 def retrieve_for_question(
     question: str,
     chunks: list[StagingChunk],
-    embedder: EmbeddingClient,
+    embedder: EmbeddingClient | None,
     *,
     top_k: int,
     minimum_score: float,
     query_vector: list[float] | None = None,
+    semantic_scores: dict[str, float] | None = None,
 ) -> list[RankedChunk]:
-    """资料内容问答（助手 RAG）的混合检索：与 exam point 同款打分/量化/决胜，入参为裸问题串。"""
+    """资料内容问答（助手 RAG）的混合检索：与 exam point 同款打分/量化/决胜，入参为裸问题串。
+
+    semantic_scores 给定（SQL 下推预计算）→ 不调嵌入、不带查询向量直接打分；
+    缺省维持原路径（嵌入查询向量 + 库内块向量）。
+    """
 
     _validate_configuration(top_k=top_k, minimum_score=minimum_score)
     if not chunks:
         return []
 
-    if query_vector is None:
+    if query_vector is None and semantic_scores is None:
         try:
             raw_query_vectors = embedder.embed([question])
         except RetrievalConfigurationError:
@@ -202,16 +207,18 @@ def retrieve_for_question(
         query_vector=query_vector,
         top_k=top_k,
         minimum_score=minimum_score,
+        semantic_scores=semantic_scores,
     )
 
 
 def retrieve_multi_for_question(
     question_variants: list[str],
     chunks: list[StagingChunk],
-    embedder: EmbeddingClient,
+    embedder: EmbeddingClient | None,
     *,
     top_k: int,
     minimum_score: float,
+    semantic_scores: list[dict[str, float]] | None = None,
 ) -> list[RankedChunk]:
     """多查询资料问答检索：变体一次批量嵌入，各查询独立打分后同文折叠合并。
 
@@ -219,6 +226,9 @@ def retrieve_multi_for_question(
     文本打分；合并期按归一文本折叠近重复——跨文档模板碎片（表头「教学班：____」
     之类，同一课程里可有十几份同文副本）只保留得分最高的一份，正文块才可能
     进 top_k。单变体直接走单查询路径（行为与既有完全一致）。
+
+    semantic_scores 给定（SQL 下推预计算，按去重后变体对齐）→ 跳过批量嵌入，
+    直接用预计算语义分打分；缺省维持原路径（批量嵌入 + 库内块向量）。
     """
 
     _validate_configuration(top_k=top_k, minimum_score=minimum_score)
@@ -227,17 +237,29 @@ def retrieve_multi_for_question(
     variants = [v for v in dict.fromkeys(question_variants) if v.strip()]
     if not variants:
         return []
+    if semantic_scores is not None and len(semantic_scores) != len(variants):
+        raise RetrievalConfigurationError("预计算语义分与查询变体数量不一致")
     if len(variants) == 1:
         return retrieve_for_question(
-            variants[0], chunks, embedder, top_k=top_k, minimum_score=minimum_score
+            variants[0],
+            chunks,
+            embedder,
+            top_k=top_k,
+            minimum_score=minimum_score,
+            semantic_scores=semantic_scores[0] if semantic_scores else None,
         )
-    try:
-        raw_vectors = embedder.embed(variants)
-    except RetrievalConfigurationError:
-        raise
-    except Exception as exc:
-        raise RetrievalConfigurationError("嵌入服务调用失败，检索已中止") from exc
-    query_vectors = _validated_vectors(raw_vectors, expected_count=len(variants))
+    if semantic_scores is None:
+        try:
+            raw_vectors = embedder.embed(variants)
+        except RetrievalConfigurationError:
+            raise
+        except Exception as exc:
+            raise RetrievalConfigurationError("嵌入服务调用失败，检索已中止") from exc
+        query_vectors = _validated_vectors(raw_vectors, expected_count=len(variants))
+        score_maps: list[dict[str, float] | None] = [None] * len(variants)
+    else:
+        query_vectors = [None] * len(variants)
+        score_maps = list(semantic_scores)
     ranked_groups = [
         retrieve_for_question(
             variant,
@@ -246,8 +268,9 @@ def retrieve_multi_for_question(
             top_k=len(chunks),
             minimum_score=minimum_score,
             query_vector=vector,
+            semantic_scores=scores,
         )
-        for variant, vector in zip(variants, query_vectors)
+        for variant, vector, scores in zip(variants, query_vectors, score_maps)
     ]
     return _merge_ranked_groups(
         ranked_groups, top_k=top_k, key=lambda item: _dedup_key(item.chunk.content)
@@ -297,22 +320,36 @@ def _rank_hybrid(
     *,
     intent: str,
     chunks: list[StagingChunk],
-    query_vector: list[float],
+    query_vector: list[float] | None = None,
     top_k: int,
     minimum_score: float,
+    semantic_scores: dict[str, float] | None = None,
 ) -> list[RankedChunk]:
-    """0.35 词面 + 0.65 语义混合打分（要求全部块带向量，维度不齐直接抛配置错误）。"""
+    """0.35 词面 + 0.65 语义混合打分。
 
-    vectors = _validated_vectors(
-        [query_vector, *(chunk.embedding for chunk in chunks)],
-        expected_count=len(chunks) + 1,
-    )
-    query_vector, chunk_vectors = vectors[0], vectors[1:]
+    semantic_scores 给定（SQL 下推预计算的 {block_id: cosine}，向量不出库）→
+    直接取分，不再校验库内向量；缺省 → 校验全部块向量后 Python cosine
+    （维度不齐/零范数直接抛配置错误）。两条路径的打分/量化/决胜完全同款。
+    """
+
+    if semantic_scores is None:
+        if query_vector is None:
+            raise RetrievalConfigurationError("缺少查询向量或预计算语义分")
+        vectors = _validated_vectors(
+            [query_vector, *(chunk.embedding for chunk in chunks)],
+            expected_count=len(chunks) + 1,
+        )
+        query_vector, chunk_vectors = vectors[0], vectors[1:]
+    else:
+        chunk_vectors = None
 
     ranked: list[RankedChunk] = []
-    for chunk, vector in zip(chunks, chunk_vectors, strict=True):
+    for index, chunk in enumerate(chunks):
         lexical_score = lexical_overlap(intent, chunk.content)
-        semantic_score = cosine_similarity(query_vector, vector)
+        if semantic_scores is not None:
+            semantic_score = semantic_scores[chunk.id]
+        else:
+            semantic_score = cosine_similarity(query_vector, chunk_vectors[index])
         if semantic_score <= MINIMUM_SEMANTIC_SCORE:
             continue
         score = 0.35 * lexical_score + 0.65 * semantic_score

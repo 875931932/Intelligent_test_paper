@@ -60,7 +60,14 @@ from app.services import (
 # 复用既有判定（模块级 import 优于复制第二份）
 from app.services.ai_revise_service import llm_configured
 # RAG 检索与语料索引（助手 v2 资料内容问答）
-from app.services.content_index_service import build_embedder, embedding_configured, ensure_embedded, load_content_chunks
+from app.services.content_index_service import (
+    build_embedder,
+    embedding_configured,
+    ensure_embedded,
+    load_content_chunks,
+    load_semantic_scores,
+    supports_semantic_pushdown,
+)
 from app.services.staging_retrieval_service import (
     RankedChunk,
     lexical_rank_for_question,
@@ -1140,21 +1147,51 @@ def _rag_query_variants(question: str) -> list[str]:
     return variants
 
 
-def _rank_rag_chunks(question: str, chunks: list[StagingChunk]) -> tuple[str, list[RankedChunk]]:
+def _rank_rag_chunks(
+    question: str,
+    chunks: list[StagingChunk],
+    *,
+    semantic_scores: list[dict[str, float]] | None = None,
+) -> tuple[str, list[RankedChunk]]:
     """多查询混合检索（原问题+主题核心双变体，合并期同文折叠）；嵌入不可用
-    或混合无命中 → 纯词面（确定性降级，嵌入故障不断轮）。"""
+    或混合无命中 → 纯词面（确定性降级，嵌入故障不断轮）。
 
-    if embedding_configured() and all(chunk.embedding is not None for chunk in chunks):
+    semantic_scores：SQL 下推预计算的逐变体语义分（与 _rag_query_variants 对齐，
+    向量不出库）。给定且覆盖全部块 → 直接用预计算分打分；覆盖不全或缺省 → 回落
+    「装载向量 + Python cosine」旧路径（未装载向量时即纯词面）。
+    """
+
+    if embedding_configured():
         try:
-            ranked = retrieve_multi_for_question(
-                _rag_query_variants(question),
-                chunks,
-                build_embedder(),
-                top_k=_RAG_TOP_K,
-                minimum_score=_RAG_HYBRID_MIN_SCORE,
+            variants = _rag_query_variants(question)
+            scores_cover = (
+                semantic_scores is not None
+                and len(semantic_scores) == len(variants)
+                and all(
+                    chunk.id in scores for scores in semantic_scores for chunk in chunks
+                )
             )
-            if ranked:
-                return "hybrid", ranked
+            if scores_cover:
+                ranked = retrieve_multi_for_question(
+                    variants,
+                    chunks,
+                    None,
+                    top_k=_RAG_TOP_K,
+                    minimum_score=_RAG_HYBRID_MIN_SCORE,
+                    semantic_scores=semantic_scores,
+                )
+                if ranked:
+                    return "hybrid", ranked
+            elif all(chunk.embedding is not None for chunk in chunks):
+                ranked = retrieve_multi_for_question(
+                    variants,
+                    chunks,
+                    build_embedder(),
+                    top_k=_RAG_TOP_K,
+                    minimum_score=_RAG_HYBRID_MIN_SCORE,
+                )
+                if ranked:
+                    return "hybrid", ranked
         except Exception as exc:  # noqa: BLE001 — 嵌入故障降级词面，不上抛
             logger.warning("RAG 混合检索失败，降级词面: %s", exc)
     return "lexical", lexical_rank_for_question(
@@ -1257,13 +1294,33 @@ def execute_rag(
 
     # 查询时自愈：历史数据/索引任务失败留下的缺向量块在 worker 内补嵌
     ensure_embedded(session, course_id=context["course_id"], material_ids=material_ids)
+    # 语义打分下推 PG：向量 JSON 不出库（59MB 全量拉取 → ~4MB 仅文本），SQL 内算
+    # cosine；非 PG 方言装载向量走旧路径，下推任一环失败降级词面——嵌入故障不断轮
+    pushdown = supports_semantic_pushdown(session)
     chunks = load_content_chunks(
-        session, course_id=context["course_id"], material_ids=material_ids
+        session,
+        course_id=context["course_id"],
+        material_ids=material_ids,
+        include_embedding=not pushdown,
     )
     if not chunks:
         raise AssistantError("该范围没有可检索的资料内容")
 
-    mode, ranked = _rank_rag_chunks(question, chunks)
+    semantic_scores = None
+    if pushdown and embedding_configured():
+        try:
+            query_vectors = build_embedder().embed(_rag_query_variants(question))
+            semantic_scores = load_semantic_scores(
+                session,
+                course_id=context["course_id"],
+                material_ids=material_ids,
+                query_vectors=query_vectors,
+            )
+        except Exception as exc:  # noqa: BLE001 — 下推失败降级词面，不上抛
+            logger.warning("RAG 语义下推失败，降级词面: %s", exc)
+            semantic_scores = None
+
+    mode, ranked = _rank_rag_chunks(question, chunks, semantic_scores=semantic_scores)
     ranked = _expand_rag_neighborhood(ranked, chunks)
     payload = {
         "question": question,
