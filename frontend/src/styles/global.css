@@ -820,8 +820,14 @@ body > .floating-pill:nth-of-type(2) { top: 112px; }
 
 /* 模型返回的 Markdown 正文（react-markdown + GFM）：气泡内排版——
    首尾块贴边、段落轻隔、列表/表格/围栏代码可读；正文与思考区共用。
-   pre-wrap：保留模型单换行分点的聊天习惯（与原 StemBlocks 断行语义一致） */
-.md-body { line-height: 1.65; word-break: break-word; white-space: pre-wrap; }
+   white-space 只挂在内容元素（p/li/标题）上：mdast 序列化会在块级元素
+   之间插入 "\n" 文本节点，若根容器整体 pre-wrap，这些本该折叠为无形
+   空白的换行会渲染成整行空行（实测带间距 6→35px）；内容元素上的
+   pre-wrap 则保留模型单换行分点的聊天习惯。 */
+.md-body { line-height: 1.65; word-break: break-word; white-space: normal; }
+.md-body p, .md-body li,
+.md-body h1, .md-body h2, .md-body h3,
+.md-body h4, .md-body h5, .md-body h6 { white-space: pre-wrap; }
 .md-body > :first-child { margin-top: 0; }
 .md-body > :last-child { margin-bottom: 0; }
 .md-body p { margin: 6px 0; }
