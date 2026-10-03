@@ -568,70 +568,13 @@ function proposalParamRows(tool: string, payload: AssistantActionPayload): Array
       return [['资料', payload.material_name || payload.material_id || '—']];
     case 'create_exam_project':
       return [['项目名称', typeof body.name === 'string' ? body.name : '—']];
-    case 'update_exam_rules': {
-      const before = payload.before ?? {};
-      const fmtRatios = (v: unknown): string =>
-        Array.isArray(v) && v.length > 0
-          ? v
-              .map((r) => {
-                const rec = (r ?? {}) as Record<string, unknown>;
-                const t = typeof rec.question_type === 'string' ? rec.question_type : '';
-                return `${qlabel(t)} ${Number(rec.ratio) || 0}%`;
-              })
-              .join('、')
-          : '（空）';
-      const fmtChapters = (v: unknown): string =>
-        Array.isArray(v) && v.length > 0
-          ? v
-              .map((r) => {
-                const rec = (r ?? {}) as Record<string, unknown>;
-                return `${String(rec.anchor_key ?? '')} ${Number(rec.weight) || 0}`;
-              })
-              .join('、')
-          : '（空）';
-      const fmtFocus = (v: unknown): string =>
-        Array.isArray(v) && v.length > 0
-          ? v
-              .map((r) => {
-                const rec = (r ?? {}) as Record<string, unknown>;
-                const m = typeof rec.assessment_mode === 'string' ? rec.assessment_mode : '';
-                return `${ASSESSMENT_MODE_LABELS[m] ?? m} ${Number(rec.weight) || 0}`;
-              })
-              .join('、')
-          : '（空）';
-      const fields: Array<[string, string, (v: unknown) => string]> = [
-        ['题型比例', 'question_type_ratios', fmtRatios],
-        ['章节权重', 'chapter_weights', fmtChapters],
-        ['考试侧重点', 'assessment_focus', fmtFocus],
-      ];
-      const rows: Array<[string, string]> = [];
-      for (const [label, key, fmt] of fields) {
-        const b = before[key];
-        const a = body[key];
-        if (JSON.stringify(b ?? null) !== JSON.stringify(a ?? null)) {
-          rows.push([label, `${fmt(b)} → ${fmt(a)}`]);
-        }
-      }
-      if (rows.length === 0) rows.push(['说明', '（未检测到变化）']);
-      return rows;
-    }
-    case 'create_blueprint': {
-      const pool = body.comprehensive_archetypes;
-      return [
-        ['项目', payload.project_name || payload.project_id || '—'],
-        [
-          '综合题原型',
-          Array.isArray(pool) && pool.length > 0
-            ? pool
-                .map((a) => {
-                  const key = String(a);
-                  return ARCHETYPE_LABELS[key] ?? key;
-                })
-                .join('、')
-            : '（默认轮换池）',
-        ],
-      ];
-    }
+    case 'update_exam_rules':
+      // 逐项对比（现值/新值两列 + 变化高亮）由 SpecTable 渲染——
+      // 原来把「A、B、C → A、B、C」挤成一行长串，既不好看也没法逐项对比
+      return [];
+    case 'create_blueprint':
+      // 综合题原型与生成依据（考核规则）由 SpecTable 渲染
+      return [['项目', payload.project_name || payload.project_id || '—']];
     case 'enqueue_blueprint_suggest':
       return [
         ['项目', payload.project_name || payload.project_id || '—'],
@@ -796,6 +739,177 @@ function ThinkingBlock({ text, live = false }: { text: string; live?: boolean })
 }
 
 
+/** 规格表行：before=null 表示无对比列（生成依据模式） */
+type SpecRow = { group: string; item: string; before: string | null; after: string; changed: boolean };
+
+const specList = (v: unknown): Array<Record<string, unknown>> =>
+  Array.isArray(v)
+    ? v.filter((x): x is Record<string, unknown> => !!x && typeof x === 'object')
+    : [];
+
+const specNum = (v: unknown): number =>
+  typeof v === 'number' && Number.isFinite(v) ? v : Number(v) || 0;
+
+/**
+ * 考核规则数组的逐项对比行：按 before 顺序 + after 新增项，label 由 key 派生。
+ * before 传 undefined 时退化为单列「值」行（生成依据模式）。
+ */
+function specDiffRows(
+  group: string,
+  keyOf: (r: Record<string, unknown>) => string,
+  labelOfKey: (k: string) => string,
+  fmt: (r: Record<string, unknown>) => string,
+  before: unknown,
+  after: unknown,
+): SpecRow[] {
+  const b = specList(before);
+  const a = specList(after);
+  const bMap = new Map(b.map((r) => [keyOf(r), r]));
+  const aMap = new Map(a.map((r) => [keyOf(r), r]));
+  const keys: string[] = [];
+  for (const r of [...b, ...a]) {
+    const k = keyOf(r);
+    if (k && !keys.includes(k)) keys.push(k);
+  }
+  return keys.map((k) => {
+    const bv = bMap.has(k) ? fmt(bMap.get(k)!) : '—';
+    const av = aMap.has(k) ? fmt(aMap.get(k)!) : '—';
+    return {
+      group,
+      item: labelOfKey(k),
+      before: before === undefined ? null : bv,
+      after: av,
+      changed: bv !== av,
+    };
+  });
+}
+
+/** create_blueprint 生成依据行：综合题原型池（重复=数量）+ 当前考核规则三项 */
+function basisRows(payload: AssistantActionPayload): SpecRow[] {
+  const body = payload.body ?? {};
+  const basis = payload.basis ?? {};
+  const rows: SpecRow[] = [];
+  const pool = body.comprehensive_archetypes;
+  if (Array.isArray(pool) && pool.length > 0) {
+    const counts = new Map<string, number>();
+    for (const raw of pool) {
+      const k = String(raw);
+      counts.set(k, (counts.get(k) ?? 0) + 1);
+    }
+    for (const [k, n] of counts) {
+      rows.push({
+        group: '综合题原型',
+        item: ARCHETYPE_LABELS[k] ?? k,
+        before: null,
+        after: `${n} 道`,
+        changed: true,
+      });
+    }
+  } else {
+    rows.push({ group: '综合题原型', item: '默认轮换池', before: null, after: '按规则轮换', changed: false });
+  }
+  rows.push(
+    ...specDiffRows('题型比例', (r) => String(r.question_type ?? ''), qlabel,
+      (r) => `${specNum(r.ratio)}%`, undefined, basis.question_type_ratios),
+    ...specDiffRows('考试侧重点', (r) => String(r.assessment_mode ?? ''),
+      (k) => ASSESSMENT_MODE_LABELS[k] ?? k, (r) => String(specNum(r.weight)),
+      undefined, basis.assessment_focus),
+    ...specDiffRows('章节权重', (r) => String(r.anchor_key ?? ''), (k) => k,
+      (r) => String(specNum(r.weight)), undefined, basis.chapter_weights),
+  );
+  return rows;
+}
+
+/**
+ * 考核规则规格表：
+ * - update_exam_rules →「现值 / 新值」逐项对比，变化项高亮——替代原来挤成
+ *   一行的「A、B、C → A、B、C」长串，每个侧重点/题型/章节单独一行可对比；
+ * - create_blueprint →「生成依据」单列（当前考核规则 + 综合题原型池），
+ *   教师确认前看清蓝图将按什么确定性生成，而不是只有一行项目名。
+ */
+function SpecTable({ tool, payload }: { tool: string; payload: AssistantActionPayload }) {
+  const compare = tool === 'update_exam_rules';
+  const basisMode = tool === 'create_blueprint';
+  if (!compare && !basisMode) return null;
+
+  let rows: SpecRow[];
+  let title: string;
+  if (compare) {
+    const before = payload.before ?? {};
+    const body = payload.body ?? {};
+    rows = [
+      ...specDiffRows('题型比例', (r) => String(r.question_type ?? ''), qlabel,
+        (r) => `${specNum(r.ratio)}%`, before.question_type_ratios, body.question_type_ratios),
+      ...specDiffRows('考试侧重点', (r) => String(r.assessment_mode ?? ''),
+        (k) => ASSESSMENT_MODE_LABELS[k] ?? k, (r) => String(specNum(r.weight)),
+        before.assessment_focus, body.assessment_focus),
+      ...specDiffRows('章节权重', (r) => String(r.anchor_key ?? ''), (k) => k,
+        (r) => String(specNum(r.weight)), before.chapter_weights, body.chapter_weights),
+    ];
+    if (rows.length === 0) {
+      return (
+        <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: '4px 0' }}>
+          （未检测到变化）
+        </p>
+      );
+    }
+    const changed = rows.filter((r) => r.changed).length;
+    title = `考核规则逐项对比 · ${changed}/${rows.length} 项有变化`;
+  } else {
+    rows = basisRows(payload);
+    title = '生成依据（蓝图将按当前考核规则与原型池确定性生成）';
+  }
+
+  const header = compare ? ['类别', '项目', '现值', '新值'] : ['类别', '项目', '值'];
+  return (
+    <div style={{ margin: '4px 0 2px' }}>
+      <div style={{ fontSize: '0.76rem', color: 'var(--text-tertiary)', marginBottom: 4 }}>{title}</div>
+      {/* 章节可能几十行：限高滚动，卡片不撑爆气泡 */}
+      <div style={{ maxHeight: 260, overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 8 }}>
+        <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '0.82rem' }}>
+          <thead>
+            <tr>
+              {header.map((h) => (
+                <th key={h} style={thStyle}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => {
+              const hl = compare && r.changed;
+              return (
+                <tr key={i}>
+                  <td style={{ ...tdStyle, whiteSpace: 'nowrap', color: 'var(--text-secondary)' }}>
+                    {i === 0 || rows[i - 1].group !== r.group ? r.group : ''}
+                  </td>
+                  <td style={tdStyle}>{r.item}</td>
+                  {compare && (
+                    <td style={{ ...tdStyle, color: 'var(--text-tertiary)', textAlign: 'right' }}>
+                      {r.before}
+                    </td>
+                  )}
+                  <td
+                    style={{
+                      ...tdStyle,
+                      fontWeight: hl ? 600 : undefined,
+                      background: hl ? 'var(--accent-subtle)' : undefined,
+                      color: compare ? (r.changed ? 'var(--accent)' : 'var(--text-tertiary)') : undefined,
+                      textAlign: 'right',
+                    }}
+                  >
+                    {r.after}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+
 /**
  * 提案卡：操作名 + 参数预览 + 影响说明 + 确认/取消。
  * 确认后由页面调既有业务 API 执行，成功才回写状态（proposed → executed 单向）；
@@ -826,6 +940,7 @@ function ProposalCard({
         </span>
       </div>
       <KVTable rows={rows} />
+      <SpecTable tool={tool} payload={message.action.payload ?? {}} />
       <ProposalPreview tool={tool} preview={message.action.payload?.preview} />
       <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: '2px 0' }}>
         {meta?.impact ?? '确认后调用既有业务接口执行。'}

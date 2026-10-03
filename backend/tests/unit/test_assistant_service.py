@@ -436,6 +436,18 @@ def test_normalize_intent_rejects_degenerate_output():
     }
 
 
+def test_normalize_intent_accepts_unwrapped_action():
+    """模型漏掉 {reply, action} 外层包装、直接吐 action 形状 → 确定性归一（线上 21:26/21:27 实测）。"""
+    assert assistant_service._normalize_intent(
+        {"tool": "create_exam_project", "args": {"name": "新卷"}}
+    ) == {"reply": "", "action": {"tool": "create_exam_project", "args": {"name": "新卷"}}}
+    # 归一后仍走同一套校验：tool 空 / args 非法照旧报错
+    with pytest.raises(AssistantError, match="action.tool"):
+        assistant_service._normalize_intent({"tool": "", "args": {}})
+    with pytest.raises(AssistantError, match="action.args"):
+        assistant_service._normalize_intent({"tool": "start_parse", "args": "bad"})
+
+
 def test_contract_confirm_refused_when_already_confirmed():
     ctx = _ctx(
         projects=[{"id": "p1", "name": "期末", "status": "draft", "blueprint": None,
@@ -680,11 +692,21 @@ def test_create_blueprint_guards_and_archetypes_pool():
     assert payload["body"] == {
         "comprehensive_archetypes": ["case_analysis", "solution_design", "case_analysis"]
     }
-    # 不带原型池 = 走默认轮换池，body 为空
+    # basis：生成依据（考核规则现值）——提案卡展示「蓝图将按什么确定性生成」
+    assert payload["basis"]["question_type_ratios"] == [
+        {"question_type": "single_choice", "ratio": 40},
+        {"question_type": "comprehensive", "ratio": 20},
+    ]
+    assert payload["basis"]["assessment_focus"] == [
+        {"assessment_mode": "conceptual", "weight": 60}
+    ]
+    assert payload["basis"]["chapter_weights"] == [{"anchor_key": "ch1", "weight": 100}]
+    # 不带原型池 = 走默认轮换池，body 为空，basis 照带
     plain = build_proposal_payload(
         "create_blueprint", {"project_id": "p1"}, context=_paper_ctx()
     )
     assert plain["body"] == {}
+    assert plain["basis"] == payload["basis"]
     with pytest.raises(AssistantError, match="未知综合题原型"):
         build_proposal_payload(
             "create_blueprint",

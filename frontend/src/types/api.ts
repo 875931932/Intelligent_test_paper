@@ -871,6 +871,8 @@ export interface AssistantActionPayload {
   before?: Record<string, unknown>;
   /** 确认类提案（蓝图/合同/生成）的实物预览：题位计划逐题明细 */
   preview?: AssistantPlanPreview;
+  /** create_blueprint：生成依据（考核规则现值）——卡片展示「蓝图将按什么生成」 */
+  basis?: AssistantRulesBasis;
   // 结果卡
   course_name?: string;
   materials?: AssistantMaterialRow[] | { count: number; parse_status: Record<string, number> };
@@ -907,6 +909,13 @@ export interface AssistantPlanPreview {
   total_score: number;
   difficulty: Record<string, number>;
   items: AssistantPreviewItem[];
+}
+
+/** create_blueprint 的生成依据（后端按 context.framework.exam_rules 现值附带） */
+export interface AssistantRulesBasis {
+  question_type_ratios?: unknown[];
+  assessment_focus?: unknown[];
+  chapter_weights?: unknown[];
 }
 
 /** 来源引用条目（与后端 payload.sources 同构；snippet 为块正文前 160 字） */

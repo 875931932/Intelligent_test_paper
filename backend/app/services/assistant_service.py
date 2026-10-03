@@ -631,6 +631,11 @@ def _normalize_intent(raw) -> dict:
         raise AssistantError("模型未返回 JSON 对象")
     reply = str(raw.get("reply") or "").strip()
     action = raw.get("action")
+    if action in (None, "", {}) and "tool" in raw:
+        # 模型偶发漏掉 {reply, action} 外层包装、直接吐 action 形状
+        # （线上 21:26/21:27 连续实测），形状无歧义——确定性归一后
+        # 走下面同一套 tool/args 校验，避免白白烧一次带反馈重试。
+        action = {"tool": raw.get("tool"), "args": raw.get("args")}
     if action in (None, "", {}):
         # 既无正文也无动作 ≠合法纯问答：模型 reasoning 正确但 content 通道
         # 输出退化 JSON（`{}`/破损串）时会落成这里——放行会静默降级成
@@ -1063,10 +1068,18 @@ def build_proposal_payload(tool: str, args: dict, *, context: dict) -> dict:
             archetypes = pool
         # body 只带原型池（蓝图主体由前端确认时按考核规则+知识目录组装，
         # 与试卷页创建蓝图同一条组装路径，无第二套写入逻辑）
+        # basis：生成依据（考核规则现值）——提案卡展示「蓝图将按什么确定性
+        # 生成」，教师确认前看到规则全貌，而不是只有一行项目名。
+        rules = (context.get("framework") or {}).get("exam_rules") or {}
         return {
             "project_id": project["id"],
             "project_name": project["name"],
             "body": {"comprehensive_archetypes": archetypes} if archetypes else {},
+            "basis": {
+                "question_type_ratios": rules.get("question_type_ratios") or [],
+                "assessment_focus": rules.get("assessment_focus") or [],
+                "chapter_weights": rules.get("chapter_weights") or [],
+            },
         }
 
     if tool == "confirm_blueprint":
