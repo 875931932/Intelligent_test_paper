@@ -700,7 +700,7 @@ def test_prompt_documents_paper_review_tool():
     # 落点：「试卷有没有问题/帮我检查」这类问法指向评审工具
     assert "整卷质量检查" in system_prompt
     # review/exported 停点放行评审卡（停点只拦出卷主线推进）
-    assert "例外：教师明确要求检查/评审试卷" in system_prompt
+    assert "① 教师明确要求检查/评审试卷" in system_prompt
     # 前提与防重复：以 paper.exists 为判据、报告回试卷页看
     assert "paper.exists=true" in system_prompt
     assert "不要重复发起" in system_prompt
@@ -746,6 +746,18 @@ def test_prompt_documents_paper_pipeline_ladder():
     assert "试卷定稿、导出" in system_prompt
     # 教师的难度比例说法要进蓝图建议指令
     assert "5简单3中等2难" in system_prompt
+    # 新卷分支：已有 review 项目时「另出一份」也从 create_exam_project 起步，
+    # 不被阶梯第1步的独占前提（没有试卷项目）与停点1双重封死（曾在 langchain课
+    # 程上振荡后回「是否现在发起？」的口头承诺、action=null 没有下一步）
+    assert "或教师点名要另出一份新卷" in system_prompt
+    assert "② 教师明确要另出一份新卷" in system_prompt
+    assert "不受本项目 review 状态牵连" in system_prompt
+    # 卡片即确认：禁止「是否现在发起」式口头征求；带要求开新卷不塞第一张卡
+    assert "先反问「是否现在发起」" in system_prompt
+    assert "卡片本身就是教师的确认环节" in system_prompt
+    assert "不要**塞进本卡 args" in system_prompt
+    # 倾向型难度说法（非数字比例）如实进建议指令，不承诺确定性换算
+    assert "「难度偏中等」" in system_prompt
     # 红线不回退：助手不换算不承诺
     assert "比例/难度/去重" in system_prompt
 
