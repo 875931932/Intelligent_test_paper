@@ -9,9 +9,11 @@ import { useToastStore } from '@/stores/toast';
 import { useAssistantStore } from '@/stores/assistantStore';
 import { Badge, Button, MarkdownText } from '@/components/ui';
 import { assembleBlueprintRequestBody } from '@/pages/paper/blueprintAssembly';
+import { formatScore } from '@/lib/format';
 import {
   ASSESSMENT_MODE_LABELS,
   PAPER_STATUS_META,
+  dlabel,
   projectStatusMeta,
   qlabel,
 } from '@/lib/examDisplay';
@@ -24,6 +26,7 @@ import type {
   AssistantActionPayload,
   AssistantMaterialRow,
   AssistantMessage,
+  AssistantPlanPreview,
   CourseCreate,
   CourseUpdate,
   ExamRules,
@@ -669,6 +672,69 @@ function proposalParamRows(tool: string, payload: AssistantActionPayload): Array
 }
 
 /**
+ * 提案卡实物预览：蓝图题位计划 / 已确认合同槽位——教师点「确认」之前，
+ * 先在气泡里看到「确认的到底是什么」，而不是只有一行项目名。
+ * 数据由后端在提案时现势读库附带（payload.preview），历史卡片没有则不渲染。
+ */
+function ProposalPreview({ tool, preview }: { tool: string; preview?: AssistantPlanPreview }) {
+  if (!preview || preview.items.length === 0) return null;
+  const contract = preview.source === 'contract';
+  const ver = preview.version_no != null ? ` v${preview.version_no}` : '';
+  const title = contract
+    ? '已确认合同槽位'
+    : tool === 'confirm_contract'
+      ? `蓝图${ver}题位（合同分配基础）`
+      : `蓝图${ver}题位计划`;
+  const header = contract
+    ? ['#', '题型', '分值', '难度', '考点', '知识卡']
+    : ['#', '题型', '分值', '难度', '考查方式', '考点'];
+  const rows = preview.items.map((it) =>
+    contract
+      ? [
+          String(it.item_index),
+          qlabel(it.question_type),
+          formatScore(it.score),
+          dlabel(it.difficulty),
+          it.exam_point || '—',
+          it.knowledge_card || '—',
+        ]
+      : [
+          String(it.item_index),
+          qlabel(it.question_type),
+          formatScore(it.score),
+          dlabel(it.difficulty),
+          it.assessment_mode
+            ? (ASSESSMENT_MODE_LABELS[it.assessment_mode] ?? it.assessment_mode)
+            : '—',
+          it.exam_point || '—',
+        ],
+  );
+  const diffText = Object.entries(preview.difficulty)
+    .map(([k, n]) => `${dlabel(k)} ${n} 题`)
+    .join(' · ');
+  return (
+    <div style={{ margin: '4px 0 2px' }}>
+      <div style={{ fontSize: '0.76rem', color: 'var(--text-tertiary)', marginBottom: 4 }}>
+        {title} · 共 {preview.item_count} 题 · 总分 {formatScore(preview.total_score)}
+        {diffText ? ` · ${diffText}` : ''}
+        {tool === 'confirm_contract' ? ' · 确认后逐题锁定考查原子与答案域' : ''}
+      </div>
+      {/* 题位可能有几十行：限高滚动，卡片不撑爆气泡 */}
+      <div
+        style={{
+          maxHeight: 260,
+          overflowY: 'auto',
+          border: '1px solid var(--line)',
+          borderRadius: 8,
+        }}
+      >
+        <GridTable header={header} rows={rows} />
+      </div>
+    </div>
+  );
+}
+
+/**
  * 思考过程块：思考模型推理的独立展示区——与正式回复气泡分离，绝不混入正文。
  * live（流式）：始终展开，column-reverse 自动尾随最新推理；落库消息默认折叠、点击展开。
  */
@@ -760,6 +826,7 @@ function ProposalCard({
         </span>
       </div>
       <KVTable rows={rows} />
+      <ProposalPreview tool={tool} preview={message.action.payload?.preview} />
       <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: '2px 0' }}>
         {meta?.impact ?? '确认后调用既有业务接口执行。'}
       </p>

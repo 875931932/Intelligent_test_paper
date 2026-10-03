@@ -869,6 +869,8 @@ export interface AssistantActionPayload {
   current?: string;
   /** update_exam_rules：修改前的现值（卡片做「现值 → 新值」对比展示） */
   before?: Record<string, unknown>;
+  /** 确认类提案（蓝图/合同/生成）的实物预览：题位计划逐题明细 */
+  preview?: AssistantPlanPreview;
   // 结果卡
   course_name?: string;
   materials?: AssistantMaterialRow[] | { count: number; parse_status: Record<string, number> };
@@ -883,6 +885,28 @@ export interface AssistantActionPayload {
   steps?: AssistantGuideStep[];
   pages?: AssistantGuidePage[];
   current_step?: string | null;
+}
+
+/** 提案卡实物预览条目（后端 _proposal_preview 产出；exam_point/knowledge_card 为标题文案） */
+export interface AssistantPreviewItem {
+  item_index: number;
+  question_type: string;
+  score: number;
+  difficulty: string;
+  /** 考查方式（仅蓝图预览带；合同槽位无此列） */
+  assessment_mode?: string;
+  exam_point?: string;
+  knowledge_card?: string;
+}
+
+/** 确认类提案卡的实物预览：source=blueprint 蓝图题位计划 / contract 已确认合同槽位 */
+export interface AssistantPlanPreview {
+  source: 'blueprint' | 'contract';
+  version_no?: number | null;
+  item_count: number;
+  total_score: number;
+  difficulty: Record<string, number>;
+  items: AssistantPreviewItem[];
 }
 
 /** 来源引用条目（与后端 payload.sources 同构；snippet 为块正文前 160 字） */

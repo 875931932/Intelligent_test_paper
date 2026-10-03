@@ -27,7 +27,7 @@ import time
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session
 
 from app.db.schema import (
@@ -35,8 +35,10 @@ from app.db.schema import (
     assistant_messages,
     assistant_sessions,
     blueprint_versions,
+    exam_points,
     exam_projects,
     framework_versions,
+    knowledge_cards,
     knowledge_catalog_versions,
     paper_items,
     paper_versions,
@@ -630,6 +632,11 @@ def _normalize_intent(raw) -> dict:
     reply = str(raw.get("reply") or "").strip()
     action = raw.get("action")
     if action in (None, "", {}):
+        # 既无正文也无动作 ≠合法纯问答：模型 reasoning 正确但 content 通道
+        # 输出退化 JSON（`{}`/破损串）时会落成这里——放行会静默降级成
+        # 「口头承诺却不出卡、无下文」。抛错走上层带反馈重试一次。
+        if not reply:
+            raise AssistantError("输出既无 reply 也无 action（空响应或 JSON 破损）")
         return {"reply": reply, "action": None}
     if not isinstance(action, dict):
         raise AssistantError("action 必须是对象或 null")
@@ -1424,6 +1431,143 @@ _DEFAULT_PROPOSAL_REPLIES = {
 }
 
 
+# ---------------------------------------------------------------------------
+# 确认类提案的实物预览：让教师在气泡里看到「确认的到底是什么」
+# ---------------------------------------------------------------------------
+
+_PREVIEW_TOOLS = frozenset({"confirm_blueprint", "confirm_contract", "start_generation"})
+
+
+def _active_blueprint_version_id(session: Session, *, course_id: str, project_id: str) -> str | None:
+    """项目当前蓝图版本（active → 最新版本回退），与 _blueprint_summary 同口径。"""
+    bv_id = session.execute(
+        select(exam_projects.c.active_blueprint_version_id).where(
+            exam_projects.c.id == project_id,
+            exam_projects.c.course_id == course_id,
+        )
+    ).scalar_one_or_none()
+    if bv_id:
+        return bv_id
+    return session.execute(
+        select(blueprint_versions.c.id)
+        .where(
+            blueprint_versions.c.course_id == course_id,
+            blueprint_versions.c.exam_project_id == project_id,
+        )
+        .order_by(blueprint_versions.c.version_no.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+
+def _preview_doc(source: str, items: list[dict], *, version_no: int | None = None) -> dict:
+    difficulty: dict[str, int] = {}
+    total = 0.0
+    for item in items:
+        key = item["difficulty"]
+        difficulty[key] = difficulty.get(key, 0) + 1
+        total += float(item["score"])
+    return {
+        "source": source,
+        "version_no": version_no,
+        "item_count": len(items),
+        "total_score": round(total, 2),
+        "difficulty": difficulty,
+        "items": items,
+    }
+
+
+def _proposal_preview(session: Session, *, course_id: str, tool: str, payload: dict) -> dict:
+    """确认/发起类提案卡的实物预览（只进卡片 payload，不进 LLM prompt）。
+
+    - confirm_blueprint / confirm_contract：蓝图题位计划逐题明细。合同确认前
+      尚无快照，展示的即是确定性分配算法将按此锁定的题位基础；
+    - start_generation：已确认合同的真实槽位（缺快照时回退蓝图明细）。
+    数据现势读库、course_id 隔离；项目无蓝图时返回空（提案本身不受影响）。
+    """
+    if tool not in _PREVIEW_TOOLS:
+        return {}
+    project_id = str(payload.get("project_id") or "")
+    if not project_id:
+        return {}
+
+    if tool == "start_generation":
+        snapshot = exam_project_service.get_current_contract_snapshot(
+            session, course_id=course_id, project_id=project_id
+        )
+        slots = snapshot.get("slots") if isinstance(snapshot, dict) else None
+        if isinstance(slots, list) and slots:
+            items = [
+                {
+                    "item_index": int(s.get("item_index") or 0),
+                    "question_type": str(s.get("question_type") or ""),
+                    "score": float(s.get("score") or 0),
+                    "difficulty": str(s.get("difficulty") or ""),
+                    "exam_point": str(s.get("exam_point_title") or s.get("exam_point_id") or ""),
+                    "knowledge_card": str(s.get("card_name") or s.get("card_id") or ""),
+                }
+                for s in slots
+                if isinstance(s, dict)
+            ]
+            if items:
+                return {"preview": _preview_doc("contract", items)}
+
+    bv_id = _active_blueprint_version_id(session, course_id=course_id, project_id=project_id)
+    if not bv_id:
+        return {}
+    version_no = session.execute(
+        select(blueprint_versions.c.version_no).where(
+            blueprint_versions.c.id == bv_id,
+            blueprint_versions.c.course_id == course_id,
+        )
+    ).scalar_one_or_none()
+    rows = session.execute(
+        select(
+            plan_items.c.item_index,
+            plan_items.c.question_type,
+            plan_items.c.score,
+            plan_items.c.difficulty,
+            plan_items.c.assessment_mode,
+            exam_points.c.title,
+            knowledge_cards.c.name,
+        )
+        .select_from(
+            plan_items.outerjoin(
+                exam_points,
+                and_(
+                    exam_points.c.id == plan_items.c.exam_point_id,
+                    exam_points.c.course_id == course_id,
+                ),
+            ).outerjoin(
+                knowledge_cards,
+                and_(
+                    knowledge_cards.c.id == plan_items.c.knowledge_card_id,
+                    knowledge_cards.c.course_id == course_id,
+                ),
+            )
+        )
+        .where(
+            plan_items.c.course_id == course_id,
+            plan_items.c.blueprint_version_id == bv_id,
+        )
+        .order_by(plan_items.c.item_index)
+    ).all()
+    if not rows:
+        return {}
+    items = [
+        {
+            "item_index": int(row[0]),
+            "question_type": str(row[1]),
+            "score": float(row[2]),
+            "difficulty": str(row[3]),
+            "assessment_mode": str(row[4]),
+            "exam_point": row[5] or "",
+            "knowledge_card": row[6] or "",
+        }
+        for row in rows
+    ]
+    return {"preview": _preview_doc("blueprint", items, version_no=int(version_no) if version_no is not None else None)}
+
+
 def route_intent(intent: dict, *, session: Session, context: dict, message: str = "") -> dict:
     """意图 → {kind: chat|result|proposal|rag, reply, action?, payload?}。
 
@@ -1469,6 +1613,11 @@ def route_intent(intent: dict, *, session: Session, context: dict, message: str 
 
     if tool in PROPOSAL_TOOLS:
         payload = build_proposal_payload(tool, args, context=context)
+        # 确认类提案附实物预览（蓝图题位/合同槽位）：教师点确认前能看到内容，
+        # 而不是只有一行项目名。现势读库，任何缺失都不阻断提案本身。
+        payload.update(
+            _proposal_preview(session, course_id=context["course_id"], tool=tool, payload=payload)
+        )
         reply = intent.get("reply") or _DEFAULT_PROPOSAL_REPLIES.get(tool, "已生成提案，确认后执行：")
         return {
             "kind": "proposal",
@@ -1865,22 +2014,24 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
         thinking_parts.append(text)
         intent_think_buffer.add(text)
 
-    intent = parse_intent(
-        client, context, message, call_context=call_context, on_think=_collect_think
-    )
+    # 带反馈纠错一次：解析与路由的 AssistantError 统一交回模型重试——
+    # 破损 JSON（空响应/缺 reply 与 action）也在这里被拦下重试，
+    # 不再静默降级成「只有口头承诺、不出卡」的纯聊天。
     try:
+        intent = parse_intent(
+            client, context, message, call_context=call_context, on_think=_collect_think
+        )
         routed = route_intent(intent, session=session, context=context, message=message)
     except AssistantError as first_error:
-        # 带反馈纠错一次：把校验失败原因交回模型重新解析
-        intent = parse_intent(
-            client,
-            context,
-            message,
-            call_context=call_context,
-            previous_error=str(first_error),
-            on_think=_collect_think,
-        )
         try:
+            intent = parse_intent(
+                client,
+                context,
+                message,
+                call_context=call_context,
+                previous_error=str(first_error),
+                on_think=_collect_think,
+            )
             routed = route_intent(intent, session=session, context=context, message=message)
         except AssistantError as second_error:
             routed = {

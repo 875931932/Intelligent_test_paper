@@ -16,9 +16,17 @@ from app.db.schema import (
     Course,
     User,
     assistant_messages,
+    assessment_units,
+    blueprint_versions,
+    content_domains,
+    exam_points,
     exam_projects,
+    framework_versions,
+    knowledge_cards,
+    knowledge_catalog_versions,
     materials,
     paper_versions,
+    plan_items,
     task_runs,
 )
 from app.domain.knowledge.relevance import StagingChunk
@@ -365,6 +373,69 @@ def test_unknown_tool_exhausts_retry_with_deterministic_text(session):
     assert row.startswith("我没能处理这个请求")
 
 
+def test_empty_intent_retried_with_feedback(session):
+    """模型输出退化 JSON（既无 reply 也无 action）→ 带反馈重试，不再静默降级成无卡聊天。
+
+    线上根因：step-3.7-flash 两轮 reasoning 正确、content 通道却输出 `{}`/破损串，
+    旧逻辑把空对象当合法纯问答放行 → 教师只收到口头承诺、没有任何提案卡。
+    """
+    client = StubClient([{}, _intent("好的，这就为你创建试卷项目。")])
+    task_id = _new_turn(session, "t-empty")
+    sink = MemoryTurnEventSink(task_id)
+
+    result = run_turn(
+        session,
+        payload={"course_id": "c1", "task_run_id": task_id, "message": "新建试卷项目"},
+        client=client,
+        sink=sink,
+    )
+
+    assert result["kind"] == "chat"
+    assert len(client.calls) == 2  # 第一次被拦下并带反馈重试
+    assert "reply" in (client.calls[1]["previous_error"] or "")
+    row = session.execute(
+        select(assistant_messages.c.content).where(assistant_messages.c.task_run_id == task_id)
+    ).scalar_one()
+    assert "流式回答" in row  # 纠错后的正文来自段2 流式，不是降级文案
+
+
+def test_broken_json_twice_degrades_to_deterministic_text(session):
+    """两次都退化 → 确定性失败文案兜底：可见的失败优于无声承诺。"""
+    client = StubClient([{}, {"foo": "bar"}])
+    task_id = _new_turn(session, "t-broken")
+    sink = MemoryTurnEventSink(task_id)
+
+    result = run_turn(
+        session,
+        payload={"course_id": "c1", "task_run_id": task_id, "message": "继续"},
+        client=client,
+        sink=sink,
+    )
+
+    assert result["kind"] == "chat"
+    assert len(client.calls) == 2  # 只重试一次
+    assert len(client.stream_calls) == 0  # 确定性文案不再进模型
+    row = session.execute(
+        select(assistant_messages.c.content).where(assistant_messages.c.task_run_id == task_id)
+    ).scalar_one()
+    assert row.startswith("我没能处理这个请求")
+
+
+def test_normalize_intent_rejects_degenerate_output():
+    """_normalize_intent 层的空/破损输出守卫（run_turn 据此触发带反馈重试）。"""
+    with pytest.raises(AssistantError, match="reply"):
+        assistant_service._normalize_intent({})
+    with pytest.raises(AssistantError, match="reply"):
+        assistant_service._normalize_intent({"foo": "bar"})
+    with pytest.raises(AssistantError, match="JSON 对象"):
+        assistant_service._normalize_intent("not-a-dict")
+    # 合法纯问答（有正文、无动作）仍然放行
+    assert assistant_service._normalize_intent({"reply": "你好"}) == {
+        "reply": "你好",
+        "action": None,
+    }
+
+
 def test_contract_confirm_refused_when_already_confirmed():
     ctx = _ctx(
         projects=[{"id": "p1", "name": "期末", "status": "draft", "blueprint": None,
@@ -662,6 +733,130 @@ def test_start_generation_requires_confirmed_contract():
     )
     assert payload["project_id"] == "p1"
     assert payload["project_name"] == "期末卷"
+
+
+def _seed_blueprint_chain(session) -> None:
+    """种子：框架/目录/考点/单元/知识卡 + 项目 p1 + 蓝图 v1 + 2 个题位。"""
+    session.execute(framework_versions.insert().values(
+        id="fv1", course_id="c1", version_no=1, status="published",
+        payload={"anchors": [{"key": "A1", "title": "第1章 绪论"}]},
+    ))
+    session.execute(knowledge_catalog_versions.insert().values(
+        id="cv1", course_id="c1", framework_version_id="fv1",
+        version_no=1, status="published",
+    ))
+    session.execute(exam_points.insert().values(
+        id="ep1", course_id="c1", framework_version_id="fv1", anchor_key="A1",
+        code="EP1", title="考点1", assessment_requirement="掌握A", weight_value=30.0,
+        weight_source="teacher_confirmed", weight_group_id="A1", priority="normal",
+        cognitive_targets=[], assessment_orientations=[],
+        allowed_question_types=["single_choice"],
+        operational_detail_policy="supporting_only", scope_boundary={},
+        required_evidence_roles=[], retrieval_intent="围绕A检索",
+        teaching_anchor_keys=[], status="active",
+    ))
+    session.execute(content_domains.insert().values(
+        id="cd1", course_id="c1", catalog_version_id="cv1", parent_domain_id=None,
+        level=1, framework_anchor_key="A1", code="A1", name="章1", status="active",
+    ))
+    session.execute(assessment_units.insert().values(
+        id="au1", course_id="c1", catalog_version_id="cv1", content_domain_id="cd1",
+        exam_point_id="ep1", code="U1", title="单元1", performance_statement="ps1",
+        weight=30, status="active",
+    ))
+    session.execute(knowledge_cards.insert().values(
+        id="kc1", course_id="c1", catalog_version_id="cv1", assessment_unit_id="au1",
+        name="卡A1", performance_statement="掌握A1",
+        assessable_content=["A1-原子1定义"], content_hash="hca1",
+        status="active", concept_cluster="A", answer_proposition="A1-边界",
+    ))
+    # 先建项目再建蓝图：active_blueprint_version_id 是同课程复合 FK
+    session.execute(exam_projects.insert().values(
+        id="p1", course_id="c1", name="期末卷", status="draft",
+    ))
+    session.execute(blueprint_versions.insert().values(
+        id="bv1", course_id="c1", exam_project_id="p1",
+        framework_version_id="fv1", catalog_version_id="cv1", version_no=1,
+        status="draft", type_rules={}, chapter_weights={},
+    ))
+    session.execute(
+        exam_projects.update()
+        .where(exam_projects.c.id == "p1")
+        .values(active_blueprint_version_id="bv1")
+    )
+    for idx, qtype, score, difficulty in (
+        (1, "single_choice", 6.0, "low"),
+        (2, "short_answer", 4.0, "medium"),
+    ):
+        session.execute(plan_items.insert().values(
+            id=f"pi{idx}", course_id="c1", blueprint_version_id="bv1",
+            assessment_unit_id="au1", question_type=qtype, item_index=idx,
+            score=score, difficulty=difficulty, cognitive_level="understand",
+            assessment_mode="conceptual", exam_point_id="ep1",
+            knowledge_card_id="kc1",
+        ))
+    session.commit()
+
+
+def test_proposal_preview_carries_blueprint_plan(session):
+    """确认蓝图/合同提案附题位计划实物预览：教师在气泡里看到「确认的到底是什么」。"""
+    _seed_blueprint_chain(session)
+    ctx = _paper_ctx()
+
+    routed = route_intent(
+        {"reply": "", "action": {"tool": "confirm_blueprint", "args": {"project_id": "p1"}}},
+        session=session,
+        context=ctx,
+        message="确认蓝图",
+    )
+    preview = routed["payload"]["preview"]
+    assert preview["source"] == "blueprint"
+    assert preview["version_no"] == 1
+    assert preview["item_count"] == 2
+    assert preview["total_score"] == 10.0
+    assert preview["difficulty"] == {"low": 1, "medium": 1}
+    first = preview["items"][0]
+    assert first["item_index"] == 1
+    assert first["question_type"] == "single_choice"
+    assert first["assessment_mode"] == "conceptual"
+    assert first["exam_point"] == "考点1"
+    assert first["knowledge_card"] == "卡A1"
+
+    # 合同确认前尚无快照：预览展示确定性分配将按此锁定的题位基础
+    routed_contract = route_intent(
+        {"reply": "", "action": {"tool": "confirm_contract", "args": {"project_id": "p1"}}},
+        session=session,
+        context=ctx,
+        message="确认合同",
+    )
+    assert routed_contract["payload"]["preview"]["item_count"] == 2
+
+    # 非确认类提案不带预览（payload 形状不受影响）
+    routed_create = route_intent(
+        {"reply": "", "action": {"tool": "create_exam_project", "args": {"name": "新卷"}}},
+        session=session,
+        context=_ctx(),
+        message="新建项目",
+    )
+    assert "preview" not in routed_create["payload"]
+
+
+def test_proposal_preview_start_generation_falls_back_to_blueprint(session):
+    """发起生成时合同已确认（理论上有槽位快照）；本种子无 generation run → 回退蓝图明细。"""
+    _seed_blueprint_chain(session)
+    ctx = _paper_ctx()
+    ctx["projects"][0]["contract"]["confirmed"] = True
+
+    routed = route_intent(
+        {"reply": "", "action": {"tool": "start_generation", "args": {"project_id": "p1"}}},
+        session=session,
+        context=ctx,
+        message="开始生成",
+    )
+    preview = routed["payload"]["preview"]
+    assert preview["source"] == "blueprint"
+    assert preview["item_count"] == 2
+    assert preview["items"][1]["knowledge_card"] == "卡A1"
 
 
 def test_enqueue_paper_review_payload_and_guards():
