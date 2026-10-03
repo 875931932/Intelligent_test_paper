@@ -672,7 +672,7 @@ def update_plan_item(
     """更新单个计划项，修改后轻量校验总分合理性；失败则回滚。"""
     allowed_keys = {
         "score", "question_type", "difficulty", "cognitive_level",
-        "exam_point_id", "card_id",
+        "exam_point_id", "card_id", "assessment_mode",
     }
     unknown = set(changes.keys()) - allowed_keys
     if unknown:
@@ -691,6 +691,26 @@ def update_plan_item(
                 f"score 必须按 0.5 步进，当前值={score}"
             )
         db_changes["score"] = score
+
+    # 考查方式值域：5 枚举之外拒绝（教师手动下拉/AI 建议同口径）。
+    # 与单元 allowed_assessment_modes 的兼容性校验留给合同分配兜底
+    # （归正到原型允许值），此处只保证值合法。
+    if "assessment_mode" in db_changes:
+        mode = db_changes["assessment_mode"]
+        if mode not in ASSESSMENT_MODES:
+            raise BlueprintValidationError(
+                f"assessment_mode 非法: {mode!r}（可用：{', '.join(ASSESSMENT_MODES)}）"
+            )
+
+    # 题型 canonical 校验：中文别名归一到英文枚举，未知题型拒绝——
+    # 落库的必须是 generation_graph 认识的 canonical 值。
+    if "question_type" in db_changes:
+        canonical = canonical_question_type(db_changes["question_type"])
+        if canonical is None:
+            raise BlueprintValidationError(
+                f"question_type 非法: {db_changes['question_type']!r}"
+            )
+        db_changes["question_type"] = canonical
 
     try:
         # 找到所属 blueprint_version_id

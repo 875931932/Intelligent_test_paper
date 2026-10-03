@@ -265,6 +265,34 @@ def test_update_plan_item_score_causes_total_mismatch_raises_and_rolls_back(sess
         update_plan_item(session, pi_id2, {"score": 9.5}, course_id="c1")
 
 
+def test_update_plan_item_assessment_mode_enum_and_question_type_canonical(session):
+    """逐题换考法：5 枚举之外拒绝（API 层 422）；题型中文别名归一、
+    未知题型拒绝——落库必须是 generation_graph 认识的 canonical 值。"""
+    bv_id, _plan = create_draft_blueprint(session, **_draft_params(count=5, per=20))
+    items = list_plan_items(session, bv_id, course_id="c1")
+    pi_id = items[0]["id"]
+
+    # 合法考法：直接落库并回读
+    out = update_plan_item(session, pi_id, {"assessment_mode": "problem_solving"}, course_id="c1")
+    assert out["assessment_mode"] == "problem_solving"
+
+    # 非法考法 → BlueprintValidationError（路由映射 422）
+    with pytest.raises(BlueprintValidationError, match="assessment_mode"):
+        update_plan_item(session, pi_id, {"assessment_mode": "brainstorm"}, course_id="c1")
+
+    # 中文题型别名归一为英文枚举
+    out = update_plan_item(session, pi_id, {"question_type": "判断题"}, course_id="c1")
+    assert out["question_type"] == "true_false"
+
+    # 未知题型 → 拒绝，且行未被改动
+    with pytest.raises(BlueprintValidationError, match="question_type"):
+        update_plan_item(session, pi_id, {"question_type": "brainstorm"}, course_id="c1")
+    unchanged = session.execute(
+        select(plan_items.c.question_type).where(plan_items.c.id == pi_id)
+    ).one()
+    assert unchanged._mapping["question_type"] == "true_false"
+
+
 # --- TR-2.3 ---
 
 def test_plan_item_reads_and_writes_are_scoped_to_course(session):

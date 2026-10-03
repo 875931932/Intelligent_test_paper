@@ -3,9 +3,9 @@ import { api } from '@/api/client';
 import { isApiError } from '@/api/errors';
 import { Button } from '@/components/ui/Button';
 import type { NameMaps } from '@/hooks/useNameMaps';
-import { qlabel, dlabel, clabel, mlabel, PLAN_DIFFICULTY_OPTIONS } from '@/lib/examDisplay';
+import { qlabel, dlabel, clabel, mlabel, PLAN_DIFFICULTY_OPTIONS, QUESTION_TYPE_OPTIONS, ASSESSMENT_MODE_OPTIONS } from '@/lib/examDisplay';
 import { formatScore } from '@/lib/format';
-import type { ExamProject, ExamRules, PlanItem } from '@/types/api';
+import type { ExamProject, ExamRules, PlanItem, PlanItemChanges } from '@/types/api';
 import { BlueprintSuggestPanel } from './BlueprintSuggestPanel';
 import { StageHeading } from './StageHeading';
 import { examPointLabel, anchorLabel, type StageKey, type ToastFn } from './stageShared';
@@ -50,6 +50,24 @@ function planDifficultyOptions(current: string) {
     : [{ value: current, label: dlabel(current) }, ...PLAN_DIFFICULTY_OPTIONS];
 }
 
+/** 题型下拉：考纲比例里的题型 ∪ 当前值（含当前值防空白）；考纲未解析时退回全词表 */
+function planQuestionTypeOptions(current: string, rules: ExamRules | null) {
+  const ratios = rules?.question_type_ratios ?? [];
+  const base = ratios.length > 0
+    ? ratios.map((r) => ({ value: r.question_type, label: qlabel(r.question_type) }))
+    : QUESTION_TYPE_OPTIONS;
+  return base.some((o) => o.value === current)
+    ? base
+    : [{ value: current, label: qlabel(current) }, ...base];
+}
+
+/** 考查方式下拉：5 枚举 ∪ 当前值（遗留值不显示成空白） */
+function planModeOptions(current: string) {
+  return ASSESSMENT_MODE_OPTIONS.some((o) => o.value === current)
+    ? ASSESSMENT_MODE_OPTIONS
+    : [{ value: current, label: mlabel(current) }, ...ASSESSMENT_MODE_OPTIONS];
+}
+
 export function renderBlueprint({
   sp, courseId, setStep, bpCreating, handleCreateBlueprint, loadPlanItems, planItems, maps, examRules, addToast, onProjectChanged,
 }: {
@@ -66,7 +84,7 @@ export function renderBlueprint({
     // 0.5 步进与总分合理性由服务端校验；改完已分配的合同需重新分配才生效。
     const patchItem = async (
       item: PlanItem,
-      changes: { score?: number; difficulty?: string },
+      changes: PlanItemChanges,
       onFail?: () => void,
     ) => {
       try {
@@ -179,7 +197,25 @@ export function renderBlueprint({
                   {planItems.map((item) => (
                     <tr key={item.item_index}>
                       <td>{item.item_index}</td>
-                      <td>{qlabel(item.question_type)}</td>
+                      <td>
+                        <select
+                          aria-label={`第${item.item_index}题题型`}
+                          value={item.question_type}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            if (v !== item.question_type) void patchItem(item, { question_type: v });
+                          }}
+                          style={{
+                            fontSize: '0.82rem', padding: '3px 4px',
+                            borderRadius: 'var(--radius-sm)', border: '1px solid var(--line)',
+                            background: 'var(--surface-solid)', color: 'var(--text)',
+                          }}
+                        >
+                          {planQuestionTypeOptions(item.question_type, examRules).map((o) => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
+                          ))}
+                        </select>
+                      </td>
                       <td>
                         <input
                           type="number" step={0.5} min={0.5}
@@ -221,7 +257,25 @@ export function renderBlueprint({
                           ))}
                         </select>
                       </td>
-                      <td style={{ whiteSpace: 'nowrap' }}>{mlabel(item.assessment_mode)}</td>
+                      <td style={{ whiteSpace: 'nowrap' }}>
+                        <select
+                          aria-label={`第${item.item_index}题考查方式`}
+                          value={item.assessment_mode}
+                          onChange={(e) => {
+                            const v = e.target.value;
+                            if (v !== item.assessment_mode) void patchItem(item, { assessment_mode: v });
+                          }}
+                          style={{
+                            fontSize: '0.82rem', padding: '3px 4px',
+                            borderRadius: 'var(--radius-sm)', border: '1px solid var(--line)',
+                            background: 'var(--surface-solid)', color: 'var(--text)',
+                          }}
+                        >
+                          {planModeOptions(item.assessment_mode).map((o) => (
+                            <option key={o.value} value={o.value}>{o.label}</option>
+                          ))}
+                        </select>
+                      </td>
                       <td title={item.anchor_key || undefined}>{item.anchor_key ? anchorLabel(maps, item.anchor_key) : '-'}</td>
                       <td title={item.exam_point_title || item.exam_point_code || item.exam_point_id || undefined}>
                         {item.exam_point_id ? examPointLabel(maps, item.exam_point_id, item.exam_point_title) : '-'}

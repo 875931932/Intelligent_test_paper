@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.schema import blueprint_versions, exam_projects, task_runs
+from app.domain.blueprint.models import ASSESSMENT_MODES
 from app.domain.framework.exam_rules import canonical_question_type
 from app.domain.model_calls import ModelCallContext
 from app.infrastructure.tasks.models import TERMINAL_TASK_STATUSES, create_task_run
@@ -46,8 +47,8 @@ _TASK_LEASE_SECONDS = 300  # 与 worker.py 的 _LEASE_SECONDS_BY_TYPE 保持一�
 _CLIENT_TIMEOUT_SECONDS = 45.0
 _CLIENT_MAX_ATTEMPTS = 2
 
-# 建议可动的字段 = 既有 PATCH plan-items 端点的 allowed（assessment_mode 不在
-# 其列：分配时定死，生成后不可原地改）
+# 建议可动的字段 = 既有 PATCH plan-items 端点的 allowed（蓝图草稿阶段逐题
+# 换考法：分配时定死的约束只对已确认蓝图生效，draft 可改、合同重分配兜底）
 SUGGESTED_FIELDS = (
     "question_type",
     "difficulty",
@@ -55,6 +56,7 @@ SUGGESTED_FIELDS = (
     "score",
     "exam_point_id",
     "card_id",
+    "assessment_mode",
 )
 
 # 蓝图题位难度词表（blueprint_service 值域 low/medium/high；模型惯用 easy/hard
@@ -90,6 +92,16 @@ _TYPE_SCOPE = re.compile(
 # 认知层级词表（与蓝图引擎同值域）
 _COGNITIVE_LEVELS = ("remember", "understand", "apply", "analyze", "evaluate", "create")
 
+# 考查方式词表（domain/blueprint/models.ASSESSMENT_MODES 同值域；prompt 里
+# 给中文注释帮助模型选对枚举）
+_ASSESSMENT_MODE_NOTES = {
+    "theory_recall": "理论记忆",
+    "conceptual": "概念理解",
+    "application": "应用",
+    "problem_solving": "问题求解",
+    "practical_operation": "实操",
+}
+
 # 建议字段 → 当前题位上的字段名（card_id 落库映射 knowledge_card_id）
 _CURRENT_FIELD = {
     "card_id": "knowledge_card_id",
@@ -100,8 +112,8 @@ _MIN_SUMMARY_LEN = 10
 _SYSTEM_PROMPT = """你是高校命题教师的试卷蓝图题位调整助手。教师已经生成了一份蓝图（题位清单 + 后端算好的确定性统计），你逐题给出调整建议。建议会展示给教师逐条确认，教师点「应用」后由既有接口改题位——你只提案，不直接改动，也无权改动。
 
 硬规则：
-1. suggestions 的 item_index 只能取 payload.items 里出现过的题号（整数）；field 只能取 payload.suggested_fields 里的六个字段；同题位同字段只给一条。
-2. value 值域：difficulty ∈ payload.vocab.difficulty（low/medium/high）；cognitive_level ∈ payload.vocab.cognitive_level；question_type ∈ payload.allowed_question_types（英文枚举）；score 是 0.5 步进的正数；exam_point_id/card_id 只能取 payload.known_exam_point_ids / payload.known_card_ids。
+1. suggestions 的 item_index 只能取 payload.items 里出现过的题号（整数）；field 只能取 payload.suggested_fields 里的字段；同题位同字段只给一条。
+2. value 值域：difficulty ∈ payload.vocab.difficulty（low/medium/high）；cognitive_level ∈ payload.vocab.cognitive_level；question_type ∈ payload.allowed_question_types（英文枚举）；assessment_mode ∈ payload.vocab.assessment_mode（英文枚举，键即合法值）；score 是 0.5 步进的正数；exam_point_id/card_id 只能取 payload.known_exam_point_ids / payload.known_card_ids。
 3. 所有 score 类建议的分值增减合计必须为 0（全卷总分不变）；没有成对把握就不要建议调分。
 4. 值与题位当前值相同的建议不要给（无操作建议会被丢弃）；cognitive_level 要与题型命题常识相符（客观题一般不建议 analyze/evaluate/create）。
 5. payload.type_diff / difficulty_dist / cognitive_dist / chapter_dist 是后端算好的事实，直接引用，不要自己重算比例。
@@ -441,6 +453,9 @@ def build_suggest_prompt(
         "vocab": {
             "difficulty": list(_DIFFICULTY_VOCAB),
             "cognitive_level": list(_COGNITIVE_LEVELS),
+            "assessment_mode": {
+                m: _ASSESSMENT_MODE_NOTES.get(m, m) for m in ASSESSMENT_MODES
+            },
         },
         "allowed_question_types": context.get("allowed_question_types") or [],
         "known_exam_point_ids": context.get("known_exam_point_ids") or [],
@@ -470,6 +485,9 @@ def _coerce_value(field: str, value, context: dict):
     if field == "cognitive_level":
         key = str(value or "").strip().lower()
         return key if key in _COGNITIVE_LEVELS else None
+    if field == "assessment_mode":
+        key = str(value or "").strip().lower()
+        return key if key in ASSESSMENT_MODES else None
     if field == "score":
         try:
             score = float(value)

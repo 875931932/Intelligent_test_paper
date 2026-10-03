@@ -86,6 +86,11 @@ export const ASSESSMENT_MODE_LABELS: Record<string, string> = {
   practical_operation: '实操操作',
 };
 
+/** 蓝图题位考查方式下拉（由 ASSESSMENT_MODE_LABELS 派生，同词表同顺序） */
+export const ASSESSMENT_MODE_OPTIONS = Object.entries(ASSESSMENT_MODE_LABELS).map(
+  ([value, label]) => ({ value, label }),
+);
+
 /** 试卷项目状态（后端 exam_projects.status） */
 export const EXAM_PROJECT_STATUS_META: Record<string, { label: string; variant: 'default' | 'success' | 'warning' | 'error' | 'info' | 'purple' }> = {
   draft: { label: '草稿', variant: 'default' },

@@ -30,6 +30,7 @@ from app.db.schema import (
     plan_items,
     task_runs,
 )
+from app.domain.blueprint.models import ASSESSMENT_MODES
 from app.services import blueprint_suggest_service
 from app.services.blueprint_suggest_service import (
     SUGGESTED_FIELDS,
@@ -240,6 +241,10 @@ def test_build_suggest_prompt_puts_real_data_into_payload(session):
     assert payload["type_diff"][0]["delta"] == -1.0
     assert len(payload["items"]) == 2
     assert payload["suggested_fields"] == list(SUGGESTED_FIELDS)
+    # 逐题换考法：字段进词表、值域随 payload 下发、prompt 硬规则点名
+    assert "assessment_mode" in payload["suggested_fields"]
+    assert list(payload["vocab"]["assessment_mode"]) == list(ASSESSMENT_MODES)
+    assert "assessment_mode" in system
     assert payload["vocab"]["difficulty"] == ["low", "medium", "high"]
     assert "short_answer" in payload["allowed_question_types"]
     # 建议清单是给教师确认的 JSON，schema 硬规则必须在 system prompt 里
@@ -264,9 +269,12 @@ def test_normalize_suggestions_filters_and_coerces(session):
             {"item_index": 1, "field": "difficulty", "value": "hard", "reason": "别名归一"},
             {"item_index": 1, "field": "difficulty", "value": "medium", "reason": "同题位同字段重复"},
             {"item_index": 99, "field": "score", "value": 5, "reason": "题号越界"},
-            {"item_index": 2, "field": "assessment_mode", "value": "practical_operation", "reason": "字段不在词表"},
+            {"item_index": 2, "field": "material_form", "value": "case_text", "reason": "字段不在词表"},
             {"item_index": 2, "field": "cognitive_level", "value": "understand", "reason": "改认知层级"},
             {"item_index": 1, "field": "question_type", "value": "简答题", "reason": "中文题型名要归一"},
+            {"item_index": 1, "field": "assessment_mode", "value": "problem_solving", "reason": "逐题换考法合法枚举"},
+            {"item_index": 2, "field": "assessment_mode", "value": "brainstorm", "reason": "考法非法枚举要丢弃"},
+            {"item_index": 1, "field": "assessment_mode", "value": "conceptual", "reason": "与当前同值要丢弃"},
             {"item_index": 2, "field": "difficulty", "value": "困难", "reason": "非法难度词"},
             {"item_index": 2, "field": "score", "value": 4.0, "reason": "与当前同值"},
             {"item_index": 1, "field": "cognitive_level", "value": "apply", "reason": ""},
@@ -280,6 +288,7 @@ def test_normalize_suggestions_filters_and_coerces(session):
         (1, "difficulty", "high"),       # 别名 hard → high
         (2, "cognitive_level", "understand"),
         (1, "question_type", "short_answer"),  # 中文名归一
+        (1, "assessment_mode", "problem_solving"),  # 逐题换考法：合法枚举入表
         (2, "difficulty", "low"),        # 字符串题号 "2" + 别名 easy → low
     ]
     assert result["summary"].startswith("混合输入")

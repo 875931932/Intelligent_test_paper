@@ -693,6 +693,7 @@ export interface PlanItemChanges {
   question_type?: string;
   exam_point_id?: string;
   card_id?: string;
+  assessment_mode?: string;
 }
 
 /**

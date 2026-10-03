@@ -5,7 +5,7 @@ import { getErrorMessage } from '@/api/errors';
 import { useAuthStore } from '@/stores/auth';
 import { Button } from '@/components/ui/Button';
 import type { NameMaps } from '@/hooks/useNameMaps';
-import { clabel, dlabel, qlabel } from '@/lib/examDisplay';
+import { clabel, dlabel, mlabel, qlabel } from '@/lib/examDisplay';
 import { formatScore } from '@/lib/format';
 import type {
   BlueprintSuggestResult,
@@ -23,6 +23,7 @@ const FIELD_LABELS: Record<keyof PlanItemChanges, string> = {
   score: '分值',
   exam_point_id: '考点',
   card_id: '知识卡',
+  assessment_mode: '考法',
 };
 
 /** 建议字段 → 可直接提交给既有 PATCH plan-items 的 changes 形状（后端已归一词表） */
@@ -34,6 +35,7 @@ function toChanges(s: BlueprintSuggestion): PlanItemChanges {
     case 'question_type': return { question_type: String(s.value) };
     case 'exam_point_id': return { exam_point_id: String(s.value) };
     case 'card_id': return { card_id: String(s.value) };
+    case 'assessment_mode': return { assessment_mode: String(s.value) };
     default: return {};
   }
 }
@@ -48,6 +50,7 @@ function currentLabel(item: PlanItem | undefined, field: keyof PlanItemChanges, 
     case 'question_type': return qlabel(item.question_type);
     case 'exam_point_id': return item.exam_point_id ? examPointLabel(maps, item.exam_point_id, item.exam_point_title) : '—';
     case 'card_id': return item.knowledge_card_id ? cardLabel(maps, item.knowledge_card_id, item.knowledge_card_name) : '—';
+    case 'assessment_mode': return mlabel(item.assessment_mode);
     default: return '—';
   }
 }
@@ -60,6 +63,7 @@ function targetLabel(s: BlueprintSuggestion, maps: NameMaps): string {
     case 'question_type': return qlabel(String(s.value));
     case 'exam_point_id': return examPointLabel(maps, String(s.value));
     case 'card_id': return cardLabel(maps, String(s.value));
+    case 'assessment_mode': return mlabel(String(s.value));
     default: return String(s.value);
   }
 }
@@ -82,6 +86,7 @@ function fromLabel(s: BlueprintSuggestion, item: PlanItem | undefined, maps: Nam
     case 'question_type': return qlabel(value);
     case 'exam_point_id': return examPointLabel(maps, value);
     case 'card_id': return cardLabel(maps, value);
+    case 'assessment_mode': return mlabel(value);
     default: return value;
   }
 }
@@ -95,6 +100,7 @@ function matchesCurrent(s: BlueprintSuggestion, item: PlanItem | undefined): boo
     : s.field === 'exam_point_id' ? item.exam_point_id
     : s.field === 'difficulty' ? item.difficulty
     : s.field === 'cognitive_level' ? item.cognitive_level
+    : s.field === 'assessment_mode' ? item.assessment_mode
     : item.question_type;
   return String(current ?? '') === String(s.value);
 }

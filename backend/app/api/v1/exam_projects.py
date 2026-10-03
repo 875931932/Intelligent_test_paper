@@ -251,7 +251,7 @@ def patch_plan_item(
     session: Session = Depends(get_session),
 ) -> dict:
     # 只允许的字段
-    allowed = {"score", "question_type", "difficulty", "cognitive_level", "exam_point_id", "card_id"}
+    allowed = {"score", "question_type", "difficulty", "cognitive_level", "exam_point_id", "card_id", "assessment_mode"}
     if not set(body.keys()).issubset(allowed):
         bad = sorted(set(body.keys()) - allowed)
         raise HTTPException(status_code=422, detail=f"unsupported keys: {bad}")
