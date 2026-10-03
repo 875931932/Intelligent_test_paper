@@ -1,7 +1,7 @@
 # AI 期末试卷命题系统 · 交接文档
 
-> 更新日期：2026-09-27
-> 状态：引擎层 + 教师工作台 + 试卷模块（含考试侧重点与 3 处新 AI 落点：考核规则助手 / 蓝图题位建议 / 框架候选评审）均已交付；出卷全链路可在浏览器端走通
+> 更新日期：2026-10-03
+> 状态：引擎层 + 教师工作台 + 试卷模块（含考试侧重点与 AI 落点：考核规则助手 / 蓝图题位建议 / 框架候选评审 / 助手自然语言出卷提案链 / 使用引导卡）均已交付；出卷全链路可在浏览器端走通
 > 产品基线：`docs/superpowers/specs/2026-08-12-ai-final-exam-paper-design.md`（v2.3，务必先读）
 > 链路设计：`docs/superpowers/specs/2026-08-17-contract-first-generation-design.md`（合同优先生成）
 > 接口权威清单：`docs/backend-api.md`；代码全景：`CODE_WIKI.md`；模型调优：`docs/LLM_TUNING.md`
@@ -11,7 +11,7 @@
 ## 1. 项目是什么
 
 面向高校教师的**纸质期末试卷生产线**：教师上传课程大纲与教学资料 → 系统整理出知识目录 →
-教师确认蓝图与命题合同 → AI 按合同分批出题 → 教师审核编辑 → 导出学生卷/答卷与**答案细则 JSON**
+教师确认蓝图与命题合同 → AI 按合同分批出题 → 教师审核编辑 → 导出学生卷/答卷/答题卡与**答案细则 JSON**
 （评分点/分值/可接受答案结构化输出，供阅卷环节程序化消费——本项目是"阅卷出题"一体，
 答案细则是阅卷端的直接输入）。
 
@@ -80,7 +80,7 @@ MinerU 解析 → 双大纲框架确认 → 知识目录发布 → 蓝图/合同
 ## 3. 系统架构（四层）
 
 ```
-┌─ 教师工作台（React 19 + TS，7 个页面路由）
+┌─ 教师工作台（React 19 + TS，9 个页面路由）
 ├─ 应用服务层（FastAPI API + Celery Worker + outbox 派发）
 ├─ 领域引擎 ★已验证·封存不动★
 │  ├─ 框架引擎    framework_graph       双大纲解析 → 考点表（权重/锚点/考试规则）
@@ -91,11 +91,13 @@ MinerU 解析 → 双大纲框架确认 → 知识目录发布 → 蓝图/合同
 
 数据主线：
 `课程空间 → 资料库(四区) → 命题框架版本(冻结) → 知识目录(内容域→考核单元→知识卡↔证据)
-→ 试卷项目 → 蓝图 → 试卷合同 → 生成运行 → PaperVersion → 导出(学生卷/答卷 HTML + 答案细则 JSON)`
+→ 试卷项目 → 蓝图 → 试卷合同 → 生成运行 → PaperVersion → 四份导出(学生卷/答卷/答题卡 HTML + 答案细则 JSON，另有 docx×2 同源)`
 
 **前端一个「试卷」模块承载后半程**：项目详情页两个页签——「出卷流水线」（蓝图→合同→生成，
 `pages/paper/PipelinePanel.tsx`）与「试卷」（查看/编辑/定稿/导出，`pages/paper/PaperPanel.tsx`，
 左题号索引 + 右题目详情的双栏阅读器）。审核编辑**不在**流水线阶段里。
+另有**对话页**（`pages/assistant/`）：AI 助手多会话流式问答、只读查询、RAG 资料问答、
+使用引导卡，写操作一律走提案卡（教师点确认才由既有接口执行，不绕确认流）。
 
 关键数据边界（设计文档 §2.1，已落地）：**出题模型只见纯净知识卡**（原子/答案域/禁用上下文/
 卡片名），来源关系（文件名/页码/证据ID）由后端在生成后回链，绝不进模型请求。
@@ -261,10 +263,12 @@ frontend\src\
 ├─ pages\paper\             ★「试卷」模块：index(外壳) / PipelinePanel(流水线) / PaperPanel(阅读器)
 │                            + AiRevise(改题) / AiCreate(出题) / PaperReview(整卷评审) / stage\BlueprintSuggestPanel(蓝图建议) 面板
 ├─ pages\framework\         命题框架 + ExamRulesCard（规则查看/修改 + AI 助手提案）+ FrameworkReviewPanel（AI 评审）
-├─ pages\{dashboard,materials,knowledge}\  概览 / 资料库 / 知识目录
+├─ pages\assistant\         对话页：多会话 / 流式问答（think+delta）/ 提案卡确认制 / RAG 来源卡 / 使用引导卡 / 停止生成
+├─ pages\paper-archive\     资料库「试卷」文件夹的归档快照编辑页（与试卷页同款双栏阅读器）
+├─ pages\{dashboard,materials,knowledge, course-space}\  概览 / 资料库 / 知识目录 / 课程空间
 ├─ components\layout\       Layout + Sidebar（悬浮岛侧栏）
 ├── hooks\useNameMaps.ts    id → 中文名映射
-├── lib\examDisplay.ts      题型/难度/状态展示常量
+├── lib\examDisplay.ts      题型/难度/状态展示常量 + 卷面题号映射 questionNumbers（每题型从 1）
 └─ api\domains\             按业务域拆分的 fetch 封装
 ```
 
@@ -276,7 +280,7 @@ frontend\src\
 
 - ✅ 引擎层全链路真实数据验证：37 题 / 100 分 / ~12 次模型调用 / final_check 全绿 / 0 needs_review
 - ✅ 考点比例严格等于考纲权重、原子不重复（唯一+互斥构造性保证）、语义簇分散、答案不互泄
-- ✅ 教师工作台七个页面路由全部接通真实 API（登录/课程空间/概览/资料库/命题框架/知识目录/试卷）
+- ✅ 教师工作台九个页面路由全部接通真实 API（登录/课程空间/概览/资料库/命题框架/知识目录/试卷/归档编辑/对话助手）
 - ✅ 「试卷」模块：出卷流水线（蓝图→合同→生成）+ 试卷双栏阅读器（查看/编辑/调序/增删/定稿）
 - ✅ **AI 助手落点重构**（2026-09，提案式、不绕确认流）：移除合同槽位解释；新增考核规则
   AI 助手（一句话提案→回填编辑草稿→教师保存）、蓝图题位 AI 调整建议（后端确定性统计对照
@@ -288,17 +292,32 @@ frontend\src\
   五项权重，预设+微调）→ 蓝图消费（题型比例、章节权重与侧重点**确定性**折算题位考查方式
   分布，无实操可考单元两层收敛、出卷不失败）
 - ✅ 四份导出按高校卷面模板渲染：学生卷 / 答卷（信息头 + 题次表 + 装订线 + 答案速查表）/
-  答题卡 / 答案细则 JSON（schema 1.1.0 起逐题带 `rubric`，生成→编辑→导出全链路贯通）；
-  另有试卷整体预览与综合题分问排版；档案卡「一键打包」把六份导出产物
+  答题卡 / 答案细则 JSON（schema 1.1.0 起逐题带 `rubric`、1.2.0 起带卷面题号 `no`，
+  生成→编辑→导出全链路贯通）；**卷面题号每种题型从 1 重新计数**（2026-10-03，前端与四份
+  HTML/两份 docx 导出同口径；`item_index` 保持全局唯一只作内部 id——蓝图/合同的题位表仍
+  全局 1..N，题位 ≠ 卷面题号）；另有试卷整体预览与综合题分问排版；档案卡「一键打包」把六份导出产物
   （docx×2 + HTML×3 + JSON，同源渲染）打成 `试卷包_v{n}.zip` 一次下载（§9.10）
 - ✅ 知识目录鲁棒性根治（2026-09-24/25）：run 行先于内容落库、失败标记补插兜底、
   孤儿 run 读路径自愈（`interrupted_by_restart`）、构建轮询止损/基线回退、嵌入索引键双契约
 - ✅ 模型调优体系（2026-09-25，StepFun 官方文档核对）：型号调优档案独立成档
   `model_profiles.py` + 抽取 `json_schema` strict 结构约束 + 输出预算重校准（抽取 6144 /
   归并 8192）+ 召回阈值 min_score 0.30——手册 `docs/LLM_TUNING.md`
-- ✅ 后端门禁全绿：`uv run pytest -q` **1075 passed / 1 xfailed**（唯一 xfail=编造检测的
-  联合 bigram 阈值已知缺口，测试 docstring 注明根因）+ 覆盖率 **84.30%**（≥80 门禁）；
-  前端 `npm run build` 0 error、oxlint 8 warning 基线持平
+- ✅ 助手 v2/v3 演进（2026-09-29 ~ 10-03，接口权威见 `docs/backend-api.md` §10）：资料内容
+  RAG 问答（多查询混合检索 + 命中块邻域扩展捞回正文 + 来源卡，语义打分下推 PG 向量不出库）；
+  嵌入输入清洗版本化（`embedding_text_version` 全库重嵌——实测清洗对排序无增益，正文捞回
+  靠邻域扩展）；多会话与停止生成（协作式取消）；使用引导卡（`usage_guide` 能力地图 +
+  出卷六步跳转）；**自然语言出卷提案链**（`PROPOSAL_TOOLS` 12 个，按项目状态逐级发卡：
+  创建项目 → 考核规则 → 蓝图 → 蓝图建议 → 确认蓝图/合同 → 生成；教师要求有确定性落点表，
+  难度比例等换算不交模型）；意图阶段流式推理（SSE `think` 事件实时展示）+ 气泡 Markdown；
+  整卷 AI 评审接入助手提案卡
+- ✅ 期间修复（2026-10-01 ~ 10-03）：一键补证据保留教师手动 supplement 不再静默丢弃
+  （existing 过滤与注释意图相反的根因）、蓝图建议面板 StrictMode 下刷新恢复失效、进入合同
+  阶段先落库蓝图确认、生成状态双读（助手按 `generation_task_status` 判停 + 前端徽章细分
+  生成中/待生成/生成失败）、概览/资料库 hero 卡排版根治
+- ✅ 后端门禁全绿：`uv run pytest -q` **1415 passed / 1 xfailed**（唯一 xfail=编造检测的
+  联合 bigram 阈值已知缺口，测试 docstring 注明根因）+ 覆盖率 **86.27%**（≥80 门禁，
+  2026-10-03 实测于 HEAD `882e127` 干净快照）；前端 `npm run build` 0 error、
+  oxlint 0 error（warning 均为既有文件基线）
 
 ### 已知问题（不阻塞，接手时留意）
 
@@ -310,10 +329,15 @@ frontend\src\
 5. **旧框架没有考试规则**：构建改动前的框架 payload 里 `final_exam_rules` 是空 dict，
    框架页会显示"没有解析出考试规则"并提供「补充规则」；重新构建一次框架即可自动带上考纲比例
 6. 前端无单元测试文件，门禁是 `npm run build` + `npm run lint`；端到端行为由后端 pytest 锁定
-7. **github（origin）push 曾连续 443 超时未同步**：gitee 是当前上游；网络恢复后
-   `git push origin main` 补推，避免服务器从 github 拉到旧代码
+7. **github（origin）push 曾连续 443 超时**（2026-09 历史问题，现已恢复双远端同步）：再遇
+   超时时 gitee 是上游，网络恢复后 `git push origin main` 补推，避免服务器从 github 拉到旧代码
 8. 孤儿 run 自愈依赖**单进程部署**（`_ACTIVE_ORG_RUN_IDS` 进程内存态）：改多 worker 须换
    租约心跳，否则跨进程误杀活跃 run（`knowledge.py` 注释有说明）
+9. **解析侧结构信号缺口（待根治）**：全库 `content_blocks` 的 `heading_path` 非空 = 0、
+   `block_type=title` = 0——MinerU 回传的块类型/标题层级没进归一化
+   （`document_processing_service`），RAG 丢章节结构信号；正文捞回目前靠命中块邻域扩展兜底。
+   根治路径：抓 `document_artifacts` 原始 content_list 确认回传 type → 修 `normalize_content_list`
+   / `_extract_text` → 全库重解析重嵌 → 复跑 RAG 对照
 
 ---
 
@@ -340,7 +364,7 @@ frontend\src\
 | 代码全景 | `CODE_WIKI.md` | 架构/领域模型/工作流/API/服务/数据库/前端/测试 |
 | 接口权威清单 | `docs/backend-api.md` | 从 FastAPI 路由逐条提取，联调唯一依据 |
 | 模型调优手册 | `docs/LLM_TUNING.md` | 型号档案/旋钮速查/换模型流程/故障速查（`model_calls.details`） |
-| 对话式出卷提案 | `docs/CONVERSATIONAL_GENERATION.md` | 未实现的接线建议 + 红线自查清单 |
+| 对话式出卷提案 | `docs/CONVERSATIONAL_GENERATION.md` | 接线建议 + 红线自查清单；出卷提案链已按其红线部分落地（干跑预览未实现） |
 | 产品设计基线 v2.3 | `docs/superpowers/specs/2026-08-12-ai-final-exam-paper-design.md` | 产品对象/权限/数据边界/P0-P5/27条必测场景（**接手必读**） |
 | 合同优先生成设计 | `docs/superpowers/specs/2026-08-17-contract-first-generation-design.md` | 命题引擎重构的完整设计 rationale |
 | 实施计划存档 | `docs/superpowers/plans/` | 历轮迭代的实施记录（历史档案，路径可能已变） |

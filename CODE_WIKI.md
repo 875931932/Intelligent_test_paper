@@ -140,10 +140,11 @@ f:\比赛项目\阅卷出题功能/
 
 **试卷页签**：`paper_versions.py` 提供逐题编辑、增删、调序、定稿 / 撤销，以及四份导出
 （学生卷 HTML、答卷 HTML、答题卡 HTML、答案细则 JSON——schema 自 `1.1.0` 起逐题带
-`rubric` 评分细则）。另有 **AI 助手落点**（考核规则提案 / 蓝图题位调整建议 /
-框架候选评审 / 单题改题 / 整题生成 / 整卷评审）：AI 只产出提案或只读报告（202 异步 +
-`task_runs` 轮询），落库一律经教师
-确认走既有端点，不绕确认流（接口细节见 `docs/backend-api.md` §4.9、§4.10、§8.7b、§9.3e–g）。
+`rubric` 评分细则、`1.2.0` 起带卷面题号 `no`；**卷面题号每种题型从 1 重新计数**，
+`item_index` 只作全局内部 id）。另有 **AI 助手落点**（考核规则提案 / 蓝图题位调整建议 /
+框架候选评审 / 单题改题 / 整题生成 / 整卷评审 / **对话页出卷提案链与 RAG 问答**）：
+AI 只产出提案或只读报告（202 异步 + `task_runs` 轮询），落库一律经教师
+确认走既有端点，不绕确认流（接口细节见 `docs/backend-api.md` §4.9、§4.10、§8.7b、§9.3e–g、§10）。
 
 ---
 
@@ -590,7 +591,9 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract
 
 **导出渲染要点**：
 - `_strip_stem_noise()`：剥掉题干自带的编号 / 分值前缀，避免与导出题号叠成「1.1.」
-- `_section_groups()` / `_section_caption()`：按题型分节，生成「一、单选题（共N题，每题X分，共Y分）」
+- `_section_groups()` / `_section_caption()`：按题型分节，生成「一、单选题（共N题，每题X分，共Y分）」；
+  分组时 `_attach_type_numbers()` 给每题挂卷面题号 `no`——**每种题型从 1 重新计数**（不跨类型续号），
+  渲染统一读 `_q_no()`（未挂载退回 `item_index`），前端 `examDisplay.questionNumbers` 同口径
 - `_answer_keys()` / `answer_option_keys()`：答案解析成选项字母，兼容字母、选项原文、并列原文三种形态
 - `_exam_shell()`：三份卷面 HTML（学生卷 / 答卷 / 答题卡）共用的正式卷面外壳（信息头 + 题次表 + 装订线 + 学号姓名页脚）
 - 答题卡：客观题题号表格作答 + 主观题横线区，不出题面（题面在学生卷上）
@@ -1279,7 +1282,7 @@ backend/tests/
 
 ```bash
 cd backend
-uv run pytest -q                    # 全量门禁（基线：1075 passed / 1 xfailed）
+uv run pytest -q                    # 全量门禁（基线：1415 passed / 1 xfailed，2026-10-03）
 uv run pytest --cov=app --cov-fail-under=80   # 覆盖率门禁
 ```
 

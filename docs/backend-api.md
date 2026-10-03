@@ -831,7 +831,9 @@ schema 自 `1.2.0` 起新增该字段；逐题带 `rubric`（主观题评分细�
 
 `GET .../assistant/turns/{task_run_id}/stream?last_id=0`
 
-- `text/event-stream`；事件：`delta {text}` / `card {kind,tool,payload}`（kind ∈
+- `text/event-stream`；事件：`delta {text}` / `think {text}`（模型思考增量——意图阶段与段2 流式
+  的 reasoning 实时回调 `on_think`，聚批推送、阶段收口 flush；前端思考区实时展示，不计入正文回复）/
+  `card {kind,tool,payload}`（kind ∈
   `result` | `proposal` | `sources`，sources=资料内容问答的来源引用卡，§10.5）/
   `done {message_id,task_run_id}` / `error {message}`，另有心跳注释行 `: ping`。
 - 每帧带 `id:`（Redis 流条目 id）——断线重连带 `?last_id=<最后收到的 id>` 从该条目后续读，
@@ -880,10 +882,28 @@ schema 自 `1.2.0` 起新增该字段；逐题带 `rubric`（主观题评分细�
   全完成 = `current_step:null`）；段1 prompt 同时注入产品能力地图（页面模块 / 出卷主线 / 助手边界），
   教师问「这个网站能干什么/怎么出卷/下一步做什么」时模型选此工具，reply 结合 `current_step`
   给 1~3 句引导（不复述步骤）；卡上每步带「前往」跳转按钮 + 卡底五模块页面导航；
-- 提案工具（确认后调用）：`create_course` → §2、`update_course` → §2、`start_parse` → §3.5、
-  `enqueue_blueprint_suggest` → §8.7b、`confirm_contract` → §8.11。
-  模型回传的 id 必须命中段1 上下文白名单，非法带反馈重试一次；比例/难度/去重规则
-  不进任何助手 prompt（助手职责不涉及）。
+- 提案工具（`PROPOSAL_TOOLS` 共 12 个，确认后调用）：`create_course` → §2、`update_course` → §2、
+  `start_parse` → §3.5、`create_exam_project` → §8.2、`update_exam_rules` → §4.8、
+  `create_blueprint` → §8.5、`confirm_blueprint` → §8.8、`enqueue_blueprint_suggest` → §8.7b、
+  `confirm_contract` → §8.11、`start_generation` → §8.13、`enqueue_paper_review` → §9.3g、
+  `update_question_type_format` → §4.8（单题型出题格式写入考核规则 `type_formats`，空串恢复默认；
+  综合题由原型档案驱动、不适用本工具）。模型回传的 id 必须命中段1 上下文白名单，非法带反馈重试
+  一次；蓝图确认与发起生成已移入提案（卡上「确认执行」= 教师确认），定稿/导出/删除资料等仍在
+  `REFUSED_TOOLS` 硬拒。
+- **出卷主线逐级提案（阶梯）**：教师要出卷、继续出卷或直接给出出卷要求时，模型按 snapshot 的项目
+  状态选**下一步**提案、一次一张卡推进：`create_exam_project` → `update_exam_rules`（考核要求落点）
+  → `create_blueprint`（综合题原型白名单等）→ `enqueue_blueprint_suggest`（难度比例 → 指令）→
+  `confirm_blueprint` → `confirm_contract` → `start_generation`；卡片确认成功后前端自动追问
+  「继续」，模型按阶梯接续，不要求教师手动输入。教师具体要求的确定性落点表：难度比例 → 建议指令
+  （**系统确定性换算**，模型不自行换算、不承诺达标）、偏理论/侧重理解 → `assessment_focus`、
+  题型比例/章节权重 → `update_exam_rules`、综合题形态（如不出代码题）→
+  `create_blueprint.comprehensive_archetypes`、单题型格式 → `update_question_type_format`、
+  整卷质量检查 → `enqueue_paper_review`。停点按项目 `status` 优先判定：`review`/`exported` →
+  定式话术引导「试卷」页审核编辑（例外放行：另出新卷 `create_exam_project`、整卷评审
+  `enqueue_paper_review`，均不推进本项目）；`generating` 且生成任务在跑 → 引导看进度不重复发起
+  （状态双读 `status` + `generation_task_status`：合同刚确认未发起照发 `start_generation`，
+  任务 failed/cancelled → 引导试卷页重新生成）。比例/难度/去重的**换算与结果**始终由确定性算法
+  负责，助手只把教师原话转成指令/提案，不把规则塞给模型「自觉遵守」。
 - **资料内容问答（RAG，助手 v2）**：`answer_material_content`（第 4 类路由，`kind="sources"`）——
   - `args={material_id?}` 点名资料（复用同一套材料白名单 + `parse_status=="ready"` 硬校验，
     未解析引导先解析）；不传则限定**全课程已解析资料**（无已解析资料时带反馈重试后落确定性文案）；
@@ -893,6 +913,10 @@ schema 自 `1.2.0` 起新增该字段；逐题带 `rubric`（主观题评分细�
     （原问题 + 去问句框架的主题核心，如「总结教学大纲讲了什么？」→「教学大纲」），一次批量嵌入，
     各变体独立打分（混合 `0.35 词面 + 0.65 语义`，`top_k=6`、hybrid min 0.15），合并期按归一文本
     折叠近重复（跨文档同文模板碎片只留得分最高一份，正文块才进得了 top_k；单变体退化为既有单查询）；
+    语义打分可**下推 PG 库内算**（`load_semantic_scores` unnest 向量逐变体算 cosine，向量不过网络，
+    实测 59MB/轮 → ~4MB；非 PG 方言/查询向量非法 → 返回 None 回落装载向量旧路径，任一环失败再降
+    词面，嵌入故障不断轮）；装载时剔除清洗后无正文的结构残片（`<details>` 类——不可嵌入的块混入会让
+    「全部块带向量」门恒假，混合检索永不点亮，与 `ensure_embedded` 可嵌入判据同源根治）；
     命中后**邻域扩展**（`_expand_rag_neighborhood`）：每个命中附带同资料同/邻页的正文块
     （len≥60 排除又一个标题；同页优先、长块优先，轮转分配保证后位命中不吃光预算，
     同块只带一次、单轮封顶 6 块）进段2 与来源卡——「总结类」问题与正文天然低相似、

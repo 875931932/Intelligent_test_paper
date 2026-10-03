@@ -10,7 +10,7 @@
   上传大纲与教学资料 → 知识目录 → 教师确认蓝图/合同 → AI 按合同出题 → 教师审核编辑 → 导出学生卷/答卷/答题卡 HTML + 答案细则 JSON（阅卷端的直接输入）。
 - **技术栈**：
   - 后端 `backend/`：FastAPI + SQLAlchemy 2.0 + PostgreSQL + Redis + Celery + LangGraph 工作流；适配器层接 LLM 、MinerU（解析）、MinIO/S3（存储）。
-  - 前端 `frontend/`：React 19 + TypeScript + Vite + Zustand，7 个页面模块（`src/pages/`）。
+  - 前端 `frontend/`：React 19 + TypeScript + Vite + Zustand，9 个路由页面（`src/pages/`）。
 - **范围声明**：在线考试/阅卷本身**明确不做**，本系统止于"导出纸质生产线产物"，权威说明见 `docs/` 设计文档。
 
 ## 2. 核心纪律（先读这一节）
@@ -22,7 +22,7 @@
    ⚠️ `app/workflows/framework_graph.py`、`app/workflows/organization_graph.py`、`app/workflows/generation_graph.py` 为已验证封存代码（在 `workflows/` 下，**不在** `domain/` 下）。
    修改前必须获得项目负责人确认，且改动后必须重新跑全量验证套件，否则禁止合入。
 3. **在线考试/阅卷是范围外需求。** ⚠️ 收到此类需求时拒绝实现，引导至设计文档的范围声明。
-4. **课程隔离是多租户底线。** 所有数据库查询、缓存键、对象存储路径必须携带 `course_id` 过滤，38 张表无一例外。
+4. **课程隔离是多租户底线。** 所有数据库查询、缓存键、对象存储路径必须携带 `course_id` 过滤，40 张表无一例外。
 5. **冻结即不可变。** 命题框架版本一旦冻结（已确认合同、PaperVersion 同理），只允许追加新版本，禁止原地修改。
 6. **同一方法重复失败即止损换路。** ⚠️ 同一修复思路连续失败 2~3 次，禁止继续在同一路径上微调重试；必须停下来重新定位根因，换一条不同的实现路径（换层次、换工具、换数据流），并清理掉此前无效改动的残留。
 7. **补丁只许权宜，根治才算修复。** 允许打补丁解燃眉之急（临时兜底、防御性校验、热修），⚠️ 但禁止把"叠加补丁"当作常规解决手段；每个 bug 必须追溯到根因并在源头修复。确需保留的补丁须注明 TODO、失效触发条件与后续根治计划，并在下一轮迭代中还账。
@@ -66,7 +66,7 @@ uv run pytest --cov=app --cov-report=term-missing --cov-fail-under=80
 ```text
 backend/
 ├── app/
-│   ├── api/v1/               # 7 个 FastAPI router，一个业务概念一个 router
+│   ├── api/v1/               # 9 个 FastAPI router，一个业务概念一个 router
 │   ├── workflows/            # 领域引擎 ★已验证封存★（见核心纪律）
 │   │   ├── framework_graph.py      # 双大纲 → 考点 / 考试规则
 │   │   ├── organization_graph.py   # 分类 → 事实 → 画像 → 知识卡
@@ -76,7 +76,7 @@ backend/
 │   ├── services/             # 用例编排（合同分配、导出等）
 │   ├── infrastructure/       # Celery（tasks/celery_app、outbox、worker）、技术设施
 │   ├── adapters/             # LLM / MinerU / MinIO-S3 外部系统适配器（含型号调优档案 model_profiles）
-│   ├── db/                   # schema.py（37 表，按 course_id 隔离）+ session.py + init_db.py（结构变更唯一入口）
+│   ├── db/                   # schema.py（40 表，按 course_id 隔离）+ session.py + init_db.py（结构变更唯一入口）
 │   ├── schemas/              # Pydantic v2 请求/响应模型
 │   ├── config.py             # 配置（自动向上查找仓库根 .env）
 │   └── main.py               # FastAPI 入口
@@ -87,7 +87,7 @@ backend/
 
 frontend/
 ├── src/
-│   ├── pages/                # 7 个路由页面
+│   ├── pages/                # 9 个路由页面
 │   ├── components/           # PipelinePanel / PaperPanel / ExamRulesCard 等
 │   ├── stores/               # Zustand 状态仓库，一域一 store
 │   ├── api/                  # 后端 API 客户端（统一 baseURL 与错误处理）
@@ -103,9 +103,9 @@ docs/                         # 设计文档，范围声明的唯一权威来源
 四层架构（自上而下）：
 
 1. **教师工作台（React）**：`/login`、`/courses`、课程概览、资料库、命题框架、知识目录、试卷。
-2. **应用服务层**：FastAPI 7 个 router（`app/api/v1/`）+ Celery worker + outbox 派发。
+2. **应用服务层**：FastAPI 9 个 router（`app/api/v1/`）+ Celery worker + outbox 派发。
 3. **领域引擎 ★已验证封存★**：`app/workflows/` 下三个 graph（见第 4 节）。
-4. **基础设施**：PostgreSQL（37 表、课程隔离多租户）、Redis 队列、模型网关。
+4. **基础设施**：PostgreSQL（40 表、课程隔离多租户）、Redis 队列、模型网关。
 
 数据主线（一次组卷的完整链路）：
 
