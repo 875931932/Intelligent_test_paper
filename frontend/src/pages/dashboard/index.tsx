@@ -145,7 +145,7 @@ const DashboardPage: FC = () => {
     <div className="page-enter page-stack">
       <div>
         <h1 className="page-title">课程概览</h1>
-        <p className="page-subtitle">智能出卷系统 · 从课程资料到成品试卷的完整链路</p>
+        <p className="page-subtitle">PaperPact·AI 命题系统 · 从课程资料到成品试卷的完整链路</p>
       </div>
 
       {/* 统计瓦片行：白底 zinc + 色板三原色实色（蓝/紫/粉）混排 */}

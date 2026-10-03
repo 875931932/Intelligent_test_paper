@@ -184,8 +184,8 @@ export default function CourseSpacePage() {
             <BookOpen size={20} />
           </div>
           <div>
-            <div style={{ fontSize: '1rem', fontWeight: 600, lineHeight: 1.2 }}>智能出卷</div>
-            <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)' }}>AI Exam System</div>
+            <div style={{ fontSize: '1rem', fontWeight: 600, lineHeight: 1.2 }}>PaperPact</div>
+            <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)' }}>AI 命题系统</div>
           </div>
         </div>
         <button onClick={logout} title="退出登录" style={{

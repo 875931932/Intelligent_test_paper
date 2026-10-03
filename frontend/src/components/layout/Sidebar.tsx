@@ -103,7 +103,7 @@ export function Sidebar({ onLogout }: Props) {
           }}>
             <BookOpen size={17} />
           </span>
-          {!collapsed && <span>智卷</span>}
+          {!collapsed && <span>PaperPact</span>}
         </div>
 
         <button

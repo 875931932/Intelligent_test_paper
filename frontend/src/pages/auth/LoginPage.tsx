@@ -61,8 +61,8 @@ export function LoginPage() {
           <div className="login-icon">
             <BookOpen size={28} strokeWidth={1.8} />
           </div>
-          <h1 className="login-title">智能出卷</h1>
-          <p className="login-subtitle">AI 驱动的智能试卷生成系统</p>
+          <h1 className="login-title">PaperPact</h1>
+          <p className="login-subtitle">AI 命题系统 · 从课程资料到成品试卷</p>
         </div>
 
         <form className="login-form" onSubmit={handleSubmit}>
