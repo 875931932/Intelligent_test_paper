@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { BadgeSuccess, BadgeWarning, BadgePurple, Badge } from '@/components/ui/Badge';
 import { SkeletonCardGrid } from '@/components/ui/Skeleton';
-import { EXAM_PROJECT_STATUS_META } from '@/lib/examDisplay';
+import { projectStatusMeta } from '@/lib/examDisplay';
 import type { MaterialResponse, CurrentFrameworkResponse, PublishedKnowledgeResponse, ExamProject } from '@/types/api';
 
 /** 资料类型中文名（与资料库页一致；hero 分布条展示用） */
@@ -406,8 +406,8 @@ const DashboardPage: FC = () => {
                     }}
                   >
                     {project.name}
-                    <Badge variant={EXAM_PROJECT_STATUS_META[project.status]?.variant ?? 'default'}>
-                      {EXAM_PROJECT_STATUS_META[project.status]?.label ?? '未知状态'}
+                    <Badge variant={projectStatusMeta(project).variant}>
+                      {projectStatusMeta(project).label}
                     </Badge>
                   </span>
                 ))

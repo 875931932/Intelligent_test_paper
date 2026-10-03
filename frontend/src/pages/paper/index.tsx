@@ -10,7 +10,7 @@ import { Badge, Input } from '@/components/ui';
 import { SkeletonCardGrid, SkeletonList } from '@/components/ui/Skeleton';
 import PipelinePanel from './PipelinePanel';
 import PaperPanel from './PaperPanel';
-import { EXAM_PROJECT_STATUS_META, PAPER_STATUS_META } from '@/lib/examDisplay';
+import { projectStatusMeta, PAPER_STATUS_META } from '@/lib/examDisplay';
 import type { ExamProject, PaperVersion } from '@/types/api';
 
 type TabKey = 'pipeline' | 'paper';
@@ -202,7 +202,7 @@ export default function PaperPage() {
         ) : (
           <div className="bento bento-2">
             {projects.map((p) => {
-              const sm = EXAM_PROJECT_STATUS_META[p.status] ?? { label: p.status, variant: 'default' as const };
+              const sm = projectStatusMeta(p);
               const psm = p.paper_version_status ? (PAPER_STATUS_META[p.paper_version_status] ?? null) : null;
               return (
                 <div
@@ -271,9 +271,10 @@ export default function PaperPage() {
 
   // ── 项目详情 ──
   const sp = activeProject;
-  const statusMeta = EXAM_PROJECT_STATUS_META[sp.status] ?? { label: sp.status, variant: 'default' as const };
+  const statusMeta = projectStatusMeta(sp);
   const paperMeta = sp.paper_version_status ? (PAPER_STATUS_META[sp.paper_version_status] ?? null) : null;
-  const pipelineStage = sp.status === 'generating' ? '生成中' : statusMeta.label;
+  // 徽章即阶段文案：generating 细分为生成中/待生成/生成失败（与流水线页按钮同源）
+  const pipelineStage = statusMeta.label;
 
   return (
     <div className="page-enter page-stack">

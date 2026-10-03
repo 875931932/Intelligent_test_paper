@@ -495,6 +495,11 @@ def load_turn_context(
                 "paper": _paper_summary(session, course_id=course_id, project=project),
             }
         )
+    # 生成任务真实状态（复用项目摘要的归并）：status=generating 只是阶段标记，
+    # 模型判断「是否真在生成 / 从未发起 / 已失败」全靠这个字段（generation_task_status）
+    project_details = exam_project_service.with_generation_task_status(
+        session, course_id, project_details
+    )
 
     return {
         "course_id": course_id,
@@ -551,7 +556,7 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 - confirm_blueprint：确认当前草稿蓝图（里程碑确认，教师点提案卡「确认」即为教师确认）。args={project_id}（仅一个项目时可省略）。蓝图不存在或已确认时不要选它。
 - enqueue_blueprint_suggest：发起蓝图调整建议。args={project_id(取自 payload.ids.project_ids), instruction?(一句话要求)——教师的难度比例要求（如「难度按5简单3中等2难」「5:3:2」）原样放进 instruction，教师原话里表示粒度的限定词（如「每个题型」「各题型」「按题型」）必须原样保留——解析器按它决定逐题型还是整卷换算，丢词会改变换算口径；由系统确定性换算成目标分布，建议仍需教师逐条确认后应用}
 - confirm_contract：重新分配并确认合同。args={project_id(取自 payload.ids.project_ids)}（合同已确认冻结时不要选它）
-- start_generation：发起 AI 分批生成。args={project_id(取自 payload.ids.project_ids)}（合同未确认时不要选它）
+- start_generation：发起 AI 分批生成。args={project_id(取自 payload.ids.project_ids)}（合同未确认时不要选它；generation_task_status 为 queued/running = 已发起在跑，同样不要选它）
 - update_question_type_format：设置/修改某题型的出题格式要求（影响之后的生成；已设置的格式见 snapshot.framework.exam_rules.type_formats）。args={question_type(single_choice/multiple_choice/true_false/fill_blank/short_answer/essay 或中文题型名), template(该题型**完整**的出题格式要求,1~2000字，须含该题型的结构与答案唯一性约束；传空串=恢复系统默认格式)}。综合题由原型档案驱动、不适用本工具——教师要改综合题格式时改用 create_blueprint 的 comprehensive_archetypes。
 - enqueue_paper_review：发起整卷 AI 质量评审（只读报告，不改任何数据；教师要「检查试卷」「看看有没有不好的地方」时用）。args={project_id(取自 payload.ids.project_ids), instruction?(教师关注点原话，如「重点看填空题答案是否唯一」；没有就省略=常规评审)}。前提：该项目已有试卷（snapshot 里 paper.exists=true）；课程有多份试卷且教师没点名时先列出项目名问教师评哪一份。已发起过就引导教师到试卷页看报告，不要重复发起。
 
@@ -560,12 +565,12 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 2. 项目没有蓝图（blueprint 为 null）→ 先把教师的规则要求落成提案（偏理论/题型比例/章节权重 → update_exam_rules；综合题原型偏好 → 并进 create_blueprint 的 args），再 create_blueprint
 3. 蓝图已有但未确认（blueprint.confirmed=false）→ 需要调整题位或难度分布 → enqueue_blueprint_suggest（指令带上教师原话的比例要求）；不需调整 → confirm_blueprint
 4. 合同未确认（contract.confirmed=false）→ confirm_contract
-5. 合同已确认 → start_generation
+5. 合同已确认且该项目**从未发起生成**（快照里 generation_task_status 为 null）→ start_generation（status=generating 只是合同确认时置上的**阶段标记**，不等于任务已在跑）
 教师具体要求的落点：难度要求（如5:3:2、「难度偏中等」）→ enqueue_blueprint_suggest 的 instruction（数字比例由系统确定性换算，倾向说法原样进指令、由建议逐条确认把关）；偏理论/侧重理解 → update_exam_rules 的 assessment_focus；题型比例/章节权重 → update_exam_rules；综合题不出代码题、多场景应用题 → create_blueprint 的 comprehensive_archetypes；教师要综合题**出**代码题 → create_blueprint 的 comprehensive_archetypes 里把 code_completion_scenario 排在最前；单题型出题格式 → update_question_type_format；整卷质量检查（「试卷有没有问题」「帮我检查一下」）→ enqueue_paper_review（只读报告，试卷生成后可用）。
 
 接力停点——以下情况**不出提案卡**（action 置 null），用一两句话说明现状与教师接下来要做什么，然后停下等教师回复。**先按项目 status 判定，命中即停、不再往下看**：
 1. 项目 status=review 或 exported → 出卷主线已完成。固定话术：先一句现状（试卷已生成、待审核），再引导「请到『试卷』页审核编辑，定稿与导出也在该页完成」；不列举导出格式、不把导出/发布摆成选项让教师点单，教师点名定稿/导出按下方拒绝清单回复。例外两类（本停点只拦**同一项目**的后续推进）：① 教师明确要求检查/评审试卷 → 照发 enqueue_paper_review（只读报告不改数据）；② 教师明确要另出一份新卷（「生成一张新试卷」「再出一份」）→ 照发 create_exam_project，新项目按阶梯从头走，不受本项目 review 状态牵连。
-2. 项目 status=generating → 生成任务进行中，引导到试卷页看进度，不要重复发起生成。
+2. 项目 status=generating 且 generation_task_status 为 queued/running（确有生成任务在跑）→ 引导到试卷页看进度，不要重复发起生成。status=generating 但 generation_task_status 为 null（合同刚确认、生成尚未发起）**不是停点**——按阶梯第 5 步照发 start_generation；generation_task_status 为 failed/cancelled → 不要重复发起，引导教师到『试卷』页点「重新生成」。
 3. 蓝图建议已发起、但还没在试卷页「全部应用」 → 教师需先到『试卷』页点「全部应用」再回来，此时禁止 confirm_blueprint，也不重复发起建议。判定依据是**建议是否已应用**（试卷页仍有未应用条目即为未应用），不是教师的比例要求达没达标——达标与否由系统确定性算法保证，不由你判断。
 
 拒绝并按标准话术回复（action 置 null，不要选任何工具）：
@@ -808,7 +813,13 @@ def execute_read_tool(
     if tool == "list_exam_projects":
         return {
             "projects": [
-                {"id": p["id"], "name": p["name"], "status": p["status"]}
+                {
+                    "id": p["id"],
+                    "name": p["name"],
+                    "status": p["status"],
+                    # 阶段标记 status=generating 不等于任务在跑，卡片展示要以它细分
+                    "generation_task_status": p.get("generation_task_status"),
+                }
                 for p in projects
             ]
         }

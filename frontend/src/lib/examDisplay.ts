@@ -4,6 +4,8 @@
  * 否则同一份合同在流水线页和试卷页会长得不一样。
  */
 
+import type { ExamProject } from '@/types/api';
+
 export const QUESTION_TYPE_LABELS: Record<string, string> = {
   single_choice: '单选',
   multiple_choice: '多选',
@@ -93,6 +95,25 @@ export const EXAM_PROJECT_STATUS_META: Record<string, { label: string; variant: 
   review: { label: '待审核', variant: 'warning' },
   exported: { label: '已导出', variant: 'success' },
 };
+
+/**
+ * 项目状态徽章：status=generating 是「合同已确认、进入生成阶段」的阶段标记
+ * （确认合同时即置上），不等于任务在跑——是否真在生成以 generation_task_status
+ * 为准：queued/running=生成中、failed=生成失败、null=待生成（从未发起，
+ * 此时流水线页给的是「开始生成」按钮）。其余状态原样返回。
+ */
+export function projectStatusMeta(p: Pick<ExamProject, 'status' | 'generation_task_status'>): {
+  label: string;
+  variant: 'default' | 'success' | 'warning' | 'error' | 'info' | 'purple';
+} {
+  const meta = EXAM_PROJECT_STATUS_META[p.status] ?? { label: p.status, variant: 'default' as const };
+  if (p.status !== 'generating') return meta;
+  const task = p.generation_task_status;
+  if (task === 'failed') return { label: '生成失败', variant: 'error' };
+  // succeeded 只在试卷落库前的瞬间窗口存在（随即翻 review），按在跑口径显示
+  if (task === 'queued' || task === 'running' || task === 'succeeded') return meta;
+  return { label: '待生成', variant: 'info' };
+}
 
 /** 试卷版本状态（后端 paper_versions.status） */
 export const PAPER_STATUS_META: Record<string, { label: string; variant: 'default' | 'success' | 'warning' | 'error' | 'info' | 'purple' }> = {

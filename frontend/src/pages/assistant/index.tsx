@@ -11,8 +11,8 @@ import { Badge, Button, MarkdownText } from '@/components/ui';
 import { assembleBlueprintRequestBody } from '@/pages/paper/blueprintAssembly';
 import {
   ASSESSMENT_MODE_LABELS,
-  EXAM_PROJECT_STATUS_META,
   PAPER_STATUS_META,
+  projectStatusMeta,
   qlabel,
 } from '@/lib/examDisplay';
 import {
@@ -231,7 +231,7 @@ function ResultBody({
               [
                 '试卷项目',
                 projects.length > 0
-                  ? projects.map((p) => `${p.name}（${EXAM_PROJECT_STATUS_META[p.status]?.label ?? p.status}）`).join('、')
+                  ? projects.map((p) => `${p.name}（${projectStatusMeta(p).label}）`).join('、')
                   : '暂无',
               ],
             ]}
@@ -325,7 +325,7 @@ function ResultBody({
           header={['项目', '状态']}
           rows={projects.map((p) => [
             p.name,
-            EXAM_PROJECT_STATUS_META[p.status]?.label ?? p.status,
+            projectStatusMeta(p).label,
           ])}
         />
       );

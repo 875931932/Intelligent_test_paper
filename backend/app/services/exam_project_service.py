@@ -223,7 +223,7 @@ def _backfill_active_blueprint(
     ).scalar_one_or_none()
 
 
-def _with_generation_task_status(session: Session, course_id: str, projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def with_generation_task_status(session: Session, course_id: str, projects: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """将 durable task 的真实进度附加到项目摘要，供课程首页展示。
 
     exam_projects.active_generation_run_id 指向 generation_runs，不是 task_runs.id；
@@ -316,7 +316,7 @@ def list_projects(session: Session, course_id: str) -> list[dict[str, Any]]:
                 session, course_id, p["id"]
             )
     projects = _with_paper_summary(session, course_id, projects)
-    return _with_generation_task_status(session, course_id, projects)
+    return with_generation_task_status(session, course_id, projects)
 
 
 def create_project(session: Session, course_id: str, name: str) -> dict[str, Any]:
@@ -349,7 +349,7 @@ def get_project(session: Session, course_id: str, project_id: str) -> dict[str, 
             session, course_id, project_id
         )
     project = _with_paper_summary(session, course_id, [project])[0]
-    return _with_generation_task_status(session, course_id, [project])[0]
+    return with_generation_task_status(session, course_id, [project])[0]
 
 
 def update_status(session: Session, course_id: str, project_id: str, status: str) -> dict[str, Any]:

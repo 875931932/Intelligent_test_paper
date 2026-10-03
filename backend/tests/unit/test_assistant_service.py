@@ -758,6 +758,13 @@ def test_prompt_documents_paper_pipeline_ladder():
     assert "不要**塞进本卡 args" in system_prompt
     # 倾向型难度说法（非数字比例）如实进建议指令，不承诺确定性换算
     assert "「难度偏中等」" in system_prompt
+    # 生成阶段双读：status=generating 只是合同确认时置上的阶段标记，真在跑看
+    # generation_task_status——曾在合同确认后、生成未发起的窗口被停点2 当成
+    # 「任务在跑」拦死，start_generation 永远发不出（前端只见徽章「生成中」而无任务）
+    assert "从未发起生成" in system_prompt
+    assert "generation_task_status 为 null" in system_prompt
+    assert "**不是停点**" in system_prompt
+    assert "generation_task_status 为 queued/running" in system_prompt
     # 红线不回退：助手不换算不承诺
     assert "比例/难度/去重" in system_prompt
 
@@ -1909,3 +1916,38 @@ def test_paper_summary_prefers_active_version(session):
         session, course_id="c1", project={"id": "proj1"}
     )
     assert fallback["paper_version_id"] == "pv2"
+
+
+def test_load_context_carries_generation_task_status(session):
+    """项目快照带生成任务真状态：status=generating 只是阶段标记（合同确认即置上），
+    模型必须另看 generation_task_status 才能区分「从未发起（null）/ 在跑 /
+    已失败」——否则会把生成未发起的项目当「任务在跑」停住，start_generation 发不出。"""
+    session.execute(
+        exam_projects.insert().values(
+            id="proj-g1", course_id="c1", name="在跑项目", status="generating",
+        )
+    )
+    session.execute(
+        exam_projects.insert().values(
+            id="proj-g2", course_id="c1", name="未发起项目", status="generating",
+        )
+    )
+    session.execute(
+        task_runs.insert().values(
+            id="gen-task-1",
+            course_id="c1",
+            task_type="generation_run",
+            input_version="v1",
+            idempotency_key="test-gen-task-1",
+            status="running",
+            payload={"project_id": "proj-g1"},
+        )
+    )
+    session.commit()
+
+    context = load_turn_context(session, course_id="c1")
+    by_id = {p["id"]: p for p in context["projects"]}
+    assert by_id["proj-g1"]["generation_task_status"] == "running"
+    assert by_id["proj-g1"]["active_task_run_id"] == "gen-task-1"
+    assert by_id["proj-g2"]["generation_task_status"] is None
+    assert by_id["proj-g2"]["active_task_run_id"] is None

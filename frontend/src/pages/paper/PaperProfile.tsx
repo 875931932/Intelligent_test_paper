@@ -5,7 +5,8 @@ import {
 import { Button } from '@/components/ui/Button';
 import { Badge } from '@/components/ui/Badge';
 import {
-  EXAM_PROJECT_STATUS_META, PAPER_STATUS_META, QUESTION_TYPE_ORDER, dlabel, qlabel,
+  PAPER_STATUS_META, QUESTION_TYPE_ORDER, dlabel, qlabel,
+  projectStatusMeta,
 } from '@/lib/examDisplay';
 import { formatScore } from '@/lib/format';
 import type { ExamProject, PaperVersion } from '@/types/api';
@@ -85,7 +86,7 @@ export function PaperProfile({
           </div>
           {project && (
             <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
-              所属项目：{project.name} · {(EXAM_PROJECT_STATUS_META[project.status] ?? { label: project.status }).label}
+              所属项目：{project.name} · {projectStatusMeta(project).label}
             </div>
           )}
         </div>
