@@ -434,10 +434,10 @@ def create_draft_blueprint(
             course_id=course_id,
             framework_version_id=framework_version_id,
         )
-    # 教师显式综合题原型池（顺序即偏好序）：合同分配读取的是
-    # type_rules.comprehensive.archetypes，这里在推导结果上合并注入，
-    # 非编程课程可排除 code_completion_scenario（非法名在此过滤，
-    # 调用方——AI 助手提案——已按 ARCHETYPE_CONTRACTS 严格校验）。
+    # 教师显式综合题原型按序列表（可重复=数量，教师要两道代码题就写两次）：
+    # 合同分配读取的是 type_rules.comprehensive.archetypes，这里在推导结果
+    # 上合并注入，非编程课程可排除 code_completion_scenario（非法名在此
+    # 过滤，调用方——AI 助手提案——已按 ARCHETYPE_CONTRACTS 严格校验）。
     # 只合入已声明的综合题规则：注入无 count 的新键会让分配算法按
     # "题数必须为正"报错——题型构成归考核规则，这里不擅自补题型。
     if comprehensive_archetypes:

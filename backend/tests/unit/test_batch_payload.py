@@ -167,3 +167,22 @@ def test_course_type_format_override_never_touches_comprehensive():
         "C1": {},
     })
     assert "不应出现的覆盖" not in payload.questions[0].question_template
+
+
+def test_course_type_format_override_by_archetype_key():
+    """综合题原型任务卡可课程级覆盖：键=原型名替换文本，分问 schema 恒按档案。"""
+    comp = _slot(
+        1, question_type="comprehensive", assessment_mode="application",
+        comprehensive_archetype="code_completion_scenario", material_form="code_skeleton",
+        cognitive_sequence=["understand", "apply"],
+        subquestion_count_range=[2, 2], subquestion_actions=["补全代码", "分析问题"],
+        answer_boundaries=["代码补全", "问题分析"],
+    )
+    batch = split_contract_into_batches([comp])[0]
+    payload = compile_batch_generation_payload(batch, {
+        COURSE_TYPE_FORMATS_KEY: {"code_completion_scenario": "课程自定义代码补全格式"},
+        "C1": {},
+    })
+    assert payload.questions[0].question_template == "课程自定义代码补全格式"
+    default = compile_batch_generation_payload(batch, {"C1": {}})
+    assert payload.questions[0].output_schema == default.questions[0].output_schema

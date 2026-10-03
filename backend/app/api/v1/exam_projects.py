@@ -187,7 +187,7 @@ def create_blueprint(
     units_payload = body["units"]
     card_semantic_profiles = body.get("card_semantic_profiles") or {}
     card_question_types = body.get("card_question_types") or {}
-    # 可选综合题原型池（教师显式白名单，顺序即偏好序）；非法名在
+    # 可选综合题原型按序列表（顺序即指派顺序，可重复=数量）；非法名在
     # create_draft_blueprint 内过滤，缺失时走默认轮换池
     archetypes = body.get("comprehensive_archetypes")
     archetypes = archetypes if isinstance(archetypes, list) and archetypes else None

@@ -28,6 +28,7 @@ from app.domain.framework.exam_rules import (
     normalize_exam_rules,
 )
 from app.domain.framework.models import FrameworkCandidate, FrameworkConfirmation
+from app.domain.generation.archetypes import ARCHETYPE_CONTRACTS
 from app.domain.generation.question_formats import QUESTION_TEMPLATES
 from app.services.course_service import get_course
 
@@ -301,13 +302,17 @@ class DatabaseFrameworkRepository:
         return self._write_exam_rules(row, course_id, payload)
 
     def set_question_type_format(self, *, course_id: str, question_type: str, template: str) -> str:
-        """设置/修改单个题型的课程级出题格式（template 为空 = 删除覆盖、恢复默认）。
+        """设置/修改单个题型（或综合题原型）的课程级出题格式（template 为空 = 删除覆盖、恢复默认）。
 
         只动 ``type_formats`` 一个键：其余规则取已归一形态原样回写（章节权重按
-        既有锚点补齐语义不变）。生成装配时该覆盖逐题型压过类别预设与全局档案。
+        既有锚点补齐语义不变）。生成装配时该覆盖逐键压过类别预设与全局档案——
+        综合题原型用原型名作键，覆盖该原型的任务卡文本（schema/分问结构不变）。
         """
+        raw_key = str(question_type or "").strip()
         canonical = canonical_question_type(question_type)
         if canonical not in QUESTION_TEMPLATES:
+            canonical = raw_key if raw_key in ARCHETYPE_CONTRACTS else None
+        if canonical is None:
             raise FrameworkInputError(f"未知题型：{question_type!r}")
         row = _current_rules_row(self.session, course_id, None)
         payload = dict(row["payload"] or {})

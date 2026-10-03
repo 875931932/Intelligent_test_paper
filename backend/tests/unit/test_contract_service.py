@@ -184,6 +184,55 @@ def test_teacher_pool_order_survives_seed_shuffle():
     }
 
 
+def test_explicit_pool_repetition_is_count_quota():
+    """重复=数量：教师要「两道代码题」→ [code, code, case] 按序硬指派。
+
+    显式池不因种子平移错位（seed=7 下仍从池首起），也不因模式不兼容
+    顺延吞掉配额位置——否则数量要求会静默少一道（E2E 实测过 3 综合题
+    只出 1 道代码题）。池长 3、题数 4：第 4 道是配额外溢出槽位，取
+    默认轮换中教师未点名的原型——回卷池首会把配额复制超量（代码题
+    2 道变 3 道），数量必须由算法保证精确。
+    """
+    rules = _comp_rules(archetypes=[
+        "code_completion_scenario",
+        "code_completion_scenario",
+        "case_analysis",
+    ])
+    named = {"code_completion_scenario", "case_analysis"}
+    for seed in (None, 7):
+        contract = allocate_paper_contract(_comprehensive_request(rules, seed=seed))
+        seq = [s.comprehensive_archetype for s in contract.slots]
+        assert seq[:3] == [
+            "code_completion_scenario",
+            "code_completion_scenario",
+            "case_analysis",
+        ], f"seed={seed}: {seq}"
+        assert seq[3] not in named, f"seed={seed} 溢出槽位不得复用已配额原型: {seq}"
+        assert seq.count("code_completion_scenario") == 2, f"seed={seed}: {seq}"
+
+
+def test_short_quota_pool_does_not_overproduce_on_overflow():
+    """配额池短于槽位数：[code, code] + 4 综合题 → 恰好 2 道代码题。
+
+    线上 E2E 实测缺陷：回卷池首（pool[nth % len(pool)]）让溢出槽位也
+    变成代码题，「两道代码题」出了四道。溢出槽位必须取默认轮换中
+    未点名的原型，数量约束由确定性算法保证（不依赖模型把池写够长）。
+    """
+    rules = _comp_rules(archetypes=[
+        "code_completion_scenario",
+        "code_completion_scenario",
+    ])
+    for seed in (None, 7):
+        contract = allocate_paper_contract(_comprehensive_request(rules, seed=seed))
+        seq = [s.comprehensive_archetype for s in contract.slots]
+        assert len(seq) == 4
+        assert seq[:2] == ["code_completion_scenario", "code_completion_scenario"]
+        assert all(a != "code_completion_scenario" for a in seq[2:]), (
+            f"seed={seed} 溢出槽位回卷复制了配额: {seq}"
+        )
+        assert seq.count("code_completion_scenario") == 2, f"seed={seed}: {seq}"
+
+
 def test_first_comprehensive_archetype_varies_across_seeds():
     # 用户可感知的接线：第 1 道综合题不再被钉死在池首（code_completion_scenario）
     firsts = {

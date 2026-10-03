@@ -122,8 +122,9 @@ def compile_batch_generation_payload(
     batch: QuestionBatch, knowledge_cards: dict[str, dict]
 ) -> BatchGenerationPayload:
     # 课程级题型格式覆盖（类别预设 + 考核规则 type_formats，runner 经约定键注入）：
-    # 逐题型**替换**任务卡文本；output_schema 恒用全局档案——schema 描述的是 JSON
-    # 字段形状，与出题风格无关。综合题走原型档案，不参与覆盖。
+    # 逐键**替换**任务卡文本；output_schema 恒用全局档案——schema 描述的是 JSON
+    # 字段形状，与出题风格无关。综合题按原型 key（archetype 名）同样可覆盖文本，
+    # 分问结构与 schema 仍由原型档案确定性给出。
     overrides = knowledge_cards.get(COURSE_TYPE_FORMATS_KEY)
     overrides = overrides if isinstance(overrides, dict) else {}
     specs: list[BatchQuestionSpec] = []
@@ -133,6 +134,9 @@ def compile_batch_generation_payload(
             question_template, output_schema = _comprehensive_template_and_schema(
                 slot.comprehensive_archetype, slot.subquestion_count_range,
             )
+            custom = overrides.get(slot.comprehensive_archetype or "")
+            if isinstance(custom, str) and custom.strip():
+                question_template = custom.strip()
         else:
             question_template, output_schema = _template_and_schema_for(slot.question_type)
             custom = overrides.get(slot.question_type)

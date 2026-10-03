@@ -561,7 +561,7 @@ def test_set_question_type_format_writes_updates_and_clears(tmp_path):
 def test_set_question_type_format_rejects_unknown_types(tmp_path):
     engine, session, repository, version_id = _published_rules_session(tmp_path)
     try:
-        # 综合题归原型档案，不接受格式覆盖
+        # 裸 comprehensive 不是任务卡键（可覆盖的是 8 个原型 key，见下例）
         with pytest.raises(FrameworkInputError, match="未知题型"):
             repository.set_question_type_format(
                 course_id="course", question_type="comprehensive", template="x"
@@ -570,6 +570,28 @@ def test_set_question_type_format_rejects_unknown_types(tmp_path):
             repository.set_question_type_format(
                 course_id="course", question_type="变态题", template="x"
             )
+        assert "type_formats" not in _final_rules(session, version_id)
+    finally:
+        session.close()
+        engine.dispose()
+
+
+def test_set_question_type_format_accepts_archetype_key(tmp_path):
+    """综合题原型任务卡走同一覆盖层：键=原型名，写入后过归一化存活。"""
+    engine, session, repository, version_id = _published_rules_session(tmp_path)
+    try:
+        repository.set_question_type_format(
+            course_id="course",
+            question_type="code_completion_scenario",
+            template="两问制代码补全任务卡格式",
+        )
+        assert _final_rules(session, version_id)["type_formats"] == {
+            "code_completion_scenario": "两问制代码补全任务卡格式"
+        }
+        # 空模板 = 删除覆盖，键随之消失
+        repository.set_question_type_format(
+            course_id="course", question_type="code_completion_scenario", template=""
+        )
         assert "type_formats" not in _final_rules(session, version_id)
     finally:
         session.close()

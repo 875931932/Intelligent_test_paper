@@ -53,13 +53,16 @@ def _shuffled_default_pool(seed: int | None) -> list[str]:
     )
 
 
-def _comprehensive_archetype_pool(request: ContractRequest) -> list[str]:
+def _comprehensive_archetype_pool(
+    request: ContractRequest,
+) -> tuple[list[str], bool]:
     """综合题原型池：教师经 type_rules.comprehensive.archetypes 显式控制。
 
-    教师可传原型白名单（顺序即偏好序），适合按学科裁剪——非编程课程可
-    排除 code_completion_scenario，文科可只留 case_analysis 等。未指定
-    或全部非法时回退默认原型池（通用机制，不绑定具体课程）；默认池按
-    allocation_seed 确定性洗牌（见 _shuffled_default_pool）。
+    返回 (池, 是否教师显式指定)。教师传的是原型**按序列表**：顺序即指派
+    顺序，**可重复，重复即数量**（教师要「两道代码题」就写两次
+    code_completion_scenario）；非编程课程可整体排除该原型。未指定或
+    全部非法时回退默认原型池（explicit=False，按 allocation_seed 确定性
+    洗牌轮换，见 _shuffled_default_pool）。
     """
 
     rule = request.blueprint.type_rules.get("comprehensive") or {}
@@ -67,8 +70,31 @@ def _comprehensive_archetype_pool(request: ContractRequest) -> list[str]:
     if isinstance(requested, list) and requested:
         pool = [name for name in requested if name in ARCHETYPE_CONTRACTS]
         if pool:
-            return pool
-    return _shuffled_default_pool(request.allocation_seed)
+            return pool, True
+    return _shuffled_default_pool(request.allocation_seed), False
+
+
+def _nth_comprehensive_archetype(
+    nth: int, pool: list[str], *, explicit: bool, seed: int | None
+) -> str:
+    """第 nth 道综合题的原型（nth 为综合题出现序号）。
+
+    默认池（explicit=False）：nth 已含种子平移，池内轮回。显式池两种语义：
+    - 无重复（白名单，如文科只要案例/方案/评析）：池内按序轮回，教师裁剪
+      出的原型集合是闭集，轮换不越界；
+    - 有重复（按序配额，重复=数量）：前 len(pool) 道按池序硬指派；配额耗尽
+      后的溢出槽位改取默认轮换池中教师**未点名**的原型——回卷池首会把配额
+      复制超量（[code, code] 撞 3 个综合题槽位会出三道代码题，「两道」变
+      「三道」，数量必须由确定性算法保证，不能依赖模型把池写够长）。点名
+      覆盖全部 8 原型时无候选，退回池内轮回兜底。
+    """
+    if nth < len(pool) or not explicit or len(set(pool)) == len(pool):
+        return pool[nth % len(pool)]
+    named = set(pool)
+    overflow = [name for name in _shuffled_default_pool(seed) if name not in named]
+    if not overflow:
+        return pool[nth % len(pool)]
+    return overflow[(nth - len(pool)) % len(overflow)]
 
 
 class ContractRequest(BaseModel):
@@ -91,15 +117,13 @@ class ContractRequest(BaseModel):
     plan: BlueprintPlan | None = None
 
 
-def _comprehensive_fields(nth: int, pool: list[str]) -> dict:
+def _comprehensive_fields(nth: int, archetype: str) -> dict:
     """第 nth 道综合题的结构轮换字段。
 
-    pool 是原型轮换池（教师可裁剪；默认池已经 _shuffled_default_pool 按
-    种子洗牌）；轮换起点再由 allocation_seed 平移（seed=None 时起点 0）。
-    洗牌与平移同种子一致，同种子复现、异种子整条序列不同——避免每张卷的
-    综合题序列是可预测的固定循环序切片。
+    archetype 由调用方按池/配额规则选定（默认池轮换或教师显式配额，
+    见 allocate_paper_contract）；nth 只驱动 material_form 与认知序列
+    的结构轮换，同种子复现、异种子整条序列不同。
     """
-    archetype = pool[nth % len(pool)]
     contract = ARCHETYPE_CONTRACTS[archetype]
     material_forms = sorted(contract.material_forms)
     material_form = material_forms[nth % len(material_forms)]
@@ -241,11 +265,51 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract:
     slots: list[ContractSlot] = []
     # 综合题原型池（教师可裁剪）与轮换起点（种子扰动：同种子复现，
     # 异种子换原型序列；None 保持确定性起点 0）
-    archetype_pool = _comprehensive_archetype_pool(request)
-    comp_counter = (
-        request.allocation_seed % len(archetype_pool)
-        if request.allocation_seed is not None else 0
+    archetype_pool, explicit_pool = _comprehensive_archetype_pool(request)
+    # 显式池是教师的按序配额（重复=数量）：从池首起指派、种子不平移，
+    # 否则 seed%len 会把 [code, code] 这类配额序列错位，「两道代码题」
+    # 只出一道。默认洗牌池保持种子平移（同种子复现、异种子换起始原型）。
+    if explicit_pool:
+        comp_cursor = 0
+    elif request.allocation_seed is not None:
+        comp_cursor = request.allocation_seed % len(archetype_pool)
+    else:
+        comp_cursor = 0
+    # 综合题原型按**卷面题序**（item_index）预算成查表：主循环按考点序
+    # 遍历，考点升序与题号序可能不一致（实测三道综合题分属三个考点，
+    # 考点升序恰为题号倒序），共享游标按遍历序计数会把配额错位到别的
+    # 题上——「写在列表最前」的代码题落到卷面最后一题。游标单调前进、
+    # 默认池模式不兼容顺延的语义不变，只是结算顺序改为卷面序。
+    comp_plan: dict[int, dict] = {}
+    comprehensive_items = sorted(
+        (item for group in items_by_point.values() for item in group
+         if item.question_type == "comprehensive"),
+        key=lambda i: i.item_index,
     )
+    for item in comprehensive_items:
+        archetype = _nth_comprehensive_archetype(
+            comp_cursor, archetype_pool,
+            explicit=explicit_pool, seed=request.allocation_seed,
+        )
+        fields = _comprehensive_fields(comp_cursor, archetype)
+        if not explicit_pool:
+            # 默认池：不兼容顺延换原型（轮换多样性优先）。显式池
+            # 不顺延——顺延会吞掉配额位置（教师要「两道代码题」
+            # 就可能出不来）；模式不兼容时由主循环兜底把
+            # assessment_mode 归正到该原型允许值，原型按教师
+            # 序列硬指派。
+            for _ in range(len(archetype_pool)):
+                contract_def = ARCHETYPE_CONTRACTS[archetype]
+                if item.assessment_mode in contract_def.allowed_modes:
+                    break
+                comp_cursor += 1
+                archetype = _nth_comprehensive_archetype(
+                    comp_cursor, archetype_pool,
+                    explicit=explicit_pool, seed=request.allocation_seed,
+                )
+                fields = _comprehensive_fields(comp_cursor, archetype)
+        comp_plan[item.item_index] = fields
+        comp_cursor += 1
     # 全卷共享互斥状态：跨考点原子唯一 + 答案边界互斥（终检为全卷两两比较）
     used_keys: set[str] = set()
     used_boundaries: list[str] = []
@@ -270,19 +334,13 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract:
             extra: dict = {}
             assessment_mode = item.assessment_mode
             if item.question_type == "comprehensive":
-                fields = _comprehensive_fields(comp_counter, archetype_pool)
-                # 校验兼容性，不兼容则顺延原型
-                for _ in range(len(archetype_pool)):
-                    contract_def = ARCHETYPE_CONTRACTS[fields["comprehensive_archetype"]]
-                    if assessment_mode in contract_def.allowed_modes:
-                        break
-                    comp_counter += 1
-                    fields = _comprehensive_fields(comp_counter, archetype_pool)
+                # 原型/结构字段已按卷面题序预算（comp_plan），此处只结算
+                # 模式归正：assessment_mode 不在原型允许集时取最小允许值。
+                fields = comp_plan[item.item_index]
                 contract_def = ARCHETYPE_CONTRACTS[fields["comprehensive_archetype"]]
                 if assessment_mode not in contract_def.allowed_modes:
                     assessment_mode = sorted(contract_def.allowed_modes)[0]
                 extra = fields
-                comp_counter += 1
             slots.append(ContractSlot(
                 item_index=item.item_index,
                 question_type=item.question_type,

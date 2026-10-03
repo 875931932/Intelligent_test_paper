@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 
 from app.domain.blueprint.models import ASSESSMENT_MODES
+from app.domain.generation.archetypes import ARCHETYPE_CONTRACTS
 from app.domain.generation.question_formats import QUESTION_TEMPLATES
 
 # 模型与教师都可能用中文题型名，统一映射到内部英文枚举
@@ -121,19 +122,26 @@ def _normalize_to_100(pairs: list[tuple[str, float]]) -> list[tuple[str, float]]
 
 
 def _type_formats_dict(raw: object) -> dict[str, str]:
-    """题型出题格式覆盖 {question_type: template}：只认已登记题型，清洗留痕。
+    """题型出题格式覆盖 {question_type: template}：只认已登记键，清洗留痕。
 
-    键统一英文枚举（中文别名可入），值剥空白后截断到 2000 字；空值/非字符串/
-    未知题型直接剔除。综合题由原型档案驱动，不进本覆盖表。
+    键统一英文枚举（中文别名可入）；综合题原型 key（ARCHETYPE_CONTRACTS 的
+    8 个原型名）同表登记——覆盖的是该原型的任务卡文本，分问结构与输出
+    schema 恒按原型档案。值剥空白后截断到 2000 字；空值/非字符串/未知键
+    直接剔除。
     """
     if not isinstance(raw, dict):
         return {}
     formats: dict[str, str] = {}
     for raw_type, template in raw.items():
         canonical = canonical_question_type(raw_type)
-        if not canonical or canonical not in QUESTION_TEMPLATES:
-            continue
-        if not isinstance(template, str):
+        if canonical not in QUESTION_TEMPLATES:
+            # 裸 comprehensive 等非任务卡键不收；原型名原样作为键
+            canonical = (
+                raw_type
+                if isinstance(raw_type, str) and raw_type in ARCHETYPE_CONTRACTS
+                else None
+            )
+        if canonical is None or not isinstance(template, str):
             continue
         text = template.strip()
         if not text:

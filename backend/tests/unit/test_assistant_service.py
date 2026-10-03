@@ -420,11 +420,21 @@ def test_update_question_type_format_payload_contract():
     )
     assert restore["body"] == {"question_type": "essay", "template": ""}
     assert restore["current"] == ""
+    # 综合题原型 key 同表可覆盖（键=原型名，与标准题型同一 PATCH 执行体）
+    comp = build_proposal_payload(
+        "update_question_type_format",
+        {"question_type": "code_completion_scenario", "template": "新的代码补全任务卡"},
+        context=ctx,
+    )
+    assert comp["body"] == {
+        "question_type": "code_completion_scenario",
+        "template": "新的代码补全任务卡",
+    }
 
 
 def test_update_question_type_format_rejects_bad_args():
     ctx = _ctx()
-    # 综合题归原型档案，不接受格式覆盖
+    # 裸 comprehensive 不是任务卡键（可覆盖的是 8 个原型 key，见上一用例）
     with pytest.raises(AssistantError, match="未知题型"):
         build_proposal_payload(
             "update_question_type_format",
@@ -590,14 +600,14 @@ def test_create_blueprint_guards_and_archetypes_pool():
             "comprehensive_archetypes": [
                 "case_analysis",
                 "solution_design",
-                "case_analysis",  # 去重
+                "case_analysis",  # 重复保留：重复=数量（教师要 N 道同类原型）
             ],
         },
         context=_paper_ctx(),
     )
     assert payload["project_id"] == "p1"
     assert payload["body"] == {
-        "comprehensive_archetypes": ["case_analysis", "solution_design"]
+        "comprehensive_archetypes": ["case_analysis", "solution_design", "case_analysis"]
     }
     # 不带原型池 = 走默认轮换池，body 为空
     plain = build_proposal_payload(
@@ -765,6 +775,11 @@ def test_prompt_documents_paper_pipeline_ladder():
     assert "generation_task_status 为 null" in system_prompt
     assert "**不是停点**" in system_prompt
     assert "generation_task_status 为 queued/running" in system_prompt
+    # 生题题型可控：综合题原型按序可重复=数量（两道代码题=写两次）；
+    # 原型 key 可覆盖任务卡、裸 comprehensive 不收
+    assert "可重复，重复即数量" in system_prompt
+    assert "**写 N 次**" in system_prompt
+    assert "**不接受裸 comprehensive**" in system_prompt
     # 红线不回退：助手不换算不承诺
     assert "比例/难度/去重" in system_prompt
 
