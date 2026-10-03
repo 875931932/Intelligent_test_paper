@@ -1,6 +1,9 @@
 import { create } from 'zustand';
 import { api } from '@/api/client';
+import { getErrorMessage } from '@/api/errors';
+import { executeProposalAction, RELAY_TOOLS } from '@/lib/assistantProposalExecution';
 import type { AssistantMessage, AssistantProposalStatus, AssistantSession } from '@/types/api';
+import { useAuthStore } from './auth';
 import { useToastStore } from './toast';
 
 /**
@@ -58,12 +61,20 @@ interface AssistantState {
   renameSession: (sessionId: string, title: string) => Promise<void>;
   /** 删除会话及消息（在途 409 由页面提示先停止；删的是当前会话则切到最近会话） */
   deleteSession: (sessionId: string) => Promise<void>;
-  /** 提案卡状态回写（只记账，执行走既有业务 API，由页面先行调用） */
+  /** 提案卡状态回写（只记账，执行走既有业务 API，由调用方先行调用） */
   patchProposal: (
     messageId: string,
     status: AssistantProposalStatus,
     receipt?: string,
   ) => Promise<void>;
+  /** 「执行中断」卡片的手动重试：状态已是 executing（认领过），直接再跑一次 */
+  retryProposal: (messageId: string) => void;
+  /**
+   * 自动执行中的进度文案（messageId → 文案，本地态，不落库）。
+   * 进度不走卡片状态机：认领必须是独占的（executing → executing 被后端拒绝），
+   * 长步骤（蓝图建议任务）的过程只能靠这份本地态呈现。
+   */
+  autoProgress: Record<string, string>;
 }
 
 export const useAssistantStore = create<AssistantState>()((set, get) => {
@@ -93,6 +104,102 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
       streamThink: '',
       streamHint: null,
     });
+
+  // ---------------------------------------------------------------------------
+  // 自动执行队列：出卷主线上的非里程碑提案（label/impact/auto 来自后端注册表）
+  // 不显示「确认执行」，直接调既有业务 API 并在气泡里回报执，然后自动接力。
+  // ---------------------------------------------------------------------------
+
+  /** 同步闩锁：拦住「看到卡片 → claim 落库」之间的同帧重入（重挂载/StrictMode） */
+  const autoInFlight = new Set<string>();
+  /** claim 就没落上的卡片：记为跳过，避免同一张卡反复重试 */
+  const autoSkipped = new Set<string>();
+  /** 串行队列：sending 只保护 send，不保护并发的业务写 */
+  let autoChain: Promise<void> = Promise.resolve();
+
+  const isAutoPending = (m: AssistantMessage) =>
+    m.role === 'assistant'
+    && m.action?.kind === 'proposal'
+    && m.action.status === 'auto'
+    && !autoInFlight.has(m.id)
+    && !autoSkipped.has(m.id);
+
+  /**
+   * 执行一张自动卡片：claim（先落库：中断即停在 executing，不再自动重放非幂等写）
+   * → 调既有业务 API → 回写 executed → 自动追问「继续」，让下一张卡自动弹出。
+   */
+  const runAutoCard = async (m: AssistantMessage, sessionId: string | null) => {
+    const courseId = get().courseId;
+    if (!courseId) return;
+    if (m.action.status !== 'executing') {
+      try {
+        await get().patchProposal(m.id, 'executing');
+      } catch {
+        autoSkipped.add(m.id);
+        return;
+      }
+    }
+    const token = useAuthStore.getState().token ?? undefined;
+    try {
+      const { receipt, relay } = await executeProposalAction(m, {
+        courseId,
+        token,
+        // 长步骤（蓝图建议任务）的过程走本地进度态：状态机只认「认领」这一跳
+        onProgress: (text) => {
+          if (get().courseId === courseId) {
+            set((s) => ({ autoProgress: { ...s.autoProgress, [m.id]: text } }));
+          }
+        },
+      });
+      if (get().courseId !== courseId) return; // 已切课：结果以服务端为准，不再回写
+      await get().patchProposal(m.id, 'executed', receipt);
+      useToastStore.getState().addToast(receipt, 'success');
+      // 教师切走会话就不再替他接力：链停在原会话，卡片仍是已执行
+      const onLadder = RELAY_TOOLS.has(m.action.tool ?? '');
+      if (relay && onLadder && get().activeSessionId === sessionId) {
+        await get().send('继续');
+      }
+    } catch (err) {
+      useToastStore.getState().addToast('自动执行失败: ' + getErrorMessage(err), 'error');
+      // 卡片停在 executing：给教师可见的「重试执行」，绝不自动重放
+    } finally {
+      clearProgress(m.id);
+    }
+  };
+
+  /** 清掉本地进度文案（执行结束；消息的最终回执以落库的 receipt 为准） */
+  const clearProgress = (messageId: string) => {
+    set((s) => {
+      if (!(messageId in s.autoProgress)) return {};
+      const next = { ...s.autoProgress };
+      delete next[messageId];
+      return { autoProgress: next };
+    });
+  };
+
+  /** 入队（串行）并保持队列自驱：执行完再找下一张 */
+  const enqueueAutoRun = (m: AssistantMessage, sessionId: string | null) => {
+    if (autoInFlight.has(m.id)) return;
+    autoInFlight.add(m.id);
+    autoChain = autoChain
+      .then(() => runAutoCard(m, sessionId))
+      .catch(() => {
+        /* 单张失败不拖垮队列：失败态已由 runAutoCard 收口 */
+      })
+      .finally(() => {
+        autoInFlight.delete(m.id);
+        window.setTimeout(drainAutoQueue, 0);
+      });
+  };
+
+  /** 找出下一张待自动执行的卡片（在途轮次结束后才动，避免与流式抢状态） */
+  function drainAutoQueue() {
+    const s = get();
+    if (!s.courseId || s.sending) return;
+    const next = s.messages.find(isAutoPending);
+    if (!next) return;
+    enqueueAutoRun(next, s.activeSessionId);
+  }
 
   // 当前会话按课程持久化（切课/刷新后回到上次所在会话；隐私模式不可用则退化为内存态）
   const storageKey = (courseId: string) => `assistant:${courseId}:session`;
@@ -166,6 +273,8 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
         .addToast('对话刷新失败，内容以服务端为准，请稍后刷新页面', 'error');
     } finally {
       clearTurnState();
+      // 收口后接着跑自动执行队列：接力产出的下一张卡在这一拍落地
+      drainAutoQueue();
     }
   };
 
@@ -269,10 +378,14 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
     streamThink: '',
     streamHint: null,
     settledTaskIds: [],
+    autoProgress: {},
 
     reset: (courseId) => {
       stopStream();
       stopPolling();
+      // 切课等于换一套数据：在跑的自动执行队列随之作废（回写前会校验 courseId）
+      autoInFlight.clear();
+      autoSkipped.clear();
       set({
         courseId,
         sessions: [],
@@ -287,6 +400,7 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
         streamThink: '',
         streamHint: null,
         settledTaskIds: [],
+        autoProgress: {},
       });
     },
 
@@ -315,6 +429,7 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
         const messages = active ? await api.assistant.listMessages(courseId, active) : [];
         set({ messages, restored: true, restoring: false });
         attachSessionStream(messages);
+        drainAutoQueue();
       } catch (err) {
         set({ restoring: false });
         throw err;
@@ -327,6 +442,7 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
       const sid = get().activeSessionId;
       const messages = sid ? await api.assistant.listMessages(courseId, sid) : [];
       set({ messages, restored: true });
+      drainAutoQueue();
     },
 
     send: async (message) => {
@@ -439,6 +555,7 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
         const messages = await api.assistant.listMessages(courseId, sessionId);
         set({ messages, restored: true });
         attachSessionStream(messages);
+        drainAutoQueue();
       } catch (err) {
         // 失败回滚到原会话与原时间线：否则停在空时间线且同 id 点击会被
         // 早退拦掉，无法重试
@@ -488,6 +605,14 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
       set((s) => ({
         messages: s.messages.map((m) => (m.id === messageId ? updated : m)),
       }));
+    },
+
+    retryProposal: (messageId) => {
+      const s = get();
+      const m = s.messages.find((x) => x.id === messageId);
+      if (!m || autoInFlight.has(messageId)) return;
+      // executing 已经是「被认领」的状态：重试不再 claim，直接再跑一次
+      enqueueAutoRun(m, s.activeSessionId);
     },
   };
 });

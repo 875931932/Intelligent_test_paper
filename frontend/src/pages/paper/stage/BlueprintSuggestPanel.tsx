@@ -7,6 +7,16 @@ import { Button } from '@/components/ui/Button';
 import type { NameMaps } from '@/hooks/useNameMaps';
 import { clabel, dlabel, mlabel, qlabel } from '@/lib/examDisplay';
 import { formatScore } from '@/lib/format';
+// 建议的「已应用判定 / 逐条 PATCH / 等任务完成」与助手自动应用共用同一份实现
+import {
+  applySuggestions,
+  isSuggestionApplied,
+  matchesCurrent,
+  NO_APPLIED_KEYS,
+  pendingSuggestions,
+  suggestKey,
+  toChanges,
+} from '@/lib/blueprintSuggest';
 import type {
   BlueprintSuggestResult,
   BlueprintSuggestion,
@@ -25,20 +35,6 @@ const FIELD_LABELS: Record<keyof PlanItemChanges, string> = {
   card_id: '知识卡',
   assessment_mode: '考法',
 };
-
-/** 建议字段 → 可直接提交给既有 PATCH plan-items 的 changes 形状（后端已归一词表） */
-function toChanges(s: BlueprintSuggestion): PlanItemChanges {
-  switch (s.field) {
-    case 'score': return { score: Number(s.value) };
-    case 'difficulty': return { difficulty: String(s.value) };
-    case 'cognitive_level': return { cognitive_level: String(s.value) };
-    case 'question_type': return { question_type: String(s.value) };
-    case 'exam_point_id': return { exam_point_id: String(s.value) };
-    case 'card_id': return { card_id: String(s.value) };
-    case 'assessment_mode': return { assessment_mode: String(s.value) };
-    default: return {};
-  }
-}
 
 /** 当前值文案（题位现状）与目标值文案（建议值） */
 function currentLabel(item: PlanItem | undefined, field: keyof PlanItemChanges, maps: NameMaps): string {
@@ -68,11 +64,6 @@ function targetLabel(s: BlueprintSuggestion, maps: NameMaps): string {
   }
 }
 
-const keyOf = (s: BlueprintSuggestion) => `${s.item_index}:${s.field}`;
-
-/** 「已应用」判定里「没有额外 key」的占位集合（模块级常量，避免每次渲染新建） */
-const EMPTY_KEYS = new Set<string>();
-
 /** 提案时原值文案：优先用后端 from_value 快照（应用后不漂移），缺失时退回当前值 */
 function fromLabel(s: BlueprintSuggestion, item: PlanItem | undefined, maps: NameMaps): string {
   if (s.from_value === undefined || s.from_value === null || s.from_value === '') {
@@ -89,20 +80,6 @@ function fromLabel(s: BlueprintSuggestion, item: PlanItem | undefined, maps: Nam
     case 'assessment_mode': return mlabel(value);
     default: return value;
   }
-}
-
-/** 建议值已等于题位当前值（应用过或教师已手动改到位）→ 视为已应用 */
-function matchesCurrent(s: BlueprintSuggestion, item: PlanItem | undefined): boolean {
-  if (!item) return false;
-  if (s.field === 'score') return Math.abs(Number(item.score) - Number(s.value)) < 0.001;
-  const current =
-    s.field === 'card_id' ? item.knowledge_card_id
-    : s.field === 'exam_point_id' ? item.exam_point_id
-    : s.field === 'difficulty' ? item.difficulty
-    : s.field === 'cognitive_level' ? item.cognitive_level
-    : s.field === 'assessment_mode' ? item.assessment_mode
-    : item.question_type;
-  return String(current ?? '') === String(s.value);
 }
 
 /**
@@ -253,23 +230,21 @@ export function BlueprintSuggestPanel({
    * 恢复历史建议时 `applied` 必然为空，全靠「值已相等」兜住——否则刷新后会把
    * 已落地条目误报成待办，点「全部应用」又对同一题位重复 PATCH。
    */
-  const isAppliedTo = (s: BlueprintSuggestion, extra: Set<string> = EMPTY_KEYS): boolean =>
-    extra.has(keyOf(s))
-    || applied.has(keyOf(s))
-    || matchesCurrent(s, planItems.find((p) => p.item_index === s.item_index));
+  const isAppliedTo = (s: BlueprintSuggestion, extra: ReadonlySet<string> = NO_APPLIED_KEYS): boolean =>
+    isSuggestionApplied(s, planItems, new Set([...applied, ...extra]));
 
-  /** 待办清单：尚未落地的建议 */
-  const pending = result ? result.suggestions.filter((s) => !isAppliedTo(s)) : [];
+  /** 待办清单：尚未落地的建议（与助手自动应用同一份判定） */
+  const pending = result ? pendingSuggestions(result, planItems, applied) : [];
 
   /** 已落地条数 */
-  const appliedCount = result ? result.suggestions.filter((s) => isAppliedTo(s)).length : 0;
+  const appliedCount = result ? result.suggestions.length - pending.length : 0;
 
   /** 全部建议是否都已落地——应用完自动折叠的判定（部分失败不收起） */
   const allSatisfied = (extra: Set<string>): boolean =>
     !!result && result.suggestions.every((s) => isAppliedTo(s, extra));
 
   const handleApplyOne = async (s: BlueprintSuggestion) => {
-    const key = keyOf(s);
+    const key = suggestKey(s);
     setApplyingKey(key);
     try {
       const ok = await applyOne(s);
@@ -288,18 +263,15 @@ export function BlueprintSuggestPanel({
   const handleApplyAll = async () => {
     if (pending.length === 0) return;
     setApplyingAll(true);
-    let okCount = 0;
-    const appliedNow = new Set(applied);
     try {
-      for (const s of pending) {
-        if (await applyOne(s)) {
-          appliedNow.add(keyOf(s));
-          setApplied((prev) => new Set(prev).add(keyOf(s)));
-          okCount += 1;
-        }
-      }
+      // 逐条 PATCH 的循环与「分值失败即止损」都在共享实现里（与助手自动应用同款）
+      const { appliedKeys, failed } = await applySuggestions(
+        courseId, planItems, pending, token ?? undefined,
+      );
+      const okCount = appliedKeys.length;
+      const appliedNow = new Set([...applied, ...appliedKeys]);
+      setApplied(appliedNow);
       reload();
-      const failed = pending.length - okCount;
       addToast(
         failed > 0 ? `已应用 ${okCount} 条建议，${failed} 条失败` : `已应用 ${okCount} 条建议`,
         failed > 0 ? 'error' : 'success',
@@ -391,7 +363,7 @@ export function BlueprintSuggestPanel({
             const isApplied = isAppliedTo(s);
             return (
               <div
-                key={keyOf(s)}
+                key={suggestKey(s)}
                 style={{
                   display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap',
                   padding: '8px 10px', borderRadius: 'var(--radius-sm)',
@@ -412,7 +384,7 @@ export function BlueprintSuggestPanel({
                 <Button
                   size="sm" variant="secondary"
                   disabled={isApplied || applyingAll}
-                  loading={applyingKey === keyOf(s)}
+                  loading={applyingKey === suggestKey(s)}
                   onClick={() => void handleApplyOne(s)}
                 >
                   {isApplied ? '已应用' : '应用'}

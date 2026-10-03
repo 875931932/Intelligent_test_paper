@@ -59,6 +59,15 @@ from app.services import (
     material_service,
     parse_service,
 )
+# 工具注册表：枚举/提示词/卡片元数据的唯一来源（本模块只做路由与收口）
+from app.services.assistant_tools import (
+    PROPOSAL_TOOLS,
+    RAG_TOOL,
+    READ_TOOLS,
+    proposal_card_meta,
+    render_section,
+    tool_names,
+)
 # 复用既有判定（模块级 import 优于复制第二份）
 from app.services.ai_revise_service import llm_configured
 # RAG 检索与语料索引（助手 v2 资料内容问答）
@@ -94,34 +103,8 @@ _HISTORY_CHAR_LIMIT = 500
 _MATERIAL_LIMIT = 50
 _MESSAGE_MAX_CHARS = 4000
 
-# 只读工具：后端确定性执行查询，结果卡不依赖模型文本
-READ_TOOLS = (
-    "course_overview",
-    "list_materials",
-    "framework_status",
-    "blueprint_status",
-    "contract_status",
-    "paper_status",
-    "list_exam_projects",
-    "usage_guide",
-)
-# 提案工具：只组装提案卡（执行契约在 payload），确认由前端调既有业务 API。
-# 出卷主线（创建项目/更新考核规则/创建蓝图/确认蓝图/确认合同/发起生成）整体
-# 提案化——每个里程碑仍是教师点「确认」才执行，只是不必切页面。
-PROPOSAL_TOOLS = (
-    "create_course",
-    "update_course",
-    "start_parse",
-    "create_exam_project",
-    "update_exam_rules",
-    "create_blueprint",
-    "confirm_blueprint",
-    "enqueue_blueprint_suggest",
-    "confirm_contract",
-    "start_generation",
-    "enqueue_paper_review",
-    "update_question_type_format",
-)
+# 工具清单（只读 / 提案 / 问答）与卡片元数据全部来自注册表 assistant_tools，
+# 提示词里的工具说明与参数口径也由它渲染——一处定义，不再各维护一份。
 # 双保险：即使模型给出这些 tool，路由层也按确定性文案拒绝（prompt 另有指示）。
 # 蓝图确认与发起生成已移入提案（教师卡上确认即教师确认），定稿/导出仍拒绝。
 REFUSED_TOOLS = frozenset(
@@ -141,7 +124,6 @@ REFUSED_REPLY = (
 )
 
 # 资料内容问答（RAG，助手 v2）：第 4 类路由——语料检索 + 段2 流式作答 + 来源引用卡
-RAG_TOOL = "answer_material_content"
 _RAG_TOP_K = 6
 _RAG_HYBRID_MIN_SCORE = 0.15
 _RAG_LEXICAL_MIN_SCORE = 0.2
@@ -152,8 +134,57 @@ _RAG_EXPAND_MAX_TOTAL = 6       # 单轮邻域扩展总块数封顶（生成上�
 _RAG_BLOCK_PROMPT_CHARS = 1500  # 单块进段2 prompt 的上限
 _RAG_FALLBACK_REPLY = "已检索到相关资料，回答见下："
 
-# 提案卡状态只允许单向迁移（proposed → executed/dismissed）
-_PROPOSAL_TRANSITIONS = {"executed", "dismissed"}
+# 段1 的输出通道：function calling（而非让模型自由吐 JSON）。
+# 线上实测（step-5-preview/step-3.7-flash）：模型会把 history 里"消息 content +
+# 卡片动作 {kind,tool,status}"拼成一个扁平对象，或直接吐 `{}`，自由 JSON 的
+# 外层契约时好时坏。改用工具后由 provider 保证函数调用信封在场，参数严格按
+# 下发的 schema 填充；tool_choice 未下发（StepFun 档案不支持，见 model_profiles），
+# 故仍保留 content-JSON 兜底与带反馈重试。枚举与白名单同源，模型不可能"发明"工具名。
+# 形状遵循网关 tool 参数口径（只给 function 体，{"type":"function","function":…}
+# 的外层包装由 _build_body 补），与 model_profiles 的既有约定一致。
+_INTENT_TOOL: dict = {
+    "name": "submit_reply",
+    "description": (
+        "向教师提交一条回复，并可附带一个要执行的动作。闲聊/解释状态时只给 reply。"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "reply": {"type": "string", "description": "给教师的中文回复，1~2 句"},
+            "action": {
+                "type": "object",
+                "description": "要执行的动作；纯问答或闲聊时省略本字段",
+                "properties": {
+                    "tool": {
+                        # 枚举与注册表同源（含只读/提案/问答），模型无从"发明"工具
+                        "type": "string",
+                        "enum": tool_names(),
+                    },
+                    "args": {"type": "object", "description": "动作参数；无参数时给空对象"},
+                },
+                "required": ["tool"],
+            },
+        },
+        "required": ["reply"],
+    },
+}
+
+# 提案卡状态机（单向迁移）：
+#   proposed （待教师确认）→ executed | dismissed
+#   auto     （待自动执行）→ executing
+#   executing（已开始，结果未知）→ executed | dismissed
+# executing 是关键的安全停态：自动执行中途刷新/切页时卡片停在 executing，
+# **不再自动重跑**——建项目/建蓝图/发建议都不是幂等操作，重放会重复建实体，
+# 由卡片上的「重试执行」交给教师决定是否再来一次。
+_PROPOSAL_TRANSITIONS = {"executed", "dismissed", "executing"}
+# 注：executing → executing 刻意**不**允许——认领必须是独占的（两个标签页同时
+# 看到 auto 卡时，只有先落库那次能 claim 成功，另一次被拒后不再执行业务写）。
+# 长步骤的执行进度不走状态机，由前端用本地进度态呈现。
+_ALLOWED_STATUS_MOVES = {
+    "proposed": {"executed", "dismissed"},
+    "auto": {"executing"},
+    "executing": {"executed", "dismissed"},
+}
 
 
 class AssistantError(Exception):
@@ -455,16 +486,31 @@ def _history_rows(session: Session, course_id: str, session_id: str | None = Non
             {
                 "role": role,
                 "content": (content or "")[:_HISTORY_CHAR_LIMIT],
-                "action": {
-                    "kind": action.get("kind"),
-                    "tool": action.get("tool"),
-                    "status": action.get("status"),
-                }
-                if action
-                else {},
+                # 只给一句「上一步走到哪」的人话，不下发结构化 action
+                "step": _step_note(action),
             }
         )
     return history
+
+
+def _step_note(action: dict) -> str:
+    """历史里「上一步做了什么」的中性文本（非结构化，不给模型模仿的形状）。
+
+    原先下发 ``{kind, tool, status}``，模型会照抄这个形状去拼自己的输出——线上
+    实测出现 ``{"content":…, "kind":"proposal", "status":"pending", "tool":…}``
+    这种扁平对象（21:53 那次"继续"失败的第一根因）。改成一句人话，既保住「哪一步
+    已走过」的信息（阶梯据此不重复发起），又不提供可模仿的输出模板。
+    """
+    if not action or action.get("kind") != "proposal":
+        return ""
+    tool = str(action.get("tool") or "")
+    label = proposal_card_meta(tool).get("label") or tool
+    status = str(action.get("status") or "")
+    if status in {"executed", "auto", "executing"}:
+        return f"已执行：{label}"
+    if status == "dismissed":
+        return f"教师取消：{label}"
+    return f"待教师确认：{label}"
 
 
 def load_turn_context(
@@ -526,18 +572,11 @@ def load_turn_context(
 _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{course_name}」课程空间里用自然语言向你提需求，你输出一句回复与一个可选的动作（action）。动作分两类：只读查询（后端直接执行并展示结果卡）、写操作提案（只生成提案卡，教师点「确认」才由既有接口执行——你永远不直接执行写操作）。
 
 可用只读工具（action.tool 取其一）：
-- course_overview：课程全阶段状态概览（资料/框架/目录/蓝图/合同/试卷/项目）
-- list_materials：上传资料清单与解析状态
-- framework_status：命题框架与考核规则状态
-- blueprint_status：蓝图题位统计（逐试卷项目）
-- contract_status：合同状态（逐试卷项目）
-- paper_status：试卷版本与待复核题数（逐试卷项目）
-- list_exam_projects：试卷项目列表
-- usage_guide：使用引导（网站能力地图 + 出卷全流程 + 当前进行到哪一步；引导卡自带步骤与页面跳转按钮）。教师问「这个网站能干什么/怎么用/怎么出一份卷子/下一步做什么」时必须使用，args={}。
-只读工具 args 默认 {}（呈现全部）。教师**点名了某个试卷项目**时，course_overview/blueprint_status/contract_status/paper_status/list_exam_projects 必须传 args={project_id(取自 payload.ids.project_ids)}，结果卡只呈现该项目；没点名就不传（usage_guide 与项目无关，恒 args={}）。
+{read_tools}
+只读工具 args 默认 {}（呈现全部）。教师**点名了某个试卷项目**时 course_overview 必须传 project_id（取自 payload.ids.project_ids），结果卡只呈现该项目；没点名就不传（usage_guide 与项目无关，恒 args={}）。
 
 资料内容问答工具：
-- answer_material_content：基于已解析资料正文回答问题/做总结。args={material_id?}——教师点名某份资料时必须传 material_id（取自 payload.ids.material_ids）；问全课程资料时不传。仅对 snapshot.materials 中 parse_status=="ready" 的资料使用；没有已解析资料时不使用本工具，回复引导教师先到「资料库」解析。回答正文由系统按检索片段生成，你的 reply 只给一句引导（如「已检索到相关资料，回答如下：」），不要复述片段。
+{rag_tools}
 
 产品能力地图（回答「这个网站能做什么/怎么操作/流程是什么」时的依据；结构化步骤与跳转按钮由 usage_guide 引导卡呈现）：
 - 页面模块：课程概览（全阶段状态）、资料库（上传/解析/索引资料，四分区展示）、命题框架（双大纲→考点与考核规则，确认后冻结）、知识目录（分类→事实→画像→知识卡）、试卷（试卷项目工作区）。
@@ -545,35 +584,19 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 - 助手边界：只读查询、资料内容问答与总结、写操作提案（教师点确认后由既有接口执行）可由我代劳——出卷主线的创建项目/修改考核规则/创建与确认蓝图/确认合同/发起生成与整卷质量评审均可提案代劳；出题改题、试卷定稿导出、删除资料需引导教师到对应页面亲自完成；在线考试与阅卷不在本系统范围内。
 
 可用提案工具（action.args 只允许下述字段，id 必须取自 payload.ids 白名单）：
-- create_course：新建课程。args={name(必填,1~200字), slug?(小写字母数字连字符), description?, category?(类别 key，取自 payload.course_categories)}
-- update_course：修改当前课程。args={name?, slug?, description?}（至少一个）
-- start_parse：启动某资料解析。args={material_id(取自 payload.ids.material_ids)}
-- create_exam_project：创建试卷项目。args={name(必填,1~200字，从教师原话取，如「期末考试卷」)}
-- update_exam_rules：修改考核规则（题型比例/章节权重/考试侧重点；蓝图创建时按新规则确定性折算，你只提方案、不做换算）。args 至少给一个：
-  - question_type_ratios?: [{question_type(可用中文题型名), ratio(百分比,>0)}]
-  - chapter_weights?: [{anchor_key(章节锚点), weight(>0)}]
-  - assessment_focus?: [{assessment_mode(theory_recall理论记忆/conceptual概念理解/application应用/problem_solving问题求解/practical_operation实操), weight(>0)}]——教师说「偏理论」即提高 theory_recall 与 conceptual 的权重
-  各字段已有现值见 snapshot.framework.exam_rules（question_type_ratios/chapter_weights/assessment_focus），未给出的字段保持原值。
-- create_blueprint：创建草稿蓝图（按考核规则与知识目录确定性生成题位、难度分布与章节权重）。args={project_id(取自 payload.ids.project_ids), comprehensive_archetypes?(综合题原型**按序列表**：顺序即指派顺序，**可重复，重复即数量**——教师要两道代码题就把 code_completion_scenario 写两次、只写一次=一道；合法值8个：code_completion_scenario(代码补全场景)/case_analysis(案例分析)/fault_diagnosis(故障诊断)/comparative_decision(比较决策)/solution_design(方案设计)/process_optimization(流程优化)/critique_correction(评析纠错)/integrated_explanation(综合阐释)；教师要求综合题不出代码题时排除 code_completion_scenario)}。前提：命题框架已冻结且知识目录已发布，否则不要选它。
-- confirm_blueprint：确认当前草稿蓝图（里程碑确认，教师点提案卡「确认」即为教师确认）。args={project_id}（仅一个项目时可省略）。蓝图不存在或已确认时不要选它。
-- enqueue_blueprint_suggest：发起蓝图调整建议。args={project_id(取自 payload.ids.project_ids), instruction?(一句话要求)——教师的难度比例要求（如「难度按5简单3中等2难」「5:3:2」）原样放进 instruction，教师原话里表示粒度的限定词（如「每个题型」「各题型」「按题型」）必须原样保留——解析器按它决定逐题型还是整卷换算，丢词会改变换算口径；由系统确定性换算成目标分布，建议仍需教师逐条确认后应用；逐题改考法/题型/分值（「第5题改成问题求解」「这题换成多选」）同样走本工具，把教师原话放进 instruction}
-- confirm_contract：重新分配并确认合同。args={project_id(取自 payload.ids.project_ids)}（合同已确认冻结时不要选它）
-- start_generation：发起 AI 分批生成。args={project_id(取自 payload.ids.project_ids)}（合同未确认时不要选它；generation_task_status 为 queued/running = 已发起在跑，同样不要选它）
-- update_question_type_format：设置/修改某题型（或综合题原型）的出题格式要求（影响之后的生成；已设置的格式见 snapshot.framework.exam_rules.type_formats）。args={question_type(single_choice/multiple_choice/true_false/fill_blank/short_answer/essay 或中文题型名；综合题传原型 key，8选一：code_completion_scenario/case_analysis/fault_diagnosis/comparative_decision/solution_design/process_optimization/critique_correction/integrated_explanation，**不接受裸 comprehensive**), template(该题型/原型**完整**的出题格式要求,1~2000字，须含该题型的结构与答案唯一性约束；传空串=恢复系统默认格式)}。综合题原型覆盖只替换该原型的任务卡文本，分问数量与输出 schema 仍按原型档案确定性生效。
-- enqueue_paper_review：发起整卷 AI 质量评审（只读报告，不改任何数据；教师要「检查试卷」「看看有没有不好的地方」时用）。args={project_id(取自 payload.ids.project_ids), instruction?(教师关注点原话，如「重点看填空题答案是否唯一」；没有就省略=常规评审)}。前提：该项目已有试卷（snapshot 里 paper.exists=true）；课程有多份试卷且教师没点名时先列出项目名问教师评哪一份。已发起过就引导教师到试卷页看报告，不要重复发起。
+{proposal_tools}
 
-出卷主线推进（教师要出卷、继续出卷、或直接给出出卷要求时，先看 snapshot.projects 状态选**下一步**的提案，一次一张卡；回复里说明整体计划。教师点「确认执行」成功后，前端会自动替教师追问「继续」——收到这类追问就按本阶梯推进，**不要**在回复里要求教师手动输入「继续」。教师带着具体要求（难度/侧重/综合题形态）要新卷时，第一张卡仍只是 create_exam_project——回复里点明这些要求各自落到后续哪一步（见落点表），**不要**塞进本卡 args）：
+出卷主线推进（教师要出卷、继续出卷、或直接给出出卷要求时，先看 snapshot.projects 状态选**下一步**的提案，一次一张卡；回复里说明整体计划。**除 confirmed 的确认类提案外，其余提案卡片由前端自动执行并回报执**，执行后前端自动替教师追问「继续」——收到这类追问就按本阶梯推进，**不要**在回复里要求教师手动输入「继续」。教师带着具体要求（难度/侧重/综合题形态）要新卷时，第一张卡仍只是 create_exam_project——回复里点明这些要求各自落到后续哪一步（各工具的参数说明里写明了要求该填进哪个字段），**不要**塞进本卡 args）：
 1. 没有试卷项目，或教师点名要另出一份新卷（「生成一张新试卷」「再出一份」）→ create_exam_project（name 从教师原话取；课程可有多个试卷项目，既有项目保持冻结不受影响，新项目按本阶梯从头走）
 2. 项目没有蓝图（blueprint 为 null）→ 先把教师的规则要求落成提案（偏理论/题型比例/章节权重 → update_exam_rules；综合题原型偏好 → 并进 create_blueprint 的 args），再 create_blueprint
-3. 蓝图已有但未确认（blueprint.confirmed=false）→ 需要调整题位或难度分布 → enqueue_blueprint_suggest（指令带上教师原话的比例要求）；不需调整 → confirm_blueprint
+3. 蓝图已有但未确认（blueprint.confirmed=false）→ 需要调整题位或难度分布 → enqueue_blueprint_suggest（指令带上教师原话的比例要求，建议由前端自动应用）；不需调整 → confirm_blueprint
 4. 合同未确认（contract.confirmed=false）→ confirm_contract
 5. 合同已确认且该项目**从未发起生成**（快照里 generation_task_status 为 null）→ start_generation（status=generating 只是合同确认时置上的**阶段标记**，不等于任务已在跑）
-教师具体要求的落点：难度要求（如5:3:2、「难度偏中等」）→ enqueue_blueprint_suggest 的 instruction（数字比例由系统确定性换算，倾向说法原样进指令、由建议逐条确认把关）；逐题换考法（「第X题改成问题求解」「这道题换实操」）与逐题改题型/分值 → enqueue_blueprint_suggest 的 instruction（建议逐条确认后应用，蓝图草稿阶段可改）；偏理论/侧重理解 → update_exam_rules 的 assessment_focus；题型比例/章节权重 → update_exam_rules；综合题不出代码题、多场景应用题 → create_blueprint 的 comprehensive_archetypes（排除 code_completion_scenario）；教师要综合题出 N 道代码题 → create_blueprint 的 comprehensive_archetypes 里 code_completion_scenario **写 N 次**（重复=数量，写在列表最前；只说「要代码题」未说数量=写一次）；单题型出题格式 → update_question_type_format；综合题某原型的出题格式 → update_question_type_format 传原型 key；整卷质量检查（「试卷有没有问题」「帮我检查一下」）→ enqueue_paper_review（只读报告，试卷生成后可用）。
+每一步只推进一级：历史里已经执行过的那一步不要重复发起（例如已发起过 enqueue_blueprint_suggest 就不再发起，蓝图未确认时直接 confirm_blueprint）。
 
 接力停点——以下情况**不出提案卡**（action 置 null），用一两句话说明现状与教师接下来要做什么，然后停下等教师回复。**先按项目 status 判定，命中即停、不再往下看**：
 1. 项目 status=review 或 exported → 出卷主线已完成。固定话术：先一句现状（试卷已生成、待审核），再引导「请到『试卷』页审核编辑，定稿与导出也在该页完成」；不列举导出格式、不把导出/发布摆成选项让教师点单，教师点名定稿/导出按下方拒绝清单回复。例外两类（本停点只拦**同一项目**的后续推进）：① 教师明确要求检查/评审试卷 → 照发 enqueue_paper_review（只读报告不改数据）；② 教师明确要另出一份新卷（「生成一张新试卷」「再出一份」）→ 照发 create_exam_project，新项目按阶梯从头走，不受本项目 review 状态牵连。
 2. 项目 status=generating 且 generation_task_status 为 queued/running（确有生成任务在跑）→ 引导到试卷页看进度，不要重复发起生成。status=generating 但 generation_task_status 为 null（合同刚确认、生成尚未发起）**不是停点**——按阶梯第 5 步照发 start_generation；generation_task_status 为 failed/cancelled → 不要重复发起，引导教师到『试卷』页点「重新生成」。
-3. 蓝图建议已发起、但还没在试卷页「全部应用」 → 教师需先到『试卷』页点「全部应用」再回来，此时禁止 confirm_blueprint，也不重复发起建议。判定依据是**建议是否已应用**（试卷页仍有未应用条目即为未应用），不是教师的比例要求达没达标——达标与否由系统确定性算法保证，不由你判断。
 
 拒绝并按标准话术回复（action 置 null，不要选任何工具）：
 1. 出题、改题、新增题目 → 「题目内容的新增与修改请到『试卷』页操作（选中题目后可用 AI 修改/创建）。」
@@ -588,13 +611,13 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 - 回复用中文，面向教师，简洁自然；查询/提案类回复 1~2 句：先给针对教师所问对象的结论，再引出卡片。
 - 结果卡已结构化呈现数据：回复不要逐条复述卡内容，教师没点名的项目/资料不要罗列；状态以卡片标签为准，回复里不要自行转述另一套状态说法。
 - 你给的 id 必须来自 payload.ids 白名单；不确定教师指哪份资料/项目时，action 置 null 并在回复里追问。
-- 提案卡自带「确认执行/取消」，卡片本身就是教师的确认环节——参数能定下来就**直接发卡**，**不要**先反问「是否现在发起」「要我帮你吗」征求同意（那只会把对话停在没有下一步的口头承诺上）；仅当目标真的指不清（多份资料/项目没点名）才按上一条追问。
+- 参数能定下来就**直接发卡**（不建议、不商量）：出卷主线上的写操作卡片由前端自动执行，只有确认类提案卡才需要教师点「确认执行」——所以更不该先反问「是否现在发起」「要我帮你吗」，那只会把对话停在没有下一步的口头承诺上；仅当目标真的指不清（多份资料/项目没点名）才按上一条追问。
 - 只依据 payload 中的真实数据回答，不臆造资料、项目、状态或数字。
 - 难度要求的处理：比例/难度/去重的**结果**由系统确定性算法保证，你可以把教师的比例要求转成蓝图建议指令或考核规则提案，但不自己做换算、不承诺达标结果；题型的出题格式要求可用 update_question_type_format 提案修改。
 
-只返回严格 JSON 对象：
-{"reply": "给教师的回复文本", "action": {"tool": "list_materials", "args": {}}}
-不需要动作时：{"reply": "...", "action": null}"""
+输出方式：调用 submit_reply 工具提交，参数即下面的对象（reply 必填；不需要动作时省略 action 或置空）。
+{"reply": "给教师的回复文本", "action": {"tool": "course_overview", "args": {"section": "materials"}}}
+不需要动作时：{"reply": "..."}"""
 
 
 def build_intent_prompt(
@@ -621,15 +644,23 @@ def build_intent_prompt(
     if previous_error:
         payload["previous_validation_error"] = previous_error
     # replace 而非 format：系统提示里含 JSON 示例与 args={...}，花括号会被
-    # format 当占位符解析而炸（KeyError）。
-    return _SYSTEM_PROMPT.replace("{course_name}", context["course_name"]), payload
+    # format 当占位符解析而炸（KeyError）。工具清单与参数口径由注册表渲染。
+    system_prompt = (
+        _SYSTEM_PROMPT.replace("{course_name}", context["course_name"])
+        .replace("{read_tools}", render_section("read"))
+        .replace("{rag_tools}", render_section("rag"))
+        .replace("{proposal_tools}", render_section("proposal"))
+    )
+    return system_prompt, payload
 
 
 def _normalize_intent(raw) -> dict:
     """把模型输出收敛为 {reply, action|null}；结构非法抛 AssistantError（上层重试一次）。"""
     if not isinstance(raw, dict):
         raise AssistantError("模型未返回 JSON 对象")
-    reply = str(raw.get("reply") or "").strip()
+    # content 与 reply 同义：模型若漏调工具、退回 content 通道，常按 history 里
+    # 消息的形状用 content 当正文（线上 21:53 实测），此处一并接受。
+    reply = str(raw.get("reply") or raw.get("content") or "").strip()
     action = raw.get("action")
     if action in (None, "", {}) and "tool" in raw:
         # 模型偶发漏掉 {reply, action} 外层包装、直接吐 action 形状
@@ -667,11 +698,13 @@ def parse_intent(
 ) -> dict:
     system_prompt, payload = build_intent_prompt(context, message, previous_error=previous_error)
     # stream=True：意图解析也走 SSE——推理增量在等待期实时回调 on_think
-    # （前端思考块先动起来），正文 JSON 服务端拼装后按既有重试环解析。
+    # （前端思考块先动起来），function calling 的 arguments 增量由网关
+    # 按 index 拼装成与非流式同构的 message 后，交 _normalize_intent 统一收口。
     raw = client.request_json(
         system_prompt=system_prompt,
         payload=payload,
         temperature=0.0,
+        tool=_INTENT_TOOL,
         call_context=call_context,
         on_think=on_think,
         stream=True,
@@ -684,27 +717,32 @@ def parse_intent(
 # ---------------------------------------------------------------------------
 
 
-def _read_course_overview(session: Session, context: dict, *, projects: list[dict]) -> dict:
-    materials = context["materials"]
+# 结果卡的视图标记：一个查询工具按 section 只呈现教师问的那一部分
+_OVERVIEW_SECTIONS = (
+    "overview",
+    "materials",
+    "framework",
+    "blueprint",
+    "contract",
+    "paper",
+    "projects",
+)
+
+
+def _read_course_overview(context: dict, *, projects: list[dict], section: str) -> dict:
+    """课程状态查询的唯一载荷：同一份快照 + 本次要呈现的 section。
+
+    原先是六七个各查一片的工具，现在一次装配全量返回、由 section 决定卡片视图，
+    避免模型在「框架状态/蓝图状态/合同状态…」之间挑错工具。
+    """
     return {
+        "section": section,
         "course_name": context["course_name"],
-        "materials": {
-            "count": len(materials),
-            "parse_status": {
-                status: sum(1 for m in materials if m["parse_status"] == status)
-                for status in sorted({m["parse_status"] for m in materials if m["parse_status"]})
-            },
-        },
+        "materials": context["materials"],
         "framework": context["framework"],
         "catalog": context["catalog"],
         "projects": projects,
     }
-
-
-# 逐项目粒度的只读工具：教师点名项目时按 project_id 过滤（资料/框架是课程级，无此参数）
-_PROJECT_READ_TOOLS = frozenset(
-    {"course_overview", "blueprint_status", "contract_status", "paper_status", "list_exam_projects"}
-)
 
 
 def _target_projects(context: dict, args: dict | None) -> list[dict]:
@@ -804,37 +842,15 @@ def _usage_guide_payload(context: dict) -> dict:
 def execute_read_tool(
     session: Session, *, context: dict, tool: str, args: dict | None = None
 ) -> dict:
-    # 项目定位只对逐项目工具生效；非逐项目工具收到 project_id 时忽略（粒度不变）
-    projects = (
-        _target_projects(context, args) if tool in _PROJECT_READ_TOOLS else context["projects"]
-    )
     if tool == "course_overview":
-        return _read_course_overview(session, context, projects=projects)
-    if tool == "list_materials":
-        return {"materials": context["materials"]}
-    if tool == "framework_status":
-        if context["framework"] is None:
-            raise AssistantError("尚未构建命题框架")
-        return {"framework": context["framework"], "catalog": context["catalog"]}
-    if tool == "blueprint_status":
-        return {"projects": [{"id": p["id"], "name": p["name"], "blueprint": p["blueprint"]} for p in projects]}
-    if tool == "contract_status":
-        return {"projects": [{"id": p["id"], "name": p["name"], "contract": p["contract"]} for p in projects]}
-    if tool == "paper_status":
-        return {"projects": [{"id": p["id"], "name": p["name"], "paper": p["paper"]} for p in projects]}
-    if tool == "list_exam_projects":
-        return {
-            "projects": [
-                {
-                    "id": p["id"],
-                    "name": p["name"],
-                    "status": p["status"],
-                    # 阶段标记 status=generating 不等于任务在跑，卡片展示要以它细分
-                    "generation_task_status": p.get("generation_task_status"),
-                }
-                for p in projects
-            ]
-        }
+        section = str((args or {}).get("section") or "").strip() or "overview"
+        if section not in _OVERVIEW_SECTIONS:
+            raise AssistantError(
+                f"未知 section {section}（可用：{', '.join(_OVERVIEW_SECTIONS)}）"
+            )
+        return _read_course_overview(
+            context, projects=_target_projects(context, args), section=section
+        )
     if tool == "usage_guide":
         # 不触库：能力地图 + 步骤状态全由本轮 snapshot 推导
         return _usage_guide_payload(context)
@@ -1420,14 +1436,27 @@ def execute_rag(
 
 _DEFAULT_READ_REPLIES = {
     "course_overview": "课程当前各阶段状态见下表：",
-    "list_materials": "这是你的资料清单与解析状态：",
-    "framework_status": "命题框架与考核规则状态如下：",
-    "blueprint_status": "各项目蓝图统计如下：",
-    "contract_status": "合同状态如下：",
-    "paper_status": "试卷状态如下：",
-    "list_exam_projects": "试卷项目列表如下：",
     "usage_guide": "这个课程空间能做什么与出卷全流程见下卡，结合你当前进度的建议：",
 }
+# 合并后的查询工具按 section 给开场白（模型没给 reply 时的确定性兜底）
+_SECTION_READ_REPLIES = {
+    "materials": "这是你的资料清单与解析状态：",
+    "framework": "命题框架与考核规则状态如下：",
+    "blueprint": "各项目蓝图统计如下：",
+    "contract": "合同状态如下：",
+    "paper": "试卷状态如下：",
+    "projects": "试卷项目列表如下：",
+}
+
+
+def _read_reply(tool: str, args: dict | None) -> str:
+    if tool == "course_overview":
+        section = str((args or {}).get("section") or "").strip()
+        if section in _SECTION_READ_REPLIES:
+            return _SECTION_READ_REPLIES[section]
+    return _DEFAULT_READ_REPLIES.get(tool, "查询结果见下表：")
+
+
 _DEFAULT_PROPOSAL_REPLIES = {
     "create_course": "已生成新建课程提案，确认后执行：",
     "update_course": "已生成课程信息修改提案，确认后执行：",
@@ -1602,7 +1631,7 @@ def route_intent(intent: dict, *, session: Session, context: dict, message: str 
 
     if tool in READ_TOOLS:
         payload = execute_read_tool(session, context=context, tool=tool, args=args)
-        reply = intent.get("reply") or _DEFAULT_READ_REPLIES.get(tool, "查询结果见下表：")
+        reply = intent.get("reply") or _read_reply(tool, args)
         return {
             "kind": "result",
             "reply": reply,
@@ -1631,11 +1660,22 @@ def route_intent(intent: dict, *, session: Session, context: dict, message: str 
         payload.update(
             _proposal_preview(session, course_id=context["course_id"], tool=tool, payload=payload)
         )
+        # 卡片元数据与「要不要教师确认」同样来自注册表：前端据此决定渲染
+        # 「确认执行」按钮还是自动执行并回报执（前后端不再各维护一份）。
+        meta = proposal_card_meta(tool)
+        payload.update(meta)
         reply = intent.get("reply") or _DEFAULT_PROPOSAL_REPLIES.get(tool, "已生成提案，确认后执行：")
         return {
             "kind": "proposal",
             "reply": reply,
-            "action": {"kind": "proposal", "tool": tool, "args": args, "status": "proposed", "receipt": ""},
+            "action": {
+                "kind": "proposal",
+                "tool": tool,
+                "args": args,
+                # auto = 待自动执行（前端 claim 后转 executing）；proposed = 等教师确认
+                "status": "auto" if meta.get("auto") else "proposed",
+                "receipt": "",
+            },
             "payload": payload,
         }
 
@@ -1862,8 +1902,11 @@ def patch_message_action(
     if row is None:
         raise AssistantError("消息不存在")
     action = dict(row["action"] or {})
-    if action.get("kind") != "proposal" or action.get("status") != "proposed":
-        raise AssistantError("只有处于 proposed 状态的提案卡可以回写")
+    if action.get("kind") != "proposal":
+        raise AssistantError("只有提案卡可以回写状态")
+    current_status = str(action.get("status") or "")
+    if action_status not in _ALLOWED_STATUS_MOVES.get(current_status, set()):
+        raise AssistantError(f"提案卡当前状态 {current_status or '未知'} 不能迁移到 {action_status}")
     action["status"] = action_status
     if receipt:
         action["receipt"] = str(receipt)[:500]

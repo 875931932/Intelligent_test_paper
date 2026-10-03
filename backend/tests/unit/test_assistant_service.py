@@ -66,6 +66,7 @@ class StubClient:
                 "temperature": temperature,
                 "previous_error": payload.get("previous_validation_error"),
                 "stream": kwargs.get("stream", False),
+                "tool": kwargs.get("tool"),
             }
         )
         return self._responses.pop(0)
@@ -246,7 +247,9 @@ def test_turn_thinking_streamed_and_persisted_separate_from_content(session):
 
 
 def test_read_tool_returns_result_card_without_stream(session):
-    client = StubClient([_intent("资料清单见下表：", {"tool": "list_materials", "args": {}})])
+    client = StubClient([
+        _intent("资料清单见下表：", {"tool": "course_overview", "args": {"section": "materials"}})
+    ])
     task_id = _new_turn(session, "t-read")
     sink = MemoryTurnEventSink(task_id)
 
@@ -294,7 +297,13 @@ def test_proposal_card_not_executed(session):
     ).scalar_one()
     assert row["kind"] == "proposal"
     assert row["status"] == "proposed"
-    assert row["payload"] == {"body": {"name": "新课程X"}}
+    # 执行契约 + 注册表下发的卡片元数据（label/impact/auto）：建课程是确认类
+    assert row["payload"] == {
+        "body": {"name": "新课程X"},
+        "label": "新建课程",
+        "impact": "将在课程空间新增一门课程；不影响当前课程的数据。",
+        "auto": False,
+    }
     cards = [e for e in sink.registry[task_id] if e["event"] == "card"]
     assert cards[0]["data"]["kind"] == "proposal"
 
@@ -436,6 +445,42 @@ def test_normalize_intent_rejects_degenerate_output():
     }
 
 
+def test_normalize_intent_accepts_content_alias():
+    """模型漏调工具、退回 content 通道时按 history 形状用 content 当正文（线上 21:53 实测）。"""
+    assert assistant_service._normalize_intent({"content": "好的"}) == {
+        "reply": "好的",
+        "action": None,
+    }
+
+
+def test_intent_sent_through_function_calling_tool(session):
+    """段1 用 function calling 收口：下发 submit_reply 工具，其动作枚举与白名单同源。"""
+    client = StubClient([
+        _intent("这是你的试卷项目列表：", {"tool": "course_overview", "args": {"section": "projects"}})
+    ])
+    task_id = _new_turn(session, "t-tool")
+    run_turn(
+        session,
+        payload={"course_id": "c1", "task_run_id": task_id, "message": "我有哪些试卷项目"},
+        client=client,
+        sink=MemoryTurnEventSink(task_id),
+    )
+
+    call = client.calls[0]
+    assert call["tool"] is assistant_service._INTENT_TOOL
+    assert call["stream"] is True  # 工具通道仍走流式，思考增量照常实时推
+    params = call["tool"]["parameters"]
+    assert params["required"] == ["reply"]
+    enum = params["properties"]["action"]["properties"]["tool"]["enum"]
+    assert set(enum) == (
+        set(assistant_service.READ_TOOLS)
+        | set(assistant_service.PROPOSAL_TOOLS)
+        | {assistant_service.RAG_TOOL}
+    )
+    # 拒绝清单不给出题口：模型不可能"发明"被禁工具名
+    assert not set(assistant_service.REFUSED_TOOLS) & set(enum)
+
+
 def test_normalize_intent_accepts_unwrapped_action():
     """模型漏掉 {reply, action} 外层包装、直接吐 action 形状 → 确定性归一（线上 21:26/21:27 实测）。"""
     assert assistant_service._normalize_intent(
@@ -550,7 +595,10 @@ def test_route_update_question_type_format_as_proposal():
         session=None, context=_ctx(),
     )
     assert routed["kind"] == "proposal"
-    assert routed["action"]["status"] == "proposed"
+    # 出卷主线上的提案自动执行（status=auto）；不需教师点确认
+    assert routed["action"]["status"] == "auto"
+    assert routed["payload"]["auto"] is True
+    assert routed["payload"]["label"] == "修改题型格式"
     assert routed["payload"]["body"]["question_type"] == "fill_blank"
     assert "提案" in routed["reply"]
     assert "update_question_type_format" in assistant_service.PROPOSAL_TOOLS
@@ -917,20 +965,19 @@ def test_enqueue_paper_review_payload_and_guards():
 
 
 def test_prompt_documents_paper_review_tool():
-    """整卷 AI 评审接入助手：工具描述、质量检查落点与 review 停点例外齐备。"""
+    """整卷 AI 评审接入助手：工具说明（注册表渲染）、质量检查落点与停点例外齐备。"""
     system_prompt, _payload = build_intent_prompt(_paper_ctx(), "帮我检查一下试卷")
     assert "enqueue_paper_review" in system_prompt
     # 卡片开场白有专属文案（非通用兜底）
     assert "整卷 AI 评审任务的发起提案" in (
         assistant_service._DEFAULT_PROPOSAL_REPLIES["enqueue_paper_review"]
     )
-    # 落点：「试卷有没有问题/帮我检查」这类问法指向评审工具
-    assert "整卷质量检查" in system_prompt
+    # 落点在注册表里跟着工具走（不再是一段手写的「要求落点」散文）
+    assert "检查试卷" in system_prompt
+    assert "前提：该项目已有试卷" in system_prompt
+    assert "不要重复发起" in system_prompt
     # review/exported 停点放行评审卡（停点只拦出卷主线推进）
     assert "① 教师明确要求检查/评审试卷" in system_prompt
-    # 前提与防重复：以 paper.exists 为判据、报告回试卷页看
-    assert "paper.exists=true" in system_prompt
-    assert "不要重复发起" in system_prompt
 
 
 def test_prompt_documents_paper_pipeline_ladder():
@@ -949,19 +996,20 @@ def test_prompt_documents_paper_pipeline_ladder():
     assert "自动替教师追问" in system_prompt
     assert "要求教师手动输入" in system_prompt
     assert "请教师确认卡片后回复" not in system_prompt
-    # 接力停点：建议未应用不出确认卡（防未调难度就冻结蓝图）、生成中不重复
-    # 发起、主线完成引导审核
-    assert "全部应用" in system_prompt
-    assert "禁止 confirm_blueprint" in system_prompt
+    # 自动化：出卷主线上的提案由前端自动执行，只有确认类卡片等教师点确认
+    assert "其余提案卡片由前端自动执行并回报执" in system_prompt
+    assert "建议由前端自动应用" in system_prompt
+    # 每一步只推进一级：历史走过的步骤不重复发起（防建议环节打转）
+    assert "每一步只推进一级" in system_prompt
+    # 接力停点只剩两个：主线完成引导审核、生成中不重复发起；难度建议由前端
+    # 自动应用，不再有「建议未应用」这个需要教师跳页的停点
+    assert "全部应用" not in system_prompt
     assert "status=generating" in system_prompt
-    # 停点优先级：review/exported 与 generating 是终态判定先命中即停，
-    # 防主线走完后被「难度停点」误拦（曾在 review 阶段误报「建议未应用」）
+    # 停点优先级：先按项目 status 判定、命中即停，防主线走完后被后续停点误拦
     assert "先按项目 status 判定，命中即停、不再往下看" in system_prompt
     assert system_prompt.index("status=review 或 exported") < system_prompt.index(
-        "还没在试卷页「全部应用」"
+        "status=generating 且 generation_task_status"
     )
-    # 停点判定看「建议是否已应用」，不许拿分布反推教师比例要求是否达标
-    assert "建议是否已应用" in system_prompt
     # review 引导给固定话术：不列导出格式、不摆选项让教师点单（曾回「导出
     # 试卷（Word/PDF 等格式）/发布/查看详情」三选一，格式与顺序均属臆造）
     assert "请到『试卷』页审核编辑，定稿与导出也在该页完成" in system_prompt
@@ -979,12 +1027,13 @@ def test_prompt_documents_paper_pipeline_ladder():
     assert "或教师点名要另出一份新卷" in system_prompt
     assert "② 教师明确要另出一份新卷" in system_prompt
     assert "不受本项目 review 状态牵连" in system_prompt
-    # 卡片即确认：禁止「是否现在发起」式口头征求；带要求开新卷不塞第一张卡
+    # 卡片即执行：禁止「是否现在发起」式口头征求；带要求开新卷不塞第一张卡
     assert "先反问「是否现在发起」" in system_prompt
-    assert "卡片本身就是教师的确认环节" in system_prompt
+    assert "出卷主线上的写操作卡片由前端自动执行" in system_prompt
     assert "不要**塞进本卡 args" in system_prompt
-    # 倾向型难度说法（非数字比例）如实进建议指令，不承诺确定性换算
-    assert "「难度偏中等」" in system_prompt
+    # 倾向型难度说法（非数字比例）如实进建议指令，不承诺确定性换算；
+    # 「难度偏中等」这类倾向说法的落点写在注册表的 instruction 参数说明里
+    assert "难度偏中等" in system_prompt
     # 生成阶段双读：status=generating 只是合同确认时置上的阶段标记，真在跑看
     # generation_task_status——曾在合同确认后、生成未发起的窗口被停点2 当成
     # 「任务在跑」拦死，start_generation 永远发不出（前端只见徽章「生成中」而无任务）
@@ -992,11 +1041,12 @@ def test_prompt_documents_paper_pipeline_ladder():
     assert "generation_task_status 为 null" in system_prompt
     assert "**不是停点**" in system_prompt
     assert "generation_task_status 为 queued/running" in system_prompt
-    # 生题题型可控：综合题原型按序可重复=数量（两道代码题=写两次）；
-    # 原型 key 可覆盖任务卡、裸 comprehensive 不收
+    # 生题题型可控：综合题原型按序可重复=数量（两道代码题=写两次）——
+    # 这条口径现在写在注册表的 comprehensive_archetypes 参数说明里
     assert "可重复，重复即数量" in system_prompt
-    assert "**写 N 次**" in system_prompt
-    assert "**不接受裸 comprehensive**" in system_prompt
+    assert "code_completion_scenario 写两次" in system_prompt
+    # 原型 key 可覆盖任务卡、裸 comprehensive 不收
+    assert "不接受裸 comprehensive" in system_prompt
     # 红线不回退：助手不换算不承诺
     assert "比例/难度/去重" in system_prompt
 
@@ -1206,21 +1256,35 @@ def _project_ctx() -> dict:
 def test_read_tool_targets_named_project():
     """教师点名项目：结果卡只含该项目，不再罗列其它项目。"""
     routed = route_intent(
-        _intent("学期2的试卷情况见下表：", {"tool": "paper_status", "args": {"project_id": "p1"}}),
+        _intent(
+            "学期2的试卷情况见下表：",
+            {"tool": "course_overview", "args": {"section": "paper", "project_id": "p1"}},
+        ),
         session=None,
         context=_project_ctx(),
     )
     assert routed["kind"] == "result"
+    assert routed["payload"]["section"] == "paper"  # 结果卡据此选视图
     assert [p["id"] for p in routed["payload"]["projects"]] == ["p1"]
 
 
 def test_read_tool_without_target_lists_all_projects():
     routed = route_intent(
-        _intent("", {"tool": "paper_status", "args": {}}),
+        _intent("", {"tool": "course_overview", "args": {"section": "projects"}}),
         session=None,
         context=_project_ctx(),
     )
     assert [p["id"] for p in routed["payload"]["projects"]] == ["p1", "p2"]
+
+
+def test_read_tool_rejects_unknown_section():
+    """合并后的查询工具按 section 选视图：非法 section 走带反馈重试。"""
+    with pytest.raises(AssistantError, match="未知 section"):
+        route_intent(
+            _intent("", {"tool": "course_overview", "args": {"section": "evil"}}),
+            session=None,
+            context=_project_ctx(),
+        )
 
 
 def test_read_tool_course_overview_targets_project():
@@ -1237,7 +1301,7 @@ def test_read_tool_rejects_foreign_project_id():
     """点名参数与提案同一套 id 白名单：非法 id → AssistantError（上层带反馈重试一次）。"""
     with pytest.raises(AssistantError, match="白名单"):
         route_intent(
-            _intent("", {"tool": "paper_status", "args": {"project_id": "p-evil"}}),
+            _intent("", {"tool": "course_overview", "args": {"project_id": "p-evil"}}),
             session=None,
             context=_project_ctx(),
         )
@@ -2047,7 +2111,7 @@ def test_patch_proposal_transition_is_one_way(session):
     assert view["action"]["receipt"] == "已创建"
 
     # 单向：executed 不能再改，也不能回 proposed
-    with pytest.raises(AssistantError, match="proposed"):
+    with pytest.raises(AssistantError, match="不能迁移到"):
         patch_message_action(session, course_id="c1", message_id=msg_id, action_status="dismissed")
     with pytest.raises(AssistantError, match="非法的提案状态"):
         patch_message_action(session, course_id="c1", message_id=msg_id, action_status="proposed")
@@ -2056,6 +2120,56 @@ def test_patch_proposal_transition_is_one_way(session):
         patch_message_action(
             session, course_id="c2", message_id=msg_id, action_status="executed"
         )
+
+
+def test_auto_proposal_claim_then_finish(session):
+    """自动执行的卡片状态机：auto --claim--> executing --成功--> executed。
+
+    executing 是「已开始、结果未知」的安全停态：中断后不再自动重跑（建项目/建
+    蓝图非幂等，重放会重复建实体），卡上给教师「重试执行」。
+    """
+    task_id = _new_turn(session, "t-auto")
+    assistant_service._insert_message(
+        session,
+        course_id="c1",
+        task_run_id=task_id,
+        role="assistant",
+        content="已生成提案：",
+        action={
+            "kind": "proposal",
+            "tool": "create_exam_project",
+            "args": {},
+            "payload": {"auto": True},
+            "status": "auto",
+        },
+    )
+    session.commit()
+    msg_id = session.execute(
+        select(assistant_messages.c.id).where(assistant_messages.c.task_run_id == task_id)
+    ).scalar_one()
+
+    # claim：必须在调业务 API 之前落库，刷新/双跑才不会重复执行
+    claimed = patch_message_action(
+        session, course_id="c1", message_id=msg_id, action_status="executing"
+    )
+    session.commit()
+    assert claimed["action"]["status"] == "executing"
+    # 认领是独占的：executing → executing 必须被拒（两个标签页同时看到 auto 卡时，
+    # 只有先落库那次能 claim 成功，后到的那次不再执行业务写）
+    with pytest.raises(AssistantError, match="不能迁移到"):
+        patch_message_action(
+            session, course_id="c1", message_id=msg_id, action_status="executing"
+        )
+    # auto 不是合法的目标状态（只能由后端在提案时写入）
+    with pytest.raises(AssistantError, match="非法的提案状态"):
+        patch_message_action(session, course_id="c1", message_id=msg_id, action_status="auto")
+
+    done = patch_message_action(
+        session, course_id="c1", message_id=msg_id, action_status="executed", receipt="已创建"
+    )
+    session.commit()
+    assert done["action"]["status"] == "executed"
+    assert done["action"]["receipt"] == "已创建"
 
 
 # ---------------------------------------------------------------------------

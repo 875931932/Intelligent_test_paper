@@ -1,14 +1,12 @@
 import { useEffect, useRef, useState, type CSSProperties, type FC } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Bot, Check, ChevronDown, ExternalLink, Pencil, Plus, Send, Sparkles, Square, Trash2, X } from 'lucide-react';
-import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
+import { executeProposalAction, RELAY_TOOLS } from '@/lib/assistantProposalExecution';
 import { useAuthStore } from '@/stores/auth';
-import { useCourseStore } from '@/stores/course';
 import { useToastStore } from '@/stores/toast';
 import { useAssistantStore } from '@/stores/assistantStore';
 import { Badge, Button, MarkdownText } from '@/components/ui';
-import { assembleBlueprintRequestBody } from '@/pages/paper/blueprintAssembly';
 import { formatScore } from '@/lib/format';
 import {
   ASSESSMENT_MODE_LABELS,
@@ -26,22 +24,46 @@ import type {
   AssistantActionPayload,
   AssistantMaterialRow,
   AssistantMessage,
+  AssistantOverviewSection,
   AssistantPlanPreview,
-  CourseCreate,
-  CourseUpdate,
-  ExamRules,
 } from '@/types/api';
 
-/** 只读工具 → 卡片标题与跳转（结果卡 = 确定性查询，CTA 指向同源页面） */
-const READ_TOOL_META: Record<string, { label: string; nav: string; cta: string }> = {
-  course_overview: { label: '课程概览', nav: '', cta: '打开概览' },
-  list_materials: { label: '资料清单', nav: 'materials', cta: '打开资料库' },
-  framework_status: { label: '命题框架状态', nav: 'framework', cta: '打开命题框架' },
-  blueprint_status: { label: '蓝图状态', nav: 'paper', cta: '打开试卷页' },
-  contract_status: { label: '合同状态', nav: 'paper', cta: '打开试卷页' },
-  paper_status: { label: '试卷状态', nav: 'paper', cta: '打开试卷页' },
-  list_exam_projects: { label: '试卷项目', nav: 'paper', cta: '打开试卷页' },
+/**
+ * 结果卡视图 → 标题与同源页面跳转（CTA）。六个状态切片已合并进
+ * `course_overview`，用 section 选视图；卡片按 section 取这里的元数据。
+ */
+const SECTION_META: Record<AssistantOverviewSection, { label: string; nav: string; cta: string }> = {
+  overview: { label: '课程概览', nav: '', cta: '打开概览' },
+  materials: { label: '资料清单', nav: 'materials', cta: '打开资料库' },
+  framework: { label: '命题框架状态', nav: 'framework', cta: '打开命题框架' },
+  blueprint: { label: '蓝图状态', nav: 'paper', cta: '打开试卷页' },
+  contract: { label: '合同状态', nav: 'paper', cta: '打开试卷页' },
+  paper: { label: '试卷状态', nav: 'paper', cta: '打开试卷页' },
+  projects: { label: '试卷项目', nav: 'paper', cta: '打开试卷页' },
 };
+
+/** 使用引导卡（无 section 概念，单独一份元数据） */
+const GUIDE_META = { label: '使用引导', nav: '', cta: '打开概览' };
+
+/**
+ * 历史卡片兜底：合并前的旧只读工具名 → 现在的 section。
+ * 改造前落库的消息 action.tool 仍是旧名，刷新后要照样能渲染。
+ */
+const LEGACY_TOOL_SECTIONS: Record<string, AssistantOverviewSection> = {
+  list_materials: 'materials',
+  framework_status: 'framework',
+  blueprint_status: 'blueprint',
+  contract_status: 'contract',
+  paper_status: 'paper',
+  list_exam_projects: 'projects',
+};
+
+/** 结果卡这次要呈现哪一部分：新卡片读 payload.section，历史卡片按 tool 名兜底 */
+function readSection(message: AssistantMessage): AssistantOverviewSection {
+  const section = message.action.payload?.section;
+  if (section) return section;
+  return LEGACY_TOOL_SECTIONS[message.action.tool ?? ''] ?? 'overview';
+}
 
 /** 提案工具 → 操作名与影响说明（确认执行 = 调既有业务 API，无第二套写路径） */
 const PROPOSAL_META: Record<string, { label: string; impact: string }> = {
@@ -101,23 +123,6 @@ const SUGGESTIONS = [
   '总结教学大纲讲了什么？',
   '有哪些试卷项目？',
 ];
-
-/**
- * 确认成功后自动接力追问的工具：出卷主线逐级推进（一次确认 → 自动出下一张
- * 确认卡）。课程级一次性操作（新建课程/改课程/发解析）不接力，避免空追问。
- * 是否再出卡由后端按快照判断——需教师线下操作或流程到终点时它只回文字，
- * 接力自然停止；教师点「取消」不接力。
- */
-const RELAY_TOOLS = new Set([
-  'create_exam_project',
-  'update_exam_rules',
-  'create_blueprint',
-  'confirm_blueprint',
-  'enqueue_blueprint_suggest',
-  'confirm_contract',
-  'start_generation',
-  'update_question_type_format',
-]);
 
 /** 综合题原型词表（与后端 ARCHETYPE_CONTRACTS 同键；裸英文不进卡片） */
 const ARCHETYPE_LABELS: Record<string, string> = {
@@ -187,16 +192,16 @@ function GridTable({ header, rows }: { header: string[]; rows: string[][] }) {
   );
 }
 
-/** 结果卡正文：按 tool 渲染确定性查询结果（不依赖模型文本，数据即真相） */
+/** 结果卡正文：按 section 渲染确定性查询结果（不依赖模型文本，数据即真相） */
 function ResultBody({
-  tool,
+  section,
   payload,
 }: {
-  tool: string;
+  section: AssistantOverviewSection;
   payload: AssistantActionPayload;
 }) {
-  switch (tool) {
-    case 'list_materials': {
+  switch (section) {
+    case 'materials': {
       const rows: AssistantMaterialRow[] = Array.isArray(payload.materials)
         ? payload.materials
         : [];
@@ -212,10 +217,17 @@ function ResultBody({
         />
       );
     }
-    case 'course_overview': {
+    case 'overview': {
       const mat = payload.materials;
+      // 新卡片恒为资料行数组，历史卡片可能是 {count, parse_status} 摘要
       const count = Array.isArray(mat) ? mat.length : (mat?.count ?? 0);
-      const dist = Array.isArray(mat) || !mat ? {} : mat.parse_status;
+      const dist = Array.isArray(mat)
+        ? mat.reduce<Record<string, number>>((acc, m) => {
+            const key = m.parse_status;
+            if (key) acc[key] = (acc[key] ?? 0) + 1;
+            return acc;
+          }, {})
+        : (mat?.parse_status ?? {});
       const distText =
         Object.entries(dist)
           .map(([st, n]) => `${PARSE_STATUS_LABELS[st] ?? st} ${n}`)
@@ -242,7 +254,7 @@ function ResultBody({
         </>
       );
     }
-    case 'framework_status': {
+    case 'framework': {
       const fw = payload.framework;
       if (!fw) return <p style={muted}>尚未构建命题框架，先到命题框架页构建。</p>;
       const rules = fw.exam_rules;
@@ -267,7 +279,7 @@ function ResultBody({
         </>
       );
     }
-    case 'blueprint_status': {
+    case 'blueprint': {
       const projects = payload.projects ?? [];
       return (
         <GridTable
@@ -288,7 +300,7 @@ function ResultBody({
         />
       );
     }
-    case 'contract_status': {
+    case 'contract': {
       const projects = payload.projects ?? [];
       return (
         <GridTable
@@ -305,7 +317,7 @@ function ResultBody({
         />
       );
     }
-    case 'paper_status': {
+    case 'paper': {
       const projects = payload.projects ?? [];
       return (
         <GridTable
@@ -320,7 +332,7 @@ function ResultBody({
         />
       );
     }
-    case 'list_exam_projects': {
+    case 'projects': {
       const projects = payload.projects ?? [];
       if (projects.length === 0) return <p style={muted}>暂无试卷项目，到试卷页新建。</p>;
       return (
@@ -368,7 +380,9 @@ function ResultCard({
   navigate: (to: string) => void;
 }) {
   const tool = message.action.tool ?? '';
-  const meta = READ_TOOL_META[tool];
+  const isGuide = tool === 'usage_guide';
+  const section = readSection(message);
+  const meta = isGuide ? GUIDE_META : SECTION_META[section];
   const payload = message.action.payload ?? {};
   // 点名查询的卡片只含一个项目 → CTA 深链到该项目（试卷页支持 ?project= 定位）
   const singleProjectId =
@@ -389,7 +403,7 @@ function ResultCard({
           {message.content}
         </span>
       </div>
-      <ResultBody tool={tool} payload={payload} />
+      <ResultBody section={section} payload={payload} />
       {meta && (
         <div>
           <Button size="sm" variant="secondary" onClick={go} icon={<ExternalLink size={13} />}>
@@ -911,37 +925,52 @@ function SpecTable({ tool, payload }: { tool: string; payload: AssistantActionPa
 
 
 /**
- * 提案卡：操作名 + 参数预览 + 影响说明 + 确认/取消。
- * 确认后由页面调既有业务 API 执行，成功才回写状态（proposed → executed 单向）；
- * 执行失败卡片保持 proposed，可重试或取消。
+ * 提案卡：操作名 + 参数预览 + 影响说明 + 状态区。
+ *
+ * 「要不要教师点确认」由后端注册表决定（随 payload 下发 auto）：出卷主线上的
+ * 中间产物 auto=true，卡片不带按钮、由助手自动执行并回报执；只有里程碑
+ * （确认蓝图/确认合同）与课程级写操作是 proposed，需要教师点「确认执行」。
+ *
+ * executing = 已开始、结果未知：中断的卡片停在这里（非幂等写绝不自动重放），
+ * 给教师「重试执行」入口。
  */
 function ProposalCard({
   message,
   busy,
+  progress,
   onConfirm,
   onDismiss,
+  onRetry,
 }: {
   message: AssistantMessage;
   busy: boolean;
+  /** 自动执行中的本地进度文案（长步骤；落库的 receipt 只在结束时才有） */
+  progress?: string;
   onConfirm: (m: AssistantMessage) => void;
   onDismiss: (m: AssistantMessage) => void;
+  onRetry: (m: AssistantMessage) => void;
 }) {
   const tool = message.action.tool ?? '';
-  const meta = PROPOSAL_META[tool];
+  const payload = message.action.payload ?? {};
+  // label/impact 优先用后端注册表下发的（历史卡片没有 → 退回本地表）
+  const meta = payload.label
+    ? { label: payload.label, impact: payload.impact ?? '' }
+    : PROPOSAL_META[tool];
   const status = message.action.status ?? 'proposed';
-  const rows = proposalParamRows(tool, message.action.payload ?? {});
+  const auto = payload.auto === true;
+  const rows = proposalParamRows(tool, payload);
   return (
     <div style={{ ...cardBox, border: '1px dashed var(--accent-soft)', background: 'var(--accent-subtle)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <Badge variant="purple">提案</Badge>
+        <Badge variant="purple">{auto ? '自动执行' : '提案'}</Badge>
         <strong style={{ fontSize: '0.85rem' }}>{meta?.label ?? tool}</strong>
         <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
           {message.content}
         </span>
       </div>
       <KVTable rows={rows} />
-      <SpecTable tool={tool} payload={message.action.payload ?? {}} />
-      <ProposalPreview tool={tool} preview={message.action.payload?.preview} />
+      <SpecTable tool={tool} payload={payload} />
+      <ProposalPreview tool={tool} preview={payload.preview} />
       <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: '2px 0' }}>
         {meta?.impact ?? '确认后调用既有业务接口执行。'}
       </p>
@@ -963,6 +992,27 @@ function ProposalCard({
             icon={<X size={13} />}
           >
             取消
+          </Button>
+        </div>
+      ) : status === 'auto' ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <Badge variant="info">正在自动执行…</Badge>
+        </div>
+      ) : status === 'executing' ? (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <Badge variant={progress ? 'info' : 'default'}>
+            {progress ? '正在自动执行…' : '执行中（中断可重试）'}
+          </Badge>
+          {(progress || message.action.receipt) && (
+            <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+              {progress || message.action.receipt}
+            </span>
+          )}
+          <Button size="sm" variant="secondary" disabled={busy} onClick={() => onRetry(message)}>
+            重试执行
+          </Button>
+          <Button size="sm" variant="secondary" disabled={busy} onClick={() => onDismiss(message)}>
+            放弃
           </Button>
         </div>
       ) : (
@@ -1315,6 +1365,8 @@ const AssistantPage: FC = () => {
   const cancelTurn = useAssistantStore((s) => s.cancelTurn);
   const createSession = useAssistantStore((s) => s.createSession);
   const patchProposal = useAssistantStore((s) => s.patchProposal);
+  const retryProposal = useAssistantStore((s) => s.retryProposal);
+  const autoProgress = useAssistantStore((s) => s.autoProgress);
 
   const [input, setInput] = useState('');
   const [busyMessageId, setBusyMessageId] = useState<string | null>(null);
@@ -1380,144 +1432,25 @@ const AssistantPage: FC = () => {
 
   /** 确认提案：助手的写能力上限 = 既有 API 能力，成功后才回写卡片状态 */
   const handleConfirm = async (m: AssistantMessage) => {
-    const payload = m.action.payload ?? {};
-    const body = payload.body ?? {};
     setBusyMessageId(m.id);
     try {
-      let receipt = '';
-      switch (m.action.tool) {
-        case 'create_course': {
-          // body 经后端白名单硬校验（name 必填），运行时形状由 build_proposal_payload 保证
-          const created = await api.courses.create(body as unknown as CourseCreate, token ?? undefined);
-          useCourseStore.getState().addCourse(created);
-          receipt = `已创建课程「${created.name}」`;
-          break;
-        }
-        case 'update_course': {
-          const updated = await api.courses.update(
-            payload.course_id ?? courseId,
-            body as CourseUpdate,
-            token ?? undefined,
-          );
-          // course store 无单条更新动作，就地替换避免侧栏课程名显示陈旧值
-          useCourseStore.setState((s) => ({
-            courses: s.courses.map((c) => (c.id === updated.id ? updated : c)),
-          }));
-          receipt = `已更新课程「${updated.name}」`;
-          break;
-        }
-        case 'start_parse': {
-          if (!payload.material_id) throw new Error('提案缺少资料 id');
-          await api.materials.parse(courseId, payload.material_id, token ?? undefined);
-          receipt = '已发起解析，进度见资料库';
-          break;
-        }
-        case 'create_exam_project': {
-          if (typeof body.name !== 'string' || !body.name.trim()) throw new Error('提案缺少项目名称');
-          const created = await api.examProjects.create(
-            courseId,
-            { name: body.name.trim() },
-            token ?? undefined,
-          );
-          receipt = `已创建试卷项目「${created.name}」`;
-          break;
-        }
-        case 'update_exam_rules': {
-          // body 由后端按现值合并成完整规则（整份替换语义，未涉及字段不丢）
-          await api.framework.updateExamRules(courseId, body as unknown as ExamRules, token ?? undefined);
-          receipt = '考核规则已更新（蓝图创建时按新规则确定性生成）';
-          break;
-        }
-        case 'create_blueprint': {
-          if (!payload.project_id) throw new Error('提案缺少项目 id');
-          // 与试卷页同一条组装路径（共享 blueprintAssembly），不开第二套写路径
-          const assembly = await assembleBlueprintRequestBody(courseId);
-          if (!assembly.ok) throw new Error('请先发布知识目录');
-          const pool = Array.isArray(body.comprehensive_archetypes)
-            ? body.comprehensive_archetypes
-            : [];
-          await api.examProjects.createBlueprint(
-            courseId,
-            payload.project_id,
-            pool.length > 0
-              ? { ...assembly.body, comprehensive_archetypes: pool }
-              : assembly.body,
-            token ?? undefined,
-          );
-          receipt = `已为「${payload.project_name || payload.project_id}」创建草稿蓝图，确认题位后可确认蓝图`;
-          break;
-        }
-        case 'confirm_blueprint': {
-          if (!payload.project_id) throw new Error('提案缺少项目 id');
-          await api.examProjects.confirmBlueprint(courseId, payload.project_id, {}, token ?? undefined);
-          receipt = '蓝图已确认冻结，可进入合同分配';
-          break;
-        }
-        case 'enqueue_blueprint_suggest': {
-          if (!payload.project_id) throw new Error('提案缺少项目 id');
-          await api.examProjects.suggestBlueprintAdjustments(
-            courseId,
-            payload.project_id,
-            typeof body.instruction === 'string' ? body.instruction : '',
-            token ?? undefined,
-          );
-          receipt = '已发起蓝图 AI 建议任务，进度见试卷页';
-          break;
-        }
-        case 'confirm_contract': {
-          if (!payload.project_id) throw new Error('提案缺少项目 id');
-          await api.examProjects.confirmContract(courseId, payload.project_id, {}, token ?? undefined);
-          receipt = '合同已确认落库（分配由既有确定性算法执行）';
-          break;
-        }
-        case 'start_generation': {
-          if (!payload.project_id) throw new Error('提案缺少项目 id');
-          await api.examProjects.startGeneration(courseId, payload.project_id, undefined, token ?? undefined);
-          receipt = '已发起 AI 生成任务，进度见试卷页';
-          break;
-        }
-        case 'enqueue_paper_review': {
-          if (!payload.paper_version_id) throw new Error('提案缺少试卷版本 id');
-          await api.paperVersions.aiReview(
-            courseId,
-            payload.paper_version_id,
-            typeof body.instruction === 'string' ? body.instruction : '',
-            token ?? undefined,
-          );
-          receipt = '已发起整卷 AI 评审任务，完成后在试卷页查看报告';
-          break;
-        }
-        case 'update_question_type_format': {
-          if (typeof body.question_type !== 'string') throw new Error('提案缺少题型');
-          await api.framework.setQuestionTypeFormat(
-            courseId,
-            {
-              question_type: body.question_type,
-              template: typeof body.template === 'string' ? body.template : '',
-            },
-            token ?? undefined,
-          );
-          const qtLabel = qlabel(body.question_type);
-          receipt = body.template
-            ? `已更新「${qtLabel}」出题格式（之后生成生效）`
-            : `已恢复「${qtLabel}」系统默认出题格式`;
-          break;
-        }
-        default:
-          throw new Error(`不支持的提案操作：${m.action.tool ?? '未知'}`);
-      }
+      // 执行契约在 lib/assistantProposalExecution 里（自动执行队列同一份实现）
+      const { receipt, relay } = await executeProposalAction(m, {
+        courseId,
+        token: token ?? undefined,
+      });
       await patchProposal(m.id, 'executed', receipt);
       addToast(receipt, 'success');
       // 逐级接力：确认成功即自动追问，让下一张提案卡自动弹出成为教师的下一个
       // 确认框；send 有 sending 并发守卫，中途教师点「取消」则链在此断开
-      if (RELAY_TOOLS.has(m.action.tool ?? '')) {
+      if (relay && RELAY_TOOLS.has(m.action.tool ?? '')) {
         // send 失败会回滚乐观气泡并 rethrow：提示教师手动补「继续」
         void send('继续').catch(() =>
           addToast('自动追问失败，请手动输入「继续」', 'error'),
         );
       }
     } catch (err) {
-      // 执行失败：卡片保持 proposed（回写只在成功后发生），教师可重试或取消
+      // 执行失败：卡片保持原状态（回写只在成功后发生），教师可重试或取消
       addToast('执行失败: ' + getErrorMessage(err), 'error');
     } finally {
       setBusyMessageId(null);
@@ -1682,8 +1615,10 @@ const AssistantPage: FC = () => {
                   <ProposalCard
                     message={m}
                     busy={busyMessageId === m.id}
+                    progress={autoProgress[m.id]}
                     onConfirm={(msg) => void handleConfirm(msg)}
                     onDismiss={(msg) => void handleDismiss(msg)}
+                    onRetry={(msg) => retryProposal(msg.id)}
                   />
                 ) : m.action.kind === 'sources' ? (
                   <>

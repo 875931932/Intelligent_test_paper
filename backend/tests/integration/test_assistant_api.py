@@ -33,10 +33,13 @@ PATH = "/api/v1/courses/{cid}/assistant"
 
 
 class StubClient:
-    """LLMJsonClient 同接口桩：意图固定为 list_materials 查询 + 流式固定文本。"""
+    """LLMJsonClient 同接口桩：意图固定为 course_overview 查询 + 流式固定文本。"""
 
     def __init__(self, intent=None):
-        self.intent = intent or {"reply": "资料清单见下表：", "action": {"tool": "list_materials", "args": {}}}
+        self.intent = intent or {
+            "reply": "资料清单见下表：",
+            "action": {"tool": "course_overview", "args": {"section": "materials"}},
+        }
         self.calls: list[dict] = []
         self.stream_calls: list[dict] = []
 

@@ -296,6 +296,118 @@ def test_request_json_stream_retry_may_repush_thinking(monkeypatch):
     assert thinks == ["第一遍思考", "第一遍思考"]
 
 
+def test_request_json_stream_assembles_tool_call_arguments():
+    """stream=True + tool：arguments 被拆成多个 delta 下发（name 只在首段），
+    网关按 index 拼回 message.tool_calls，交 _extract_tool_arguments 统一解析。"""
+    tool = {"name": "submit_reply", "parameters": {"type": "object", "properties": {}}}
+    lines = [
+        'data: ' + json.dumps({"choices": [{"delta": {"reasoning_content": "先想"}}]}),
+        'data: ' + json.dumps({"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "call_a", "type": "function",
+             "function": {"name": "submit_reply", "arguments": '{"reply": '}}
+        ]}}]}),
+        'data: ' + json.dumps({"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "", "type": "", "function": {"name": "", "arguments": '"好的"'}}
+        ]}}]}),
+        'data: ' + json.dumps({"choices": [{"delta": {"tool_calls": [
+            {"index": 0, "id": "", "type": "", "function": {"name": "", "arguments": '}'}}
+        ]}}]}),
+        "data: [DONE]",
+    ]
+    http = _FakeHttpClient(lines=lines)
+    client = _client(http)
+    thinks: list[str] = []
+
+    result = client.request_json(
+        system_prompt="sys",
+        payload={"q": "hi"},
+        temperature=0.0,
+        call_context=_ctx(),
+        tool=tool,
+        on_think=thinks.append,
+        stream=True,
+    )
+
+    assert result == {"reply": "好的"}
+    assert thinks == ["先想"]  # 工具通道下思考增量仍实时回调
+    body = http.stream_bodies[0]
+    assert body["tools"] == [{"type": "function", "function": tool}]
+    # 工具通道不走 json_object：function calling 与 response_format 互斥
+    assert "response_format" not in body
+    # StepFun 档案不发 tool_choice（既有一致行为）
+    assert "tool_choice" not in body
+
+
+class _FakeCacheRecorder:
+    """lookup_response / record 的最小替身，用于锁定"哪些调用可缓存"。"""
+
+    def __init__(self, cached: dict | None = None) -> None:
+        self.cached = cached
+        self.lookups: list[str] = []
+        self.records: list[dict] = []
+
+    def lookup_response(self, *, model: str, prompt_hash: str) -> dict | None:
+        self.lookups.append(prompt_hash)
+        return self.cached
+
+    def record(self, **values) -> None:
+        self.records.append(values)
+
+
+def test_temperature_zero_without_validator_is_never_cached():
+    """无 response_validator 的 temperature=0 调用不查也不写缓存。
+
+    根因：助手意图解析曾是唯一不带 validator 的 temp=0 调用，退化 JSON（`{}`）
+    被记成成功落库后，同 prompt 重试被逐字回放，一次模型抖动放大成永久失败。
+    """
+    body = _completion_body({"content": "{}"})
+    http = _FakeHttpClient(response=_FakeResponse(body))
+    recorder = _FakeCacheRecorder(cached={"reply": "缓存的旧回答"})
+    client = LLMJsonClient(
+        api_key="sk-test",
+        base_url="https://api.stepfun.com/v1",
+        model="step-3.7-flash",
+        client=http,
+        recorder=recorder,
+    )
+
+    result = client.request_json(
+        system_prompt="sys",
+        payload={"q": "hi"},
+        temperature=0.0,
+        call_context=_ctx(),
+    )
+
+    assert result == {}  # 真实响应，不取缓存
+    assert recorder.lookups == []  # 压根不查
+    assert len(http.post_calls) == 1  # 真实打了模型
+
+
+def test_temperature_zero_with_validator_still_reuses_cache():
+    """带 validator 的 temp=0 调用照旧复用历史成功响应（知识构建类零 token 重建）。"""
+    http = _FakeHttpClient(response=_FakeResponse(_completion_body({"content": '{"ok": true}'})))
+    recorder = _FakeCacheRecorder(cached={"ok": True})
+    client = LLMJsonClient(
+        api_key="sk-test",
+        base_url="https://api.stepfun.com/v1",
+        model="step-3.7-flash",
+        client=http,
+        recorder=recorder,
+    )
+
+    result = client.request_json(
+        system_prompt="sys",
+        payload={"q": "hi"},
+        temperature=0.0,
+        call_context=_ctx(),
+        response_validator=lambda _r: None,
+    )
+
+    assert result == {"ok": True}
+    assert len(recorder.lookups) == 1
+    assert http.post_calls == []  # 命中缓存，未打模型
+
+
 def test_stream_text_body_keeps_stream_without_response_format():
     """stream_text（自由文本打字机）：只下发 stream，不带 response_format
     ——_build_body 解耦后不得把 json_object 锁到正文流式上。"""

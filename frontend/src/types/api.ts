@@ -769,19 +769,30 @@ export type AssistantRole = 'user' | 'assistant';
  * stopped = 教师停止生成（v3，正文是中断前已流出的部分内容）
  */
 export type AssistantStreamStatus = 'complete' | 'failed' | 'stopped';
-/** 提案卡单向迁移：proposed → executed | dismissed（后端 _PROPOSAL_TRANSITIONS 同集合） */
-export type AssistantProposalStatus = 'executed' | 'dismissed';
+/**
+ * 提案卡状态机（与后端 _ALLOWED_STATUS_MOVES 同集合）：
+ * proposed（待教师确认）→ executed | dismissed；
+ * auto（待自动执行）→ executing → executed | dismissed。
+ * executing = 已开始、结果未知的安全停态：中断后不再自动重跑（建项目/建蓝图
+ * 非幂等，重放会重复建实体），由卡片上的「重试执行」交给教师决定。
+ */
+export type AssistantProposalStatus = 'executed' | 'dismissed' | 'executing';
+/** 提案卡初始状态（后端下发）：auto = 待自动执行，proposed = 等教师确认 */
+export type AssistantProposalInitialStatus = 'auto' | 'proposed';
 
-/** 只读工具（确定性查询 → 结果卡；与后端 execute_read_tool 同集合） */
-export type AssistantReadTool =
-  | 'course_overview'
-  | 'list_materials'
-  | 'framework_status'
-  | 'blueprint_status'
-  | 'contract_status'
-  | 'paper_status'
-  | 'list_exam_projects'
-  | 'usage_guide';
+/** 只读工具（确定性查询 → 结果卡；与后端 execute_read_tool 同集合）。
+ * 六个状态切片已合并进 course_overview，用 section 选视图。 */
+export type AssistantReadTool = 'course_overview' | 'usage_guide';
+
+/** 结果卡视图（course_overview.section；历史卡片按旧工具名兜底映射到这里） */
+export type AssistantOverviewSection =
+  | 'overview'
+  | 'materials'
+  | 'framework'
+  | 'blueprint'
+  | 'contract'
+  | 'paper'
+  | 'projects';
 
 /** 提案工具（组装提案卡 → 教师确认后由前端调既有业务 API；与后端白名单同集合） */
 export type AssistantProposalTool =
@@ -873,8 +884,16 @@ export interface AssistantActionPayload {
   preview?: AssistantPlanPreview;
   /** create_blueprint：生成依据（考核规则现值）——卡片展示「蓝图将按什么生成」 */
   basis?: AssistantRulesBasis;
+  // 提案卡展示元数据（后端注册表 assistant_tools 下发，前后端不再各维护一份；
+  // 改造前落库的历史卡片没有，前端按 tool 名兜底）
+  label?: string;
+  impact?: string;
+  /** true = 助手自动执行并回报执（前端不渲染「确认执行」按钮） */
+  auto?: boolean;
   // 结果卡
   course_name?: string;
+  /** course_overview：结果卡视图（历史卡片缺省按 tool 名映射） */
+  section?: AssistantOverviewSection;
   materials?: AssistantMaterialRow[] | { count: number; parse_status: Record<string, number> };
   framework?: AssistantFrameworkSummary | null;
   catalog?: { version_no: number; status: string } | null;
@@ -948,7 +967,7 @@ export interface AssistantAction {
   kind?: 'result' | 'proposal' | 'sources';
   tool?: string;
   args?: Record<string, unknown>;
-  /** result|sources=completed；proposal=proposed|executed|dismissed */
+  /** result|sources=completed；proposal=auto|proposed|executing|executed|dismissed */
   status?: string;
   receipt?: string;
   payload?: AssistantActionPayload;

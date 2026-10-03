@@ -208,7 +208,11 @@ class LLMJsonClient:
         # temperature=0 的确定性调用（知识目录分类/归并/提取等）可安全复用
         # 历史成功响应：同 (model, prompt) 的重建（如资料未变的重复构建）不再
         # 触发真实模型调用，模型消耗趋近于零。出题类 temperature>0 调用不缓存。
-        if temperature <= 0 and self.recorder is not None:
+        # ⚠️ 必须带 response_validator 才缓存：validator 是"回放安全"的唯一保证。
+        # 无 validator 的调用（如助手意图解析）会把 `{}` 这类退化 JSON 也记成
+        # 成功并落库，同 prompt 重试时被逐字回放——一次模型抖动被放大成永久
+        # 失败（线上 20:37 落库 `{}`，21:24 同 prompt 命中缓存原样回放）。
+        if temperature <= 0 and response_validator is not None and self.recorder is not None:
             lookup = getattr(self.recorder, "lookup_response", None)
             if lookup is not None:
                 try:
@@ -259,8 +263,9 @@ class LLMJsonClient:
 
         # 流式 JSON（意图解析等）：推理增量在 SSE 里实时回调 on_think，正文
         # JSON 增量只在服务端拼装、不对外回调；解析/校验/重试语义与非流式
-        # 一致。tool 调用没有流式 tool_calls 解析，带 tool 时回落非流式。
-        use_stream = stream and tool is None
+        # 一致。带 tool（function calling）时同样支持流式：tool_calls 的
+        # arguments 增量在服务端按 index 拼装成与非流式同构的 message。
+        use_stream = stream
 
         for attempt in range(1, effective_max_attempts + 1):
             attempt_count = attempt
@@ -281,6 +286,7 @@ class LLMJsonClient:
                         system_prompt,
                         canonical_prompt,
                         temperature,
+                        tool=tool,
                         max_tokens=max_tokens,
                         reasoning_effort=reasoning_effort,
                         response_schema=response_schema,
@@ -614,6 +620,7 @@ class LLMJsonClient:
         canonical_prompt: str,
         temperature: float,
         *,
+        tool: dict[str, Any] | None = None,
         max_tokens: int | None = None,
         reasoning_effort: str | None = None,
         response_schema: dict[str, Any] | None = None,
@@ -630,6 +637,11 @@ class LLMJsonClient:
         HTTP/传输异常原样上抛由外层重试环接管（重试会重发流式请求，思考
         可能重复推送——罕见路径，可接受）；错误响应体先 read 再
         raise_for_status，保住 HTTPStatusError 的 body_tag 白名单匹配。
+
+        带 ``tool``（function calling）时，provider 把 arguments 拆成多个
+        delta 逐段下发（name 只在首段），这里按 index 拼回完整的
+        ``message.tool_calls``，使 ``_extract_tool_arguments`` 与非流式路径
+        共用同一解析口径。
         """
         json_body = self._build_body(
             system_prompt,
@@ -637,6 +649,7 @@ class LLMJsonClient:
             temperature,
             stream=True,
             json_mode=True,
+            tool=tool,
             max_tokens=max_tokens,
             reasoning_effort=reasoning_effort,
             response_schema=response_schema,
@@ -650,6 +663,8 @@ class LLMJsonClient:
             "timeout": httpx.Timeout(self.timeout, connect=15.0),
         }
         parts: list[str] = []
+        # tool_calls 增量拼装槽：key=index，value={name, arguments}
+        tool_slots: dict[int, dict[str, str]] = {}
         usage: dict[str, Any] = {}
         request_id: str | None = None
         status_code = 200
@@ -703,18 +718,63 @@ class LLMJsonClient:
                     text = delta.get("content")
                     if isinstance(text, str) and text:
                         parts.append(text)
+                    self._accumulate_tool_call_delta(delta, tool_slots)
         content = "".join(parts)
+        message: dict[str, Any] = {"content": content}
+        if tool_slots:
+            # 拼回非流式 message 形状（id/type 流式下可能只在首段给出，
+            # 这里按 index 确定性补齐），交 _extract_tool_arguments 统一解析。
+            message["tool_calls"] = [
+                {
+                    "id": f"call_{index}",
+                    "type": "function",
+                    "function": {"name": slot["name"], "arguments": slot["arguments"]},
+                }
+                for index, slot in sorted(tool_slots.items())
+            ]
         body: dict[str, Any] = {
             "id": request_id,
-            "choices": [{"message": {"content": content}}],
+            "choices": [{"message": message}],
             "usage": usage,
         }
         meta = {
             "request_id": request_id,
             "status_code": status_code if isinstance(status_code, int) else 200,
-            "raw_snapshot": content[:2000],
+            # tool 模式下 content 为空，原始快照取拼装后的 arguments（排查用）
+            "raw_snapshot": (
+                content
+                or "".join(slot["arguments"] for _i, slot in sorted(tool_slots.items()))
+            )[:2000],
         }
         return body, meta
+
+    @staticmethod
+    def _accumulate_tool_call_delta(
+        delta: dict[str, Any], slots: dict[int, dict[str, str]]
+    ) -> None:
+        """把 SSE 里的 tool_calls 增量按 index 累积（name 取首个非空段，
+        arguments 逐段拼接）。provider 会把 ``function.arguments`` 拆成多个
+        delta 下发，且后续段的 id/type/name 常为空串，故只认非空值。
+        """
+        tool_calls = delta.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            return
+        for item in tool_calls:
+            if not isinstance(item, dict):
+                continue
+            index = item.get("index")
+            if not isinstance(index, int):
+                index = 0
+            slot = slots.setdefault(index, {"name": "", "arguments": ""})
+            function = item.get("function")
+            if not isinstance(function, dict):
+                continue
+            name = function.get("name")
+            if isinstance(name, str) and name:
+                slot["name"] = name
+            arguments = function.get("arguments")
+            if isinstance(arguments, str) and arguments:
+                slot["arguments"] += arguments
 
     def stream_text(
         self,
