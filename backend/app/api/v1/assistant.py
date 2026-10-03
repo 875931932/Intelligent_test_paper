@@ -59,6 +59,15 @@ class AssistantSessionRename(BaseModel):
     title: str
 
 
+class AssistantGenerationReportRequest(BaseModel):
+    """生成结束通报：由后端落一条助手消息（不产生用户消息）。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    session_id: str
+    project_id: str
+
+
 # ---------------------------------------------------------------------------
 # 会话管理（v3 多会话：新建 / 重命名 / 删除；切换由前端带 session_id 完成）
 # ---------------------------------------------------------------------------
@@ -131,6 +140,32 @@ def delete_session(
             raise HTTPException(status_code=409, detail=msg)
         raise HTTPException(status_code=422, detail=msg)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/generation-reports", response_model=dict)
+def report_generation(
+    course_id: str,
+    body: AssistantGenerationReportRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    """生成结束通报（零 LLM）：由后端往会话里落一条助手消息。
+
+    出卷要跑几分钟，教师全程只是在等待；轮询到生成终态后调这里补上收尾通报，
+    聊天里**不会**出现教师没发过的「继续」气泡。幂等：同一项目同一会话只播报一次。
+    """
+    try:
+        result = assistant_service.report_generation_complete(
+            session,
+            course_id=course_id,
+            session_id=body.session_id,
+            project_id=body.project_id,
+        )
+        session.commit()
+    except assistant_service.AssistantError as exc:
+        session.rollback()
+        msg = str(exc)
+        raise HTTPException(status_code=404 if "不存在" in msg else 422, detail=msg)
+    return result
 
 
 # ---------------------------------------------------------------------------

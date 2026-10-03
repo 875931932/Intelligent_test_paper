@@ -1924,6 +1924,143 @@ def patch_message_action(
     return message_view(refreshed)
 
 
+_GENERATION_REPORT_TASK_TYPE = "assistant_notice"
+
+
+def report_generation_complete(
+    session: Session,
+    *,
+    course_id: str,
+    session_id: str,
+    project_id: str,
+) -> dict:
+    """生成结束后由**后端主动**播报一条助手消息（不写用户消息）。
+
+    为什么不让前端发「继续」：出卷要跑几分钟，教师这段时间只是在等待、没有
+    任何操作；若沿用自动追问，聊天里会凭空冒出一条教师自己发的「继续」气泡，
+    很突兀。收尾通报本来就该由助手发出，所以这里只落 assistant 消息。
+
+    文案是确定性的（状态通报不需要模型润色）：成功给「已生成 N 道题 + 去审核」，
+    失败给原因与「重新生成」引导。
+
+    幂等：按 (course, session, project) 建一条 assistant_notice 任务的
+    idempotency_key，重复调用直接返回已播报结果（前端轮询可能多次触发）。
+    """
+    if _load_session_row(session, course_id=course_id, session_id=session_id) is None:
+        raise AssistantError("会话不存在")
+    try:
+        project = exam_project_service.get_project(
+            session, course_id=course_id, project_id=project_id
+        )
+    except exam_project_service.ExamProjectNotFoundError:
+        raise AssistantError("试卷项目不存在")
+
+    task_status = str(project.get("generation_task_status") or "")
+    project_status = str(project.get("status") or "")
+    settled = task_status in {"succeeded", "failed", "cancelled"} or project_status in {
+        "review",
+        "exported",
+    }
+    if not settled:
+        # 还没跑完：不播报（前端会继续轮询，到终态再调）
+        return {"reported": False, "reason": "not_settled"}
+
+    key = hashlib.sha256(
+        f"generation-report:{course_id}:{session_id}:{project_id}".encode()
+    ).hexdigest()[:24]
+    existing_task = session.execute(
+        select(task_runs.c.id).where(
+            task_runs.c.course_id == course_id,
+            task_runs.c.idempotency_key == key,
+        )
+    ).scalar_one_or_none()
+    task_id = existing_task or uuid4().hex
+    existing_message = session.execute(
+        select(assistant_messages.c.id)
+        .where(assistant_messages.c.task_run_id == task_id)
+        .limit(1)
+    ).scalar_one_or_none()
+    if existing_message is not None:
+        return {"reported": False, "reason": "already_reported", "message_id": existing_message}
+
+    name = str(project.get("name") or "该试卷")
+    failed = task_status in {"failed", "cancelled"} and project_status not in {
+        "review",
+        "exported",
+    }
+    if failed:
+        content = (
+            f"「{name}」的试卷生成没有成功：{project.get('generation_error') or '未知原因'}。"
+            "可到『试卷』页重新生成。"
+        )
+    else:
+        detail = "，".join(
+            [
+                text
+                for text in (
+                    f"共 {project.get('item_count')} 道题" if project.get("item_count") else "",
+                    f"总分 {project.get('total_score')}" if project.get("total_score") is not None else "",
+                )
+                if text
+            ]
+        ) or "试卷已就绪"
+        content = (
+            f"「{name}」的试卷已生成：{detail}。可以进入审核了——"
+            "到『试卷』页逐题查看与编辑，定稿与导出也在该页完成。"
+        )
+
+    if existing_task is None:
+        create_task_run(
+            session,
+            course_id=course_id,
+            task_type=_GENERATION_REPORT_TASK_TYPE,
+            idempotency_key=key,
+            input_version=_INPUT_VERSION,
+            payload={
+                "course_id": course_id,
+                "session_id": session_id,
+                "project_id": project_id,
+                # 系统主动通报：不是教师轮次，前端不据此渲染流式区
+                "system_notice": True,
+            },
+            task_id=task_id,
+        )
+    now = datetime.now(timezone.utc)
+    session.execute(
+        task_runs.update()
+        .where(task_runs.c.id == task_id, task_runs.c.course_id == course_id)
+        .values(
+            status="succeeded",
+            stage="completed",
+            progress=100,
+            result={"kind": "generation_report", "project_id": project_id},
+            updated_at=now,
+            completed_at=now,
+        )
+    )
+    message_id = _insert_message(
+        session,
+        course_id=course_id,
+        task_run_id=task_id,
+        role="assistant",
+        content=content,
+        action={
+            "kind": "generation_report",
+            "tool": "start_generation",
+            "project_id": project_id,
+            "status": "completed",
+            "receipt": "",
+        },
+        session_id=session_id,
+    )
+    return {
+        "reported": True,
+        "message_id": message_id,
+        "task_run_id": task_id,
+        "content": content,
+    }
+
+
 def _assistant_reply_exists(session: Session, task_run_id: str) -> dict | None:
     row = session.execute(
         select(assistant_messages)

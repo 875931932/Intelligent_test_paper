@@ -152,6 +152,17 @@ export const assistantApi = {
       method: 'POST',
       body: JSON.stringify(sessionId ? { message, session_id: sessionId } : { message }),
     }, token),
+  /** 生成结束通报：后端落一条助手消息（不产生用户消息）。幂等，重复调用安全 */
+  reportGeneration: (
+    courseId: string,
+    sessionId: string,
+    projectId: string,
+    token?: string,
+  ): Promise<{ reported: boolean; message_id?: string; reason?: string }> =>
+    request('/courses/' + courseId + '/assistant/generation-reports', {
+      method: 'POST',
+      body: JSON.stringify({ session_id: sessionId, project_id: projectId }),
+    }, token),
   /** 历史恢复（时间序，含卡片与回执；挂载与 done 后刷新都以它为权威）。
    *  sessionId 给定只返回该会话（v3），缺省全课程（向后兼容） */
   listMessages: (courseId: string, sessionId?: string, token?: string): Promise<AssistantMessage[]> =>

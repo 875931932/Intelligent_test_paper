@@ -491,6 +491,29 @@ export interface ExamProject {
   updated_at: string;
 }
 
+/**
+ * 生成进度快照（助手页「发起 AI 生成」卡片内展示）。
+ *
+ * 来源是项目摘要（后端把 task_runs.progress 折算成 5–95% 的生成区间，
+ * 每完成一批考点题目独立提交一次），由 assistantStore 轮询写入——轮询挂在
+ * store 上，切页面/重挂载都不会断，教师随时能看到最新进度。
+ */
+export interface GenerationProgressSnapshot {
+  project_id: string;
+  /** 0–100；生成区间为 5–95，null = 尚未上报 */
+  progress: number | null;
+  /** task_runs.status：queued/running/succeeded/failed/cancelled */
+  task_status: string | null;
+  stage: string | null;
+  /** 项目阶段：draft/generating/review/exported */
+  project_status: string;
+  /** 完成后才有值：题数与可审核试卷版本（「进入审核」用） */
+  item_count: number | null;
+  total_score: number | null;
+  paper_version_id: string | null;
+  error: string | null;
+}
+
 // ── Paper Versons ──
 export interface PaperVersionItem {
   item_index: number;

@@ -2173,6 +2173,96 @@ def test_auto_proposal_claim_then_finish(session):
 
 
 # ---------------------------------------------------------------------------
+# 生成结束通报（后端主动播报，不产生用户消息）
+# ---------------------------------------------------------------------------
+
+
+def _seed_generation_project(
+    session, *, project_id: str = "p-gen", task_status: str = "succeeded",
+    project_status: str = "review", progress: int = 100,
+) -> None:
+    """预置一个带生成任务的项目（get_project 会读论文摘要与生成态）。"""
+    session.execute(exam_projects.insert().values(
+        id=project_id, course_id="c1", name="E2E自动执行", status=project_status,
+    ))
+    session.execute(task_runs.insert().values(
+        id=f"gr-{project_id}", course_id="c1", task_type="generation_run",
+        input_version="v1", idempotency_key=f"gen-{project_id}",
+        status=task_status, stage="generating", progress=progress,
+        payload={"project_id": project_id, "generation_run_id": f"gr-{project_id}"},
+        error_message="模型超时" if task_status == "failed" else None,
+    ))
+    session.commit()
+
+
+def test_generation_report_not_settled_is_skipped(session):
+    """生成还在跑：不播报（前端继续轮询，到终态再调）。"""
+    _seed_generation_project(session, task_status="running", project_status="generating", progress=40)
+    sid = assistant_service.ensure_default_session(session, course_id="c1")
+    session.commit()
+    result = assistant_service.report_generation_complete(
+        session, course_id="c1", session_id=sid, project_id="p-gen",
+    )
+    assert result == {"reported": False, "reason": "not_settled"}
+    assert session.execute(select(assistant_messages.c.id)).scalars().all() == []
+
+
+def test_generation_report_writes_assistant_message_without_user_bubble(session):
+    """生成完成：只落一条助手消息（教师全程在等待，不该凭空多出自己发的「继续」）。"""
+    _seed_generation_project(session)
+    sid = assistant_service.ensure_default_session(session, course_id="c1")
+    session.commit()
+
+    result = assistant_service.report_generation_complete(
+        session, course_id="c1", session_id=sid, project_id="p-gen",
+    )
+    session.commit()
+
+    assert result["reported"] is True
+    rows = session.execute(
+        select(assistant_messages.c.role, assistant_messages.c.content, assistant_messages.c.action)
+    ).mappings().all()
+    # 没有 user 消息：聊天里不会出现教师没发过的「继续」气泡
+    assert [r["role"] for r in rows] == ["assistant"]
+    assert "E2E自动执行" in rows[0]["content"]
+    assert "试卷已生成" in rows[0]["content"]
+    assert rows[0]["action"]["kind"] == "generation_report"
+    # 幂等：前端轮询可能多次触发，重复调用不重复插消息
+    again = assistant_service.report_generation_complete(
+        session, course_id="c1", session_id=sid, project_id="p-gen",
+    )
+    assert again["reason"] == "already_reported"
+    assert len(session.execute(select(assistant_messages.c.id)).scalars().all()) == 1
+
+
+def test_generation_report_failure_message(session):
+    """生成失败：同样由助手播报原因与重新生成引导。"""
+    _seed_generation_project(
+        session, task_status="failed", project_status="generating", progress=30,
+    )
+    sid = assistant_service.ensure_default_session(session, course_id="c1")
+    session.commit()
+    result = assistant_service.report_generation_complete(
+        session, course_id="c1", session_id=sid, project_id="p-gen",
+    )
+    session.commit()
+    assert result["reported"] is True
+    content = session.execute(select(assistant_messages.c.content)).scalar_one()
+    assert "没有成功" in content
+    assert "模型超时" in content
+    assert "重新生成" in content
+
+
+def test_generation_report_rejects_foreign_session(session):
+    """会话不属于本课程 → 拒绝（课程隔离）。"""
+    _seed_generation_project(session)
+    with pytest.raises(AssistantError, match="会话不存在"):
+        assistant_service.report_generation_complete(
+            session, course_id="c1", session_id="nope", project_id="p-gen",
+        )
+
+
+# ---------------------------------------------------------------------------
 # 任务入队幂等
 # ---------------------------------------------------------------------------
 

@@ -26,6 +26,7 @@ import type {
   AssistantMessage,
   AssistantOverviewSection,
   AssistantPlanPreview,
+  GenerationProgressSnapshot,
 } from '@/types/api';
 
 /**
@@ -924,6 +925,89 @@ function SpecTable({ tool, payload }: { tool: string; payload: AssistantActionPa
 }
 
 
+/** 生成阶段文案（后端 generation_stage → 教师能看懂的说法） */
+const GENERATION_STAGE_LABELS: Record<string, string> = {
+  generating: '正在出题',
+};
+
+/**
+ * 生成进度块：出卷是唯一要跑几分钟的一步，教师必须看得见「还在推进」。
+ *
+ * 助手在这一步**挂起不收尾**（store 里 start_generation 不立即接力），
+ * 由这里承载等待期的反馈：真实进度条（后端按批次折算 5–95%）+ 阶段文案；
+ * 生成结束后卡片原地变「已生成 N 道题 · 总分 M」，并给「进入审核」入口，
+ * 同时助手才被唤醒补上收尾回答。
+ */
+function GenerationProgressBlock({
+  snap,
+  onOpenPaper,
+}: {
+  snap: GenerationProgressSnapshot;
+  onOpenPaper?: (projectId: string) => void;
+}) {
+  const failed = snap.task_status === 'failed' || snap.task_status === 'cancelled';
+  const done =
+    snap.task_status === 'succeeded'
+    || snap.project_status === 'review'
+    || snap.project_status === 'exported';
+  const pct = typeof snap.progress === 'number' ? Math.min(100, Math.max(0, snap.progress)) : null;
+  const stageText = GENERATION_STAGE_LABELS[snap.stage ?? ''] ?? '正在出题';
+
+  if (failed) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <Badge variant="error">生成失败</Badge>
+        <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+          {snap.error || '未知原因'}
+        </span>
+        <Button
+          size="sm"
+          variant="secondary"
+          icon={<ExternalLink size={13} />}
+          onClick={() => onOpenPaper?.(snap.project_id)}
+        >
+          去试卷页重新生成
+        </Button>
+      </div>
+    );
+  }
+
+  if (done) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <Badge variant="success">生成完成</Badge>
+        <span style={{ fontSize: '0.8rem' }}>
+          {snap.item_count != null ? `已生成 ${snap.item_count} 道题` : '试卷已生成'}
+          {snap.total_score != null ? ` · 总分 ${formatScore(snap.total_score)}` : ''}
+        </span>
+        <Button
+          size="sm"
+          icon={<ExternalLink size={13} />}
+          onClick={() => onOpenPaper?.(snap.project_id)}
+        >
+          进入审核
+        </Button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+      <div className="progress-track" style={{ width: '100%' }}>
+        <div
+          className={`progress-fill${pct === null ? ' progress-indeterminate' : ''}`}
+          style={pct === null ? undefined : { width: `${pct}%` }}
+        />
+      </div>
+      <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+        {snap.task_status === 'queued' ? '排队中，等待出题…' : stageText}
+        {pct !== null ? ` · ${pct}%` : ''}
+        {snap.item_count != null ? ` · 已出 ${snap.item_count} 道` : ''}
+      </span>
+    </div>
+  );
+}
+
 /**
  * 提案卡：操作名 + 参数预览 + 影响说明 + 状态区。
  *
@@ -938,17 +1022,22 @@ function ProposalCard({
   message,
   busy,
   progress,
+  generation,
   onConfirm,
   onDismiss,
   onRetry,
+  onOpenPaper,
 }: {
   message: AssistantMessage;
   busy: boolean;
   /** 自动执行中的本地进度文案（长步骤；落库的 receipt 只在结束时才有） */
   progress?: string;
+  /** 该项目当前的生成进度快照（仅「发起 AI 生成」卡片用；完成前承载等待反馈） */
+  generation?: GenerationProgressSnapshot;
   onConfirm: (m: AssistantMessage) => void;
   onDismiss: (m: AssistantMessage) => void;
   onRetry: (m: AssistantMessage) => void;
+  onOpenPaper?: (projectId: string) => void;
 }) {
   const tool = message.action.tool ?? '';
   const payload = message.action.payload ?? {};
@@ -974,6 +1063,10 @@ function ProposalCard({
       <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: '2px 0' }}>
         {meta?.impact ?? '确认后调用既有业务接口执行。'}
       </p>
+      {/* 发起生成已执行：只留进度块——「已执行」那行会被进度/完成态取代，避免重复 */}
+      {generation && tool === 'start_generation' && status === 'executed' && (
+        <GenerationProgressBlock snap={generation} onOpenPaper={onOpenPaper} />
+      )}
       {status === 'proposed' ? (
         <div style={{ display: 'flex', gap: 8 }}>
           <Button
@@ -1015,7 +1108,7 @@ function ProposalCard({
             放弃
           </Button>
         </div>
-      ) : (
+      ) : generation && tool === 'start_generation' ? null : (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <Badge variant={status === 'executed' ? 'success' : 'default'}>
             {status === 'executed' ? '已执行' : '已取消'}
@@ -1367,6 +1460,7 @@ const AssistantPage: FC = () => {
   const patchProposal = useAssistantStore((s) => s.patchProposal);
   const retryProposal = useAssistantStore((s) => s.retryProposal);
   const autoProgress = useAssistantStore((s) => s.autoProgress);
+  const generationProgress = useAssistantStore((s) => s.generationProgress);
 
   const [input, setInput] = useState('');
   const [busyMessageId, setBusyMessageId] = useState<string | null>(null);
@@ -1616,9 +1710,15 @@ const AssistantPage: FC = () => {
                     message={m}
                     busy={busyMessageId === m.id}
                     progress={autoProgress[m.id]}
+                    generation={
+                      m.action.payload?.project_id
+                        ? generationProgress[m.action.payload.project_id]
+                        : undefined
+                    }
                     onConfirm={(msg) => void handleConfirm(msg)}
                     onDismiss={(msg) => void handleDismiss(msg)}
                     onRetry={(msg) => retryProposal(msg.id)}
+                    onOpenPaper={(pid) => navigate(`/courses/${courseId}/paper?project=${pid}`)}
                   />
                 ) : m.action.kind === 'sources' ? (
                   <>

@@ -2,7 +2,12 @@ import { create } from 'zustand';
 import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
 import { executeProposalAction, RELAY_TOOLS } from '@/lib/assistantProposalExecution';
-import type { AssistantMessage, AssistantProposalStatus, AssistantSession } from '@/types/api';
+import type {
+  AssistantMessage,
+  AssistantProposalStatus,
+  AssistantSession,
+  GenerationProgressSnapshot,
+} from '@/types/api';
 import { useAuthStore } from './auth';
 import { useToastStore } from './toast';
 
@@ -75,6 +80,12 @@ interface AssistantState {
    * 长步骤（蓝图建议任务）的过程只能靠这份本地态呈现。
    */
   autoProgress: Record<string, string>;
+  /**
+   * 生成进度快照（project_id → 快照）：出卷是最长的一步，卡片里要给真实进度。
+   * 轮询挂在 store 上（不是组件 effect）——教师切到试卷页/切会话也不断，
+   * 回来即看到最新进度，生成完成后卡片原地变「进入审核」。
+   */
+  generationProgress: Record<string, GenerationProgressSnapshot>;
 }
 
 export const useAssistantStore = create<AssistantState>()((set, get) => {
@@ -156,7 +167,11 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
       useToastStore.getState().addToast(receipt, 'success');
       // 教师切走会话就不再替他接力：链停在原会话，卡片仍是已执行
       const onLadder = RELAY_TOOLS.has(m.action.tool ?? '');
-      if (relay && onLadder && get().activeSessionId === sessionId) {
+      // 发起生成**不立即接力**：出卷要跑几分钟，此刻追问只能得到「进度 0%，
+      // 请稍候」这种没有下文的话。改为等生成真正结束，再由 relayAfterGeneration
+      // 追问一次，让助手的收尾回答落在「已生成 N 道题」上（教师诉求）。
+      const isGeneration = m.action.tool === 'start_generation';
+      if (relay && onLadder && !isGeneration && get().activeSessionId === sessionId) {
         await get().send('继续');
       }
     } catch (err) {
@@ -164,6 +179,11 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
       // 卡片停在 executing：给教师可见的「重试执行」，绝不自动重放
     } finally {
       clearProgress(m.id);
+      // 生成是长任务：卡片执行完立即挂上进度轮询（轮询在 store 上，切页不断）
+      if (m.action.tool === 'start_generation') {
+        const projectId = m.action.payload?.project_id;
+        if (projectId) watchGeneration(projectId);
+      }
     }
   };
 
@@ -200,6 +220,129 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
     if (!next) return;
     enqueueAutoRun(next, s.activeSessionId);
   }
+
+  // ---------------------------------------------------------------------------
+  // 生成进度轮询：出卷是唯一要跑几分钟的一步，卡片里要有真实进度
+  // ---------------------------------------------------------------------------
+
+  /** project_id → 定时器（每个项目一条；到终态即停，避免空转打库） */
+  const genTimers = new Map<string, number>();
+  /** 本次挂载里亲眼见过 running 的项目——完成后接力的准入条件（见 pollGeneration） */
+  const genSawRunning = new Set<string>();
+  const GEN_POLL_INTERVAL_MS = 2500;
+
+  const stopGenerationWatch = (projectId: string) => {
+    const timer = genTimers.get(projectId);
+    if (timer !== undefined) {
+      window.clearInterval(timer);
+      genTimers.delete(projectId);
+    }
+  };
+
+  const stopAllGenerationWatches = () => {
+    genTimers.forEach((timer) => window.clearInterval(timer));
+    genTimers.clear();
+  };
+
+  /** 生成任务是否已到终态（任务终态或项目已推进到审核/导出） */
+  const generationSettled = (snap: GenerationProgressSnapshot) =>
+    snap.task_status === 'succeeded'
+    || snap.task_status === 'failed'
+    || snap.task_status === 'cancelled'
+    || snap.project_status === 'review'
+    || snap.project_status === 'exported';
+
+  const pollGeneration = async (projectId: string) => {
+    const courseId = get().courseId;
+    if (!courseId) {
+      stopGenerationWatch(projectId);
+      return;
+    }
+    try {
+      const p = await api.examProjects.get(courseId, projectId);
+      if (get().courseId !== courseId) return; // 已切课：丢弃本次结果
+      const snap: GenerationProgressSnapshot = {
+        project_id: projectId,
+        progress: p.generation_progress ?? null,
+        task_status: p.generation_task_status ?? null,
+        stage: p.generation_stage ?? null,
+        project_status: p.status,
+        item_count: p.item_count ?? null,
+        total_score: p.total_score ?? null,
+        paper_version_id: p.paper_version_id ?? null,
+        error: p.generation_error ?? null,
+      };
+      set((s) => ({
+        generationProgress: { ...s.generationProgress, [projectId]: snap },
+      }));
+      // 必须**亲眼见过**它跑起来（queued/running）才有资格触发「完成后接力」：
+      // 否则刷新时遇到一个早就生成完的历史项目，会平白替教师追问一次。
+      if (snap.task_status === 'queued' || snap.task_status === 'running') {
+        genSawRunning.add(projectId);
+      }
+      if (generationSettled(snap)) {
+        stopGenerationWatch(projectId);
+        if (genSawRunning.delete(projectId)) void relayAfterGeneration(projectId);
+      }
+    } catch {
+      /* 瞬时错误忽略：下一轮重试（终态由任务自身收敛） */
+    }
+  };
+
+  /**
+   * 生成结束后的收尾：**请后端落一条助手消息**（不产生用户气泡）。
+   *
+   * 教师这一阶段只是等待、没有任何操作——若沿用自动追问，聊天里会冒出一条
+   * 教师自己发的「继续」，很突兀。改为调后端通报端点：文案与幂等都在后端，
+   * 成功给「已生成 N 道题 + 去审核」，失败给原因与重新生成引导。
+   */
+  const relayAfterGeneration = async (projectId: string) => {
+    const s = get();
+    const courseId = s.courseId;
+    const sessionId = s.activeSessionId;
+    if (!courseId || !sessionId) return;
+    // 教师已经不看这条链了（切走会话/时间线里没有该项目卡片）→ 不打扰
+    const linked = s.messages.some(
+      (m) => m.action?.tool === 'start_generation'
+        && m.action.payload?.project_id === projectId,
+    );
+    if (!linked) return;
+    try {
+      const token = useAuthStore.getState().token ?? undefined;
+      const res = await api.assistant.reportGeneration(
+        courseId, sessionId, projectId, token,
+      );
+      if (res.reported && get().activeSessionId === sessionId) await get().refresh();
+    } catch {
+      /* 播报失败不打扰：卡片已显示生成完成/失败态，教师仍能进试卷页 */
+    }
+  };
+
+  const watchGeneration = (projectId: string) => {
+    if (genTimers.has(projectId)) return;
+    void pollGeneration(projectId); // 立即取一次，不等第一个间隔
+    genTimers.set(
+      projectId,
+      window.setInterval(() => void pollGeneration(projectId), GEN_POLL_INTERVAL_MS),
+    );
+  };
+
+  /**
+   * 扫描时间线里「已发起的生成」，为每个项目挂上进度轮询。
+   * 幂等：已在轮询的项目不重复挂；已到终态的卡片不再唤醒（避免无谓打库）。
+   */
+  const scanGenerationWatches = () => {
+    const s = get();
+    for (const m of s.messages) {
+      if (m.action?.kind !== 'proposal' || m.action.tool !== 'start_generation') continue;
+      if (m.action.status !== 'executed') continue; // 只跟真正发起过的
+      const projectId = m.action.payload?.project_id;
+      if (!projectId || genTimers.has(projectId)) continue;
+      const known = s.generationProgress[projectId];
+      if (known && generationSettled(known)) continue; // 已收口
+      watchGeneration(projectId);
+    }
+  };
 
   // 当前会话按课程持久化（切课/刷新后回到上次所在会话；隐私模式不可用则退化为内存态）
   const storageKey = (courseId: string) => `assistant:${courseId}:session`;
@@ -275,6 +418,8 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
       clearTurnState();
       // 收口后接着跑自动执行队列：接力产出的下一张卡在这一拍落地
       drainAutoQueue();
+      // 与自动执行同理：历史里的生成卡片在这一拍挂上进度轮询
+      scanGenerationWatches();
     }
   };
 
@@ -379,13 +524,15 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
     streamHint: null,
     settledTaskIds: [],
     autoProgress: {},
+    generationProgress: {},
 
     reset: (courseId) => {
       stopStream();
       stopPolling();
-      // 切课等于换一套数据：在跑的自动执行队列随之作废（回写前会校验 courseId）
+      // 切课等于换一套数据：在跑的自动执行队列与进度轮询随之作废
       autoInFlight.clear();
       autoSkipped.clear();
+      stopAllGenerationWatches();
       set({
         courseId,
         sessions: [],
@@ -401,6 +548,7 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
         streamHint: null,
         settledTaskIds: [],
         autoProgress: {},
+        generationProgress: {},
       });
     },
 
@@ -430,6 +578,7 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
         set({ messages, restored: true, restoring: false });
         attachSessionStream(messages);
         drainAutoQueue();
+        scanGenerationWatches();
       } catch (err) {
         set({ restoring: false });
         throw err;
@@ -443,6 +592,7 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
       const messages = sid ? await api.assistant.listMessages(courseId, sid) : [];
       set({ messages, restored: true });
       drainAutoQueue();
+      scanGenerationWatches();
     },
 
     send: async (message) => {
@@ -556,6 +706,7 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
         set({ messages, restored: true });
         attachSessionStream(messages);
         drainAutoQueue();
+        scanGenerationWatches();
       } catch (err) {
         // 失败回滚到原会话与原时间线：否则停在空时间线且同 id 点击会被
         // 早退拦掉，无法重试
