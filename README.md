@@ -1,6 +1,7 @@
-# 智能组卷/阅卷系统
+# PaperPact·AI 命题系统
 
-AI 驱动的组卷与阅卷平台，支持课程资料解析、考纲框架构建、知识图谱组织、合同式组卷生成和试卷导出。
+AI 驱动的试卷命题平台，支持课程资料解析、考纲框架构建、知识图谱组织、合同式组卷生成，
+导出学生卷 / 答卷 / 答题卡 HTML 与答案细则 JSON（阅卷端直接输入）。
 
 ## 技术栈
 
@@ -267,7 +268,7 @@ npm run dev
 .
 ├── backend/                 # 后端代码
 │   └── app/
-│       ├── api/v1/          # REST API 路由（7 个 router）
+│       ├── api/v1/          # REST API 路由（9 个 router）
 │       ├── domain/          # 领域模型与确定性算法（含考核规则归一化）
 │       ├── workflows/       # LangGraph 工作流（框架/整理/生成/知识目录）
 │       ├── services/        # 业务服务
@@ -277,7 +278,7 @@ npm run dev
 │       └── main.py          # FastAPI 入口
 ├── frontend/                # 前端代码（React 19 + TS）
 │   └── src/
-│       ├── pages/           # 页面：登录/课程空间/概览/资料库/命题框架/知识目录/试卷
+│       ├── pages/           # 页面：登录/课程空间/概览/资料库/命题框架/知识目录/试卷/归档编辑/对话助手
 │       ├── components/      # 布局与 UI 基础组件
 │       ├── api/             # HTTP 层，按业务域拆分的客户端
 │       └── stores/ hooks/ lib/
@@ -287,7 +288,7 @@ npm run dev
 │   ├── DEPLOY_UBUNTU.md     # Ubuntu 部署
 │   ├── HANDOVER.md          # 交接文档
 │   ├── LLM_TUNING.md        # 模型调优 / 换模型手册
-│   ├── CONVERSATIONAL_GENERATION.md  # 对话式出卷接线提案（未实现）
+│   ├── CONVERSATIONAL_GENERATION.md  # 对话式出卷接线提案（出卷提案链已部分落地）
 │   └── 素材/                # 演示课程素材与卷面范本
 ├── CODE_WIKI.md             # 代码全景（架构/领域/工作流/API/数据库/前端）
 ├── docker-compose.dev.yml   # 开发环境 Docker 配置

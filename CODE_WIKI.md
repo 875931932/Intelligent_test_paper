@@ -1,4 +1,4 @@
-# AI 智能出卷系统 - Code Wiki
+# PaperPact·AI 命题系统 - Code Wiki
 
 ## 1. 项目概述
 
