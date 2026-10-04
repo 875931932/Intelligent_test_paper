@@ -157,6 +157,17 @@ class Settings(BaseSettings):
     # 框架大纲抽取阶段的模型调用超时（秒）。考核大纲 prompt 较大（数万 token），
     # 默认 90s 超时会触发 transport error，需放长到足以容纳完整响应。
     framework_model_timeout: float = Field(default=240.0, gt=0)
+    # 命题生成阶段的模型调用超时（秒）。生成路径此前不配超时、走网关默认 90s：
+    # 综合题（代码补全/故障诊断）思考+输出长，2026-10-04 一次 42 题生成中
+    # llm_transport_error 连环（单题重试 4 次全超时，无 http_status），三道防线
+    # 连带失守、卷面缺两道综合题。生成已异步化（Celery），放长超时不占请求线程；
+    # 与 organization 同口径 480s。
+    generation_model_timeout: float = Field(default=480.0, gt=0)
+    # 网关进程内信号量的并发上限（LLM_MAX_CONCURRENCY）。信号量按**进程**生效：
+    # 实际并发 ≈ 持信号量的进程数（uvicorn / celery worker 各算各的）× 本值，
+    # 必须 ≤ 模型账号的并发上限（step_plan 上 step-5-preview 为 5），否则供应商
+    # 直接掐断多余连接——表现为无 http_status 的 llm_transport_error 连环。
+    llm_max_concurrency: int = Field(default=2, ge=1)
     seed_dev_data: bool = False
     upload_max_bytes: int = 209715200
     s3_endpoint: str = "http://localhost:9000"

@@ -286,6 +286,8 @@ def _default_graph_invoke(
         base_url=settings.llm_base_url,
         model=settings.llm_model,
         disable_thinking=settings.llm_generation_disable_thinking,
+        # 综合题思考+输出长，默认 90s 会 transport 连环（见 generation_model_timeout 注释）
+        timeout=settings.generation_model_timeout,
         recorder=DatabaseModelCallRecorder(get_session_factory()),
         call_context=ModelCallContext(course_id=course_id, stage="paper_generation"),
     )

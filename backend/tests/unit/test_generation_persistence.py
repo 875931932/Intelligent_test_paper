@@ -415,8 +415,13 @@ def _capturing_gateway_factory(captured: list):
     并把收到的 payload 记入 captured（断言"不向模型暴露来源元数据"）。"""
 
     class CapturingGateway:
-        def __init__(self, **_kwargs):
-            pass
+        def __init__(self, **kwargs):
+            # 生成网关必须显式带 generation_model_timeout：走网关默认 90s 会在
+            # 综合题（思考+输出长）上 transport 连环——2026-10-04 卷面缺题根因之一。
+            from app.config import settings as _settings
+            assert kwargs.get("timeout") == _settings.generation_model_timeout, (
+                "生成网关必须显式传 timeout=settings.generation_model_timeout"
+            )
 
         def generate_batch(self, payload):
             rendered = payload.model_dump(mode="json")

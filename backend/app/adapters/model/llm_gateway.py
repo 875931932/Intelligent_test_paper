@@ -14,6 +14,7 @@ import httpx
 from app.domain.model_calls import ModelCallContext
 
 from app.adapters.model.model_profiles import normalize_effort, resolve_model_profile
+from app.config import settings
 
 logger = logging.getLogger("model.gateway")
 
@@ -22,7 +23,10 @@ logger = logging.getLogger("model.gateway")
 # 用进程级信号量把所有模型调用（分类/归并/抽取/框架抽取共用同一网关）的并发数
 # 收敛到很小的常数，让 LLM 端始终处于可控负载；再用 429 长退避兜底
 # RPM 触顶。metagain 单租户工具，进程内所有 client 共享同一信号量协调并发。
-_LLM_MAX_CONCURRENCY = 2
+# 2026-10-04 常数改为 settings.llm_max_concurrency（LLM_MAX_CONCURRENCY，缺省 2）：
+# 信号量按进程生效，多进程（uvicorn + celery worker）各持一份，实际并发 ≈
+# 进程数 × 本值，须 ≤ 模型账号并发上限（step-5-preview 为 5）。
+_LLM_MAX_CONCURRENCY = settings.llm_max_concurrency
 _LLM_SEMAPHORE = threading.BoundedSemaphore(_LLM_MAX_CONCURRENCY)
 
 
@@ -34,6 +38,10 @@ _PERSISTED_ERROR_MESSAGES = {
     "model_non_json_response": "model returned content that is not valid JSON",
     "model_non_object_response": "model returned a non-object JSON value",
     "model_output_evidence_gap": "model response failed evidence validation",
+    # 批式生成漏 questions 外壳（模型直接回扁平单题对象）：单独落码而非
+    # 泛化成 model_validation_failed——今晚的缺题排查里该形态占大头，
+    # 泛化码让人无从区分「外壳缺失」与「内容校验失败」两类根因。
+    "model_output_schema_violation": "model output is missing the questions envelope",
     "model_output_scope_violation": "model response failed scope validation",
     "model_schema_validation_failed": "model JSON does not match the required schema",
 }
@@ -1042,6 +1050,17 @@ class LLMGateway:
         spec_schemas = {spec.item_index: spec.output_schema for spec in payload.questions}
 
         def validate_batch(result) -> None:
+            if isinstance(result, dict) and "questions" not in result and "item_index" in result:
+                # 单题批模型惯于直接回扁平对象、漏 questions 外壳：2026-10-04
+                # step-5-preview 单题重试连续 4 次全返 {"item_index":42,...}，
+                # HTTP 200 却过不了数组校验，重试烧尽后题位落成占位、卷面缺题。
+                # 此处确定性包装：同一 dict 原地改写，request_json 返回的即包装后
+                # 对象——与 _lift_nested_output_schema、助手 intent 漏包装归一同属
+                # 「确定性归一，不指望模型自觉」。包装后照常走题位集合校验，
+                # 批次要多题而模型只回一题时仍以 scope violation 拒收重试。
+                flat = dict(result)
+                result.clear()
+                result["questions"] = [flat]
             questions = result.get("questions") if isinstance(result, dict) else None
             if not isinstance(questions, list):
                 raise LLMModelError(

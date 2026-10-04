@@ -46,11 +46,31 @@ def test_generate_batch_returns_validated_list():
     assert "questions" in client.calls[0]["system_prompt"]
 
 
-def test_generate_batch_rejects_non_list_response():
-    client = FakeJsonClient({"item_index": 1})
+def test_generate_batch_wraps_flat_single_question_response():
+    # 真实故障形态（2026-10-04 step-5-preview 实测）：单题批直接回扁平对象、
+    # 漏 questions 外壳，HTTP 200 却过不了数组校验，4 连败后题位落占位、卷面缺题。
+    # 确定性包装后照常通过题位集合校验——内容是对的，只是没装进外壳。
+    client = FakeJsonClient({"item_index": 1, "stem": "题一", "answer": "A"})
+    gateway = LLMGateway(api_key="k", json_client=client)
+    questions = gateway.generate_batch(_payload(question_count=1))
+    assert [q["item_index"] for q in questions] == [1]
+    assert questions[0]["stem"] == "题一"
+
+
+def test_generate_batch_flat_response_without_item_index_rejected():
+    # 扁平但没有题号：无从归一，仍拒收走重试（与退化 {} 同路径）
+    client = FakeJsonClient({"stem": "没有编号", "answer": "A"})
     gateway = LLMGateway(api_key="k", json_client=client)
     with pytest.raises(LLMModelError):
         gateway.generate_batch(_payload(question_count=1))
+
+
+def test_generate_batch_flat_response_wrong_slot_rejected():
+    # 批次要两题、模型只扁平回一题且题号不符 → 包装后 scope 校验拒收
+    client = FakeJsonClient({"item_index": 99, "stem": "错题", "answer": "B"})
+    gateway = LLMGateway(api_key="k", json_client=client)
+    with pytest.raises(LLMModelError):
+        gateway.generate_batch(_payload(question_count=2))
 
 
 def test_generate_batch_rejects_questions_not_list():
@@ -151,3 +171,15 @@ def test_generate_batch_keeps_top_level_content_when_both_present():
     questions = gateway.generate_batch(_payload(question_count=1))
     assert questions[0]["stem"] == "顶层题干"
     assert questions[0]["answer"] == "B"
+
+
+def test_schema_violation_persists_distinct_error_code():
+    # 漏 questions 外壳曾被泛化成 model_validation_failed，与「内容校验失败」
+    # 混为一谈，缺题排查时无从区分两类根因——单独落码。
+    from app.adapters.model.llm_gateway import _persistence_error
+
+    code, message = _persistence_error(
+        LLMModelError("model_output_schema_violation", "x")
+    )
+    assert code == "model_output_schema_violation"
+    assert "questions" in message
