@@ -586,7 +586,7 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 可用提案工具（action.args 只允许下述字段，id 必须取自 payload.ids 白名单）：
 {proposal_tools}
 
-出卷主线推进（教师要出卷、继续出卷、或直接给出出卷要求时，先看 snapshot.projects 状态选**下一步**的提案，一次一张卡；回复里说明整体计划。**除 confirmed 的确认类提案外，其余提案卡片由前端自动执行并回报执**，执行后前端自动替教师追问「继续」——收到这类追问就按本阶梯推进，**不要**在回复里要求教师手动输入「继续」。教师带着具体要求（难度/侧重/综合题形态）要新卷时，第一张卡仍只是 create_exam_project——回复里点明这些要求各自落到后续哪一步（各工具的参数说明里写明了要求该填进哪个字段），**不要**塞进本卡 args）：
+出卷主线推进（教师要出卷、继续出卷、或直接给出出卷要求时，先看 snapshot.projects 状态选**下一步**的提案，一次一张卡；回复里说明整体计划。**除 confirmed 的确认类提案外，其余提案卡片由前端自动执行并回报执**；执行成功后系统会以内部的「继续」指令推进下一级——它**不是教师说的话**（不会出现在对话时间线里），收到这类追问就按本阶梯推进，**不要**在回复里要求教师手动输入「继续」。教师带着具体要求（难度/侧重/综合题形态）要新卷时，第一张卡仍只是 create_exam_project——回复里点明这些要求各自落到后续哪一步（各工具的参数说明里写明了要求该填进哪个字段），**不要**塞进本卡 args。发起 AI 生成后系统**不再追问**：出卷要跑几分钟，生成结束后由系统直接发一条完成通报，你不需要在这期间回复任何东西）：
 1. 没有试卷项目，或教师点名要另出一份新卷（「生成一张新试卷」「再出一份」）→ create_exam_project（name 从教师原话取；课程可有多个试卷项目，既有项目保持冻结不受影响，新项目按本阶梯从头走）
 2. 项目没有蓝图（blueprint 为 null）→ 先把教师的规则要求落成提案（偏理论/题型比例/章节权重 → update_exam_rules；综合题原型偏好 → 并进 create_blueprint 的 args），再 create_blueprint
 3. 蓝图已有但未确认（blueprint.confirmed=false）→ 需要调整题位或难度分布 → enqueue_blueprint_suggest（指令带上教师原话的比例要求，建议由前端自动应用）；不需调整 → confirm_blueprint
@@ -2682,4 +2682,81 @@ def enqueue_turn(
         "task_run_id": turn_id,
         "user_message_id": user_message_id,
         "session_id": resolved_session_id,
+    }
+
+
+# 内部接力指令：教师点完确认后由系统替流程推进，**不是**教师说的话，
+# 因此不落 user 消息（聊天里不会平白多出一条「继续」气泡）。
+_RELAY_INSTRUCTION = "继续"
+
+
+def enqueue_relay(
+    session: Session,
+    *,
+    course_id: str,
+    session_id: str,
+    after_message_id: str,
+) -> dict:
+    """确认/自动执行成功后推进下一张卡的**内部**轮次（不写用户消息）。
+
+    与 enqueue_turn 的差别只有一处：不插 user 消息。为什么：教师在这一步只是
+    点了「确认执行」（或卡片自动执行完），并没有在对话里说话；沿用「替他发一条
+    继续」会在时间线上留下教师没打过的字，很突兀。改写 user 消息后，模型看到的
+    历史是「上一步已执行」的卡片记录 + 这条内部指令，阶梯判断照样成立。
+
+    幂等：以「在推进哪条消息之后」为键——同一条消息重复请求复用同一轮，
+    不会把流程推两步（双击/重试安全）。
+    """
+    if _load_session_row(session, course_id=course_id, session_id=session_id) is None:
+        raise AssistantError("会话不存在")
+    row = session.execute(
+        select(assistant_messages.c.id, assistant_messages.c.role, assistant_messages.c.content).where(
+            assistant_messages.c.id == after_message_id,
+            assistant_messages.c.course_id == course_id,
+            assistant_messages.c.session_id == session_id,
+        )
+    ).one_or_none()
+    if row is None:
+        raise AssistantError("目标消息不存在")
+
+    key = hashlib.sha256(
+        f"relay:{course_id}:{session_id}:{after_message_id}".encode()
+    ).hexdigest()[:24]
+    existing = session.execute(
+        select(task_runs.c.id, task_runs.c.status).where(
+            task_runs.c.course_id == course_id,
+            task_runs.c.idempotency_key == key,
+        )
+    ).one_or_none()
+    if existing is not None:
+        # 已推进过（含已完成）：原样返回，让调用方按状态决定续流还是刷新
+        return {
+            "task_run_id": existing[0],
+            "session_id": session_id,
+            "status": existing[1],
+            "duplicate": True,
+        }
+
+    turn_id = uuid4().hex
+    create_task_run(
+        session,
+        course_id=course_id,
+        task_type=TASK_TYPE,
+        idempotency_key=key,
+        input_version=_INPUT_VERSION,
+        payload={
+            "course_id": course_id,
+            "message": _RELAY_INSTRUCTION,
+            "task_run_id": turn_id,
+            "session_id": session_id,
+            # 内部接力：没有教师消息，前端不据此渲染教师气泡
+            "relay_after": after_message_id,
+        },
+        task_id=turn_id,
+    )
+    return {
+        "task_run_id": turn_id,
+        "session_id": session_id,
+        "status": "queued",
+        "duplicate": False,
     }

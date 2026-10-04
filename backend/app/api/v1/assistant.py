@@ -68,6 +68,15 @@ class AssistantGenerationReportRequest(BaseModel):
     project_id: str
 
 
+class AssistantRelayRequest(BaseModel):
+    """确认/自动执行成功后的内部接力：推进下一张卡，但不写用户消息。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    session_id: str
+    after_message_id: str
+
+
 # ---------------------------------------------------------------------------
 # 会话管理（v3 多会话：新建 / 重命名 / 删除；切换由前端带 session_id 完成）
 # ---------------------------------------------------------------------------
@@ -140,6 +149,52 @@ def delete_session(
             raise HTTPException(status_code=409, detail=msg)
         raise HTTPException(status_code=422, detail=msg)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/relays", response_model=dict, status_code=status.HTTP_202_ACCEPTED)
+def create_relay(
+    course_id: str,
+    body: AssistantRelayRequest,
+    session: Session = Depends(get_session),
+) -> dict:
+    """内部接力（202 + task_run_id）：推进出卷阶梯的下一张卡，**不写用户消息**。
+
+    教师点「确认执行」或卡片自动执行完后，前端调这里让助手继续；因为教师这一
+    步并没有在对话里说话，替他发一条「继续」会在时间线上留下教师没打过的字。
+    幂等：同一条消息只推进一次（重复请求返回原任务，不会把流程推两步）。
+    """
+    if not assistant_service.llm_configured():
+        raise HTTPException(status_code=503, detail="LLM model is not configured")
+
+    try:
+        result = assistant_service.enqueue_relay(
+            session,
+            course_id=course_id,
+            session_id=body.session_id,
+            after_message_id=body.after_message_id,
+        )
+        session.commit()
+    except assistant_service.AssistantError as exc:
+        session.rollback()
+        msg = str(exc)
+        raise HTTPException(status_code=404 if "不存在" in msg else 422, detail=msg)
+
+    # 与 turns 同一条投递路径：outbox 未发出时事件保持 pending，不丢任务
+    from app.infrastructure.tasks.celery_app import CeleryPublisher
+    from app.infrastructure.tasks.outbox import dispatch_pending_events
+
+    try:
+        dispatch_pending_events(
+            session,
+            CeleryPublisher(),
+            course_id=course_id,
+            limit=5,
+        )
+        session.commit()
+    except Exception:
+        session.rollback()
+
+    return result
 
 
 @router.post("/generation-reports", response_model=dict)

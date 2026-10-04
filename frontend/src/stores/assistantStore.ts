@@ -75,6 +75,12 @@ interface AssistantState {
   /** 「执行中断」卡片的手动重试：状态已是 executing（认领过），直接再跑一次 */
   retryProposal: (messageId: string) => void;
   /**
+   * 内部接力：确认/自动执行成功后推进下一张卡。
+   * 与 send 的差别是**不插教师气泡**——教师这一步只是点了确认或卡片自动执行完，
+   * 替他发一条「继续」会在时间线上留下他没打过的字。
+   */
+  relay: (afterMessageId: string) => Promise<void>;
+  /**
    * 自动执行中的进度文案（messageId → 文案，本地态，不落库）。
    * 进度不走卡片状态机：认领必须是独占的（executing → executing 被后端拒绝），
    * 长步骤（蓝图建议任务）的过程只能靠这份本地态呈现。
@@ -172,7 +178,7 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
       // 追问一次，让助手的收尾回答落在「已生成 N 道题」上（教师诉求）。
       const isGeneration = m.action.tool === 'start_generation';
       if (relay && onLadder && !isGeneration && get().activeSessionId === sessionId) {
-        await get().send('继续');
+        await get().relay(m.id);
       }
     } catch (err) {
       useToastStore.getState().addToast('自动执行失败: ' + getErrorMessage(err), 'error');
@@ -653,6 +659,34 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
     stop: () => {
       stopStream();
       // 轮询兜底不随卸载停：store 是全局的，任务收口仍要靠它把消息刷进来
+    },
+
+    relay: async (afterMessageId) => {
+      const courseId = get().courseId;
+      const sid = get().activeSessionId;
+      if (!courseId || !sid || get().sending) return;
+      set({
+        sending: true,
+        streamTaskId: null,
+        streamSessionId: null,
+        streamText: '',
+        streamThink: '',
+        streamHint: '正在思考…',
+      });
+      try {
+        const turn = await api.assistant.relay(courseId, sid, afterMessageId, useAuthStore.getState().token ?? undefined);
+        // 幂等命中（同一条消息已推进过）：不重开流，直接刷新看结果
+        if (turn.status === 'succeeded' || turn.status === 'failed' || turn.status === 'cancelled') {
+          await finishTurn();
+          return;
+        }
+        set({ streamTaskId: turn.task_run_id, streamSessionId: turn.session_id });
+        openStream(courseId, turn.task_run_id);
+      } catch (err) {
+        // 接力失败不夺走教师的输入：复位在途态即可（卡片本身已执行完成）
+        clearTurnState();
+        useToastStore.getState().addToast('下一步推进失败: ' + getErrorMessage(err), 'error');
+      }
     },
 
     cancelTurn: async () => {

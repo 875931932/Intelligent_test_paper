@@ -152,6 +152,18 @@ export const assistantApi = {
       method: 'POST',
       body: JSON.stringify(sessionId ? { message, session_id: sessionId } : { message }),
     }, token),
+  /** 内部接力：推进出卷阶梯的下一张卡，**不写用户消息**（聊天里不出现教师没打过的「继续」）。
+   *  同一条消息只推进一次（幂等）；status 为终态时调用方只需刷新。 */
+  relay: (
+    courseId: string,
+    sessionId: string,
+    afterMessageId: string,
+    token?: string,
+  ): Promise<{ task_run_id: string; session_id: string; status: string; duplicate?: boolean }> =>
+    request('/courses/' + courseId + '/assistant/relays', {
+      method: 'POST',
+      body: JSON.stringify({ session_id: sessionId, after_message_id: afterMessageId }),
+    }, token),
   /** 生成结束通报：后端落一条助手消息（不产生用户消息）。幂等，重复调用安全 */
   reportGeneration: (
     courseId: string,

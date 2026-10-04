@@ -992,9 +992,13 @@ def test_prompt_documents_paper_pipeline_ladder():
     ):
         assert tool in system_prompt
     assert "出卷主线推进" in system_prompt
-    # 接力交互：确认成功由前端自动追问，助手不再要求教师手动打字
-    assert "自动替教师追问" in system_prompt
+    # 接力交互：执行成功后由系统内部指令推进（不是教师说的话，不落用户消息），
+    # 助手不再要求教师手动打字
+    assert "内部的「继续」指令" in system_prompt
+    assert "不是教师说的话" in system_prompt
     assert "要求教师手动输入" in system_prompt
+    # 发起生成后不再追问：等生成结束由系统直接发完成通报
+    assert "生成结束后由系统直接发一条完成通报" in system_prompt
     assert "请教师确认卡片后回复" not in system_prompt
     # 自动化：出卷主线上的提案由前端自动执行，只有确认类卡片等教师点确认
     assert "其余提案卡片由前端自动执行并回报执" in system_prompt
@@ -2259,6 +2263,87 @@ def test_generation_report_rejects_foreign_session(session):
     with pytest.raises(AssistantError, match="会话不存在"):
         assistant_service.report_generation_complete(
             session, course_id="c1", session_id="nope", project_id="p-gen",
+        )
+
+
+# ---------------------------------------------------------------------------
+# 内部接力（推进下一张卡但不写用户消息）
+# ---------------------------------------------------------------------------
+
+
+def test_relay_enqueues_turn_without_user_message(session):
+    """接力只建任务不插 user 消息：聊天里不该出现教师没打过的「继续」气泡。"""
+    sid = assistant_service.ensure_default_session(session, course_id="c1")
+    card_id = assistant_service._insert_message(
+        session,
+        course_id="c1",
+        task_run_id=_new_turn(session, "t-relay-src"),
+        role="assistant",
+        content="已生成提案：",
+        action={"kind": "proposal", "tool": "confirm_blueprint", "args": {},
+                "payload": {}, "status": "executed"},
+        session_id=sid,
+    )
+    session.commit()
+
+    result = assistant_service.enqueue_relay(
+        session, course_id="c1", session_id=sid, after_message_id=card_id,
+    )
+    session.commit()
+
+    assert result["duplicate"] is False
+    task = session.execute(
+        select(task_runs.c.payload).where(task_runs.c.id == result["task_run_id"])
+    ).scalar_one()
+    assert task["relay_after"] == card_id
+    assert task["message"] == assistant_service._RELAY_INSTRUCTION
+    # 关键：没有教师消息
+    roles = session.execute(select(assistant_messages.c.role)).scalars().all()
+    assert roles == ["assistant"]
+
+
+def test_relay_is_idempotent_per_message(session):
+    """同一条消息只推进一次：双击/重试不会把流程推两步。"""
+    sid = assistant_service.ensure_default_session(session, course_id="c1")
+    card_id = assistant_service._insert_message(
+        session,
+        course_id="c1",
+        task_run_id=_new_turn(session, "t-relay-idem"),
+        role="assistant",
+        content="已生成提案：",
+        action={"kind": "proposal", "tool": "confirm_contract", "args": {},
+                "payload": {}, "status": "executed"},
+        session_id=sid,
+    )
+    session.commit()
+
+    first = assistant_service.enqueue_relay(
+        session, course_id="c1", session_id=sid, after_message_id=card_id,
+    )
+    session.commit()
+    again = assistant_service.enqueue_relay(
+        session, course_id="c1", session_id=sid, after_message_id=card_id,
+    )
+    session.commit()
+    assert again["task_run_id"] == first["task_run_id"]
+    assert again["duplicate"] is True
+    assert len(
+        session.execute(
+            select(task_runs.c.id).where(task_runs.c.task_type == assistant_service.TASK_TYPE)
+        ).scalars().all()
+    ) == 2  # 建卡的那一轮 + 接力这一轮，没有第二轮接力
+
+
+def test_relay_rejects_unknown_message_or_session(session):
+    sid = assistant_service.ensure_default_session(session, course_id="c1")
+    session.commit()
+    with pytest.raises(AssistantError, match="目标消息不存在"):
+        assistant_service.enqueue_relay(
+            session, course_id="c1", session_id=sid, after_message_id="nope",
+        )
+    with pytest.raises(AssistantError, match="会话不存在"):
+        assistant_service.enqueue_relay(
+            session, course_id="c1", session_id="nope", after_message_id="nope",
         )
 
 

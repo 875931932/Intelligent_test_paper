@@ -1459,6 +1459,7 @@ const AssistantPage: FC = () => {
   const createSession = useAssistantStore((s) => s.createSession);
   const patchProposal = useAssistantStore((s) => s.patchProposal);
   const retryProposal = useAssistantStore((s) => s.retryProposal);
+  const relayTurn = useAssistantStore((s) => s.relay);
   const autoProgress = useAssistantStore((s) => s.autoProgress);
   const generationProgress = useAssistantStore((s) => s.generationProgress);
 
@@ -1535,13 +1536,11 @@ const AssistantPage: FC = () => {
       });
       await patchProposal(m.id, 'executed', receipt);
       addToast(receipt, 'success');
-      // 逐级接力：确认成功即自动追问，让下一张提案卡自动弹出成为教师的下一个
-      // 确认框；send 有 sending 并发守卫，中途教师点「取消」则链在此断开
+      // 逐级接力：执行成功即推进下一张卡。走内部接力（不写教师消息）——
+      // 教师这一步只是点了「确认执行」，替他发一条「继续」会凭空多出气泡。
       if (relay && RELAY_TOOLS.has(m.action.tool ?? '')) {
-        // send 失败会回滚乐观气泡并 rethrow：提示教师手动补「继续」
-        void send('继续').catch(() =>
-          addToast('自动追问失败，请手动输入「继续」', 'error'),
-        );
+        // relay 内部已收口失败（toast + 复位在途态），这里不重抛
+        void relayTurn(m.id);
       }
     } catch (err) {
       // 执行失败：卡片保持原状态（回写只在成功后发生），教师可重试或取消
