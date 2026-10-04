@@ -75,26 +75,29 @@ def _comprehensive_archetype_pool(
 
 
 def _nth_comprehensive_archetype(
-    nth: int, pool: list[str], *, explicit: bool, seed: int | None
+    nth: int, pool: list[str], *, explicit: bool, seed: int | None, total: int
 ) -> str:
-    """第 nth 道综合题的原型（nth 为综合题出现序号）。
+    """第 nth 道综合题的原型（nth 为综合题卷面序 0 起，total 为综合题总数）。
 
-    默认池（explicit=False）：nth 已含种子平移，池内轮回。显式池两种语义：
-    - 无重复（白名单，如文科只要案例/方案/评析）：池内按序轮回，教师裁剪
-      出的原型集合是闭集，轮换不越界；
-    - 有重复（按序配额，重复=数量）：前 len(pool) 道按池序硬指派；配额耗尽
-      后的溢出槽位改取默认轮换池中教师**未点名**的原型——回卷池首会把配额
-      复制超量（[code, code] 撞 3 个综合题槽位会出三道代码题，「两道」变
-      「三道」，数量必须由确定性算法保证，不能依赖模型把池写够长）。点名
-      覆盖全部 8 原型时无候选，退回池内轮回兜底。
+    默认池（explicit=False）与显式白名单（无重复）：nth 已含种子平移/按序轮换，
+    池内轮回（语义不变）。显式配额（有重复，重复=数量）采用**尾部对齐**：
+    配额按池序占用卷面**最后** len(pool) 道综合题——教师说「最后两道代码题」
+    写 [code, code] 即精确落到倒数第二、倒数第一道；更靠前的综合题取默认轮换
+    池中教师未点名的原型，按各自卷面序轮换。边界：
+    - 配额 ≥ 题数：整卷依次取前 total 个配额（与旧行为一致）；
+    - 点名覆盖全部 8 原型且配额 < 题数：无候选，退回池内轮回兜底。
+    数量约束由确定性算法保证（配额不复制超量、不静默缩水），不依赖模型把池写够长。
     """
-    if nth < len(pool) or not explicit or len(set(pool)) == len(pool):
+    if not explicit or len(set(pool)) == len(pool):
         return pool[nth % len(pool)]
+    quota_start = max(0, total - len(pool))
+    if nth >= quota_start:
+        return pool[nth - quota_start]
     named = set(pool)
     overflow = [name for name in _shuffled_default_pool(seed) if name not in named]
     if not overflow:
         return pool[nth % len(pool)]
-    return overflow[(nth - len(pool)) % len(overflow)]
+    return overflow[nth % len(overflow)]
 
 
 class ContractRequest(BaseModel):
@@ -266,9 +269,10 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract:
     # 综合题原型池（教师可裁剪）与轮换起点（种子扰动：同种子复现，
     # 异种子换原型序列；None 保持确定性起点 0）
     archetype_pool, explicit_pool = _comprehensive_archetype_pool(request)
-    # 显式池是教师的按序配额（重复=数量）：从池首起指派、种子不平移，
-    # 否则 seed%len 会把 [code, code] 这类配额序列错位，「两道代码题」
-    # 只出一道。默认洗牌池保持种子平移（同种子复现、异种子换起始原型）。
+    # 显式池是教师的按序配额（重复=数量）：**尾部对齐**落位（配额占用卷面最后
+    # 几道综合题，见 _nth_comprehensive_archetype）、种子不平移，否则 seed%len
+    # 会把 [code, code] 这类配额序列错位。默认洗牌池保持种子平移（同种子复现、
+    # 异种子换起始原型）。
     if explicit_pool:
         comp_cursor = 0
     elif request.allocation_seed is not None:
@@ -290,6 +294,7 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract:
         archetype = _nth_comprehensive_archetype(
             comp_cursor, archetype_pool,
             explicit=explicit_pool, seed=request.allocation_seed,
+            total=len(comprehensive_items),
         )
         fields = _comprehensive_fields(comp_cursor, archetype)
         if not explicit_pool:
@@ -306,6 +311,7 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract:
                 archetype = _nth_comprehensive_archetype(
                     comp_cursor, archetype_pool,
                     explicit=explicit_pool, seed=request.allocation_seed,
+                    total=len(comprehensive_items),
                 )
                 fields = _comprehensive_fields(comp_cursor, archetype)
         comp_plan[item.item_index] = fields

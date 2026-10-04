@@ -185,13 +185,13 @@ def test_teacher_pool_order_survives_seed_shuffle():
 
 
 def test_explicit_pool_repetition_is_count_quota():
-    """重复=数量：教师要「两道代码题」→ [code, code, case] 按序硬指派。
+    """重复=数量：教师要「两道代码题+一道案例」→ [code, code, case] 尾部对齐。
 
-    显式池不因种子平移错位（seed=7 下仍从池首起），也不因模式不兼容
+    显式池不因种子平移错位（seed=7 下仍按池序），也不因模式不兼容
     顺延吞掉配额位置——否则数量要求会静默少一道（E2E 实测过 3 综合题
-    只出 1 道代码题）。池长 3、题数 4：第 4 道是配额外溢出槽位，取
-    默认轮换中教师未点名的原型——回卷池首会把配额复制超量（代码题
-    2 道变 3 道），数量必须由算法保证精确。
+    只出 1 道代码题）。池长 3、题数 4：配额尾部对齐占最后 3 道，第 1 道
+    是配额外槽位，取默认轮换中教师未点名的原型——回卷池首会把配额
+    复制超量（代码题 2 道变 3 道），数量必须由算法保证精确。
     """
     rules = _comp_rules(archetypes=[
         "code_completion_scenario",
@@ -202,21 +202,21 @@ def test_explicit_pool_repetition_is_count_quota():
     for seed in (None, 7):
         contract = allocate_paper_contract(_comprehensive_request(rules, seed=seed))
         seq = [s.comprehensive_archetype for s in contract.slots]
-        assert seq[:3] == [
+        assert seq[1:4] == [
             "code_completion_scenario",
             "code_completion_scenario",
             "case_analysis",
         ], f"seed={seed}: {seq}"
-        assert seq[3] not in named, f"seed={seed} 溢出槽位不得复用已配额原型: {seq}"
+        assert seq[0] not in named, f"seed={seed} 配额外槽位不得复用已配额原型: {seq}"
         assert seq.count("code_completion_scenario") == 2, f"seed={seed}: {seq}"
 
 
 def test_short_quota_pool_does_not_overproduce_on_overflow():
-    """配额池短于槽位数：[code, code] + 4 综合题 → 恰好 2 道代码题。
+    """配额池短于槽位数：[code, code] + 4 综合题 → 恰好 2 道代码题（尾部对齐）。
 
     线上 E2E 实测缺陷：回卷池首（pool[nth % len(pool)]）让溢出槽位也
-    变成代码题，「两道代码题」出了四道。溢出槽位必须取默认轮换中
-    未点名的原型，数量约束由确定性算法保证（不依赖模型把池写够长）。
+    变成代码题，「两道代码题」出了四道。配额外槽位（前 2 道）必须取默认
+    轮换中未点名的原型，数量约束由确定性算法保证（不依赖模型把池写够长）。
     """
     rules = _comp_rules(archetypes=[
         "code_completion_scenario",
@@ -226,11 +226,35 @@ def test_short_quota_pool_does_not_overproduce_on_overflow():
         contract = allocate_paper_contract(_comprehensive_request(rules, seed=seed))
         seq = [s.comprehensive_archetype for s in contract.slots]
         assert len(seq) == 4
-        assert seq[:2] == ["code_completion_scenario", "code_completion_scenario"]
-        assert all(a != "code_completion_scenario" for a in seq[2:]), (
-            f"seed={seed} 溢出槽位回卷复制了配额: {seq}"
+        assert seq[2:] == ["code_completion_scenario", "code_completion_scenario"]
+        assert all(a != "code_completion_scenario" for a in seq[:2]), (
+            f"seed={seed} 配额外槽位复制了配额: {seq}"
         )
         assert seq.count("code_completion_scenario") == 2, f"seed={seed}: {seq}"
+
+
+def test_short_quota_pool_aligns_to_paper_tail():
+    """教师说「最后两道代码题」写 [code, code]：3 综合题 → 倒数两道是代码题。
+
+    尾部对齐语义（2026-10-04 拍板）：显式重复配额按池序占用卷面**最后**
+    len(pool) 道综合题，更靠前的综合题取默认池中教师未点名的原型。
+    直接测函数：全综合 3 题在 50/50 章配额下过不了分配器的「章容量整除
+    题分」约束，3 题奇数无法两等分；total=4 的全链路接线由
+    test_short_quota_pool_does_not_overproduce_on_overflow 覆盖。
+    """
+    from app.services.contract_service import _nth_comprehensive_archetype
+
+    pool = ["code_completion_scenario", "code_completion_scenario"]
+    for seed in (None, 7):
+        seq = [
+            _nth_comprehensive_archetype(nth, pool, explicit=True, seed=seed, total=3)
+            for nth in range(3)
+        ]
+        assert seq[1:] == [
+            "code_completion_scenario",
+            "code_completion_scenario",
+        ], f"seed={seed}: {seq}"
+        assert seq[0] != "code_completion_scenario", f"seed={seed}: {seq}"
 
 
 def test_first_comprehensive_archetype_varies_across_seeds():
