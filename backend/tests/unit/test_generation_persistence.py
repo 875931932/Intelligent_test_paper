@@ -35,6 +35,7 @@ from app.services.contract_execution_service import revise_and_confirm
 from app.services.generation_runner_service import (
     GenerationRunnerError,
     _default_graph_invoke,
+    _publish_task_progress,
     enqueue_generation,
     execute_generation_task_handler,
 )
@@ -615,6 +616,35 @@ def test_worker_path_publishes_progress_for_polling(session, monkeypatch):
         probe.dispose()
     assert final["status"] == "succeeded"
     assert final["progress"] == 100
+
+
+def test_publish_task_progress_renews_lease(session):
+    """进度写入即心跳：跑批期间把租约续回有效期，活着的长任务不被判失联。
+
+    2026-10-04 两次 41/49 分钟生成全程无心跳，租约(1800s)中途过期后
+    complete_task 静默失败、任务永远卡 running（前端计时器不停）——
+    「进度即心跳续租」与「收尾只看 owner 不看过期」两道防线即为此而设。
+    """
+    from datetime import UTC, datetime, timedelta
+
+    _setup_pipeline(session)
+    task_id = enqueue_generation(session, course_id="c1", project_id="ep1")
+    past = datetime.now(UTC) - timedelta(minutes=5)  # 已过期的租约
+    session.execute(
+        task_runs.update()
+        .where(task_runs.c.id == task_id)
+        .values(status="running", stage="executing", lease_owner="w1", lease_expires_at=past)
+    )
+    session.commit()
+
+    _publish_task_progress(session, task_run_id=task_id, course_id="c1", done=1, total=2)
+
+    row = session.execute(select(task_runs).where(task_runs.c.id == task_id)).one()._mapping
+    assert row["progress"] == 50  # 5 + 90*1//2
+    lease = row["lease_expires_at"]
+    if lease.tzinfo is None:  # SQLite 存取丢时区，按 UTC 归一后与 UTC 比较
+        lease = lease.replace(tzinfo=UTC)
+    assert lease > datetime.now(UTC)  # 过期租约被心跳续回未来
 
 # --- TR-4.4 模型不可用：不许"成功"地产出空卷 ---
 

@@ -10,8 +10,12 @@ class FakeJsonClient:
         self.calls = []
 
     def request_json(self, *, system_prompt, payload, temperature,
-                     call_context=None, response_validator=None):
-        self.calls.append({"system_prompt": system_prompt, "payload": payload, "temperature": temperature})
+                     call_context=None, response_validator=None,
+                     reasoning_effort=None):
+        self.calls.append({
+            "system_prompt": system_prompt, "payload": payload,
+            "temperature": temperature, "reasoning_effort": reasoning_effort,
+        })
         if response_validator:
             response_validator(self.response)
         return self.response
@@ -183,3 +187,27 @@ def test_schema_violation_persists_distinct_error_code():
     )
     assert code == "model_output_schema_violation"
     assert "questions" in message
+
+
+def test_gateway_forwards_pinned_reasoning_effort():
+    # 构造期钉死的思考档必须原样转发给 json_client：生成阶段据此把
+    # step-5-preview 固定在 low，不受服务器 .env 的 disable_thinking 开关影响。
+    client = FakeJsonClient({
+        "questions": [{
+            "item_index": 1, "stem": "题干", "answer": "A",
+            "options": ["A", "B", "C", "D"],
+        }],
+    })
+    gateway = LLMGateway(api_key="k", json_client=client, reasoning_effort="low")
+    gateway.generate_batch(_payload(question_count=1))
+    assert client.calls[0]["reasoning_effort"] == "low"
+
+    # 未钉档位时维持原行为：转发 None，由 json_client 按档案缺省自行推导。
+    plain = FakeJsonClient({
+        "questions": [{
+            "item_index": 1, "stem": "题干", "answer": "A",
+            "options": ["A", "B", "C", "D"],
+        }],
+    })
+    LLMGateway(api_key="k", json_client=plain).generate_batch(_payload(question_count=1))
+    assert plain.calls[0]["reasoning_effort"] is None

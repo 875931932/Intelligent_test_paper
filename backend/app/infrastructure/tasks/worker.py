@@ -19,6 +19,9 @@ from sqlalchemy.orm import Session
 from app.db.schema import task_runs
 from app.db.session import get_session_factory
 from app.infrastructure.tasks.models import (
+    # 各类型租约时长的唯一权威表（与 lease 收尾逻辑同居 models）；
+    # 保留原私有名，各 service 的「与 worker.py 保持一致」注释继续成立。
+    LEASE_SECONDS_BY_TYPE as _LEASE_SECONDS_BY_TYPE,
     claim_task,
     complete_task,
     fail_task,
@@ -68,23 +71,8 @@ class TaskContext:
 TaskHandler = Callable[[TaskContext], dict]
 _HANDLERS: dict[str, TaskHandler] = {}
 
-# 各任务类型的最长合法执行时长差异极大：生成要跑十几分钟；AI 改题/生成整题是
-# 1~2 轮模型调用（45s 超时 × 2 尝试 × 2 轮，最坏 ~180s）；其余按短任务算。
-# 租约必须覆盖最坏执行时长，否则任务没跑完租约先过期，complete_task 条件
-# 失败，任务被 recovery 重新领取、模型白白重烧一遍。
-_LEASE_SECONDS_BY_TYPE = {
-    "generation_run": 1800,
-    "ai_revise_item": 300,
-    "ai_create_item": 300,
-    "review_paper_version": 300,
-    "propose_exam_rules": 300,
-    "suggest_blueprint_adjustments": 300,
-    "review_framework_candidate": 300,
-    # 助手一轮 = 意图解析 + 可选流式正文（两次模型调用），按短任务上限算
-    "assistant_turn": 300,
-    # 解析块索引 = 批量嵌入 API 调用（几百块 × 分批），按短任务上限算
-    "material_index": 300,
-}
+# 各任务类型租约时长见 models.LEASE_SECONDS_BY_TYPE（claim 时按表取值，
+# 长任务跑批期间由进度写入心跳续租，收尾只看 owner 不看过期）。
 
 
 def register_task_handler(task_type: str, handler: TaskHandler) -> None:

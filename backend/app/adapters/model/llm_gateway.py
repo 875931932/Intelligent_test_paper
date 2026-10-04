@@ -1004,12 +1004,16 @@ class LLMGateway:
         timeout: float = 90.0,
         max_attempts: int = 4,
         disable_thinking: bool = True,
+        # 显式思考档：优先于 disable_thinking 推导出的档案缺省档（None=维持
+        # 原行为）。生成阶段用它把档位钉死为 low，不受服务器 .env 开关影响。
+        reasoning_effort: str | None = None,
         client: httpx.Client | None = None,
         json_client: LLMJsonClient | None = None,
         recorder: ModelCallRecorder | None = None,
         call_context: ModelCallContext | None = None,
     ) -> None:
         self.call_context = call_context
+        self.reasoning_effort = reasoning_effort
         self.json_client = json_client or LLMJsonClient(
             api_key=api_key,
             base_url=base_url,
@@ -1024,8 +1028,8 @@ class LLMGateway:
         # 进程实际使用的 base_url/model；api_key 绝不进日志。
         logger.info(
             "LLMGateway 生效配置 base_url=%s model=%s timeout=%.1fs "
-            "max_attempts=%d disable_thinking=%s",
-            base_url, model, timeout, max_attempts, disable_thinking,
+            "max_attempts=%d disable_thinking=%s reasoning_effort=%s",
+            base_url, model, timeout, max_attempts, disable_thinking, reasoning_effort,
         )
 
     def _request_json(
@@ -1043,6 +1047,8 @@ class LLMGateway:
             temperature=temperature,
             call_context=call_context,
             response_validator=response_validator,
+            # 构造期钉死的思考档（None=不指定，走 json_client 原逻辑）
+            reasoning_effort=self.reasoning_effort,
         )
 
     def generate_batch(self, payload) -> list[dict]:

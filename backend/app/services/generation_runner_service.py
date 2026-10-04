@@ -8,7 +8,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Callable
 
 from sqlalchemy import select, func
@@ -29,7 +29,11 @@ from app.db.schema import (
     task_runs,
 )
 from app.domain.generation.question_formats import COURSE_TYPE_FORMATS_KEY
-from app.infrastructure.tasks.models import TERMINAL_TASK_STATUSES, create_task_run
+from app.infrastructure.tasks.models import (
+    LEASE_SECONDS_BY_TYPE,
+    TERMINAL_TASK_STATUSES,
+    create_task_run,
+)
 
 logger = logging.getLogger("generation.runner")
 
@@ -286,6 +290,8 @@ def _default_graph_invoke(
         base_url=settings.llm_base_url,
         model=settings.llm_model,
         disable_thinking=settings.llm_generation_disable_thinking,
+        # 思考档显式钉死（优先于 disable_thinking 的档案缺省，见配置注释）
+        reasoning_effort=settings.generation_reasoning_effort,
         # 综合题思考+输出长，默认 90s 会 transport 连环（见 generation_model_timeout 注释）
         timeout=settings.generation_model_timeout,
         recorder=DatabaseModelCallRecorder(get_session_factory()),
@@ -480,6 +486,7 @@ def _publish_task_progress(
     done = max(0, min(done, total))
     percent = 5 + (90 * done) // total
     try:
+        now = _now()
         session.execute(
             task_runs.update()
             .where(
@@ -487,7 +494,16 @@ def _publish_task_progress(
                 task_runs.c.course_id == course_id,
                 task_runs.c.status == "running",
             )
-            .values(stage="generating", progress=percent, updated_at=_now())
+            .values(
+                stage="generating",
+                progress=percent,
+                # 进度写入即心跳：顺带把租约续满一程。生成实测 41~49 分钟，远超
+                # generation_run 的 1800s 租约；跑批全程无心跳则租约中途过期，
+                # 活着的长任务会被当成失联（重复派发可抢占 → 双跑重烧）。
+                # 2026-10-04 两次长生成全程未续租即属此类隐患。
+                lease_expires_at=now + timedelta(seconds=LEASE_SECONDS_BY_TYPE["generation_run"]),
+                updated_at=now,
+            )
         )
         session.commit()
     except SQLAlchemyError as exc:

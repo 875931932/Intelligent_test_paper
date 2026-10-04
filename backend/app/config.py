@@ -163,6 +163,12 @@ class Settings(BaseSettings):
     # 连带失守、卷面缺两道综合题。生成已异步化（Celery），放长超时不占请求线程；
     # 与 organization 同口径 480s。
     generation_model_timeout: float = Field(default=480.0, gt=0)
+    # 命题生成的思考档（StepFun reasoning_effort：low/medium/high），生成网关
+    # 显式下发，优先于 llm_generation_disable_thinking 推导出的档案缺省档——
+    # 服务器上即使把该开关设为 false（不发档位、回落模型默认 medium），
+    # 生成也固定走 low（2026-10-05 要求）：低档思考已足够单批命题，且把
+    # 单次调用从分钟级压回十几秒，直接缩短整卷时长。
+    generation_reasoning_effort: str = "low"
     # 网关进程内信号量的并发上限（LLM_MAX_CONCURRENCY）。信号量按**进程**生效：
     # 实际并发 ≈ 持信号量的进程数（uvicorn / celery worker 各算各的）× 本值，
     # 必须 ≤ 模型账号的并发上限（step_plan 上 step-5-preview 为 5），否则供应商

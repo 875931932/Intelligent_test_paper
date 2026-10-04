@@ -70,6 +70,39 @@ def test_expired_lease_can_be_reclaimed_but_stale_worker_cannot_complete(session
     assert complete_task(session, course_id="course-a", task_id=task_id, worker_id="worker-2", result={"ok": True}, now=now + timedelta(seconds=2))
 
 
+def test_expired_lease_owner_can_still_write_terminal_state(session):
+    """租约过期但 owner 未被抢占时仍可写终态（complete/fail 同口径）。
+
+    生成实测跑 41~49 分钟，远超 generation_run 的 1800s 租约：过期门曾让
+    complete_task 静默 0 行，任务永远卡在 running、前端计时器永不停
+    （2026-10-04 两单实测）。owner 门已覆盖抢占（claim_task 易主）与
+    重排（recovery 清 owner），过期不再阻断收尾。
+    """
+    now = datetime.now(UTC)
+    finished = now + timedelta(minutes=49)  # 租约(30min)早已过期
+
+    ok_id = create_task_run(session, course_id="course-a", task_type="generation_run", idempotency_key="expired-ok", input_version="v1", payload={})
+    assert claim_task(session, course_id="course-a", task_id=ok_id, worker_id="worker-1", now=now, lease_seconds=1800)
+    assert complete_task(session, course_id="course-a", task_id=ok_id, worker_id="worker-1", result={"ok": True}, now=finished)
+    row = session.execute(select(task_runs).where(task_runs.c.id == ok_id)).one()._mapping
+    assert row["status"] == "succeeded"
+    assert row["result"] == {"ok": True}
+    assert row["lease_owner"] is None
+
+    bad_id = create_task_run(session, course_id="course-a", task_type="generation_run", idempotency_key="expired-bad", input_version="v1", payload={})
+    assert claim_task(session, course_id="course-a", task_id=bad_id, worker_id="worker-1", now=now, lease_seconds=1800)
+    assert fail_task(session, course_id="course-a", task_id=bad_id, worker_id="worker-1", error_code="handler_error", error_message="boom", now=finished)
+    row = session.execute(select(task_runs).where(task_runs.c.id == bad_id)).one()._mapping
+    assert row["status"] == "failed"
+    assert row["error_code"] == "handler_error"
+
+    # 语义边界不变：owner 已被抢占的过期任务，旧 worker 依然写不进终态。
+    taken_id = create_task_run(session, course_id="course-a", task_type="generation_run", idempotency_key="expired-taken", input_version="v1", payload={})
+    assert claim_task(session, course_id="course-a", task_id=taken_id, worker_id="worker-1", now=now, lease_seconds=1800)
+    assert claim_task(session, course_id="course-a", task_id=taken_id, worker_id="worker-2", now=finished, lease_seconds=1800)
+    assert not complete_task(session, course_id="course-a", task_id=taken_id, worker_id="worker-1", result={"ok": True}, now=finished)
+
+
 def test_cancelled_task_rejects_late_completion_and_lease_refresh_is_owner_only(session):
     task_id = create_task_run(session, course_id="course-a", task_type="parse", idempotency_key="cancel", input_version="v1", payload={})
     now = datetime.now(UTC)

@@ -117,7 +117,8 @@ def test_gateway_prompt_delegates_question_type_formats_to_task_card():
 
     class _Client:
         def request_json(self, *, system_prompt, payload, temperature,
-                         call_context=None, response_validator=None):
+                         call_context=None, response_validator=None,
+                         reasoning_effort=None):
             captured["system_prompt"] = system_prompt
             result = {"questions": [{"item_index": 1}]}
             if response_validator:

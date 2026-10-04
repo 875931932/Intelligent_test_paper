@@ -22,6 +22,28 @@ DISPATCH_EVENT_TYPE = "task.dispatch"
 # 而不是复用旧任务的完成态。任务状态机的唯一判定点。
 TERMINAL_TASK_STATUSES = ("succeeded", "failed", "cancelled")
 
+# 各任务类型的最长合法执行时长差异极大：生成要跑十几分钟；AI 改题/生成整题是
+# 1~2 轮模型调用（45s 超时 × 2 尝试 × 2 轮，最坏 ~180s）；其余按短任务算。
+# 租约必须覆盖最坏执行时长，否则任务没跑完租约先过期，任务会被当成失联
+# （claim_task 可抢占 → 双跑重烧）。长任务的实际保障是两道防线：
+# ① 跑批进度写入即续租（generation_runner._publish_task_progress 心跳）；
+# ② 收尾/失败写终态只看 owner、不看租约是否过期（见 complete_task/fail_task）
+# —— 2026-10-04 两次 41/49 分钟的生成跑完时租约(1800s)已过期，
+# complete_task 被过期门静默挡下，任务永远卡在 running，前端计时器永不停。
+LEASE_SECONDS_BY_TYPE = {
+    "generation_run": 1800,
+    "ai_revise_item": 300,
+    "ai_create_item": 300,
+    "review_paper_version": 300,
+    "propose_exam_rules": 300,
+    "suggest_blueprint_adjustments": 300,
+    "review_framework_candidate": 300,
+    # 助手一轮 = 意图解析 + 可选流式正文（两次模型调用），按短任务上限算
+    "assistant_turn": 300,
+    # 解析块索引 = 批量嵌入 API 调用（几百块 × 分批），按短任务上限算
+    "material_index": 300,
+}
+
 
 def _now(now: datetime | None = None) -> datetime:
     return now or datetime.now(UTC)
@@ -167,7 +189,10 @@ def complete_task(session: Session, *, course_id: str, task_id: str, worker_id: 
             task_runs.c.id == task_id,
             task_runs.c.status == "running",
             task_runs.c.lease_owner == worker_id,
-            task_runs.c.lease_expires_at > current_time,
+            # 不校验租约是否过期：owner 门已覆盖抢占（claim_task 易主）与重排
+            # （recovery 清 owner），过期门只会让长任务永远收不了尾——
+            # 生成一跑 41~49 分钟即超出 1800s 租约，2026-10-04 两单
+            # complete_task 因此静默 0 行，任务永远卡 running、前端计时器不停。
         )
         .values(status="succeeded", stage="completed", progress=100, result=result, lease_owner=None, lease_expires_at=None, updated_at=current_time, completed_at=current_time)
     )
@@ -183,7 +208,8 @@ def fail_task(session: Session, *, course_id: str, task_id: str, worker_id: str,
             task_runs.c.id == task_id,
             task_runs.c.status == "running",
             task_runs.c.lease_owner == worker_id,
-            task_runs.c.lease_expires_at > current_time,
+            # 与 complete_task 同口径：只看 owner，过期不挡收尾（异常也可能是
+            # 跑满租约后才抛的，过期门会把失败也吞成永远 running）。
         )
         .values(status="failed", stage="failed", error_code=error_code, error_message=error_message, lease_owner=None, lease_expires_at=None, updated_at=current_time, completed_at=current_time)
     )
