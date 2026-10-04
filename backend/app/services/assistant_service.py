@@ -1927,6 +1927,68 @@ def patch_message_action(
 _GENERATION_REPORT_TASK_TYPE = "assistant_notice"
 
 
+def _dropped_slots_of_project(session: Session, *, course_id: str, project: dict) -> list[dict]:
+    """读当前卷 metadata.dropped_slots（组卷宁缺勿滥剔除的题位），课程隔离。
+
+    item_count/total_score 与 dropped_slots 必须出自同一份 current 卷
+    （project.paper_version_id 即 _with_paper_summary 的选版结果），否则
+    「蓝图计划数 = 成卷数 + 缺口数」的口径会对不上。
+    """
+    pv_id = project.get("paper_version_id")
+    if not pv_id:
+        return []
+    row = session.execute(
+        select(paper_versions.c["metadata"]).where(
+            paper_versions.c.id == pv_id,
+            paper_versions.c.course_id == course_id,
+        )
+    ).first()
+    meta = row[0] if row else None
+    dropped = meta.get("dropped_slots") if isinstance(meta, dict) else None
+    if not isinstance(dropped, list):
+        return []
+    return [d for d in dropped if isinstance(d, dict)]
+
+
+# 缺口播报的确定性文案映射：收尾通报不需要模型润色，原因与题型都翻成人话
+_DROPPED_REASON_LABELS = {
+    "missing_stem": "模型未产出可用题干",
+    "missing_answer": "模型未产出可用答案",
+    "missing_generated_question": "生成阶段未返回该题",
+}
+_DROPPED_TYPE_LABELS = {"comprehensive": "综合题"}
+
+
+def _generation_gap_content(*, name: str, detail: str, item_count: int, dropped: list[dict]) -> str:
+    """缺口播报文案：缺几道、缺哪些题位、为什么缺、怎么补——一并说清。
+
+    成功分支原版只报「共 N 道题」，蓝图 42 成卷 40 时教师完全无感知
+    （2026-10-04 实测：缺口消息照常发、缺口本身零提示）。
+    """
+    planned = item_count + len(dropped)
+    items = "、".join(
+        f"#{d['item_index']}" for d in dropped if d.get("item_index") is not None
+    ) or "部分题位"
+    types: list[str] = []
+    for d in dropped:
+        raw = str(d.get("question_type") or "").strip()
+        label = _DROPPED_TYPE_LABELS.get(raw, raw)
+        if label and label not in types:
+            types.append(label)
+    reasons: list[str] = []
+    for d in dropped:
+        raw = str(d.get("reason") or "").strip()
+        label = _DROPPED_REASON_LABELS.get(raw) or raw or "未通过可用性校验"
+        if label not in reasons:
+            reasons.append(label)
+    where = f"（{'、'.join(types)}）" if types else ""
+    return (
+        f"「{name}」的试卷已生成：{detail}。注意卷面有缺口——蓝图计划 {planned} 道题位，"
+        f"成卷 {item_count} 道；题位 {items}{where} 因{'、'.join(reasons)}未入卷。"
+        "到『试卷』页点「重新生成」即可补齐缺题，补齐前也可先审核现有题目。"
+    )
+
+
 def report_generation_complete(
     session: Session,
     *,
@@ -1941,10 +2003,13 @@ def report_generation_complete(
     很突兀。收尾通报本来就该由助手发出，所以这里只落 assistant 消息。
 
     文案是确定性的（状态通报不需要模型润色）：成功给「已生成 N 道题 + 去审核」，
-    失败给原因与「重新生成」引导。
+    失败给原因与「重新生成」引导；成功但有题位被剔除（dropped_slots 非空）时
+    额外把缺口说清（蓝图计划数/缺哪些题位/原因/补齐引导），缺口不再无声。
 
-    幂等：按 (course, session, project) 建一条 assistant_notice 任务的
-    idempotency_key，重复调用直接返回已播报结果（前端轮询可能多次触发）。
+    幂等：按 (course, session, project, 当前生成 run) 建一条 assistant_notice
+    任务的 idempotency_key，重复调用直接返回已播报结果（前端轮询可能多次触发）；
+    带 run id 是为了让**重跑**成为新一轮收尾——旧口径会把重跑后的题数与缺口
+    状态永久吞掉，教师停留在上一卷的旧消息上。
     """
     if _load_session_row(session, course_id=course_id, session_id=session_id) is None:
         raise AssistantError("会话不存在")
@@ -1965,8 +2030,9 @@ def report_generation_complete(
         # 还没跑完：不播报（前端会继续轮询，到终态再调）
         return {"reported": False, "reason": "not_settled"}
 
+    run_id = str(project.get("active_generation_run_id") or "")
     key = hashlib.sha256(
-        f"generation-report:{course_id}:{session_id}:{project_id}".encode()
+        f"generation-report:{course_id}:{session_id}:{project_id}:{run_id}".encode()
     ).hexdigest()[:24]
     existing_task = session.execute(
         select(task_runs.c.id).where(
@@ -2004,10 +2070,19 @@ def report_generation_complete(
                 if text
             ]
         ) or "试卷已就绪"
-        content = (
-            f"「{name}」的试卷已生成：{detail}。可以进入审核了——"
-            "到『试卷』页逐题查看与编辑，定稿与导出也在该页完成。"
-        )
+        dropped = _dropped_slots_of_project(session, course_id=course_id, project=project)
+        if dropped:
+            content = _generation_gap_content(
+                name=name,
+                detail=detail,
+                item_count=int(project.get("item_count") or 0),
+                dropped=dropped,
+            )
+        else:
+            content = (
+                f"「{name}」的试卷已生成：{detail}。可以进入审核了——"
+                "到『试卷』页逐题查看与编辑，定稿与导出也在该页完成。"
+            )
 
     if existing_task is None:
         create_task_run(

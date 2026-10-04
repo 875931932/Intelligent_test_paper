@@ -22,9 +22,11 @@ from app.db.schema import (
     exam_points,
     exam_projects,
     framework_versions,
+    generated_questions,
     knowledge_cards,
     knowledge_catalog_versions,
     materials,
+    paper_items,
     paper_versions,
     plan_items,
     task_runs,
@@ -2264,6 +2266,64 @@ def test_generation_report_rejects_foreign_session(session):
         assistant_service.report_generation_complete(
             session, course_id="c1", session_id="nope", project_id="p-gen",
         )
+
+
+def _seed_paper_with_dropped_slots(session, project_id: str = "p-gen") -> None:
+    """给项目挂一份带缺口的当前卷：1 道题落卷 + 2 个题位被剔除（metadata 留痕）。"""
+    _seed_generation_project(session, project_id=project_id)
+    session.execute(paper_versions.insert().values(
+        id="pv-gap", course_id="c1", exam_project_id=project_id,
+        version_no=1, status="candidate",
+        metadata={"dropped_slots": [
+            {"item_index": 41, "question_type": "comprehensive",
+             "exam_point_id": "ep9", "reason": "missing_stem"},
+            {"item_index": 42, "question_type": "comprehensive",
+             "exam_point_id": "ep9", "reason": "missing_stem"},
+        ]},
+    ))
+    session.execute(generated_questions.insert().values(
+        id="gq-gap", course_id="c1",
+        payload={"stem": "正常题", "answer": "A", "score": 2},
+    ))
+    session.execute(paper_items.insert().values(
+        id="pi-gap", course_id="c1", paper_version_id="pv-gap",
+        generated_question_id="gq-gap", display_order=1,
+    ))
+    session.execute(
+        exam_projects.update()
+        .where(exam_projects.c.id == project_id)
+        .values(active_paper_version_id="pv-gap")
+    )
+    session.commit()
+
+
+def test_generation_report_surfaces_dropped_slot_gap(session):
+    """成功但有剔除：播报必须说清缺口（蓝图计划数/缺哪些题位/原因/补齐引导）。
+
+    缺口无声是线上实测缺陷：蓝图 42 成卷 40，收尾消息照旧「共 40 道题，
+    可以进入审核了」，教师对缺两道综合题零感知。
+    """
+    _seed_paper_with_dropped_slots(session)
+    sid = assistant_service.ensure_default_session(session, course_id="c1")
+    session.commit()
+
+    result = assistant_service.report_generation_complete(
+        session, course_id="c1", session_id=sid, project_id="p-gen",
+    )
+    session.commit()
+
+    assert result["reported"] is True
+    content = session.execute(
+        select(assistant_messages.c.content).where(assistant_messages.c.role == "assistant")
+    ).scalar_one()
+    assert "试卷已生成" in content
+    assert "卷面有缺口" in content
+    assert "蓝图计划 3 道题位" in content  # item_count=1 + 剔除 2
+    assert "成卷 1 道" in content
+    assert "#41、#42" in content
+    assert "综合题" in content
+    assert "模型未产出可用题干" in content
+    assert "重新生成" in content
 
 
 # ---------------------------------------------------------------------------
