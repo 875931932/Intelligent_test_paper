@@ -44,6 +44,7 @@ _CLIENT_TIMEOUT_SECONDS = 45.0
 _CLIENT_MAX_ATTEMPTS = 2
 
 # 提案字段（模型给不出就沿用当前规则的那些）——顺序即合并顺序
+# difficulty_distribution 是条件键（未声明时 normalize 省略），出口按 key in 投影
 _PROPOSAL_FIELDS = (
     "exam_form",
     "duration_minutes",
@@ -51,6 +52,7 @@ _PROPOSAL_FIELDS = (
     "question_type_ratios",
     "chapter_weights",
     "assessment_focus",
+    "difficulty_distribution",
 )
 
 _SYSTEM_PROMPT = """你是高校课程的考核规则设计助手。命题教师会用一句话描述他想要的期末考核安排（例如"闭卷笔试90分钟，选择题40%，第3章多考一些，侧重实操"），你据此产出一份结构化的「考试规则提案」。你的读者是命题教师：提案会被填入考核规则卡的编辑草稿，由教师核对、修改后点保存才生效——你只是提案，不代替教师做决定。
@@ -58,16 +60,18 @@ _SYSTEM_PROMPT = """你是高校课程的考核规则设计助手。命题教师
 硬规则：
 1. question_type_ratios 的 question_type 只能取 payload.allowed_question_types 里的英文枚举，ratio 是该题型占总分的百分比；各题合计应约 100。
 2. chapter_weights 的 anchor_key 只能取 payload.anchors 里的 key，weight 是该章占命题权重的百分比；教师没提章节就照抄 payload.current_rules.chapter_weights 原样返回，不要留空。
-3. assessment_focus 的 assessment_mode 只能取 payload.assessment_modes 里的英文枚举，weight 是偏好权重（合计约 100）；教师没提侧重点就照抄 payload.current_rules.assessment_focus 原样返回（当前为空就返回 []）。
-4. exam_form 是考试形式（如"闭卷笔试"），duration_minutes 是时长（分钟），total_score 是总分（分）；教师没提就照抄 payload.current_rules 的对应值，数字字段必须是数字而不是带单位的字符串。
-5. 比例归一到 100 由后端确定性完成，你不用为凑 100 过度纠结，但要给出合理比例。
-6. 只依据教师的要求与 payload 里的既有规则，不臆造章节或题型；提案必须给出非空的 question_type_ratios。
+4. assessment_focus 的 assessment_mode 只能取 payload.assessment_modes 里的英文枚举，weight 是偏好权重（合计约 100）；教师没提侧重点就照抄 payload.current_rules.assessment_focus 原样返回（当前为空就返回 []）。
+5. difficulty_distribution 是难度比例对象 {"low": ..., "medium": ..., "high": ...}（简单/中等/困难占比）；教师说「难度按5:3:2」就填 {"low": 50, "medium": 30, "high": 20}，教师没提就照抄 payload.current_rules.difficulty_distribution（当前没有就省略该字段）。
+6. exam_form 是考试形式（如"闭卷笔试"），duration_minutes 是时长（分钟），total_score 是总分（分）；教师没提就照抄 payload.current_rules 的对应值，数字字段必须是数字而不是带单位的字符串。
+7. 比例归一到 100 由后端确定性完成，你不用为凑 100 过度纠结，但要给出合理比例。
+8. 只依据教师的要求与 payload 里的既有规则，不臆造章节或题型；提案必须给出非空的 question_type_ratios。
 
 只返回严格 JSON 对象：
 {"exam_form": "...", "duration_minutes": 90, "total_score": 100,
  "question_type_ratios": [{"question_type": "single_choice", "ratio": 40}],
  "chapter_weights": [{"anchor_key": "A1", "weight": 30}],
  "assessment_focus": [{"assessment_mode": "conceptual", "weight": 60}],
+ "difficulty_distribution": {"low": 50, "medium": 30, "high": 20},
  "explanation": "一两句话说明这份提案如何呼应教师的要求"}
 explanation 面向教师可读，不进入落库载荷。"""
 
@@ -148,7 +152,8 @@ def normalize_proposal(raw, context: dict) -> dict:
         for key in _PROPOSAL_FIELDS
     }
     proposal = normalize_exam_rules(merged, anchor_keys=context.get("anchor_keys") or [])
-    return {key: proposal[key] for key in _PROPOSAL_FIELDS}
+    # difficulty_distribution 未声明时 normalize 会省略键，条件投影防 KeyError
+    return {key: proposal[key] for key in _PROPOSAL_FIELDS if key in proposal}
 
 
 def validate_proposal(proposal: dict, context: dict) -> dict:

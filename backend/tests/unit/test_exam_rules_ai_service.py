@@ -228,6 +228,29 @@ def test_normalize_proposal_drops_unknown_anchor_and_mode(session):
     assert proposal["assessment_focus"] == [{"assessment_mode": "conceptual", "weight": 100.0}]
 
 
+def test_normalize_proposal_difficulty_distribution_passthrough(session):
+    """难度比例提案三态：模型给→归一透传；模型略→沿用现值；双无→键不出现。"""
+    context = load_propose_context(session, course_id="c1")
+    ratios = {"question_type_ratios": [{"question_type": "single_choice", "ratio": 100}]}
+
+    # 模型给 5:3:2 → 归一到 50/30/20 进入编辑草稿
+    proposal = normalize_proposal(
+        dict(ratios, difficulty_distribution={"low": 5, "medium": 3, "high": 2}),
+        context,
+    )
+    assert proposal["difficulty_distribution"] == {"low": 50.0, "medium": 30.0, "high": 20.0}
+
+    # 模型未提及：沿用教师现值（防清空）
+    declared = dict(context, current_rules=dict(
+        context["current_rules"], difficulty_distribution={"low": 30, "medium": 50, "high": 20},
+    ))
+    carried = normalize_proposal(ratios, declared)
+    assert carried["difficulty_distribution"] == {"low": 30.0, "medium": 50.0, "high": 20.0}
+
+    # 双方都没有：条件键省略——回归：投影按 key in 而非无条件下标（曾会 KeyError）
+    assert "difficulty_distribution" not in normalize_proposal(ratios, context)
+
+
 def test_normalize_proposal_rejects_non_dict(session):
     context = load_propose_context(session, course_id="c1")
     with pytest.raises(ExamRulesAIError, match="JSON 对象"):

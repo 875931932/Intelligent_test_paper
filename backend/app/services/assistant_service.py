@@ -1017,9 +1017,30 @@ def build_proposal_payload(tool: str, args: dict, *, context: dict) -> dict:
         ratios = _validate_overrides(args, "question_type_ratios", entries=_ratio_entry)
         chapters = _validate_overrides(args, "chapter_weights", entries=_weight_entry)
         focus = _validate_overrides(args, "assessment_focus", entries=_focus_entry)
-        if ratios is None and chapters is None and focus is None:
+
+        def _difficulty_arg(raw: object) -> dict | None:
+            """难度比例 {low, medium, high}：缺省键=0，全部缺省/非法即拒。"""
+            if raw is None:
+                return None
+            if not isinstance(raw, dict):
+                raise AssistantError("difficulty_distribution 需要 {low, medium, high} 对象")
+            parsed: dict[str, float] = {}
+            for key in ("low", "medium", "high"):
+                value = raw.get(key)
+                if value is None:
+                    continue
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                    raise AssistantError(f"难度比例 {key} 必须是非负数字")
+                parsed[key] = float(value)
+            if not parsed:
+                raise AssistantError("difficulty_distribution 至少给一个非负档位")
+            return parsed
+
+        difficulty = _difficulty_arg(args.get("difficulty_distribution"))
+        if ratios is None and chapters is None and focus is None and difficulty is None:
             raise AssistantError(
-                "至少给一个要修改的字段（question_type_ratios/chapter_weights/assessment_focus）"
+                "至少给一个要修改的字段"
+                "（question_type_ratios/chapter_weights/assessment_focus/difficulty_distribution）"
             )
         body = {
             "exam_form": current.get("exam_form") or "",
@@ -1034,6 +1055,8 @@ def build_proposal_payload(tool: str, args: dict, *, context: dict) -> dict:
             "assessment_focus": (
                 focus if focus is not None else current.get("assessment_focus") or []
             ),
+            # 未涉及难度时置 None：端点按「未提供即保留」回填现值，不抹掉已声明比例
+            "difficulty_distribution": difficulty if difficulty is not None else None,
         }
         # before 供提案卡做「现值 → 新值」对比展示
         return {

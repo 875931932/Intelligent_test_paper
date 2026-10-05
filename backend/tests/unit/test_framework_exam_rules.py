@@ -97,6 +97,37 @@ def test_normalize_exam_rules_handles_empty_and_junk():
     assert junk["duration_minutes"] is None and junk["total_score"] is None
 
 
+def test_normalize_exam_rules_scales_difficulty_ratio():
+    # 考纲原样写「难度 5:3:2」：归一到 50/30/20，键序固定 low→medium→high
+    rules = normalize_exam_rules({"difficulty_distribution": {"low": 5, "medium": 3, "high": 2}})
+    assert rules["difficulty_distribution"] == {"low": 50.0, "medium": 30.0, "high": 20.0}
+    # 固定 100 的声明原样保留；负值剔除后剩余档归一
+    assert normalize_exam_rules(
+        {"difficulty_distribution": {"low": -10, "medium": 60, "high": 40}}
+    )["difficulty_distribution"] == {"medium": 60.0, "high": 40.0}
+    # 显式 0 档剔除，缺档不补
+    assert normalize_exam_rules(
+        {"difficulty_distribution": {"low": 60, "medium": 40, "high": 0}}
+    )["difficulty_distribution"] == {"low": 60.0, "medium": 40.0}
+    # 字符串值剔除后剩余档归一（与题型比例丢未知项再缩放同口径）
+    assert normalize_exam_rules(
+        {"difficulty_distribution": {"low": "50", "medium": 50}}
+    )["difficulty_distribution"] == {"medium": 100.0}
+
+
+def test_normalize_exam_rules_difficulty_omitted_when_absent_or_invalid():
+    """未声明/非法难度一律省略键（与 type_formats 同约定）：蓝图保持全 medium 缺省。"""
+    for raw in (
+        None,
+        {},
+        {"difficulty_distribution": None},
+        {"difficulty_distribution": "5:3:2"},
+        {"difficulty_distribution": {"easy": 50, "hard": 50}},  # 未知档名全剔除
+        {"difficulty_distribution": {"low": 0, "medium": 0, "high": 0}},  # 全零=未声明
+    ):
+        assert "difficulty_distribution" not in normalize_exam_rules(raw)
+
+
 def test_type_rules_from_ratios_hits_total_score_exactly():
     rules = type_rules_from_ratios(
         [

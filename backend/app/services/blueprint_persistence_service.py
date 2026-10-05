@@ -180,6 +180,47 @@ def _assessment_focus(
     return focus
 
 
+def _difficulty_ratio(
+    session: Session,
+    *,
+    course_id: str,
+    framework_version_id: str,
+) -> dict[str, float]:
+    """读取考核大纲声明的难度比例（归一到 100 的简单/中等/困难占比）。
+
+    与考试侧重点同一来源（框架 payload 的 final_exam_rules）：教师在考核规则卡
+    改完难度比例，下一次出卷即按新比例逐题型确定性分配槽位难度；未声明时为
+    空 dict，蓝图保持既有缺省（全 medium），不凭空造难度。
+    """
+    payload = _framework_payload(
+        session, course_id=course_id, framework_version_id=framework_version_id
+    )
+    rules = payload.get("final_exam_rules") if isinstance(payload, dict) else None
+    raw = normalize_exam_rules(rules).get("difficulty_distribution") or {}
+    return {str(key): float(value) for key, value in raw.items()}
+
+
+def _apply_difficulty(
+    type_rules: dict,
+    *,
+    distribution: dict[str, float],
+) -> dict:
+    """把考核规则卡的难度比例折算进各题型的槽位难度分布。
+
+    规则（与 _apply_assessment_focus 同约定，显式下发的永远优先）：教师/脚本在
+    type_rules 里显式写下的 difficulty 键不动；未声明的题型注入规则卡的比例。
+    注入随 type_rules 持久化，确认阶段防御性重跑输入一致。蓝图引擎按
+    largest-remainder 把比例落成逐题位难度（每题型各自达标）。
+    """
+    if not distribution:
+        return type_rules
+    out = dict(type_rules)
+    for qt, rule in type_rules.items():
+        if isinstance(rule, dict) and "difficulty_distribution" not in rule:
+            out[qt] = {**rule, "difficulty_distribution": dict(distribution)}
+    return out
+
+
 def _enrich_units_with_policy(
     session: Session,
     units_payload: list[dict],
@@ -454,6 +495,15 @@ def create_draft_blueprint(
             **type_rules,
             "comprehensive": {**existing, "archetypes": pool},
         }
+    # 难度比例（考核规则卡声明）→ 各题型槽位难度分布：显式下发的题型规则
+    # 不动，未声明的题型注入比例；注入随 type_rules 持久化，确认阶段防御性
+    # 重跑输入一致。未声明时保持蓝图既有缺省（全 medium）。
+    type_rules = _apply_difficulty(
+        type_rules,
+        distribution=_difficulty_ratio(
+            session, course_id=course_id, framework_version_id=framework_version_id
+        ),
+    )
     # 章节权重可能来自考核大纲的原始 weight_value，未必归一化到 100。
     # 蓝图引擎要求各章权重合计 100，这里统一缩放。
     if chapter_weights:

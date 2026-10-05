@@ -5,7 +5,7 @@ import { getErrorMessage } from '@/api/errors';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { Button } from '@/components/ui/Button';
-import { QUESTION_TYPE_OPTIONS, qlabel, mlabel } from '@/lib/examDisplay';
+import { QUESTION_TYPE_OPTIONS, qlabel, mlabel, dlabel } from '@/lib/examDisplay';
 import { formatPercent, friendlyId } from '@/lib/format';
 import type { ExamRuleFocus, ExamRules, ExamRulesProposalResult, TaskRun } from '@/types/api';
 
@@ -105,7 +105,13 @@ export function ExamRulesCard({
   const ratioSum = (draft.question_type_ratios ?? []).reduce((s, r) => s + (Number(r.ratio) || 0), 0);
   const chapterSum = (draft.chapter_weights ?? []).reduce((s, c) => s + (Number(c.weight) || 0), 0);
   const focusSum = (draft.assessment_focus ?? []).reduce((s, e) => s + (Number(e.weight) || 0), 0);
+  const diffSum = (['low', 'medium', 'high'] as const).reduce(
+    (s, k) => s + (Number(draft.difficulty_distribution?.[k]) || 0),
+    0,
+  );
   const hasRules = (rules?.question_type_ratios?.length ?? 0) > 0;
+  // 只声明了难度的旧空白规则也要进读态（否则落进「没有解析出考试规则」分支）
+  const hasDifficulty = Object.keys(rules?.difficulty_distribution ?? {}).length > 0;
   // 当前权重命中了哪个预设（全零/空 = 均衡；其余不匹配则视为自定义微调）
   const activePreset = FOCUS_PRESETS.find(
     (p) => focusSignature(draft.assessment_focus) === focusSignature(focusEntries(p.weights)),
@@ -119,6 +125,15 @@ export function ExamRulesCard({
     else next.push({ assessment_mode: mode as ExamRuleFocus['assessment_mode'], weight });
     // 全部归零 = 均衡：清空声明，蓝图回退题型默认分布
     setDraft({ ...draft, assessment_focus: next.filter((e) => Number(e.weight) > 0) });
+  };
+
+  const setDifficulty = (key: 'low' | 'medium' | 'high', value: number) => {
+    const cur = draft.difficulty_distribution ?? { low: 0, medium: 0, high: 0 };
+    const next = { ...cur, [key]: value };
+    const sum = (['low', 'medium', 'high'] as const).reduce((s, k) => s + (Number(next[k]) || 0), 0);
+    // 全零 = 不声明：必须发 {}——发 undefined 会被 JSON 丢掉，端点按
+    //「未提供即保留」反而把旧值留住，教师就清不掉了
+    setDraft({ ...draft, difficulty_distribution: sum > 0 ? next : {} });
   };
 
   // 轮询提案任务（与 PaperReviewPanel 同款：依赖只取 id，终态自停）
@@ -171,7 +186,7 @@ export function ExamRulesCard({
     setSaving(true);
     try {
       await api.framework.updateExamRules(courseId, draft);
-      addToast('考核规则已保存，下次出卷按新比例与侧重点分配', 'success');
+      addToast('考核规则已保存，下次出卷按新比例、侧重点与难度分配', 'success');
       setEditing(false);
       onSaved();
     } catch (e) {
@@ -203,7 +218,7 @@ export function ExamRulesCard({
       </div>
 
       {!editing ? (
-        hasRules || rules?.exam_form || rules?.total_score || Object.keys(rules?.type_formats ?? {}).length > 0 ? (
+        hasRules || rules?.exam_form || rules?.total_score || hasDifficulty || Object.keys(rules?.type_formats ?? {}).length > 0 ? (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
               <span>考试形式：<strong style={{ color: 'var(--text)' }}>{rules?.exam_form || '—'}</strong></span>
@@ -239,6 +254,24 @@ export function ExamRulesCard({
                       {mlabel(e.assessment_mode)} {formatPercent(e.weight)}
                     </span>
                   ))}
+                </div>
+              </div>
+            )}
+
+            {hasDifficulty && (
+              <div>
+                <p style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-tertiary)', marginBottom: '6px' }}>难度比例</p>
+                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                  {(['low', 'medium', 'high'] as const)
+                    .filter((k) => Number(rules?.difficulty_distribution?.[k] ?? 0) > 0)
+                    .map((k) => (
+                      <span key={k} style={{
+                        padding: '4px 10px', borderRadius: 999, fontSize: '0.78rem', fontWeight: 600,
+                        background: 'var(--accent-subtle)', color: 'var(--accent)',
+                      }}>
+                        {dlabel(k)} {formatPercent(rules?.difficulty_distribution?.[k] ?? 0)}
+                      </span>
+                    ))}
                 </div>
               </div>
             )}
@@ -301,7 +334,7 @@ export function ExamRulesCard({
               value={aiInstruction}
               onChange={(e) => setAiInstruction(e.target.value)}
               onKeyDown={(e) => { if (e.key === 'Enter') void handlePropose(); }}
-              placeholder="一句话描述考核安排，如：闭卷90分钟，选择题40%，第2章多考，偏理解"
+              placeholder="一句话描述考核安排，如：闭卷90分钟，选择题40%，第2章多考，难度按5:3:2"
               aria-label="考核要求（一句话）"
               disabled={aiRunning}
             />
@@ -431,9 +464,33 @@ export function ExamRulesCard({
             </p>
           </div>
 
+          <div>
+            <p style={{ fontSize: '0.82rem', fontWeight: 600, marginBottom: '8px' }}>难度比例</p>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: '8px 16px' }}>
+              {(['low', 'medium', 'high'] as const).map((k) => (
+                <div key={k} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ flex: 1, fontSize: '0.85rem' }}>{dlabel(k)}</span>
+                  <input
+                    className="input-field" type="number" min={0} max={100} step="5" style={{ width: 100 }}
+                    aria-label={`${dlabel(k)}占比`}
+                    value={draft.difficulty_distribution?.[k] ?? 0}
+                    onChange={(e) => setDifficulty(k, Number(e.target.value) || 0)}
+                  />
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)' }}>%</span>
+                </div>
+              ))}
+            </div>
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '8px', lineHeight: 1.7 }}>
+              {diffSum > 0
+                ? `合计 ${formatPercent(diffSum)}（保存时自动归一到 100，如 5:3:2 填 50/30/20）。蓝图按此比例逐题型确定性分配题位难度，确定性算法保证、不进 prompt。`
+                : '不声明：出卷不控难度，题位默认全部「中等」。全部归零即可清除已声明的比例。'}
+            </p>
+          </div>
+
           <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--info-subtle)', fontSize: '0.78rem', color: 'var(--text-secondary)', lineHeight: 1.6 }}>
             比例不需要手工凑满 100：保存时会自动归一到 100。题型比例决定试卷的题型分布与分值，
-            章节权重决定各章出题占比，考试侧重点决定各题型的考查方式；考纲未声明的章节按 0 处理。
+            章节权重决定各章出题占比，考试侧重点决定各题型的考查方式，难度比例决定各题型的难度分布；
+            考纲未声明的章节按 0 处理。
           </div>
         </div>
       )}

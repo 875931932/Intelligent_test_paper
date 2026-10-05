@@ -459,6 +459,64 @@ def test_patch_exam_rules_round_trips_assessment_focus(tmp_path):
         engine.dispose()
 
 
+def test_patch_exam_rules_round_trips_difficulty_distribution(tmp_path):
+    """考核规则 PATCH 接收难度比例：归一化落库回显；未携带时保留现值。"""
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'difficulty.db'}", connect_args={"check_same_thread": False}
+    )
+    event.listen(engine, "connect", lambda connection, _: connection.execute("PRAGMA foreign_keys=ON"))
+    Base.metadata.create_all(engine)
+    with Session(engine) as setup:
+        setup.add(User(id="owner-dev", display_name="Owner", role="teacher"))
+        setup.flush()
+        setup.add(Course(id="course", owner_id="owner-dev", slug="course", name="Course"))
+        setup.flush()
+        setup.execute(
+            framework_versions.insert().values(
+                id="fv-difficulty",
+                course_id="course",
+                version_no=1,
+                status="published",
+                payload={"anchors": [{"key": "core-exam"}], "final_exam_rules": {}},
+                published_at=datetime.now(UTC),
+            )
+        )
+        setup.commit()
+
+    def session_override():
+        with Session(engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = session_override
+    rules_url = "/api/v1/courses/course/framework-versions/current/rules"
+    try:
+        with TestClient(app) as client:
+            # 写入：考纲原样 5:3:2，响应归一到 50/30/20
+            patched = client.patch(
+                rules_url,
+                json={"difficulty_distribution": {"low": 5, "medium": 3, "high": 2}},
+            )
+            assert patched.status_code == 200, patched.text
+            expected = {"low": 50.0, "medium": 30.0, "high": 20.0}
+            assert patched.json()["exam_rules"]["difficulty_distribution"] == expected
+
+            current = client.get("/api/v1/courses/course/framework-versions/current")
+            assert current.json()["exam_rules"]["difficulty_distribution"] == expected
+
+            # 未携带 difficulty_distribution（旧表单/AI 提案）：现值不被抹掉
+            keep = client.patch(rules_url, json={"exam_form": "开卷笔试"})
+            assert keep.status_code == 200, keep.text
+            assert keep.json()["exam_rules"]["difficulty_distribution"] == expected
+
+            # 显式 {} 清空：键消失，蓝图回到全 medium 缺省
+            cleared = client.patch(rules_url, json={"difficulty_distribution": {}})
+            assert cleared.status_code == 200, cleared.text
+            assert "difficulty_distribution" not in cleared.json()["exam_rules"]
+    finally:
+        app.dependency_overrides.clear()
+        engine.dispose()
+
+
 def test_type_formats_endpoint_sets_updates_and_clears(tmp_path):
     """题型格式端点：中文别名写入 → 再设覆盖 → 空串恢复默认；其余规则不动。"""
     engine = create_engine(

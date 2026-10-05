@@ -600,6 +600,80 @@ def test_confirm_blueprint_succeeds_with_practical_focus(session):
     assert result["status"] == "confirmed"
 
 
+# --- 难度比例（difficulty_distribution）：逐题型确定性折算成槽位难度 ---
+
+
+def _set_difficulty(session, distribution: dict):
+    """往 fv1 的 payload 写入难度比例（模拟教师在考核规则卡保存）。"""
+    payload = dict(session.execute(
+        select(framework_versions.c.payload).where(framework_versions.c.id == "fv1")
+    ).one()._mapping["payload"] or {})
+    payload["final_exam_rules"] = {"difficulty_distribution": distribution}
+    session.execute(
+        framework_versions.update()
+        .where(framework_versions.c.id == "fv1")
+        .values(payload=payload)
+    )
+    session.commit()
+
+
+def _difficulty_counts(session, bv_id: str) -> dict[str, int]:
+    rows = session.execute(
+        select(plan_items.c.difficulty).where(plan_items.c.blueprint_version_id == bv_id)
+    ).all()
+    counts: dict[str, int] = {}
+    for row in rows:
+        key = row._mapping["difficulty"]
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def test_difficulty_ratio_reaches_plan_items(session):
+    """规则卡声明 5:3:2：题位难度按比例落位，注入随 type_rules 持久化。
+
+    回归背景：蓝图引擎一直支持 difficulty_distribution，但考试规则 schema 里
+    没有难度字段，整卷 42 题全落默认 medium——比例声明必须从规则卡走到槽位。
+    """
+    # 考纲原样 5:3:2（非 100），normalize 归一后注入
+    _set_difficulty(session, {"low": 5, "medium": 3, "high": 2})
+    bv_id, _ = create_draft_blueprint(session, **_draft_params(count=10, per=10))
+    stored = _stored_type_rules(session, bv_id)
+    assert stored["single_choice"]["difficulty_distribution"] == {
+        "low": 50.0, "medium": 30.0, "high": 20.0,
+    }
+    # count=10 的 largest-remainder：恰好 5 简单 / 3 中等 / 2 困难
+    assert _difficulty_counts(session, bv_id) == {"low": 5, "medium": 3, "high": 2}
+    # 确认阶段防御性重跑读持久化 type_rules：难度分布原样生效
+    result = confirm_blueprint(
+        session, course_id="c1", project_id="ep1", blueprint_version_id=bv_id
+    )
+    assert result["status"] == "confirmed"
+    assert _difficulty_counts(session, bv_id) == {"low": 5, "medium": 3, "high": 2}
+
+
+def test_difficulty_undeclared_keeps_medium_default(session):
+    """未声明难度比例：不注入键、不凭空造难度，维持既有缺省全 medium。"""
+    bv_id, _ = create_draft_blueprint(session, **_draft_params(count=10, per=10))
+    assert "difficulty_distribution" not in _stored_type_rules(session, bv_id)["single_choice"]
+    assert _difficulty_counts(session, bv_id) == {"medium": 10}
+
+
+def test_difficulty_explicit_type_rule_wins_over_rules_card(session):
+    """教师/脚本显式下发的题型难度分布永远优先于规则卡比例。"""
+    _set_difficulty(session, {"low": 50, "medium": 30, "high": 20})
+    params = _draft_params(count=10, per=10)
+    params["type_rules"]["single_choice"] = {
+        **params["type_rules"]["single_choice"],
+        "difficulty_distribution": {"low": 100, "medium": 0, "high": 0},
+    }
+    bv_id, _ = create_draft_blueprint(session, **params)
+    stored = _stored_type_rules(session, bv_id)
+    assert stored["single_choice"]["difficulty_distribution"] == {
+        "low": 100, "medium": 0, "high": 0,
+    }
+    assert _difficulty_counts(session, bv_id) == {"low": 10}
+
+
 def test_allocation_ladder_raises_last_error_when_all_attempts_fail(session):
     """分配阶梯三级全失败时把最后的校验错误抛给教师，不静默吞错。
 

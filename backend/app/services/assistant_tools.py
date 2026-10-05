@@ -204,12 +204,12 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         name="update_exam_rules",
         kind=KIND_PROPOSAL,
         doc=(
-            "修改考核规则（题型比例/章节权重/考试侧重点；蓝图创建时按新规则确定性折算，"
+            "修改考核规则（题型比例/章节权重/考试侧重点/难度比例；蓝图创建时按新规则确定性折算，"
             "你只提方案、不做换算）。至少给一个字段；各字段已有现值见 "
             "snapshot.framework.exam_rules，未给出的字段保持原值。"
         ),
         label="修改考核规则",
-        impact="覆盖题型比例 / 章节权重 / 考试侧重点；蓝图创建时按新规则确定性生成，已存在的蓝图不受影响。",
+        impact="覆盖题型比例 / 章节权重 / 考试侧重点 / 难度比例；蓝图创建时按新规则确定性生成，已存在的蓝图不受影响。",
         parameters=_obj(
             {
                 "question_type_ratios": _arr(
@@ -244,6 +244,19 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
                     ),
                     "考试侧重点列表；教师说「偏理论」即提高 theory_recall 与 conceptual 的权重",
                 ),
+                "difficulty_distribution": {
+                    **_obj(
+                        {
+                            "low": _num("简单档占比，>=0"),
+                            "medium": _num("中等档占比，>=0"),
+                            "high": _num("困难档占比，>=0"),
+                        },
+                    ),
+                    "description": (
+                        "难度比例（归一到 100 后逐题型落成槽位难度）；教师说"
+                        "「难度按5:3:2」即 {low: 50, medium: 30, high: 20}；未涉及则不传"
+                    ),
+                },
             }
         ),
     ),

@@ -5,12 +5,13 @@
 考纲声明脱节。本模块做三件确定性的事：
 
 1. ``normalize_exam_rules``：把模型/教师给的自由形态规则归一成内部约定
-   （题型名统一英文枚举、剔除未知项、比例归一到 100；考试侧重点按考查
-   方式同样归一）；
+   （题型名统一英文枚举、剔除未知项、比例归一到 100；考试侧重点与难度
+   比例按同样口径归一）；
 2. ``type_rules_from_ratios``：按题型比例推导蓝图的 type_rules
    （题数取整后定点修正，保证总分精确闭合）；
-3. 考试侧重点 ``assessment_focus`` 只声明各考查方式的权重偏好，由蓝图
-   创建时确定性地折算成各题型的考查方式分布——权重本身不进任何 prompt。
+3. 考试侧重点 ``assessment_focus`` 与难度比例 ``difficulty_distribution``
+   只声明权重偏好，由蓝图创建时确定性地折算成各题型的考查方式/槽位难度
+   ——权重本身不进任何 prompt。
 """
 from __future__ import annotations
 
@@ -62,6 +63,9 @@ DEFAULT_TYPE_RULES: dict[str, dict[str, float]] = {
     "short_answer": {"count": 4, "score": 5},
     "comprehensive": {"count": 2, "score": 10},
 }
+
+# 难度比例只认三个规范档（顺序即归一后输出顺序），与蓝图引擎 _DIFFICULTY_ORDER 同源口径
+_DIFFICULTY_KEYS = ("low", "medium", "high")
 
 
 def canonical_question_type(raw: object) -> str | None:
@@ -191,6 +195,17 @@ def normalize_exam_rules(raw: object, *, anchor_keys: list[str] | None = None) -
     focus = _normalize_to_100(focus)
     focus = [(key, value) for key, value in focus if value > 0]
 
+    # 难度比例：考纲/教师声明的简单/中等/困难占比（归一到 100，只认三个规范
+    # 档，全零/非法视为未声明）。蓝图创建时逐题型确定性折算成槽位难度；
+    # 未声明时省略键（与 type_formats 同约定），蓝图保持既有缺省——全 medium。
+    difficulty: list[tuple[str, float]] = [
+        (key, value)
+        for key, value in _ratio_list(rules.get("difficulty_distribution"))
+        if key in _DIFFICULTY_KEYS
+    ]
+    difficulty = _normalize_to_100(difficulty)
+    difficulty = [(key, value) for key, value in difficulty if value > 0]
+
     duration = rules.get("duration_minutes")
     if isinstance(duration, bool) or not isinstance(duration, (int, float)) or duration < 0:
         duration = None
@@ -214,6 +229,11 @@ def normalize_exam_rules(raw: object, *, anchor_keys: list[str] | None = None) -
     # 旧消费方（表单、精确断言）凭空加键。
     if type_formats:
         result["type_formats"] = type_formats
+    if difficulty:
+        result["difficulty_distribution"] = {
+            key: value
+            for key, value in sorted(difficulty, key=lambda pair: _DIFFICULTY_KEYS.index(pair[0]))
+        }
     return result
 
 

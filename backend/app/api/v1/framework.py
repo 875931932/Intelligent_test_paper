@@ -194,6 +194,10 @@ class ExamRulesUpdate(BaseModel):
     # 题型出题格式覆盖 {question_type: template}：None=未提供（保留现值，
     # 防旧表单把 AI 助手设置的格式抹掉），{}=显式清空（恢复类别/全局默认）
     type_formats: dict | None = None
+    # 难度比例 {low, medium, high}（蓝图创建时逐题型确定性折算成槽位难度）：
+    # None=未提供（保留现值，防旧表单/助手提案抹掉），{}=显式清空（恢复全
+    # medium 缺省），保存时由 normalize_exam_rules 归一到 100
+    difficulty_distribution: dict | None = None
 
 
 @router.patch("/framework-versions/current/rules")
@@ -202,10 +206,15 @@ def update_exam_rules(course_id: str, body: ExamRulesUpdate, session: Session = 
     repo = framework_service.DatabaseFrameworkRepository(session)
     try:
         dumped = body.model_dump()
-        if dumped.get("type_formats") is None:
-            # 整份替换语义：请求未携带 type_formats 时保留现值（数据完整性防线）
+        if dumped.get("type_formats") is None or dumped.get("difficulty_distribution") is None:
+            # 整份替换语义：请求未携带的字段按现值回填（数据完整性防线）——
+            # 旧前端/AI 助手提案不带新字段时，不能把已声明的格式/难度抹掉。
             current = framework_service.get_current_framework(session, course_id=course_id)
-            dumped["type_formats"] = (current.get("exam_rules") or {}).get("type_formats") or {}
+            exam_rules = current.get("exam_rules") or {}
+            if dumped.get("type_formats") is None:
+                dumped["type_formats"] = exam_rules.get("type_formats") or {}
+            if dumped.get("difficulty_distribution") is None:
+                dumped["difficulty_distribution"] = exam_rules.get("difficulty_distribution")
         version_id = repo.update_exam_rules({"course_id": course_id}, dumped)
     except framework_service.FrameworkNotFoundError:
         raise _not_found()

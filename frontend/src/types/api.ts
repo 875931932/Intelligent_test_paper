@@ -212,6 +212,11 @@ export interface ExamRules {
   /** 考试侧重点：各考查方式权重（保存时归一到 100）；空 = 均衡（按题型默认分布） */
   assessment_focus?: ExamRuleFocus[];
   /**
+   * 难度比例（简单/中等/困难占比，保存时归一到 100）：蓝图创建时逐题型确定性
+   * 折算成题位难度；缺省/空 = 不声明（出卷题位默认全部「中等」）。
+   */
+  difficulty_distribution?: Partial<Record<'low' | 'medium' | 'high', number>>;
+  /**
    * 题型出题格式覆盖 {question_type: 完整格式要求}：课程级，压过类别预设与全局档案。
    * 未覆盖的题型回落默认；缺省/空 = 无覆盖。AI 助手经 PATCH .../rules/type-formats 逐键修改。
    */

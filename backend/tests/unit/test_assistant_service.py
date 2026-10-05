@@ -717,6 +717,35 @@ def test_update_exam_rules_rejects_bad_args():
         build_proposal_payload("update_exam_rules", {}, context=_paper_ctx())
 
 
+def test_update_exam_rules_difficulty_merge_and_preserve():
+    payload = build_proposal_payload(
+        "update_exam_rules",
+        {"difficulty_distribution": {"low": 5, "medium": 3, "high": 2}},
+        context=_paper_ctx(),
+    )
+    # 解析成规范三档浮点，端点再归一到 100
+    assert payload["body"]["difficulty_distribution"] == {"low": 5.0, "medium": 3.0, "high": 2.0}
+
+    untouched = build_proposal_payload(
+        "update_exam_rules",
+        {"assessment_focus": [{"assessment_mode": "conceptual", "weight": 100}]},
+        context=_paper_ctx(),
+    )
+    # 未涉及难度的提案置 None：端点按「未提供即保留」回填现值，不抹已声明比例
+    assert untouched["body"]["difficulty_distribution"] is None
+
+
+def test_update_exam_rules_rejects_bad_difficulty():
+    for bad in (
+        {"difficulty_distribution": "5:3:2"},
+        {"difficulty_distribution": {}},
+        {"difficulty_distribution": {"low": -1}},
+        {"difficulty_distribution": {"low": "50"}},
+    ):
+        with pytest.raises(AssistantError, match="difficulty|难度"):
+            build_proposal_payload("update_exam_rules", bad, context=_paper_ctx())
+
+
 def test_create_blueprint_guards_and_archetypes_pool():
     with pytest.raises(AssistantError, match="知识目录"):
         build_proposal_payload(
