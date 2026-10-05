@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from typing import Protocol
 from uuid import uuid4
@@ -13,6 +14,8 @@ from sqlalchemy.orm import Session
 
 from app.db.schema import outbox_events
 from app.infrastructure.tasks.models import DISPATCH_EVENT_TYPE
+
+logger = logging.getLogger(__name__)
 
 
 class Publisher(Protocol):
@@ -87,7 +90,13 @@ def dispatch_pending_events(
         ),
     ]
     eligible.append(outbox_events.c.course_id == course_id)
-    event_ids = session.execute(select(outbox_events.c.id).where(*eligible).order_by(outbox_events.c.created_at).limit(limit)).scalars().all()
+    try:
+        event_ids = session.execute(select(outbox_events.c.id).where(*eligible).order_by(outbox_events.c.created_at).limit(limit)).scalars().all()
+    except Exception:
+        # 加载阶段失败 = 事件连 claim 都进不去（线上表现为 pending/attempts=0
+        # 且 error 为空）——留相位日志再抛，由调用方回滚。
+        logger.exception("outbox dispatch: load events failed (course=%s)", course_id)
+        raise
     published = 0
     for event_id in event_ids:
         owner = uuid4().hex
@@ -104,6 +113,10 @@ def dispatch_pending_events(
         try:
             publisher.publish(event["event_type"], event["payload"])
         except Exception as exc:
+            logger.warning(
+                "outbox dispatch: publish failed, event stays pending (course=%s event=%s): %s",
+                course_id, event_id, exc,
+            )
             session.execute(
                 update(outbox_events)
                 .where(outbox_events.c.id == event_id, outbox_events.c.status == "claimed", outbox_events.c.claim_owner == owner)

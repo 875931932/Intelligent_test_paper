@@ -1,6 +1,7 @@
 """exam_projects CRUD 端点（课程作用域），以及 blueprint / contract / generation 子端点。"""
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -38,6 +39,8 @@ from app.services.generation_runner_service import (
     GenerationRunnerError,
     enqueue_generation,
 )
+
+logger = logging.getLogger(__name__)
 
 # 试卷生成→导出链路的项目/蓝图/合同/生成端点全部要求登录：
 # router 级依赖一次覆盖全部端点，新增端点默认带鉴权。
@@ -333,6 +336,9 @@ def suggest_blueprint_adjustments(
         )
         session.commit()
     except Exception:
+        # 静默吞掉曾把「事件没发出去」藏成任务永远排队（outbox 卡 pending 且
+        # attempts=0，连 error 列都没写）——必须留痕，否则线上无从定位。
+        logger.exception("outbox dispatch failed (course=%s task=%s)", course_id, task_id)
         session.rollback()
 
     return {"task_run_id": task_id}
@@ -621,6 +627,10 @@ def generate(
             )
             session.commit()
         except Exception:
+            # 同上：留痕后回滚——dispatch 失败保持 pending 可重试，但必须可见
+            logger.exception(
+                "outbox dispatch failed (course=%s task=%s)", course_id, task_run_id
+            )
             session.rollback()
 
     return {"task_run_id": task_run_id}
