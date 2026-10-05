@@ -714,28 +714,125 @@ body > .floating-pill:nth-of-type(2) { top: 112px; }
 
 .table-wrapper { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
-/* ═══════════════════════════════════════════════
-   AI 助手聊天组件（气泡 / 头像 / 输入 composer / 流式动效）
-   ═══════════════════════════════════════════════ */
+/* ═══════════════════════════════════════════════════
+   AI 助手聊天组件（单头像接力 / 无框正文 / 结构化卡片 / 流式动效）
+   对齐主样式：正文直接落在画布上，结构化内容才用白卡承托；
+   同一轮连续助手消息只出现一个头像（Codex / Trae / Claude 风格），
+   头像中轴一条发丝接力线把整轮串起来。
+   ═══════════════════════════════════════════════════ */
 
-/* 气泡入场：上新消息从下方淡入（250ms snappy，reduced-motion 已被全局偏好覆盖） */
+/* 消息入场：上新消息从下方淡入（250ms snappy，reduced-motion 已被全局偏好覆盖） */
 .msg-in { animation: msgIn 0.25s var(--ease-snappy); }
 @keyframes msgIn {
   from { opacity: 0; transform: translateY(6px); }
   to { opacity: 1; transform: none; }
 }
 
-/* 助手头像：品牌蓝小方牌 */
+/* 助手回合：同轮消息共享一个头像；未显示头像的消息用等高占位保持缩进。
+   ::before 是头像中轴上的接力线：首条从头像下缘起笔，续条跨过消息
+   间隙连上，末条渐隐收尾；单条回合不画线。 */
+.chat-run { position: relative; width: 100%; }
+.chat-run::before {
+  content: '';
+  position: absolute;
+  left: 13px;
+  width: 1px;
+  pointer-events: none;
+  background: var(--line);
+}
+.chat-run.is-start::before { top: 38px; bottom: -14px; }
+.chat-run.is-cont::before { top: -14px; bottom: -14px; }
+.chat-run.is-end::before {
+  background: linear-gradient(to bottom, var(--line) 0%, var(--line) 55%, transparent 100%);
+}
+.chat-run.is-lone::before { display: none; }
+
+/* 头像等高占位：续条消息与首条内容列对齐（无头像但不丢缩进） */
+.chat-avatar-spacer { width: 28px; flex-shrink: 0; }
+
+/* 助手头像：品牌渐变小方牌 + 入场弹现（只在回合开头出现一次） */
 .chat-avatar {
   width: 28px;
   height: 28px;
   border-radius: 9px;
-  background: var(--brand);
+  background: linear-gradient(135deg, var(--brand) 0%, var(--acc-violet) 100%);
   color: #ffffff;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--brand) 32%, transparent);
+  animation: avatarIn 0.3s var(--ease-out-expo);
+}
+@keyframes avatarIn {
+  from { opacity: 0; transform: scale(0.72); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+/* 助手正文：无框直接落在画布上；结构化内容（结果/提案/来源/引导）才用卡片承托 */
+.chat-text { min-width: 0; font-size: 0.875rem; line-height: 1.7; color: var(--text); }
+
+/* 结构化卡片：白底 + 发丝线 + 常驻柔影；悬停阴影加深一档 */
+.chat-card {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-1);
+  transition: box-shadow var(--duration-hover) var(--ease-snappy);
+}
+.chat-card:hover { box-shadow: var(--shadow-2); }
+/* 提案卡：AI 建议身份色（品牌浅底 + 品牌描边） */
+.chat-card--proposal {
+  border-color: color-mix(in srgb, var(--brand) 26%, transparent);
+  background: var(--brand-subtle);
+}
+
+/* 详情入口 chip：胶囊按钮，hover 上浮转品牌蓝 */
+.chat-detail {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 6px 12px;
+  border-radius: var(--radius-full);
+  border: 1px solid var(--line);
+  background: var(--surface-solid);
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 500;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: color var(--duration-hover) var(--ease-snappy),
+              border-color var(--duration-hover) var(--ease-snappy),
+              background-color var(--duration-hover) var(--ease-snappy),
+              box-shadow var(--duration-hover) var(--ease-snappy),
+              transform var(--duration-hover) var(--ease-snappy);
+}
+.chat-detail:hover {
+  color: var(--brand-ink);
+  border-color: color-mix(in srgb, var(--brand) 45%, transparent);
+  background: var(--brand-subtle);
+  box-shadow: var(--shadow-1);
+  transform: translateY(-1px);
+}
+.chat-detail:active { transform: scale(0.97); }
+
+/* 消息时间戳：悬停该轮才浮现（默认隐形，减少时间线噪音） */
+.chat-time {
+  font-size: 0.7rem;
+  color: var(--text-tertiary);
+  margin-left: 36px;
+  opacity: 0;
+  transition: opacity var(--duration-hover) var(--ease-snappy);
+}
+.chat-run:hover .chat-time { opacity: 1; }
+
+/* 详情弹窗内的长表容器：限高滚动，不撑爆弹窗 */
+.chat-detail-table {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  overflow: auto;
+  max-height: 58vh;
 }
 
 /* 输入 composer：整条白卡承托，textarea 去边框融入，聚焦时光环 */

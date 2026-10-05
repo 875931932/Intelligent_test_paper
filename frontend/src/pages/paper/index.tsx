@@ -44,6 +44,15 @@ export default function PaperPage() {
   // ?project=<id> 直达（从其它位置带项目过来时自动展开），只做一次
   const autoOpenedRef = useRef(false);
 
+  // ?stage= 深链（AI 助手详情弹窗「去编辑」）：解析成阶段，传给流水线作为
+  // 「本次挂载的初始落点」——hydrate 的异步回填不得覆盖它（见 PipelinePanel）。
+  const stageFromUrl =
+    searchParams.get('stage') === 'blueprint'
+    || searchParams.get('stage') === 'contract'
+    || searchParams.get('stage') === 'generate'
+      ? (searchParams.get('stage') as 'blueprint' | 'contract' | 'generate')
+      : undefined;
+
   const loadProjects = async () => {
     if (!courseId) return;
     try {
@@ -54,7 +63,7 @@ export default function PaperPage() {
       const target = pid ? res.find((p) => p.id === pid) : undefined;
       if (target && !autoOpenedRef.current) {
         autoOpenedRef.current = true;
-        openProject(target);
+        openProject(target, stageFromUrl);
       }
     } catch {
       addToast('加载项目失败', 'error');
@@ -78,16 +87,20 @@ export default function PaperPage() {
     }
   };
 
-  const openProject = (proj: ExamProject) => {
+  const openProject = (proj: ExamProject, stage?: 'blueprint' | 'contract' | 'generate') => {
     setActiveProject(proj);
     // 已生成试卷的项目直接落到「试卷」页签；未生成的落到流水线继续出题。
     // 项目摘要已经告诉我们有没有试卷，没有就完全不必去探 paper-versions/current
     // ——那只会拿到 404，在控制台刷错误还多一次往返。
     const hasPaper = (proj.total_score ?? 0) > 0 || (proj.item_count ?? 0) > 0 || !!proj.paper_version_id;
-    setTab(hasPaper ? 'paper' : 'pipeline');
+    // 指定阶段（deep link）时直接落在流水线的对应阶段，不再跳试卷页签；
+    // stage 保留在 URL 里——刷新后仍落在同一阶段（也作为 PipelinePanel 的钉住依据）
+    setTab(stage ? 'pipeline' : hasPaper ? 'paper' : 'pipeline');
     setPaper(null);
-    setSearchParams({ project: proj.id }, { replace: true });
-    if (hasPaper) {
+    setSearchParams(stage ? { project: proj.id, stage } : { project: proj.id }, { replace: true });
+    if (stage) {
+      setStageRequest({ stage, nonce: Date.now() });
+    } else if (hasPaper) {
       void loadPaper(proj.id);
     }
   };
@@ -340,6 +353,7 @@ export default function PaperPage() {
           sp={sp}
           courseId={courseId}
           stageRequest={stageRequest}
+          initialStage={stageFromUrl}
           onOpenPaper={() => {
             void refreshPaperAndProject();
             setTab('paper');

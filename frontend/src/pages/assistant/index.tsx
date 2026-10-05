@@ -1,12 +1,12 @@
-import { useEffect, useRef, useState, type CSSProperties, type FC } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type FC } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Bot, Check, ChevronDown, ExternalLink, Pencil, Plus, Send, Sparkles, Square, Trash2, X } from 'lucide-react';
+import { ArrowUpRight, Bot, Check, ChevronDown, ExternalLink, Eye, Pencil, Plus, Send, Sparkles, Square, Trash2, X } from 'lucide-react';
 import { getErrorMessage } from '@/api/errors';
 import { executeProposalAction, RELAY_TOOLS } from '@/lib/assistantProposalExecution';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { useAssistantStore } from '@/stores/assistantStore';
-import { Badge, Button, MarkdownText } from '@/components/ui';
+import { Badge, Button, MarkdownText, Modal } from '@/components/ui';
 import { formatScore } from '@/lib/format';
 import {
   ASSESSMENT_MODE_LABELS,
@@ -124,6 +124,39 @@ const SUGGESTIONS = [
   '总结教学大纲讲了什么？',
   '有哪些试卷项目？',
 ];
+
+/**
+ * 提案卡详情弹窗的跳转目标：蓝图/合同类走试卷页阶段深链（?stage=），
+ * 考核规则回命题框架页——「详情看完了，去真实页面继续编辑」一键直达。
+ */
+const DETAIL_TARGETS: Record<string, { label: string; stage?: 'blueprint' | 'contract' | 'generate' }> = {
+  create_blueprint: { label: '去蓝图页编辑', stage: 'blueprint' },
+  confirm_blueprint: { label: '去蓝图页编辑', stage: 'blueprint' },
+  confirm_contract: { label: '去合同页编辑', stage: 'contract' },
+  start_generation: { label: '去合同页查看', stage: 'contract' },
+};
+
+/** 详情弹窗标题（与气泡里的 chip 文案同源） */
+const DETAIL_TITLES: Record<string, string> = {
+  update_exam_rules: '考核规则逐项对比',
+  create_blueprint: '蓝图生成依据',
+  confirm_blueprint: '蓝图题位计划',
+  confirm_contract: '合同槽位明细',
+  start_generation: '确认合同槽位（生成依据）',
+};
+
+/**
+ * 消息时间戳：今天只给时分，更早带上月-日——气泡下的近距表达，减少噪音。
+ * （会话列表的绝对时间仍走 formatDateTime）
+ */
+function msgTime(iso: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  if (d.toDateString() === new Date().toDateString()) return hm;
+  return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${hm}`;
+}
 
 /** 综合题原型词表（与后端 ARCHETYPE_CONTRACTS 同键；裸英文不进卡片） */
 const ARCHETYPE_LABELS: Record<string, string> = {
@@ -359,15 +392,13 @@ function ResultBody({
 
 const muted: CSSProperties = { fontSize: '0.82rem', color: 'var(--text-secondary)', margin: '4px 0' };
 
+/** 结构化卡片的内布局（外观由 .chat-card 承载：白底/描边/柔影/hover 动效） */
 const cardBox: CSSProperties = {
-  borderRadius: 'var(--radius-sm)',
-  border: '1px solid var(--line)',
-  background: 'var(--surface-solid)',
-  padding: '10px 12px',
-  marginTop: 6,
+  padding: '14px 16px',
   display: 'flex',
   flexDirection: 'column',
-  gap: 4,
+  gap: 8,
+  minWidth: 0,
 };
 
 /** 结果卡：结构化数据 + 同源页面跳转（教师看完可直接去对应页继续操作） */
@@ -397,7 +428,7 @@ function ResultCard({
     navigate(`/courses/${courseId}/${meta.nav}${query}`);
   };
   return (
-    <div style={cardBox}>
+    <div className="chat-card" style={cardBox}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <Badge variant="info">{meta?.label ?? '查询结果'}</Badge>
         <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
@@ -440,7 +471,7 @@ function GuideCard({
   };
   const nav = (path: string) => navigate(`/courses/${courseId}/${path}`);
   return (
-    <div style={cardBox}>
+    <div className="chat-card" style={cardBox}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <Badge variant="info">使用引导</Badge>
         <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
@@ -521,7 +552,7 @@ function SourcesCard({
   const sources = payload.sources ?? [];
   const scope = payload.material_name ? `「${payload.material_name}」` : '课程全部资料';
   return (
-    <div style={cardBox}>
+    <div className="chat-card" style={cardBox}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <Badge variant="info">资料来源</Badge>
         <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
@@ -631,10 +662,19 @@ function proposalParamRows(tool: string, payload: AssistantActionPayload): Array
 
 /**
  * 提案卡实物预览：蓝图题位计划 / 已确认合同槽位——教师点「确认」之前，
- * 先在气泡里看到「确认的到底是什么」，而不是只有一行项目名。
+ * 先在详情弹窗里看到「确认的到底是什么」，而不是只有一行项目名。
  * 数据由后端在提案时现势读库附带（payload.preview），历史卡片没有则不渲染。
+ * expanded=true（弹窗内）：表体给到 58vh 限高，超出屏高在表内滚动。
  */
-function ProposalPreview({ tool, preview }: { tool: string; preview?: AssistantPlanPreview }) {
+function ProposalPreview({
+  tool,
+  preview,
+  expanded = false,
+}: {
+  tool: string;
+  preview?: AssistantPlanPreview;
+  expanded?: boolean;
+}) {
   if (!preview || preview.items.length === 0) return null;
   const contract = preview.source === 'contract';
   const ver = preview.version_no != null ? ` v${preview.version_no}` : '';
@@ -677,15 +717,8 @@ function ProposalPreview({ tool, preview }: { tool: string; preview?: AssistantP
         {diffText ? ` · ${diffText}` : ''}
         {tool === 'confirm_contract' ? ' · 确认后逐题锁定考查原子与答案域' : ''}
       </div>
-      {/* 题位可能有几十行：限高滚动，卡片不撑爆气泡 */}
-      <div
-        style={{
-          maxHeight: 260,
-          overflowY: 'auto',
-          border: '1px solid var(--line)',
-          borderRadius: 8,
-        }}
-      >
+      {/* 题位可能有几十行：限高滚动（弹窗内更高一档），不撑爆气泡/弹窗 */}
+      <div className="chat-detail-table" style={expanded ? undefined : { maxHeight: 260 }}>
         <GridTable header={header} rows={rows} />
       </div>
     </div>
@@ -693,15 +726,16 @@ function ProposalPreview({ tool, preview }: { tool: string; preview?: AssistantP
 }
 
 /**
- * 思考过程块：思考模型推理的独立展示区——与正式回复气泡分离，绝不混入正文。
- * live（流式）：始终展开，column-reverse 自动尾随最新推理；落库消息默认折叠、点击展开。
+ * 思考过程块：思考模型推理的独立展示区——与正式回复分离，绝不混入正文。
+ * 住在内容列内（与正文同列对齐）；live（流式）始终展开、尾随最新推理；
+ * 落库消息默认折叠、点击展开。
  */
 function ThinkingBlock({ text, live = false }: { text: string; live?: boolean }) {
   const [open, setOpen] = useState(false);
   const expanded = live || open;
   if (!text) return null;
   return (
-    <div style={{ marginLeft: 23, maxWidth: '85%', marginBottom: 4 }}>
+    <div style={{ minWidth: 0 }}>
       <button
         type="button"
         onClick={() => !live && setOpen((v) => !v)}
@@ -717,7 +751,7 @@ function ThinkingBlock({ text, live = false }: { text: string; live?: boolean })
           cursor: live ? 'default' : 'pointer',
         }}
       >
-        <Sparkles size={11} />
+        <Sparkles size={11} style={live ? { animation: 'pulse 1.6s var(--ease-in-out) infinite' } : undefined} />
         {live ? 'AI 思考中…' : '思考过程'}
         {!live && (
           <ChevronDown
@@ -842,7 +876,15 @@ function basisRows(payload: AssistantActionPayload): SpecRow[] {
  * - create_blueprint →「生成依据」单列（当前考核规则 + 综合题原型池），
  *   教师确认前看清蓝图将按什么确定性生成，而不是只有一行项目名。
  */
-function SpecTable({ tool, payload }: { tool: string; payload: AssistantActionPayload }) {
+function SpecTable({
+  tool,
+  payload,
+  expanded = false,
+}: {
+  tool: string;
+  payload: AssistantActionPayload;
+  expanded?: boolean;
+}) {
   const compare = tool === 'update_exam_rules';
   const basisMode = tool === 'create_blueprint';
   if (!compare && !basisMode) return null;
@@ -879,8 +921,8 @@ function SpecTable({ tool, payload }: { tool: string; payload: AssistantActionPa
   return (
     <div style={{ margin: '4px 0 2px' }}>
       <div style={{ fontSize: '0.76rem', color: 'var(--text-tertiary)', marginBottom: 4 }}>{title}</div>
-      {/* 章节可能几十行：限高滚动，卡片不撑爆气泡 */}
-      <div style={{ maxHeight: 260, overflowY: 'auto', border: '1px solid var(--line)', borderRadius: 8 }}>
+      {/* 章节可能几十行：限高滚动（弹窗内更高一档），不撑爆气泡/弹窗 */}
+      <div className="chat-detail-table" style={expanded ? undefined : { maxHeight: 260 }}>
         <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '0.82rem' }}>
           <thead>
             <tr>
@@ -1009,7 +1051,10 @@ function GenerationProgressBlock({
 }
 
 /**
- * 提案卡：操作名 + 参数预览 + 影响说明 + 状态区。
+ * 提案卡：操作名 + 模型重点 + 关键参数 + 状态区。
+ *
+ * 卡面只留「结论」——重表（题位计划 / 规则对比）收进详情弹窗，教师点一下
+ * 看全套、弹窗里还能一键去真实页面编辑（.chat-detail chip + Modal）。
  *
  * 「要不要教师点确认」由后端注册表决定（随 payload 下发 auto）：出卷主线上的
  * 中间产物 auto=true，卡片不带按钮、由助手自动执行并回报执；只有里程碑
@@ -1023,6 +1068,8 @@ function ProposalCard({
   busy,
   progress,
   generation,
+  courseId,
+  onNavigate,
   onConfirm,
   onDismiss,
   onRetry,
@@ -1034,11 +1081,15 @@ function ProposalCard({
   progress?: string;
   /** 该项目当前的生成进度快照（仅「发起 AI 生成」卡片用；完成前承载等待反馈） */
   generation?: GenerationProgressSnapshot;
+  courseId: string;
+  /** 详情弹窗「去编辑」：跳转实际承载页面（试卷页阶段深链 / 命题框架页） */
+  onNavigate: (to: string) => void;
   onConfirm: (m: AssistantMessage) => void;
   onDismiss: (m: AssistantMessage) => void;
   onRetry: (m: AssistantMessage) => void;
   onOpenPaper?: (projectId: string) => void;
 }) {
+  const [detailOpen, setDetailOpen] = useState(false);
   const tool = message.action.tool ?? '';
   const payload = message.action.payload ?? {};
   // label/impact 优先用后端注册表下发的（历史卡片没有 → 退回本地表）
@@ -1048,19 +1099,63 @@ function ProposalCard({
   const status = message.action.status ?? 'proposed';
   const auto = payload.auto === true;
   const rows = proposalParamRows(tool, payload);
+  const preview = payload.preview;
+  const hasSpec = tool === 'update_exam_rules' || tool === 'create_blueprint';
+  const hasDetails = hasSpec || (preview?.items.length ?? 0) > 0;
+  const target = DETAIL_TARGETS[tool];
+  // 摘要与 chip 文案：不开弹窗也先看到关键数字（题量/分值），点开才看逐项明细
+  const detailSummary = hasSpec
+    ? tool === 'update_exam_rules'
+      ? '题型比例 / 考试侧重点 / 章节权重，逐项对比与变化高亮'
+      : '综合题原型池 + 当前考核规则（蓝图按此确定性生成）'
+    : preview
+      ? `总分 ${formatScore(preview.total_score)}`
+      : '';
+  const detailChip = hasSpec
+    ? tool === 'update_exam_rules' ? '查看逐项对比' : '查看生成依据'
+    : `查看题位详情（${preview?.item_count ?? 0} 题）`;
+  const editLabel = tool === 'update_exam_rules'
+    ? '去考核规则页编辑'
+    : (target?.label ?? '去试卷页查看');
+
+  /** 详情弹窗的跳转：考核规则回命题框架页，蓝图/合同走试卷页阶段深链 */
+  const goEdit = () => {
+    setDetailOpen(false);
+    if (tool === 'update_exam_rules') {
+      onNavigate(`/courses/${courseId}/framework`);
+      return;
+    }
+    const stage = target?.stage ?? 'blueprint';
+    const pid = payload.project_id;
+    onNavigate(
+      pid ? `/courses/${courseId}/paper?project=${pid}&stage=${stage}` : `/courses/${courseId}/paper`,
+    );
+  };
+
   return (
-    <div style={{ ...cardBox, border: '1px dashed var(--accent-soft)', background: 'var(--accent-subtle)' }}>
+    <div className="chat-card chat-card--proposal" style={cardBox}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <Badge variant="purple">{auto ? '自动执行' : '提案'}</Badge>
+        <Badge variant={auto ? 'purple' : 'info'}>{auto ? '自动执行' : '待确认提案'}</Badge>
         <strong style={{ fontSize: '0.85rem' }}>{meta?.label ?? tool}</strong>
-        <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
-          {message.content}
-        </span>
       </div>
+      {/* 模型回复的重点：卡面只留结论与关键数字，重表收进详情弹窗 */}
+      {message.content && (
+        <p style={{ fontSize: '0.83rem', lineHeight: 1.65, color: 'var(--text-secondary)', margin: 0 }}>
+          {message.content}
+        </p>
+      )}
       <KVTable rows={rows} />
-      <SpecTable tool={tool} payload={payload} />
-      <ProposalPreview tool={tool} preview={payload.preview} />
-      <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: '2px 0' }}>
+      {hasDetails && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <button type="button" className="chat-detail" onClick={() => setDetailOpen(true)}>
+            <Eye size={13} /> {detailChip}
+          </button>
+          {detailSummary && (
+            <span style={{ fontSize: '0.76rem', color: 'var(--text-tertiary)' }}>{detailSummary}</span>
+          )}
+        </div>
+      )}
+      <p style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', margin: 0 }}>
         {meta?.impact ?? '确认后调用既有业务接口执行。'}
       </p>
       {/* 发起生成已执行：只留进度块——「已执行」那行会被进度/完成态取代，避免重复 */}
@@ -1089,10 +1184,12 @@ function ProposalCard({
         </div>
       ) : status === 'auto' ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          <span className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} />
           <Badge variant="info">正在自动执行…</Badge>
         </div>
       ) : status === 'executing' ? (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+          {progress && <span className="spinner" style={{ width: 12, height: 12, borderWidth: 2 }} />}
           <Badge variant={progress ? 'info' : 'default'}>
             {progress ? '正在自动执行…' : '执行中（中断可重试）'}
           </Badge>
@@ -1119,6 +1216,27 @@ function ProposalCard({
             </span>
           )}
         </div>
+      )}
+      {/* 详情弹窗：全套题位/对比表 + 一键去真实页面编辑（蓝图/合同/考核规则） */}
+      {hasDetails && (
+        <Modal
+          open={detailOpen}
+          onClose={() => setDetailOpen(false)}
+          title={DETAIL_TITLES[tool] ?? '查看详情'}
+          maxWidth="880px"
+          footer={
+            <>
+              <Button variant="secondary" onClick={() => setDetailOpen(false)}>关闭</Button>
+              <Button icon={<ArrowUpRight size={14} />} onClick={goEdit}>{editLabel}</Button>
+            </>
+          }
+        >
+          {hasSpec ? (
+            <SpecTable tool={tool} payload={payload} expanded />
+          ) : (
+            <ProposalPreview tool={tool} preview={preview} expanded />
+          )}
+        </Modal>
       )}
     </div>
   );
@@ -1564,6 +1682,25 @@ const AssistantPage: FC = () => {
   // restored 参与判定：切会话拉取的间隙是「已知非空会话加载中」，不闪空状态
   const empty = messages.length === 0 && !sending && !restoring && restored;
 
+  // 在途流式区是否可见（只在归属本会话时显示；POST 瞬态 session 未知也显示）
+  const streamVisible = sending && (!streamSessionId || streamSessionId === activeSessionId);
+  // 流式区紧跟在助手消息后 = 同一回合的续条（不重复出头像，接力线连着走）
+  const streamContinues = streamVisible && messages[messages.length - 1]?.role === 'assistant';
+
+  // 助手回合标记：连续助手消息共享一个头像（只在回合首条显示）；
+  // 末条决定接力线渐隐；发送中的流式区接在助手消息后时，末条不算回合结束。
+  const runFlags = useMemo(
+    () =>
+      messages.map((m, i) => {
+        if (m.role !== 'assistant') return { start: false, end: false, lone: false };
+        const start = i === 0 || messages[i - 1].role !== 'assistant';
+        const nextAssistant = i < messages.length - 1 && messages[i + 1].role === 'assistant';
+        const end = !nextAssistant && !(i === messages.length - 1 && streamContinues);
+        return { start, end, lone: start && end };
+      }),
+    [messages, streamContinues],
+  );
+
   return (
     <div
       style={{
@@ -1612,7 +1749,7 @@ const AssistantPage: FC = () => {
         )}
 
         {activeSessionId === null && !restoring && (
-          <div style={{ ...cardBox, alignItems: 'flex-start', gap: 10 }}>
+          <div className="chat-card" style={{ ...cardBox, alignItems: 'flex-start', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span className="chat-avatar" style={{ width: 32, height: 32 }} aria-hidden>
                 <Bot size={17} />
@@ -1630,7 +1767,7 @@ const AssistantPage: FC = () => {
         )}
 
         {activeSessionId !== null && empty && (
-          <div style={{ ...cardBox, alignItems: 'flex-start', gap: 10 }}>
+          <div className="chat-card" style={{ ...cardBox, alignItems: 'flex-start', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <span className="chat-avatar" style={{ width: 32, height: 32 }} aria-hidden>
                 <Bot size={17} />
@@ -1651,153 +1788,181 @@ const AssistantPage: FC = () => {
           </div>
         )}
 
-        {messages.map((m) =>
-          m.role === 'user' ? (
+        {messages.map((m, i) => {
+          if (m.role === 'user') {
+            return (
+              <div
+                key={m.id}
+                className="msg-in"
+                style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}
+              >
+                <div
+                  style={{
+                    maxWidth: '78%',
+                    background: 'var(--accent)',
+                    color: 'var(--text-on-accent)',
+                    borderRadius: '18px 18px 6px 18px',
+                    padding: '10px 14px',
+                    fontSize: '0.875rem',
+                    lineHeight: 1.65,
+                    whiteSpace: 'pre-wrap',
+                    wordBreak: 'break-word',
+                    boxShadow: 'var(--shadow-1)',
+                  }}
+                >
+                  {m.content}
+                </div>
+                {m.created_at && (
+                  <span style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', marginRight: 4 }}>
+                    {msgTime(m.created_at)}
+                  </span>
+                )}
+              </div>
+            );
+          }
+          const f = runFlags[i];
+          const runClass = [
+            'msg-in',
+            'chat-run',
+            f.start ? 'is-start' : 'is-cont',
+            f.end ? 'is-end' : '',
+            f.lone ? 'is-lone' : '',
+          ]
+            .filter(Boolean)
+            .join(' ');
+          return (
             <div
               key={m.id}
-              className="msg-in"
-              style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 2 }}
+              className={runClass}
+              style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}
             >
-              <div
-                style={{
-                  maxWidth: '78%',
-                  background: 'var(--accent)',
-                  color: 'var(--surface-solid)',
-                  borderRadius: '16px 16px 4px 16px',
-                  padding: '9px 13px',
-                  fontSize: '0.875rem',
-                  lineHeight: 1.6,
-                  whiteSpace: 'pre-wrap',
-                  wordBreak: 'break-word',
-                }}
-              >
-                {m.content}
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, width: '100%' }}>
+                {f.start ? (
+                  <span className="chat-avatar" style={{ marginTop: 2 }} aria-hidden>
+                    <Bot size={15} />
+                  </span>
+                ) : (
+                  <span className="chat-avatar-spacer" aria-hidden />
+                )}
+                <div
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    maxWidth: 820,
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 8,
+                  }}
+                >
+                  {m.thinking && <ThinkingBlock text={m.thinking} />}
+                  {m.action.kind === 'result' ? (
+                    m.action.tool === 'usage_guide' ? (
+                      <GuideCard message={m} courseId={courseId} navigate={navigate} />
+                    ) : (
+                      <ResultCard message={m} courseId={courseId} navigate={navigate} />
+                    )
+                  ) : m.action.kind === 'proposal' ? (
+                    <ProposalCard
+                      message={m}
+                      busy={busyMessageId === m.id}
+                      progress={autoProgress[m.id]}
+                      generation={
+                        m.action.payload?.project_id
+                          ? generationProgress[m.action.payload.project_id]
+                          : undefined
+                      }
+                      courseId={courseId}
+                      onNavigate={navigate}
+                      onConfirm={(msg) => void handleConfirm(msg)}
+                      onDismiss={(msg) => void handleDismiss(msg)}
+                      onRetry={(msg) => retryProposal(msg.id)}
+                      onOpenPaper={(pid) => navigate(`/courses/${courseId}/paper?project=${pid}`)}
+                    />
+                  ) : m.action.kind === 'sources' ? (
+                    <>
+                      <div className="chat-text">
+                        <MarkdownText text={m.content} />
+                      </div>
+                      <SourcesCard message={m} courseId={courseId} navigate={navigate} />
+                    </>
+                  ) : (
+                    <div className="chat-text">
+                      <MarkdownText text={m.content} />
+                    </div>
+                  )}
+                  {(m.action.kind === undefined || m.action.kind === 'sources') &&
+                    m.stream_status === 'failed' && (
+                    <div>
+                      <Badge variant="warning">网关未走流式，整段返回</Badge>
+                    </div>
+                  )}
+                  {m.stream_status === 'stopped' && (
+                    <div>
+                      <Badge variant="warning">已停止</Badge>
+                    </div>
+                  )}
+                </div>
               </div>
-              {m.created_at && (
-                <span style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', marginRight: 4 }}>
-                  {formatDateTime(m.created_at)}
-                </span>
-              )}
+              {m.created_at && f.end && <span className="chat-time">{msgTime(m.created_at)}</span>}
             </div>
-          ) : (
-            <div key={m.id} className="msg-in" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-              {m.thinking && <ThinkingBlock text={m.thinking} />}
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, maxWidth: '88%' }}>
+          );
+        })}
+
+        {/* 在途轮次的流式占位（只在归属本会话时显示；POST 瞬态 session 未知也显示）
+            ——接在助手消息后时算同回合续条：不重复出头像，接力线连着走 */}
+        {streamVisible && (
+          <div
+            className={[
+              'msg-in',
+              'chat-run',
+              streamContinues ? 'is-cont is-end' : 'is-start is-end is-lone',
+            ].join(' ')}
+            style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4 }}
+          >
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, width: '100%' }}>
+              {streamContinues ? (
+                <span className="chat-avatar-spacer" aria-hidden />
+              ) : (
                 <span className="chat-avatar" style={{ marginTop: 2 }} aria-hidden>
                   <Bot size={15} />
                 </span>
-                <div
-                  style={{
-                    minWidth: 0,
-                    borderRadius: '16px 16px 16px 4px',
-                    padding: '9px 13px',
-                    background: 'var(--surface-solid)',
-                    border: '1px solid var(--line)',
-                    fontSize: '0.875rem',
-                    lineHeight: 1.65,
-                    color: 'var(--text)',
-                  }}
-                >
-                {m.action.kind === 'result' ? (
-                  m.action.tool === 'usage_guide' ? (
-                    <GuideCard message={m} courseId={courseId} navigate={navigate} />
-                  ) : (
-                    <ResultCard message={m} courseId={courseId} navigate={navigate} />
-                  )
-                ) : m.action.kind === 'proposal' ? (
-                  <ProposalCard
-                    message={m}
-                    busy={busyMessageId === m.id}
-                    progress={autoProgress[m.id]}
-                    generation={
-                      m.action.payload?.project_id
-                        ? generationProgress[m.action.payload.project_id]
-                        : undefined
-                    }
-                    onConfirm={(msg) => void handleConfirm(msg)}
-                    onDismiss={(msg) => void handleDismiss(msg)}
-                    onRetry={(msg) => retryProposal(msg.id)}
-                    onOpenPaper={(pid) => navigate(`/courses/${courseId}/paper?project=${pid}`)}
-                  />
-                ) : m.action.kind === 'sources' ? (
-                  <>
-                    <MarkdownText text={m.content} />
-                    <SourcesCard message={m} courseId={courseId} navigate={navigate} />
-                  </>
-                ) : (
-                  <MarkdownText text={m.content} />
-                )}
-                {(m.action.kind === undefined || m.action.kind === 'sources') &&
-                  m.stream_status === 'failed' && (
-                  <div style={{ marginTop: 6 }}>
-                    <Badge variant="warning">网关未走流式，整段返回</Badge>
-                  </div>
-                )}
-                {m.stream_status === 'stopped' && (
-                  <div style={{ marginTop: 6 }}>
-                    <Badge variant="warning">已停止</Badge>
-                  </div>
-                )}
-                </div>
-              </div>
-              {m.created_at && (
-                <span style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', marginTop: 3, marginLeft: 4 }}>
-                  {formatDateTime(m.created_at)}
-                </span>
               )}
-            </div>
-          ),
-        )}
-
-        {/* 在途轮次的流式占位（只在归属本会话时显示；POST 瞬态 session 未知也显示） */}
-        {sending && (!streamSessionId || streamSessionId === activeSessionId) && (
-          <>
-            {streamThink && (
-              <div className="msg-in">
-                <ThinkingBlock text={streamThink} live />
-              </div>
-            )}
-            <div className="msg-in" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, maxWidth: '88%' }}>
-              <span className="chat-avatar" style={{ marginTop: 2 }} aria-hidden>
-                <Bot size={15} />
-              </span>
               <div
                 style={{
+                  flex: 1,
                   minWidth: 0,
-                  borderRadius: '16px 16px 16px 4px',
-                  padding: '9px 13px',
-                  background: 'var(--surface-solid)',
-                  border: '1px solid var(--line)',
-                  fontSize: '0.875rem',
-                  lineHeight: 1.65,
-                  color: 'var(--text)',
+                  maxWidth: 820,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 8,
                 }}
               >
-                {streamText ? (
-                  <span>
-                    <MarkdownText text={streamText} />
-                    <span className="caret">▍</span>
-                  </span>
-                ) : (
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: 'var(--text-secondary)' }}>
-                    <span className="typing-dots">
-                      <span className="typing-dot" />
-                      <span className="typing-dot" />
-                      <span className="typing-dot" />
+                {streamThink && <ThinkingBlock text={streamThink} live />}
+                <div className="chat-text">
+                  {streamText ? (
+                    <>
+                      <MarkdownText text={streamText} />
+                      <span className="caret">▍</span>
+                    </>
+                  ) : (
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, color: 'var(--text-secondary)' }}>
+                      <span className="typing-dots">
+                        <span className="typing-dot" />
+                        <span className="typing-dot" />
+                        <span className="typing-dot" />
+                      </span>
+                      {streamHint ?? '正在思考…'}
                     </span>
-                    {streamHint ?? '正在思考…'}
-                  </span>
-                )}
-              {streamText && streamHint && (
-                <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: 4 }}>
-                  {streamHint}
+                  )}
+                  {streamText && streamHint && (
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: 4 }}>
+                      {streamHint}
+                    </div>
+                  )}
                 </div>
-              )}
               </div>
             </div>
           </div>
-          </>
         )}
 
         <div ref={bottomRef} />

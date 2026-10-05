@@ -103,7 +103,7 @@ function StageStepper({ current, onSelect }: { current: StageKey; onSelect: (s: 
 //  出卷流水线面板
 // ═══════════════════════════════════════════════
 export default function PipelinePanel({
-  sp, courseId, onOpenPaper, onBlueprintCreated, onProjectChanged, stageRequest,
+  sp, courseId, onOpenPaper, onBlueprintCreated, onProjectChanged, stageRequest, initialStage,
 }: {
   sp: ExamProject;
   courseId: string;
@@ -115,12 +115,18 @@ export default function PipelinePanel({
   onProjectChanged: () => void;
   /** 外部请求切换到某个阶段（如试卷页签点「重新生成」切到生成阶段） */
   stageRequest?: { stage: StageKey; nonce: number } | null;
+  /** 导航意图里的初始阶段（deep link ?stage=）：本次挂载由它钉住落点 */
+  initialStage?: StageKey;
 }) {
   const token = useAuthStore((s) => s.token);
   const addToast = useToastStore((s) => s.addToast);
   const { maps, reload: reloadNameMaps } = useNameMaps(courseId);
 
-  const [currentStage, setCurrentStage] = useState<StageKey>(() => stageFromStatus(sp.status));
+  // 初始落点：导航意图（deep link ?stage=）优先——首帧即落在目标阶段，
+  // 不会先闪一下服务端推断的阶段再被纠正
+  const [currentStage, setCurrentStage] = useState<StageKey>(
+    () => initialStage ?? stageFromStatus(sp.status),
+  );
   const [planItems, setPlanItems] = useState<PlanItem[]>([]);
   const [contractSnapshot, setContractSnapshot] = useState<ContractSnapshot | null>(null);
   const [taskRun, setTaskRun] = useState<TaskRun | null>(null);
@@ -163,7 +169,7 @@ export default function PipelinePanel({
   // 生成的 run，hydrate 会把旧蓝图的合同快照当成现状展示。因此
   // handleCreateBlueprint 成功后主动清掉 contractSnapshot/taskRun，让合同阶段
   // 回到「待分配」而不是展示过期快照（刷新页面则仍会看到旧快照，属后端缺口）。
-  const hydrateProjectState = async (proj: ExamProject) => {
+  const hydrateProjectState = async (proj: ExamProject, pinnedStage?: StageKey) => {
     // 1) 合同快照：只有确认过合同（active_generation_run_id 有值）才可能读得到。
     // 没确认过去探 contracts/current 只会拿到 404——既刷一屏控制台错误，又多一次往返。
     if (!proj.active_generation_run_id) {
@@ -194,10 +200,12 @@ export default function PipelinePanel({
     try {
       const tr = await api.examProjects.getTaskRun(courseId, proj.active_task_run_id, token ?? undefined);
       if (tr.status === 'succeeded') {
-        // 任务已完成：留在生成阶段展示成功面板，由「查看试卷」按钮切换到试卷页签
+        // 任务已完成：留在生成阶段展示成功面板，由「查看试卷」按钮切换到试卷页签。
+        // 外部显式请求的阶段（deep link「去合同页编辑」）优先——hydrate 是异步的，
+        // 晚于 stageRequest 落位，不钉住就会把用户拽回「生成」。
         setGenerating(false);
         setTaskRun(tr);
-        setCurrentStage('generate');
+        setCurrentStage(pinnedStage ?? 'generate');
       } else {
         // 失败/取消态恢复错误面板与「重新生成」入口；进行中则继续轮询
         setGenerating(isInFlight(tr.status));
@@ -209,9 +217,14 @@ export default function PipelinePanel({
     }
   };
 
+  // stageRequest 按 nonce 消费：合同阶段/生成阶段的推进都靠 setCurrentStage，
+  // 残留的旧请求会在下次挂载（如退出项目再进入）时把用户拽到错误的阶段，
+  // 记账后只消费一次。
+  const handledNonceRef = useRef(0);
+
   // 切换项目时重置并恢复状态
   useEffect(() => {
-    setCurrentStage(stageFromStatus(sp.status));
+    setCurrentStage(initialStage ?? stageFromStatus(sp.status));
     setContractSnapshot(null);
     setTaskRun(null);
     setPlanItems([]);
@@ -222,14 +235,14 @@ export default function PipelinePanel({
     if (sp.active_blueprint_version_id) {
       void loadPlanItems(sp);
     }
-    void hydrateProjectState(sp);
+    // 本次挂载的初始落点来自导航意图（deep link ?stage=）：hydrate 是异步回填的，
+    // 晚于 stageRequest 落位；不钉住就会被服务端推断的阶段覆盖
+    // （「去合同页编辑」落回生成阶段）。URL 派生的值在 StrictMode 双跑 effect 下
+    // 也保持稳定——两次 hydrate 得到同一落点，不存在竞态。
+    void hydrateProjectState(sp, initialStage);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sp.id]);
 
-  // stageRequest 按 nonce 消费：合同阶段/生成阶段的推进都靠 setCurrentStage，
-  // 残留的旧请求会在下次挂载（如退出项目再进入）时把用户拽到错误的阶段，
-  // 记账后只消费一次。
-  const handledNonceRef = useRef(0);
   useEffect(() => {
     if (stageRequest && stageRequest.nonce !== handledNonceRef.current) {
       handledNonceRef.current = stageRequest.nonce;
