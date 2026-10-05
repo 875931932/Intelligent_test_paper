@@ -42,9 +42,16 @@ export function GenerationProgressPanel({
   }, [inFlight]);
 
   const startedAt = Date.parse(taskRun.created_at);
-  const elapsedSeconds = Number.isFinite(startedAt)
-    ? Math.max(0, Math.floor((now - startedAt) / 1000))
-    : 0;
+  // 终态耗时以服务端完成时刻（completed_at，缺省退回 updated_at）收表：若沿用本地
+  // now，页面晚于完成时刻才打开时会把「打开时刻」当完成时刻，耗时随打开时间虚增
+  //（实际 77 分钟的生成曾显示成 568 分钟）。在途任务才用本地时钟做活体计时。
+  const endAt = isTerminal(taskRun.status)
+    ? Date.parse(taskRun.completed_at ?? taskRun.updated_at)
+    : now;
+  const elapsedSeconds =
+    Number.isFinite(startedAt) && Number.isFinite(endAt)
+      ? Math.max(0, Math.floor((endAt - startedAt) / 1000))
+      : 0;
 
   const status: ProgressStatus =
     taskRun.status === 'succeeded'
