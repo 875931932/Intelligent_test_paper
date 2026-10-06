@@ -16,10 +16,14 @@ server {
     gzip_types text/plain text/css application/javascript application/json image/svg+xml application/wasm;
 
     # Vite 产物是内容哈希命名：命中 /assets/ 的资源可长缓存（文件名变了才会重新下载）。
-    # index.html 反过来必须不缓存，否则新版本发布后浏览器仍引用旧 hash 的资源。
+    # try_files =404 必须有：发新版后旧标签页仍会按旧 hash 请求已删除的 chunk，
+    # 若落回 index.html 回退，就会以 200 + text/html 顶着一个 .js 路径返回——
+    # 浏览器按模块加载报 MIME 错误，还可能把整页 HTML 缓存到该 URL；明确 404 才干净。
     location /assets/ {
         add_header Cache-Control "public, max-age=31536000, immutable";
+        try_files $uri =404;
     }
+    # index.html 反过来必须不缓存，否则新版本发布后浏览器仍引用旧 hash 的资源。
     location = /index.html {
         add_header Cache-Control "no-cache";
     }
