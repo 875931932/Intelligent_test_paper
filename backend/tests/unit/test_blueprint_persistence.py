@@ -755,3 +755,30 @@ def test_mode_eligible_mirrors_engine_guards():
         unit, mode="theory_recall", question_type="essay",
         card_question_types={"c1": ["single_choice"]},
     )
+
+
+def test_atom_capacity_matches_contract_pool_count(session):
+    """容量口径与合同分配一致：夹具 4 张卡均无答案域 → 4 卡 8 原子全可出。"""
+    assert blueprint_persistence_service._atom_capacity(
+        session, course_id="c1", catalog_version_id="cv1"
+    ) == 8
+
+
+def test_atom_capacity_counts_answer_boundaries_once(session):
+    """答案域是卡级标量且全卷互斥：一张卡无论几个原子只贡献 1 题容量。"""
+    session.execute(
+        knowledge_cards.update()
+        .where(knowledge_cards.c.id == "c1a")
+        .values(answer_proposition="概念A定义域")
+    )
+    session.commit()
+    # au1：卡1a 1 个边界 + 卡1b 2 个空边界原子 = 3；au2 无边界 2 卡 4 原子
+    assert blueprint_persistence_service._atom_capacity(
+        session, course_id="c1", catalog_version_id="cv1"
+    ) == 7
+
+
+def test_atom_capacity_none_when_catalog_empty(session):
+    assert blueprint_persistence_service._atom_capacity(
+        session, course_id="c1", catalog_version_id="no-such-catalog"
+    ) is None

@@ -242,12 +242,15 @@ def type_rules_from_ratios(
     *,
     total_score: float = 100,
     default_rules: dict[str, dict[str, float]] | None = None,
+    capacity: int | None = None,
 ) -> dict[str, dict[str, float]] | None:
     """按题型比例推导蓝图 type_rules。
 
     每题型先按"该题型应得分数 ÷ 默认单题分值"折算题数，再定点增删题目使总分
     精确等于 total_score（蓝图引擎强约束）。无法闭合时返回 None，由调用方回退
     到默认分布——宁可按默认出卷，也不要产出总分不对的蓝图。
+    ``capacity``（知识卡池实际可出的题位数）小于推导题数时按题型分值份额等比
+    缩容：总分与各题型分值占比不变、单题分值上调；为 None 时行为与不传一致。
     """
     table = default_rules or DEFAULT_TYPE_RULES
     wanted: dict[str, float] = {}
@@ -297,8 +300,65 @@ def type_rules_from_ratios(
 
     if abs(points(counts) - target) > 0.01:
         return None
+    if capacity is not None and capacity > 0 and sum(counts.values()) > capacity:
+        return _shrink_counts_to_capacity(counts, table, capacity)
     return {
         qt: {"count": float(counts[qt]), "score": float(table[qt]["score"])}
+        for qt in counts
+    }
+
+
+def _shrink_counts_to_capacity(
+    counts: dict[str, int],
+    table: dict[str, dict[str, float]],
+    capacity: int,
+) -> dict[str, dict[str, float]]:
+    """题位数超容量时按题型分值份额等比缩容：分值上调、总分不变。
+
+    每题型的分数预算 S = 题数 × 单题分值 固定不动——总分与各题型分值占比
+    因此完全保持；题数按 capacity/原题数 的比例缩减，并吸附到"能整除 2·S"
+    的最近合法题数（单题分值 S/c 必是 0.5 的倍数、c ≤ 原题数即分值只升不
+    降）。知识卡池小于蓝图题位数时，合同分配只能给部分题位领到原子、其余
+    题位被静默丢弃（排在各章末尾的综合题先全灭：2026-10 实测 42 题位 →
+    29 题、综合 0 道），缩容让卷面题型比例不失真。同输入同输出、无随机。
+    """
+    total = sum(counts.values())
+    factor = capacity / total if total else 0.0
+    budget: dict[str, float] = {
+        qt: n * float(table[qt]["score"]) for qt, n in counts.items()
+    }
+    shrunk: dict[str, int] = {}
+    for qt, n in counts.items():
+        # 2·S 是整数（默认单题分值都是 0.5 的倍数），整除即保证 S/c 是 0.5 倍数
+        double = max(1, int(round(budget[qt] * 2)))
+        ideal = max(1, min(n, int(round(n * factor))))
+        shrunk[qt] = min(
+            (c for c in range(1, n + 1) if double % c == 0),
+            key=lambda c: (abs(c - ideal), -c),  # 最近合法值；并列时多留题数
+        )
+    # 逐题型独立取最近值，合计可能仍超容量（进位误差）：每次把某题型降到
+    # 次大合法题数，选"新合计离容量最近、降得最少"的走法，确定性。
+    for _ in range(500):
+        if sum(shrunk.values()) <= capacity:
+            break
+        best_key: tuple[int, int, str] | None = None
+        best_move: tuple[str, int] | None = None
+        for qt, c in shrunk.items():
+            if c <= 1:
+                continue
+            double = max(1, int(round(budget[qt] * 2)))
+            smaller = next((k for k in range(c - 1, 0, -1) if double % k == 0), None)
+            if smaller is None:
+                continue
+            new_total = sum(shrunk.values()) - c + smaller
+            key = (abs(new_total - capacity), -new_total, qt)
+            if best_key is None or key < best_key:
+                best_key, best_move = key, (qt, smaller)
+        if best_move is None:
+            break  # 已无可再减的题数：交回既有合同冲突上报兜底
+        shrunk[best_move[0]] = best_move[1]
+    return {
+        qt: {"count": float(shrunk[qt]), "score": round(budget[qt] / shrunk[qt], 4)}
         for qt in counts
     }
 

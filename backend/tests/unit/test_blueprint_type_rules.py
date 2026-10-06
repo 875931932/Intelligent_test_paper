@@ -78,6 +78,34 @@ def test_type_rules_fall_back_to_defaults_without_syllabus():
     assert rules == _DEFAULT_TYPE_RULES
 
 
+def test_syllabus_type_rules_shrink_to_atom_capacity():
+    """卡池容量小于考纲推导题数时缩容：综合题保底、总分与题型占比不变。"""
+    rules = _default_type_rules(
+        _FakeSession(allowed_types=None, payload={"final_exam_rules": _SYLLABUS_RULES}),
+        course_id="c1",
+        framework_version_id="fw1",
+        capacity=29,
+    )
+    assert sum(v["count"] for v in rules.values()) == 28
+    assert sum(v["count"] * v["score"] for v in rules.values()) == 100
+    # 综合题分值预算 30 分不失真（缩容只上调单题分值）
+    assert rules["comprehensive"]["count"] * rules["comprehensive"]["score"] == 30
+
+
+def test_default_type_rules_shrink_to_atom_capacity_without_syllabus():
+    """无考纲比例时内置默认分布同样按容量缩容（走同一缩容路径）。"""
+    rules = _default_type_rules(
+        _FakeSession(allowed_types=None, payload=None),
+        course_id="c1",
+        framework_version_id="fw1",
+        capacity=20,
+    )
+    # 默认 41 题位 → 缩到 19 题（各题型分值预算 30/10/20/20/20 不变）
+    assert sum(v["count"] for v in rules.values()) == 19
+    assert sum(v["count"] * v["score"] for v in rules.values()) == 100
+    assert all(v["score"] * 2 == int(v["score"] * 2) for v in rules.values())
+
+
 def test_allowed_question_types_accepts_chinese_names():
     """模型在 allowed_question_types 里写中文题型名，约束必须真的生效。"""
     rules = _default_type_rules(

@@ -150,6 +150,69 @@ def test_type_rules_from_ratios_returns_none_when_unusable():
     assert type_rules_from_ratios([{"question_type": "essay", "ratio": 100}], total_score=100) is None
 
 
+def _syllabus_ratios():
+    """线上课程实测比例：选择题20/判断20/填空10/简答20/综合30 → 42 题位。"""
+    return [
+        {"question_type": "single_choice", "ratio": 20},
+        {"question_type": "true_false", "ratio": 20},
+        {"question_type": "fill_blank", "ratio": 10},
+        {"question_type": "short_answer", "ratio": 20},
+        {"question_type": "comprehensive", "ratio": 30},
+    ]
+
+
+def test_type_rules_shrink_to_capacity_keeps_score_budget_and_half_points():
+    """卡池容量不足时按题型分值份额等比缩容：总分与占比不变、题型不归零。
+
+    回归：42 题位对 29 个可出题位（答案域口径），合同阶段静默丢掉 14 题、
+    综合题全灭（卷面 29 题 45 分）；缩容后题数收敛到容量内，题型比例不失真。
+    """
+    rules = type_rules_from_ratios(_syllabus_ratios(), total_score=100, capacity=29)
+    assert rules is not None
+    assert sum(v["count"] * v["score"] for v in rules.values()) == 100
+    # 题数取"能整除 2·S"的最近合法值（回归：曾误取最远值把各题型压到 1 题）
+    assert {qt: (v["count"], v["score"]) for qt, v in rules.items()} == {
+        "single_choice": (8.0, 2.5), "true_false": (10.0, 2.0), "fill_blank": (4.0, 2.5),
+        "short_answer": (4.0, 5.0), "comprehensive": (2.0, 15.0),
+    }
+    # 各题型分值预算（=题数×单题分值）与考纲份额一一对应：缩容只改题数
+    assert {qt: v["count"] * v["score"] for qt, v in rules.items()} == {
+        "single_choice": 20, "true_false": 20, "fill_blank": 10,
+        "short_answer": 20, "comprehensive": 30,
+    }
+    for v in rules.values():
+        # 单题分值必须是 0.5 的倍数（蓝图引擎强约束）；题数不增、不归零
+        assert v["score"] * 2 == int(v["score"] * 2)
+        assert 1 <= v["count"]
+    assert rules["single_choice"]["count"] <= 10
+    assert rules["true_false"]["count"] <= 20
+    assert rules["comprehensive"]["count"] * rules["comprehensive"]["score"] == 30
+    # 总题数收敛到容量内，且尽量贴近容量（28/29，不为保底牺牲题量）
+    assert sum(v["count"] for v in rules.values()) == 28
+    # 同输入同输出（确定性）
+    assert type_rules_from_ratios(_syllabus_ratios(), total_score=100, capacity=29) == rules
+
+
+def test_type_rules_shrink_divisor_correction_enforces_capacity():
+    """逐题型取最近合法值时合计可能仍超容量：纠正循环必须把总题数压进容量。"""
+    rules = type_rules_from_ratios(_syllabus_ratios(), total_score=100, capacity=15)
+    assert rules is not None
+    # 初始分配合计 16（超一题）→ 纠正循环降到 15，恰好填满容量
+    assert sum(v["count"] for v in rules.values()) == 15
+    assert sum(v["count"] * v["score"] for v in rules.values()) == 100
+    for v in rules.values():
+        assert v["score"] * 2 == int(v["score"] * 2)
+        assert v["count"] >= 1
+
+
+def test_type_rules_capacity_absent_or_sufficient_matches_legacy():
+    """不传容量 / 容量够用 / 容量非正时，行为与旧实现完全一致（回归）。"""
+    legacy = type_rules_from_ratios(_syllabus_ratios(), total_score=100)
+    assert type_rules_from_ratios(_syllabus_ratios(), total_score=100, capacity=None) == legacy
+    assert type_rules_from_ratios(_syllabus_ratios(), total_score=100, capacity=42) == legacy
+    assert type_rules_from_ratios(_syllabus_ratios(), total_score=100, capacity=0) == legacy
+
+
 def test_rules_have_type_ratios():
     assert rules_have_type_ratios({"question_type_ratios": [{"question_type": "single_choice", "ratio": 20}]})
     assert not rules_have_type_ratios({})

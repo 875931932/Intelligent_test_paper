@@ -36,10 +36,12 @@ from app.domain.framework.exam_rules import (
     type_rules_from_ratios,
 )
 from app.domain.generation.archetypes import ARCHETYPE_CONTRACTS
+from app.domain.generation.contract import build_exam_point_pools
 from app.services.blueprint_service import (
     BlueprintValidationError,
     allocate_plan_items,
 )
+from app.services.contract_service import _point_capacity
 
 
 class BlueprintPersistenceError(Exception):
@@ -104,16 +106,103 @@ def _framework_payload(
     return load(framework_version_id) if framework_version_id else None
 
 
+def _atom_capacity(
+    session: Session,
+    *,
+    course_id: str,
+    catalog_version_id: str,
+) -> int | None:
+    """知识卡池实际可出的题位数（与合同分配同口径），蓝图题位数上限。
+
+    合同分配按考点逐题位取原子：池子不够的题位会被静默丢弃，卷面比例按
+    题号顺序失真——排在各章末尾的综合题先全灭（2026-10 实测 42 题位 →
+    29 题、综合 0 道）。这里按与合同执行完全一致的构造（catalog 全量
+    active 单元 + 全量卡 + is_core 兜底 + 默认核心度门槛）求"最多能出多少
+    题"，供题型分布等比缩容；查不到单元/卡时返回 None（不设上限）。
+    """
+    try:
+        unit_rows = session.execute(
+            select(assessment_units.c.id, assessment_units.c.exam_point_id)
+            .where(
+                assessment_units.c.catalog_version_id == catalog_version_id,
+                assessment_units.c.course_id == course_id,
+                assessment_units.c.status == "active",
+            )
+        ).all()
+        card_rows = session.execute(
+            select(
+                knowledge_cards.c.id,
+                knowledge_cards.c.assessable_content,
+                knowledge_cards.c.answer_proposition,
+                knowledge_cards.c.concept_cluster,
+                knowledge_cards.c.assessment_unit_id,
+            ).where(
+                knowledge_cards.c.catalog_version_id == catalog_version_id,
+                knowledge_cards.c.course_id == course_id,
+            )
+        ).all()
+    except SQLAlchemyError:
+        return None
+    cards_by_unit: dict[str, list] = {}
+    for row in card_rows:
+        c = row._mapping
+        if c["assessment_unit_id"]:
+            cards_by_unit.setdefault(str(c["assessment_unit_id"]), []).append(c)
+    cards: dict[str, dict] = {}
+    units: list[UnitCoverage] = []
+    for row in unit_rows:
+        u = row._mapping
+        if not u["exam_point_id"]:
+            continue
+        card_ids: list[str] = []
+        for c in cards_by_unit.get(str(u["id"]), []):
+            cid = str(c["id"])
+            raw_atoms = list(c["assessable_content"] or [])
+            cards[cid] = {
+                "assessable_content": raw_atoms or [f"{cid} 默认知识原子"],
+                "answer_proposition": c["answer_proposition"] or "",
+                "answer_boundary": c["answer_proposition"] or "",
+                "concept_cluster": c["concept_cluster"] or "",
+                # 与合同执行同一兜底：核心度恒过默认门槛（见 contract_execution_service）
+                "is_core": True,
+            }
+            card_ids.append(cid)
+        if not card_ids:
+            # 单元无卡：合同执行会补占位卡，容量至少 +1
+            cid = f"__placeholder_{u['id']}"
+            cards[cid] = {
+                "assessable_content": [f"{cid} 默认知识原子"],
+                "answer_proposition": "",
+                "answer_boundary": "",
+                "concept_cluster": cid,
+                "is_core": True,
+            }
+            card_ids = [cid]
+        units.append(UnitCoverage(
+            unit_id=str(u["id"]),
+            exam_point_id=str(u["exam_point_id"]),
+            anchor_key=str(u["id"]),
+            card_ids=card_ids,
+        ))
+    if not units:
+        return None
+    pools = build_exam_point_pools(units, cards)
+    return sum(_point_capacity(pool) for pool in pools.values())
+
+
 def _default_type_rules(
     session: Session,
     *,
     course_id: str,
     framework_version_id: str,
+    capacity: int | None = None,
 ) -> dict:
     """未下发 type_rules 时推导默认题型分布。
 
     优先采用考核大纲声明的题型比例（框架 payload 里的 exam_rules），那才是考纲
     的硬约束；缺失或无法闭合到总分时才回退内置默认分布。
+    ``capacity``（知识卡池实际可出的题位数）小于推导题数时按题型分值份额等比
+    缩容：总分与题型占比不变、单题分值上调（见 type_rules_from_ratios）。
     结果受考点"允许题型"约束：中文题型名也做归一化——模型在 allowed_question_types
     里写的是"单选题"，早先直接与英文字段名比较，过滤几乎永远落空。
     """
@@ -150,10 +239,24 @@ def _default_type_rules(
         exam_rules = payload.get("final_exam_rules")
         if rules_have_type_ratios(exam_rules):
             from_syllabus = type_rules_from_ratios(
-                exam_rules["question_type_ratios"], total_score=100
+                exam_rules["question_type_ratios"], total_score=100, capacity=capacity
             )
             if from_syllabus:
                 return restrict(from_syllabus)
+
+    if capacity is not None and capacity > 0:
+        # 无考纲比例时同样按原子容量缩容：把内置默认分布写成"分值占比"
+        # （30/10/20/20/20，与默认题数×分值完全等价）交给同一缩容路径。
+        from_defaults = type_rules_from_ratios(
+            [
+                {"question_type": qt, "ratio": rule["count"] * rule["score"]}
+                for qt, rule in _DEFAULT_TYPE_RULES.items()
+            ],
+            total_score=100,
+            capacity=capacity,
+        )
+        if from_defaults:
+            return restrict(from_defaults)
 
     return restrict(dict(_DEFAULT_TYPE_RULES))
 
@@ -474,6 +577,11 @@ def create_draft_blueprint(
             session,
             course_id=course_id,
             framework_version_id=framework_version_id,
+            # 卡池可出的题位数低于考纲比例推导的题数时等比缩容，避免合同
+            # 阶段静默丢题（题型比例失真、综合题全灭）。
+            capacity=_atom_capacity(
+                session, course_id=course_id, catalog_version_id=catalog_version_id
+            ),
         )
     # 教师显式综合题原型按序列表（可重复=数量，教师要两道代码题就写两次）：
     # 合同分配读取的是 type_rules.comprehensive.archetypes，这里在推导结果
