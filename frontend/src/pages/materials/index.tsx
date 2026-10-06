@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { api } from '@/api/client';
+import { isApiError } from '@/api/errors';
 import { useCourseStore } from '@/stores/course';
 import { useToastStore } from '@/stores/toast';
 import { Button, Modal, Badge, SkeletonCardGrid } from '@/components/ui';
@@ -193,8 +194,20 @@ export default function MaterialsPage() {
       if (!silent) setLoading(true);
       const data = await api.materials.list(courseId);
       setMaterials(Array.isArray(data) ? data : []);
-    } catch {
-      addToast('加载资料列表失败', 'error');
+    } catch (err) {
+      // 404 = 课程已被删除：重试/轮询都不可能恢复。必须就地停表——
+      // 停表条件（materials 不再有"解析中"）在数据取不到时永远无法满足，
+      // 否则每 2 秒一次的轮询会永久刷 404 并反复弹「加载资料列表失败」。
+      if (isApiError(err) && err.status === 404) {
+        if (pollingTimerRef.current) {
+          clearInterval(pollingTimerRef.current);
+          pollingTimerRef.current = null;
+        }
+        setMaterials([]);
+        addToast('课程不存在或已被删除，请返回课程列表', 'error');
+      } else {
+        addToast('加载资料列表失败', 'error');
+      }
     } finally {
       if (!silent) setLoading(false);
     }
