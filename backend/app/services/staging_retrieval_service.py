@@ -149,8 +149,14 @@ def retrieve_for_exam_point(
     top_k: int,
     minimum_score: float,
     query_vector: list[float] | None = None,
+    query_text: str | None = None,
 ) -> list[RankedChunk]:
-    """Rank the supplied snapshot using its persisted chunk embeddings."""
+    """Rank the supplied snapshot using its persisted chunk embeddings.
+
+    query_text 是本次查询原文（词法项据此打分），缺省退回考点 retrieval_intent。
+    多路查询时向量可能来自考点名 / 考核要求展开串，若词法项仍锚在 intent，
+    展开查询只剩语义召回——短标题最精准的词面信号被丢掉（2026-10-06 修复）。
+    """
 
     _validate_configuration(top_k=top_k, minimum_score=minimum_score)
     if not chunks:
@@ -165,7 +171,7 @@ def retrieve_for_exam_point(
             raise RetrievalConfigurationError("嵌入服务调用失败，暂存检索已中止") from exc
         query_vector = _validated_vectors(raw_query_vectors, expected_count=1)[0]
     return _rank_hybrid(
-        intent=point.retrieval_intent,
+        intent=query_text or point.retrieval_intent,
         chunks=chunks,
         query_vector=query_vector,
         top_k=top_k,
@@ -418,6 +424,7 @@ class HybridStagingRetriever:
         chunks: list[StagingChunk],
         *,
         query_vector: list[float] | None = None,
+        query_text: str | None = None,
     ) -> list[RankedChunk]:
         return retrieve_for_exam_point(
             exam_point,
@@ -426,6 +433,7 @@ class HybridStagingRetriever:
             top_k=self.top_k,
             minimum_score=self.minimum_score,
             query_vector=query_vector,
+            query_text=query_text,
         )
 
     def retrieve_multi(
@@ -434,14 +442,18 @@ class HybridStagingRetriever:
         chunks: list[StagingChunk],
         *,
         query_vectors: list[list[float]],
+        query_texts: list[str] | None = None,
     ) -> list[RankedChunk]:
         """多查询混合检索：各查询独立打分，按 chunk 取最高分合并去重后截断 top_k。
 
         每个查询先过 minimum_score 过滤，再并集合并，保证任一查询能召回的块
-        都进入候选，避免长查询词法分数被稀释而整体落选。
+        都进入候选，避免长查询词法分数被稀释而整体落选。query_texts 与
+        query_vectors 对齐（词法项用各自查询原文）；缺省退化为考点 retrieval_intent。
         """
         if not query_vectors:
             return []
+        if query_texts is None:
+            query_texts = [exam_point.retrieval_intent] * len(query_vectors)
         ranked_groups = [
             retrieve_for_exam_point(
                 exam_point,
@@ -450,8 +462,9 @@ class HybridStagingRetriever:
                 top_k=len(chunks),
                 minimum_score=self.minimum_score,
                 query_vector=query_vector,
+                query_text=query_text,
             )
-            for query_vector in query_vectors
+            for query_vector, query_text in zip(query_vectors, query_texts, strict=True)
         ]
         return _merge_ranked_groups(
             ranked_groups, top_k=self.top_k, key=lambda item: item.chunk.id

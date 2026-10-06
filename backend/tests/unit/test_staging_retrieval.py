@@ -21,6 +21,7 @@ from app.domain.knowledge.relevance import StagingChunk
 from app.services.staging_retrieval_service import (
     HybridStagingRetriever,
     RetrievalConfigurationError,
+    lexical_overlap,
     lexical_rank_for_question,
     retrieve_for_exam_point,
     retrieve_for_question,
@@ -146,6 +147,44 @@ def test_retrieval_rejects_exact_lexical_match_with_orthogonal_semantics():
     )
 
     assert result == []
+
+
+def test_retrieve_multi_scores_lexical_term_with_each_query_text():
+    """2026-10-06 回归：多路查询的词法项必须用各自查询原文打分。
+
+    曾无论向量来自哪一路，词法项都锚在 retrieval_intent 上——考点名/考核要求
+    展开查询只剩语义召回，短标题最精准的词面信号被整段丢弃。
+    """
+    point = _exam_point(retrieval_intent="提取该考点的考核内容、考核要求及对应知识点")
+    topic = StagingChunk(
+        id="topic",
+        material_version_id="material-1",
+        content="LangChain四大支柱包括基础能力层与运行时编排层。",
+        embedding=[1.0, 0.0],
+    )
+    retriever = HybridStagingRetriever(
+        embedder=StaticEmbedder([[1.0, 0.0], [0.0, 1.0]]),
+        top_k=8,
+        minimum_score=0.25,
+    )
+    title_query = "LangChain四大支柱与大模型硬伤解法"
+
+    result = retriever.retrieve_multi(
+        point,
+        [topic],
+        query_vectors=[[1.0, 0.0], [0.0, 1.0]],
+        query_texts=[title_query, point.retrieval_intent],
+    )
+
+    assert [ranked.chunk.id for ranked in result] == ["topic"]
+    assert result[0].lexical_score == pytest.approx(
+        lexical_overlap(title_query, topic.content)
+    )
+    assert result[0].lexical_score > 0
+
+    # 缺省 query_texts 退回检索意图（占位符 intent 与正文零词元交集 → 词法项 0）。
+    fallback = retriever.retrieve_multi(point, [topic], query_vectors=[[1.0, 0.0]])
+    assert fallback[0].lexical_score == pytest.approx(0.0)
 
 
 def test_retrieval_only_ranks_the_supplied_course_snapshot_chunks():
@@ -772,7 +811,6 @@ def test_organization_retrieval_settings_have_safe_defaults(monkeypatch):
         "EMBEDDING_API_FORMAT",
         "ORGANIZATION_RETRIEVAL_TOP_K",
         "ORGANIZATION_RETRIEVAL_MIN_SCORE",
-        "ORGANIZATION_RETRIEVAL_EXPAND_QUERY",
         "ORGANIZATION_MAX_WORKERS",
     ):
         monkeypatch.delenv(variable, raising=False)
@@ -788,8 +826,6 @@ def test_organization_retrieval_settings_have_safe_defaults(monkeypatch):
     # 陈述语料标定：0.40 等效语义门槛 0.62 超过可达 top1 中位数 0.60，
     # 半数考点结构性零召回；0.30 使零召回归零（详见 config 注释）。
     assert settings.organization_retrieval_min_score == 0.30
-    # 双 query 展开使候选对翻倍、是分类垃圾对的重要来源，量化后默认关闭。
-    assert settings.organization_retrieval_expand_query is False
     assert settings.organization_max_workers == 16
 
 

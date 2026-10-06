@@ -139,11 +139,13 @@ class Settings(BaseSettings):
     # out_of_scope 承接）。
     organization_retrieval_top_k: int = Field(default=12, gt=0)
     organization_retrieval_min_score: float = Field(default=0.30, ge=0, le=1)
-    # 检索查询增强（retrieval_intent + 「考点名+考核要求」双 query 合并取 top_k）：
-    # 曾用于缓解收紧阈值后操作/实验类考点的漏召回，但候选对近乎翻倍，是分类垃圾对
-    # 的重要来源，量化后默认关闭。若出现漏召回，置 true（或
-    # ORGANIZATION_RETRIEVAL_EXPAND_QUERY=true）试跑一轮，对比垃圾率再定去留。
-    organization_retrieval_expand_query: bool = False
+    # 检索查询集已改为确定性装配（organization_graph.retrieve_per_exam_point）：
+    # 「考点名 + retrieval_intent + 考点名：考核要求」三路合并，无开关。
+    # 2026-10-06 根因：某框架 8 个考点的 retrieval_intent 被模型同填一句通用句式
+    # （提取该考点的考核内容、考核要求及对应知识点），单 query 召回在 52 条陈述里
+    # 只有 9 条过阈值且全为无关块，4 个考点发布时覆盖不足。原
+    # ORGANIZATION_RETRIEVAL_EXPAND_QUERY 开关随之退役（候选规模由 top_k 封顶，
+    # 三路合并只多一次批量嵌入，不增加模型调用）。
     organization_max_workers: int = Field(default=16, gt=0)
     # 生成自愈：题位在本考点内三道防线（单题重试 → 换同考点原子 → 批缺失恢复）
     # 全部失守后，允许从**同章**其他考点回补，避免整题丢弃导致卷面缺题。

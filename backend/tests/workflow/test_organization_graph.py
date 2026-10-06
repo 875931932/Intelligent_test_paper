@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from collections import defaultdict
 from time import sleep
 
 import pytest
@@ -642,22 +643,17 @@ def test_each_exam_point_material_pair_gets_its_own_top_k_budget(monkeypatch):
     ]
 
 
-def test_graph_embeds_each_exam_point_query_once_and_reuses_frozen_chunk_vectors(
-    monkeypatch,
-):
-    # expand_query 默认已随量化调参关闭；本测试钉住 True 以保持展开分支（双 query
-    # 合并取 top_k）的覆盖，关闭分支由其余用例在默认值下覆盖。
-    monkeypatch.setattr(settings, "organization_retrieval_expand_query", True)
-
+def test_graph_embeds_each_exam_point_query_once_and_reuses_frozen_chunk_vectors():
+    # 查询集确定性装配（考点名 + retrieval_intent + 考点名：考核要求）：每个考点
+    # 一次批量嵌入三路 query，合并期按块取最高分、top_k 封顶。
     class QueryOnlyEmbedder:
         def __init__(self):
             self.calls: list[list[str]] = []
 
         def embed(self, texts):
             self.calls.append(list(texts))
-            # 展开查询开启时一次批量嵌入 1-2 条（intent + 展开串）。
-            assert 1 <= len(texts) <= 2
             return [[1.0, 0.0] for _ in texts]
+
     chunks = [
         StagingChunk(
             id="m1",
@@ -685,21 +681,105 @@ def test_graph_embeds_each_exam_point_query_once_and_reuses_frozen_chunk_vectors
         config={"configurable": {"thread_id": "reuse-frozen-embeddings"}},
     )
 
-    # retrieval_expand_query 开启时，操作/实验类考点会补一条「考点名+考核要求」
-    # 的展开查询（仅多一次嵌入，不加模型调用）。考点 retrieval_intent 为
-    # 「动词+对象」短句时产生第二条查询；本测试考点的 intent 即展开串时只嵌一次。
-    embedded_texts = [texts[0] for texts in embedder.calls]
-    assert set(embedded_texts) <= {
-        _point("EP-1", "rag").retrieval_intent,
-        _point("EP-2", "agent").retrieval_intent,
-        f"{_point('EP-1', 'rag').title}：{_point('EP-1', 'rag').assessment_requirement}",
-        f"{_point('EP-2', 'agent').title}：{_point('EP-2', 'agent').assessment_requirement}",
-    }
-    assert len(embedded_texts) >= 2
+    def queries_of(code: str) -> set[str]:
+        point = _point(code, "rag" if code == "EP-1" else "agent")
+        return {
+            point.title,
+            point.retrieval_intent,
+            f"{point.title}：{point.assessment_requirement}",
+        }
+
+    expected = queries_of("EP-1") | queries_of("EP-2")
+    assert len(embedder.calls) == 2  # 每个考点一次批量嵌入
+    assert all(len(texts) == 3 for texts in embedder.calls)  # 三路 query 一次下发
+    assert all(set(texts) <= expected for texts in embedder.calls)
     assert sorted(classifier.calls) == [
         (("EP-1", "EP-2"), "material-1", ("m1",)),
         (("EP-1", "EP-2"), "material-2", ("m2",)),
     ]
+
+
+def test_graph_recalls_topic_chunks_when_retrieval_intent_is_a_generic_placeholder():
+    """回归 2026-10-06：框架抽取曾把整门课 8 个考点的 retrieval_intent 填成同一句
+    通用句式（「提取该考点的考核内容、考核要求及对应知识点」），原单 query 召回与
+    考点主题完全脱钩，线上 4 个考点发布时覆盖不足。查询集确定性含考点名后，即使
+    intent 是空话，主题陈述也要被召回，并盖过仅靠 intent 命中的无关块。
+    """
+
+    class TopicEmbedder:
+        """按查询文本是否含考点主题词返回向量：命中 → [1,0]，未命中 → [0,1]。"""
+
+        def embed(self, texts):
+            return [
+                [1.0, 0.0] if "四大支柱" in text else [0.0, 1.0]
+                for text in texts
+            ]
+
+    chunks = [
+        StagingChunk(
+            id="m1-topic",
+            material_version_id="material-1",
+            content="LangChain四大支柱包括基础能力层与运行时编排层。",
+            embedding=[1.0, 0.0],
+        ),
+        StagingChunk(
+            id="m1-noise",
+            material_version_id="material-1",
+            content="无关的系统配置说明。",
+            embedding=[0.0, 1.0],
+        ),
+    ]
+    point = _point("EP-1", "rag").model_copy(
+        update={
+            "title": "LangChain定位、四大支柱与大模型硬伤解法",
+            "assessment_requirement": "能够说明四大支柱分工与大模型硬伤解法",
+            "retrieval_intent": "提取该考点的考核内容、考核要求及对应知识点",
+        }
+    )
+
+    class RecordingHybridRetriever(HybridStagingRetriever):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.recalled: dict[str, set[str]] = defaultdict(set)
+
+        def retrieve(self, exam_point, chunks, *, query_vector=None, query_text=None):
+            ranked = super().retrieve(
+                exam_point, chunks, query_vector=query_vector, query_text=query_text
+            )
+            self.recalled[exam_point.code].update(item.chunk.id for item in ranked)
+            return ranked
+
+        def retrieve_multi(self, exam_point, chunks, *, query_vectors, query_texts=None):
+            ranked = super().retrieve_multi(
+                exam_point,
+                chunks,
+                query_vectors=query_vectors,
+                query_texts=query_texts,
+            )
+            self.recalled[exam_point.code].update(item.chunk.id for item in ranked)
+            return ranked
+
+    retriever = RecordingHybridRetriever(
+        embedder=TopicEmbedder(), top_k=1, minimum_score=0.3
+    )
+    graph, _, _, _, _ = _graph(retriever=retriever, chunks=chunks)
+    state = _state(chunks)
+    state["exam_points"] = [
+        point.model_dump(mode="json"),
+        _point("EP-2", "agent").model_dump(mode="json"),
+    ]
+
+    graph.invoke(state, config={"configurable": {"thread_id": "placeholder-intent"}})
+
+    assert retriever.recalled["EP-1"] == {"m1-topic"}
+
+    # 反证旧行为：只拿占位符 intent 当 query 时，主题块语义分为 0 被阈值剔除，
+    # 召回里只剩无关块——正是线上「覆盖不足」的形态。
+    baseline = HybridStagingRetriever(
+        embedder=TopicEmbedder(), top_k=1, minimum_score=0.3
+    )
+    only_intent = baseline.retrieve(point, list(chunks), query_vector=[0.0, 1.0])
+    assert {item.chunk.id for item in only_intent} == {"m1-noise"}
 
 
 def test_retrieval_score_flows_from_pairs_into_evidence_decisions():

@@ -419,23 +419,24 @@ def build_organization_graph(
             chunks_by_material[chunk.material_version_id].append(chunk)
         pairs: list[dict] = []
         coverage_reasons: dict[str, list[str]] = defaultdict(list)
-        expand = bool(settings.organization_retrieval_expand_query)
         for point in _points(state):
             point_has_recall = False
-            if expand:
-                # 操作/实验类考点的 retrieval_intent 是"动词+对象"短句，与材料中
-                # 知识陈述式文本相似度低；补一个「考点名+考核要求」的展开查询，
-                # 使知识名词直接参与检索。仅多一次嵌入，不增加模型调用。
-                expanded = (
-                    f"{point.title}：{point.assessment_requirement}"
-                    if (point.assessment_requirement or "").strip()
-                    else point.title
-                )
-                queries = [point.retrieval_intent]
-                if expanded != point.retrieval_intent:
-                    queries.append(expanded)
-            else:
-                queries = [point.retrieval_intent]
+            # 查询集确定性装配，不让召回单点依赖 retrieval_intent 这一个模型自由
+            # 文本：考点名恒存在、人工可读，永远进查询集；考核要求展开串补动宾
+            # 信息（操作/实验类考点的 intent 常是"动词+对象"短句，与陈述式材料
+            # 相似度低）；意图仅在非空且与前者不重复时附加。三路合并期按块取最高
+            # 分，top_k 封顶使候选规模不随查询数放大，只多一次批量嵌入。
+            # 2026-10-06 根因：某框架 8 个考点的 retrieval_intent 被模型同填一句
+            # 通用句式（「提取该考点的考核内容、考核要求及对应知识点」），原单
+            # query 召回在 52 条知识点陈述中只有 9 条过阈值且全为无关块，4 个考点
+            # 发布时覆盖不足；补考点名后关键陈述全部进入 top-12。
+            title = (point.title or "").strip()
+            requirement = (point.assessment_requirement or "").strip()
+            expanded = f"{title}：{requirement}" if title and requirement else title
+            queries: list[str] = []
+            for candidate in (title, point.retrieval_intent.strip(), expanded):
+                if candidate and candidate not in queries:
+                    queries.append(candidate)
             embed_queries = getattr(retriever, "embed_queries", None)
             query_vectors = (
                 embed_queries(queries)
@@ -452,12 +453,14 @@ def build_organization_graph(
                         point,
                         material_chunks,
                         query_vector=query_vectors[0],
+                        query_text=queries[0],
                     )
                 else:
                     retrieved = retriever.retrieve_multi(
                         point,
                         material_chunks,
                         query_vectors=query_vectors,
+                        query_texts=queries,
                     )
                 ranked = sorted(
                     retrieved,
