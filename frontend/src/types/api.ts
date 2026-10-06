@@ -877,6 +877,10 @@ export interface AssistantPaperSummary {
   version_no?: number;
   status?: string;
   needs_review_count?: number;
+  /** 成卷实际题数/总分/各题型构成（与试卷页同口径；蓝图 by_type 是计划题位，两者可不等） */
+  item_count?: number;
+  total_score?: number;
+  by_type?: Record<string, { count: number; score: number }>;
 }
 
 export interface AssistantProjectRow {

@@ -355,13 +355,21 @@ function ResultBody({
       const projects = payload.projects ?? [];
       return (
         <GridTable
-          header={['项目', '试卷']}
+          header={['项目', '试卷', '题量', '题型分布']}
           rows={projects.map((p) => {
             const pv = p.paper;
-            const text = !pv || !pv.exists
-              ? '未生成'
-              : `v${pv.version_no}（${PAPER_STATUS_META[pv.status ?? '']?.label ?? pv.status ?? '—'}），待复核 ${pv.needs_review_count ?? 0} 题`;
-            return [p.name, text];
+            if (!pv || !pv.exists) return [p.name, '未生成', '—', '—'];
+            const text = `v${pv.version_no}（${PAPER_STATUS_META[pv.status ?? '']?.label ?? pv.status ?? '—'}），待复核 ${pv.needs_review_count ?? 0} 题`;
+            // 成卷口径（实际落卷）：与蓝图「计划题位」不是一个数时以这里为准
+            const byType = Object.entries(pv.by_type ?? {})
+              .map(([t, v]) => `${qlabel(t)}×${v.count}`)
+              .join('、');
+            return [
+              p.name,
+              text,
+              `${pv.item_count ?? 0} 题 · ${pv.total_score ?? 0} 分`,
+              byType || '—',
+            ];
           })}
         />
       );

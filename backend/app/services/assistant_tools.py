@@ -96,6 +96,8 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         doc=(
             "查询课程状态。section 指定要看的部分，缺省 overview = 全阶段概览。"
             "教师点名了某个试卷项目时传 project_id，只呈现该项目。"
+            "问试卷实际题数/题型构成/总分用 section=paper（成卷口径）；"
+            "问计划题位用 section=blueprint（计划口径，可能与成卷不等）。"
         ),
         parameters=_obj(
             {

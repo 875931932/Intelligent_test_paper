@@ -27,7 +27,7 @@ import time
 from datetime import datetime, timezone
 from uuid import uuid4
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import Float, and_, func, select
 from sqlalchemy.orm import Session
 
 from app.db.schema import (
@@ -38,6 +38,7 @@ from app.db.schema import (
     exam_points,
     exam_projects,
     framework_versions,
+    generated_questions,
     knowledge_cards,
     knowledge_catalog_versions,
     paper_items,
@@ -403,10 +404,69 @@ def _contract_summary(session: Session, *, course_id: str, project_id: str) -> d
     }
 
 
+def _paper_composition(
+    session: Session, *, course_id: str, paper_version_id: str
+) -> dict:
+    """成卷实际构成（题数 / 总分 / 各题型题数与分值），供模型回答卷面状态。
+
+    解析口径与试卷页 get_paper_version 逐题处理一致：题型取
+    teacher_override → payload，分值取 teacher_override → plan_items → payload
+    （教师改分后立即反映；无蓝图槽位的归档/手拟题按 payload 计）。蓝图 by_type
+    是**计划题位**，合同分配与生成会剔除题位（卡池不足、生成失败），两者允许
+    不等——2026-10 实测蓝图 42 题位（综合题 3 道）成卷只有 29 题（综合题 0
+    道），模型曾拿蓝图数字回答卷面问题。
+    """
+    question_type = func.coalesce(
+        paper_items.c.teacher_override["question_type"].as_string(),
+        generated_questions.c.payload["question_type"].as_string(),
+    )
+    score = func.coalesce(
+        func.cast(paper_items.c.teacher_override["score"].as_string(), Float),
+        plan_items.c.score,
+        func.cast(generated_questions.c.payload["score"].as_string(), Float),
+        0.0,
+    )
+    rows = session.execute(
+        select(
+            question_type.label("question_type"),
+            func.count().label("item_count"),
+            func.coalesce(func.sum(score), 0.0).label("type_score"),
+        )
+        .select_from(paper_items)
+        .join(generated_questions, generated_questions.c.id == paper_items.c.generated_question_id)
+        .join(plan_items, plan_items.c.id == generated_questions.c.plan_item_id, isouter=True)
+        .where(
+            paper_items.c.paper_version_id == paper_version_id,
+            paper_items.c.course_id == course_id,
+        )
+        .group_by(question_type)
+    ).all()
+    by_type: dict[str, dict] = {}
+    item_count = 0
+    total_score = 0.0
+    for row in rows:
+        d = row._mapping
+        count = int(d["item_count"] or 0)
+        type_score = float(d["type_score"] or 0.0)
+        item_count += count
+        total_score += type_score
+        if d["question_type"]:
+            by_type[str(d["question_type"])] = {"count": count, "score": round(type_score, 2)}
+    return {
+        "item_count": item_count,
+        "total_score": round(total_score, 2),
+        "by_type": by_type,
+    }
+
+
 def _paper_summary(session: Session, *, course_id: str, project: dict) -> dict:
     """项目当前试卷摘要：优先 active_paper_version_id（教师在试卷页看到的那份
     卷——历史版本被重新激活时与最新版本号不同，评审/引导都以它为准），
-    无激活记录或指向失效时回退最新版本。"""
+    无激活记录或指向失效时回退最新版本。
+
+    附带成卷实际构成（item_count/total_score/by_type）与待复核数：模型回答
+    「试卷有多少题、综合题几道、总分多少」必须以这里为准（蓝图是计划题位）。
+    """
     stmt = select(
         paper_versions.c.id,
         paper_versions.c.version_no,
@@ -441,6 +501,7 @@ def _paper_summary(session: Session, *, course_id: str, project: dict) -> dict:
         "version_no": row[1],
         "status": row[2],
         "needs_review_count": int(needs_review),
+        **_paper_composition(session, course_id=course_id, paper_version_id=row[0]),
     }
 
 
@@ -613,6 +674,7 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 - 你给的 id 必须来自 payload.ids 白名单；不确定教师指哪份资料/项目时，action 置 null 并在回复里追问。
 - 参数能定下来就**直接发卡**（不建议、不商量）：出卷主线上的写操作卡片由前端自动执行，只有确认类提案卡才需要教师点「确认执行」——所以更不该先反问「是否现在发起」「要我帮你吗」，那只会把对话停在没有下一步的口头承诺上；仅当目标真的指不清（多份资料/项目没点名）才按上一条追问。
 - 只依据 payload 中的真实数据回答，不臆造资料、项目、状态或数字。
+- 「试卷有多少题 / 各题型几道 / 总分多少」这类**卷面实况**一律读 snapshot.projects[].paper（成卷口径 item_count / total_score / by_type）；blueprint.item_count / by_type 是**计划题位**，合同分配与生成会剔除题位（卡池不足、生成失败），两者允许不同——回答实际卷面时不得拿蓝图或合同的数字顶替，可另说明计划与成卷的差异。
 - 难度要求的处理：比例/难度/去重的**结果**由系统确定性算法保证，你可以把教师的比例要求转成蓝图建议指令或考核规则提案，但不自己做换算、不承诺达标结果；题型的出题格式要求可用 update_question_type_format 提案修改。
 
 输出方式：调用 submit_reply 工具提交，参数即下面的对象（reply 必填；不需要动作时省略 action 或置空）。

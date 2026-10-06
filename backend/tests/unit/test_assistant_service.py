@@ -2528,6 +2528,122 @@ def test_paper_summary_prefers_active_version(session):
     assert fallback["paper_version_id"] == "pv2"
 
 
+def _seed_actual_paper(session) -> None:
+    """给 proj1 挂一份成卷：2 道蓝图题位（1 道改分、1 道改题型）+ 1 道无槽位题。
+
+    专门构造「计划 ≠ 成卷」：题型解析口径与试卷页逐题处理一致
+    （override → payload / override → plan_items → payload）。
+    """
+    session.execute(framework_versions.insert().values(
+        id="fv1", course_id="c1", version_no=1, status="published", payload={},
+    ))
+    session.execute(knowledge_catalog_versions.insert().values(
+        id="cv1", course_id="c1", framework_version_id="fv1",
+        version_no=1, status="published",
+    ))
+    session.execute(exam_projects.insert().values(
+        id="proj1", course_id="c1", name="成卷项目", status="review",
+    ))
+    session.execute(blueprint_versions.insert().values(
+        id="bv1", course_id="c1", exam_project_id="proj1",
+        framework_version_id="fv1", catalog_version_id="cv1",
+        version_no=1, status="confirmed",
+    ))
+    session.execute(assessment_units.insert().values(
+        id="au1", course_id="c1", catalog_version_id="cv1",
+        code="U1", title="单元1", performance_statement="ps1", status="active",
+    ))
+    session.execute(plan_items.insert(), [
+        {"id": "pl1", "course_id": "c1", "blueprint_version_id": "bv1",
+         "assessment_unit_id": "au1", "question_type": "single_choice",
+         "item_index": 1, "score": 2.0},
+        {"id": "pl2", "course_id": "c1", "blueprint_version_id": "bv1",
+         "assessment_unit_id": "au1", "question_type": "comprehensive",
+         "item_index": 2, "score": 10.0},
+    ])
+    session.execute(generated_questions.insert(), [
+        {"id": "gq1", "course_id": "c1", "plan_item_id": "pl1",
+         "generation_run_id": None, "knowledge_card_id": None,
+         "revision_no": 1, "status": "candidate",
+         "payload": {"question_type": "single_choice", "score": 2, "stem": "T1", "answer": "A"}},
+        {"id": "gq2", "course_id": "c1", "plan_item_id": "pl2",
+         "generation_run_id": None, "knowledge_card_id": None,
+         "revision_no": 1, "status": "candidate",
+         "payload": {"question_type": "comprehensive", "score": 10, "stem": "T2", "answer": "B"}},
+        # 归档/手拟题：无 plan 槽位，题型与分值只在 payload
+        {"id": "gq3", "course_id": "c1", "plan_item_id": None,
+         "generation_run_id": None, "knowledge_card_id": None,
+         "revision_no": 1, "status": "candidate",
+         "payload": {"question_type": "short_answer", "score": 5, "stem": "T3", "answer": "C"}},
+    ])
+    session.execute(paper_versions.insert().values(
+        id="pv1", course_id="c1", exam_project_id="proj1", version_no=1, status="candidate",
+    ))
+    session.execute(paper_items.insert(), [
+        {"id": "pi1", "course_id": "c1", "paper_version_id": "pv1",
+         "generated_question_id": "gq1", "display_order": 1},
+        {"id": "pi2", "course_id": "c1", "paper_version_id": "pv1",
+         "generated_question_id": "gq2", "display_order": 2},
+        {"id": "pi3", "course_id": "c1", "paper_version_id": "pv1",
+         "generated_question_id": "gq3", "display_order": 3},
+    ])
+    # 教师改分（override 优先于 plan_items 原值）与改题型（override 优先于 payload）
+    session.execute(
+        paper_items.update().where(paper_items.c.id == "pi1").values(teacher_override={"score": 4})
+    )
+    session.execute(
+        paper_items.update().where(paper_items.c.id == "pi2").values(teacher_override={"question_type": "essay"})
+    )
+    session.execute(
+        exam_projects.update().where(exam_projects.c.id == "proj1").values(active_paper_version_id="pv1")
+    )
+    session.commit()
+
+
+def test_paper_summary_reports_actual_composition(session):
+    """成卷构成按试卷页口径解析：题数/总分/题型分布，override 优先、planless 回落 payload。
+
+    回归：paper 摘要原只有待复核数，模型回答「试卷有几道综合题」只能拿蓝图
+    计划数字（综合题 3 道），而卷面实际成卷口径可能完全不同。
+    """
+    _seed_actual_paper(session)
+    summary = assistant_service._paper_summary(
+        session, course_id="c1",
+        project={"id": "proj1", "active_paper_version_id": "pv1"},
+    )
+    assert summary["item_count"] == 3
+    assert summary["total_score"] == 19.0  # 4（教师改分）+ 10 + 5（无槽位题）
+    assert summary["by_type"] == {
+        "single_choice": {"count": 1, "score": 4.0},
+        "essay": {"count": 1, "score": 10.0},        # 教师把该题改判为论述题
+        "short_answer": {"count": 1, "score": 5.0},  # 无槽位题按 payload 计
+    }
+    # 计划 ≠ 成卷：蓝图计划里有综合题，成卷按实际解析口径呈现
+    assert "comprehensive" not in summary["by_type"]
+
+
+def test_paper_summary_composition_empty_when_no_items(session):
+    """空卷（版本已建、题未落）：构成给零值而非缺键，字段稳定。"""
+    _seed_actual_paper(session)
+    session.execute(paper_versions.insert().values(
+        id="pv2", course_id="c1", exam_project_id="proj1", version_no=2, status="candidate",
+    ))
+    session.commit()
+    summary = assistant_service._paper_summary(
+        session, course_id="c1", project={"id": "proj1", "active_paper_version_id": "pv2"}
+    )
+    assert summary["item_count"] == 0
+    assert summary["total_score"] == 0.0
+    assert summary["by_type"] == {}
+
+
+def test_prompt_distinguishes_plan_from_actual_paper():
+    """提示词必须锁死口径：卷面实况读 paper，蓝图是计划题位，不得混用。"""
+    system_prompt, _payload = build_intent_prompt(_ctx(), "我试卷里综合题有几道？")
+    assert "成卷" in system_prompt
+    assert "计划题位" in system_prompt
+
+
 def test_load_context_carries_generation_task_status(session):
     """项目快照带生成任务真状态：status=generating 只是阶段标记（合同确认即置上），
     模型必须另看 generation_task_status 才能区分「从未发起（null）/ 在跑 /
