@@ -352,6 +352,24 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
         ),
     ),
     ToolSpec(
+        name="enqueue_framework_review",
+        kind=KIND_PROPOSAL,
+        doc=(
+            "发起命题框架 AI 评审（只读报告，不改任何数据；教师要「检查命题框架/考点表」"
+            "「看看考核规则有没有问题」时用）。前提：课程已构建命题框架；已发起过就引导"
+            "教师到命题框架页看报告，不要重复发起。"
+        ),
+        label="发起框架 AI 评审",
+        impact="创建只读评审任务（不修改任何数据）；报告生成后在命题框架页查看。",
+        parameters=_obj(
+            {
+                "instruction": _str(
+                    "教师关注点原话，如「重点看考点权重是否合理」；没有就省略=常规评审",
+                ),
+            }
+        ),
+    ),
+    ToolSpec(
         name="update_question_type_format",
         kind=KIND_PROPOSAL,
         doc=(

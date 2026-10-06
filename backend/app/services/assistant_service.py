@@ -656,7 +656,7 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 每一步只推进一级：历史里已经执行过的那一步不要重复发起（例如已发起过 enqueue_blueprint_suggest 就不再发起，蓝图未确认时直接 confirm_blueprint）。
 
 接力停点——以下情况**不出提案卡**（action 置 null），用一两句话说明现状与教师接下来要做什么，然后停下等教师回复。**先按项目 status 判定，命中即停、不再往下看**：
-1. 项目 status=review 或 exported → 出卷主线已完成。固定话术：先一句现状（试卷已生成、待审核），再引导「请到『试卷』页审核编辑，定稿与导出也在该页完成」；不列举导出格式、不把导出/发布摆成选项让教师点单，教师点名定稿/导出按下方拒绝清单回复。例外两类（本停点只拦**同一项目**的后续推进）：① 教师明确要求检查/评审试卷 → 照发 enqueue_paper_review（只读报告不改数据）；② 教师明确要另出一份新卷（「生成一张新试卷」「再出一份」）→ 照发 create_exam_project，新项目按阶梯从头走，不受本项目 review 状态牵连。
+1. 项目 status=review 或 exported → 出卷主线已完成。固定话术：先一句现状（试卷已生成、待审核），再引导「请到『试卷』页审核编辑，定稿与导出也在该页完成」；不列举导出格式、不把导出/发布摆成选项让教师点单，教师点名定稿/导出按下方拒绝清单回复。例外两类（本停点只拦**同一项目**的后续推进）：① 教师明确要求检查/评审试卷 → 照发 enqueue_paper_review（只读报告不改数据）；教师要求检查/评审命题框架、考点表或考核规则 → 照发 enqueue_framework_review（只读报告，课程级、不受项目状态牵连）；② 教师明确要另出一份新卷（「生成一张新试卷」「再出一份」）→ 照发 create_exam_project，新项目按阶梯从头走，不受本项目 review 状态牵连。
 2. 项目 status=generating 且 generation_task_status 为 queued/running（确有生成任务在跑）→ 引导到试卷页看进度，不要重复发起生成。status=generating 但 generation_task_status 为 null（合同刚确认、生成尚未发起）**不是停点**——按阶梯第 5 步照发 start_generation；generation_task_status 为 failed/cancelled → 不要重复发起，引导教师到『试卷』页点「重新生成」。
 
 拒绝并按标准话术回复（action 置 null，不要选任何工具）：
@@ -675,6 +675,8 @@ _SYSTEM_PROMPT = """你是高校课程工作台内的 AI 助手。教师在「{c
 - 参数能定下来就**直接发卡**（不建议、不商量）：出卷主线上的写操作卡片由前端自动执行，只有确认类提案卡才需要教师点「确认执行」——所以更不该先反问「是否现在发起」「要我帮你吗」，那只会把对话停在没有下一步的口头承诺上；仅当目标真的指不清（多份资料/项目没点名）才按上一条追问。
 - 只依据 payload 中的真实数据回答，不臆造资料、项目、状态或数字。
 - 「试卷有多少题 / 各题型几道 / 总分多少」这类**卷面实况**一律读 snapshot.projects[].paper（成卷口径 item_count / total_score / by_type）；blueprint.item_count / by_type 是**计划题位**，合同分配与生成会剔除题位（卡池不足、生成失败），两者允许不同——回答实际卷面时不得拿蓝图或合同的数字顶替，可另说明计划与成卷的差异。
+- 复核与建议类能力都已内置成提案工具，教师提出这类要求就直接发对应卡：整卷检查 → enqueue_paper_review、命题框架/考点表检查 → enqueue_framework_review、蓝图调整 → enqueue_blueprint_suggest、规则调整 → update_exam_rules；只有改题/建题/定稿导出仍引导到对应页面。
+- 工具覆盖不到的要求**不要硬发 action**：不得臆造工具名、也不得给出缺 tool 的空动作——action 置 null，用一两句话说明并提示教师可在对应页面手动完成；确实无法回答时用固定话术「我暂时无法回答这个问题，您可以手动操作看看。」收口，不输出内部校验错误或工具名。
 - 难度要求的处理：比例/难度/去重的**结果**由系统确定性算法保证，你可以把教师的比例要求转成蓝图建议指令或考核规则提案，但不自己做换算、不承诺达标结果；题型的出题格式要求可用 update_question_type_format 提案修改。
 
 输出方式：调用 submit_reply 工具提交，参数即下面的对象（reply 必填；不需要动作时省略 action 或置空）。
@@ -1238,6 +1240,17 @@ def build_proposal_payload(tool: str, args: dict, *, context: dict) -> dict:
             "body": {"instruction": instruction},
         }
 
+    if tool == "enqueue_framework_review":
+        # 课程级只读评审：不受项目状态牵连，只要求已有命题框架
+        framework = context.get("framework")
+        if framework is None:
+            raise AssistantError("尚未构建命题框架：先构建并确认命题框架，再发起框架评审")
+        instruction = _require_str(args, "instruction", max_len=500, allow_empty=True) or ""
+        return {
+            "framework_version_no": framework.get("version_no"),
+            "body": {"instruction": instruction},
+        }
+
     if tool == "update_question_type_format":
         raw_key = str(args.get("question_type") or "").strip()
         canonical = canonical_question_type(args.get("question_type"))
@@ -1554,6 +1567,7 @@ _DEFAULT_PROPOSAL_REPLIES = {
     "confirm_contract": "已生成合同重新分配提案（确认合同落库），请核对参数后执行：",
     "start_generation": "已生成 AI 生成任务的发起提案，确认后按已确认合同分批生成：",
     "enqueue_paper_review": "已生成整卷 AI 评审任务的发起提案，确认后执行（只读报告，不改数据）：",
+    "enqueue_framework_review": "已生成框架 AI 评审任务的发起提案，确认后执行（只读报告，不改数据）：",
     "update_question_type_format": "已生成题型格式修改提案，确认后写入考核规则：",
 }
 
@@ -1777,6 +1791,7 @@ _ANSWER_SYSTEM_PROMPT = """你是高校课程「{course_name}」工作台内的 
 - 用中文自然回答，简洁直接，不臆造系统中不存在的数据；需要具体状态时引用 snapshot 中的真实值。
 - 不承诺调整出题比例/难度/去重——这些由系统确定性算法保证。
 - 涉及写操作只说明会生成提案由教师确认，不声称已执行。
+- 问题超出能力范围、或 snapshot 数据不足以回答时，坦诚收口并用固定话术回复：「我暂时无法回答这个问题，您可以手动操作看看。」不要编造，也不要输出内部错误信息或工具名。
 - 与当前课程无关的问题礼貌拉回到课程工作台话题。"""
 
 
@@ -2387,10 +2402,17 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
             )
             routed = route_intent(intent, session=session, context=context, message=message)
         except AssistantError as second_error:
+            # 原始错误（如 action.tool 缺失）只留日志，不进教师可见文案——
+            # 面向教师的是"坦诚收口 + 手动出路"，不是内部校验术语。
+            logger.warning(
+                "assistant 意图两次未通过校验，落兜底文案 task_run_id=%s: %s",
+                task_run_id,
+                second_error,
+            )
             routed = {
                 "kind": "chat",
                 "stream": False,  # 确定性失败文案，不再问模型
-                "reply": f"我没能处理这个请求（{second_error}）。请换个说法，或到对应页面操作。",
+                "reply": "我暂时无法回答这个问题，您可以手动操作看看。",
             }
 
     # 意图阶段思考收口：聚批缓冲残余增量全部推出，再进入段2

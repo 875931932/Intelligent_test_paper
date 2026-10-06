@@ -376,9 +376,16 @@ frontend\src\
   成卷 0 道，模型答「3 道」）
 - ✅ **单次类 AI 工具思考档钉低**（2026-10-07，`e715845`）：见 §5.6 行（评审/改题/建题/
   蓝图建议/考核规则提案/框架评审统一 `AI_TOOL_REASONING_EFFORT=low`）
-- ✅ 后端门禁全绿：`uv run pytest -q` **1488 passed / 1 xfailed**（唯一 xfail=编造检测的
+- ✅ **AI 助手能力与收口话术**（2026-10-07）：① 复核/建议类能力全部内置为提案工具——新增
+  `enqueue_framework_review`（框架 AI 评审 → §4.10；课程级、有框架才发卡、不受项目状态牵连），
+  与既有 `enqueue_paper_review` / `enqueue_blueprint_suggest` / `update_exam_rules` 组成完整
+  检查链（改题/建题/定稿导出仍按设计引导到对应页面）；② 段1 提示词加两条红线：复核要求直接
+  发对应卡、工具覆盖不到时**不得臆造工具名或发空动作**（action 置 null，说明并给手动出路）；
+  ③ 两次校验失败的兜底文案改为「我暂时无法回答这个问题，您可以手动操作看看。」——原始错误
+  （如 `action.tool 缺失`）只留日志，不再暴露给教师；段2 问答同样按该话术诚实收口
+- ✅ 后端门禁全绿：`uv run pytest -q` **1490 passed / 1 xfailed**（唯一 xfail=编造检测的
   联合 bigram 阈值已知缺口，测试 docstring 注明根因）+ 覆盖率 **86.65%**（≥80 门禁，
-  2026-10-07 实测于 HEAD `e715845`）；前端 `npm run build` 0 error、
+  2026-10-07 实测）；前端 `npm run build` 0 error、
   oxlint 0 error（warning 均为既有文件基线）
 
 ### 已知问题（不阻塞，接手时留意）

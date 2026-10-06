@@ -112,6 +112,10 @@ const PROPOSAL_META: Record<string, { label: string; impact: string }> = {
     label: '发起整卷 AI 评审',
     impact: '创建只读质量评审任务（不修改任何数据）；报告生成后在试卷页查看。',
   },
+  enqueue_framework_review: {
+    label: '发起框架 AI 评审',
+    impact: '创建只读评审任务（不修改任何数据）；报告生成后在命题框架页查看。',
+  },
   update_question_type_format: {
     label: '修改题型格式',
     impact: '覆盖该题型的出题格式要求，之后的生成按新格式出题；不影响题型比例/难度/去重。',
@@ -643,6 +647,19 @@ function proposalParamRows(tool: string, payload: AssistantActionPayload): Array
         [
           '试卷',
           typeof payload.paper_version_no === 'number' ? `v${payload.paper_version_no}` : '—',
+        ],
+        [
+          '关注点',
+          typeof body.instruction === 'string' && body.instruction ? body.instruction : '（常规评审）',
+        ],
+      ];
+    case 'enqueue_framework_review':
+      return [
+        [
+          '框架',
+          typeof payload.framework_version_no === 'number'
+            ? `v${payload.framework_version_no}（当前）`
+            : '当前框架',
         ],
         [
           '关注点',

@@ -835,6 +835,8 @@ export type AssistantProposalTool =
   | 'enqueue_blueprint_suggest'
   | 'confirm_contract'
   | 'start_generation'
+  | 'enqueue_paper_review'
+  | 'enqueue_framework_review'
   | 'update_question_type_format';
 
 export interface AssistantMaterialRow {
@@ -909,6 +911,8 @@ export interface AssistantActionPayload {
   /** enqueue_paper_review：目标试卷版本（按项目 active_paper_version_id 解析）与版本号 */
   paper_version_id?: string;
   paper_version_no?: number;
+  /** enqueue_framework_review：评审目标为课程当前框架，仅带版本号展示 */
+  framework_version_no?: number;
   /** update_question_type_format：题型现格式（空 = 从未设置，走类别/全局默认） */
   current?: string;
   /** update_exam_rules：修改前的现值（卡片做「现值 → 新值」对比展示） */

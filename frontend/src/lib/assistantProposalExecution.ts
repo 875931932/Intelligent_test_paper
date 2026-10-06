@@ -150,6 +150,14 @@ export async function executeProposalAction(
       );
       return done('已发起整卷 AI 评审任务，完成后在试卷页查看报告');
     }
+    case 'enqueue_framework_review': {
+      await api.framework.reviewFramework(
+        courseId,
+        typeof body.instruction === 'string' ? body.instruction : '',
+        token,
+      );
+      return done('已发起框架 AI 评审任务，完成后在命题框架页查看报告');
+    }
     case 'update_question_type_format': {
       if (typeof body.question_type !== 'string') throw new Error('提案缺少题型');
       await api.framework.setQuestionTypeFormat(

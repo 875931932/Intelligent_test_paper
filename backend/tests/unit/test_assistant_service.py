@@ -381,7 +381,8 @@ def test_unknown_tool_exhausts_retry_with_deterministic_text(session):
     row = session.execute(
         select(assistant_messages.c.content).where(assistant_messages.c.task_run_id == task_id)
     ).scalar_one()
-    assert row.startswith("我没能处理这个请求")
+    # 面向教师的是「坦诚收口 + 手动出路」，不暴露内部校验错误（如 action.tool 缺失）
+    assert row == "我暂时无法回答这个问题，您可以手动操作看看。"
 
 
 def test_empty_intent_retried_with_feedback(session):
@@ -429,7 +430,9 @@ def test_broken_json_twice_degrades_to_deterministic_text(session):
     row = session.execute(
         select(assistant_messages.c.content).where(assistant_messages.c.task_run_id == task_id)
     ).scalar_one()
-    assert row.startswith("我没能处理这个请求")
+    assert row == "我暂时无法回答这个问题，您可以手动操作看看。"
+    # 原始错误（"既无 reply 也无 action…"）只留日志，不进教师可见文案
+    assert "reply" not in row and "action" not in row
 
 
 def test_normalize_intent_rejects_degenerate_output():
@@ -619,6 +622,7 @@ def test_paper_pipeline_tools_whitelisted_and_unrefused():
         "confirm_blueprint",
         "start_generation",
         "enqueue_paper_review",
+        "enqueue_framework_review",
     ):
         assert tool in assistant_service.PROPOSAL_TOOLS
         assert tool not in assistant_service.REFUSED_TOOLS
@@ -1009,6 +1013,39 @@ def test_prompt_documents_paper_review_tool():
     assert "不要重复发起" in system_prompt
     # review/exported 停点放行评审卡（停点只拦出卷主线推进）
     assert "① 教师明确要求检查/评审试卷" in system_prompt
+
+
+def test_enqueue_framework_review_payload_and_guards():
+    """框架评审提案：课程级只读，有命题框架才放行（不受项目状态牵连）。"""
+    ctx = _paper_ctx()
+    payload = build_proposal_payload(
+        "enqueue_framework_review",
+        {"instruction": "重点看考点权重是否合理"},
+        context=ctx,
+    )
+    assert payload["framework_version_no"] == 1
+    assert payload["body"] == {"instruction": "重点看考点权重是否合理"}
+    # instruction 可省略 = 常规评审
+    assert build_proposal_payload("enqueue_framework_review", {}, context=ctx)["body"] == {
+        "instruction": ""
+    }
+    # 没有命题框架 → 拦下并引导先构建
+    with pytest.raises(AssistantError, match="尚未构建命题框架"):
+        build_proposal_payload("enqueue_framework_review", {}, context=_ctx(framework=None))
+
+
+def test_prompt_documents_framework_review_and_honest_fallback():
+    """框架评审接入助手 + 两条"不呆滞"红线：不臆造工具、无法回答时固定话术收口。"""
+    system_prompt, _payload = build_intent_prompt(_paper_ctx(), "帮我检查命题框架")
+    assert "enqueue_framework_review" in system_prompt
+    assert "框架 AI 评审任务的发起提案" in (
+        assistant_service._DEFAULT_PROPOSAL_REPLIES["enqueue_framework_review"]
+    )
+    assert "命题框架/考点表" in system_prompt
+    # 无法回答的固定收口话术（与 run_turn 兜底文案同源，不暴露内部校验错误）
+    assert "我暂时无法回答这个问题" in system_prompt
+    # 工具覆盖不到的要求不得臆造工具名/空动作
+    assert "不得臆造工具名" in system_prompt
 
 
 def test_prompt_documents_paper_pipeline_ladder():

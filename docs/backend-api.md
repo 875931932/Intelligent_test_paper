@@ -906,10 +906,11 @@ schema 自 `1.2.0` 起新增该字段；逐题带 `rubric`（主观题评分细�
   全完成 = `current_step:null`）；段1 prompt 同时注入产品能力地图（页面模块 / 出卷主线 / 助手边界），
   教师问「这个网站能干什么/怎么出卷/下一步做什么」时模型选此工具，reply 结合 `current_step`
   给 1~3 句引导（不复述步骤）；卡上每步带「前往」跳转按钮 + 卡底五模块页面导航；
-- 提案工具（`PROPOSAL_TOOLS` 共 12 个，确认后调用）：`create_course` → §2、`update_course` → §2、
+- 提案工具（`PROPOSAL_TOOLS` 共 13 个，确认后调用）：`create_course` → §2、`update_course` → §2、
   `start_parse` → §3.5、`create_exam_project` → §8.2、`update_exam_rules` → §4.8、
   `create_blueprint` → §8.5、`confirm_blueprint` → §8.8、`enqueue_blueprint_suggest` → §8.7b、
   `confirm_contract` → §8.11、`start_generation` → §8.13、`enqueue_paper_review` → §9.3g、
+  `enqueue_framework_review` → §4.10（课程级只读框架评审，不受项目状态牵连；有框架才发卡）、
   `update_question_type_format` → §4.8（单题型出题格式写入考核规则 `type_formats`，空串恢复默认；
   综合题由原型档案驱动、不适用本工具）。模型回传的 id 必须命中段1 上下文白名单，非法带反馈重试
   一次；蓝图确认与发起生成已移入提案（卡上「确认执行」= 教师确认），定稿/导出/删除资料等仍在
