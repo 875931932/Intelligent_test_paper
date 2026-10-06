@@ -48,6 +48,7 @@ class RecordingJsonClient:
                 "temperature": temperature,
                 "call_context": call_context,
                 "max_tokens": max_tokens,
+                "reasoning_effort": reasoning_effort,
             }
         )
         response = self.responses.pop(0)
@@ -1464,6 +1465,46 @@ def test_consolidator_accepts_owner_qualified_fact_wrapping_direct_evidence():
     system = client.recorded_payloads[-1]["system"]
     assert "自包含" in system
     assert "归属" in system
+
+
+def test_consolidator_pins_reasoning_effort():
+    """归并必须显式下发思考档（low），不依赖服务端 LLM_DISABLE_THINKING。
+
+    实测归并单次调用平均 34s，输出里卡片 JSON 只占一部分、其余是思考；
+    不下发档位而开关为 false 时会回落供应商默认档，整条链路平白变慢。
+    """
+    client = RecordingJsonClient(
+        [
+            {
+                "exam_point_code": "rag-diagnosis",
+                "cards": [
+                    {
+                        "name": "检索偏差诊断依据",
+                        "performance_statement": "能说明检索偏差的诊断依据",
+                        "assessable_content": ["召回偏差可由切分粒度不当造成"],
+                        "evidence_chunk_ids": ["e1"],
+                    }
+                ],
+            }
+        ]
+    )
+    decision = EvidenceDecision.model_validate(
+        _decision(support_claim="召回偏差可由切分粒度不当造成")
+    )
+
+    LLMExamPointKnowledgeConsolidator(client, reasoning_effort="low").consolidate(
+        exam_point=_point(),
+        admitted_decisions=[decision],
+        chunks_by_id={
+            "e1": StagingChunk(
+                id="e1",
+                material_version_id="material-v1",
+                content="召回偏差可由切分粒度不当造成",
+            )
+        },
+    )
+
+    assert client.recorded_payloads[-1]["reasoning_effort"] == "low"
 
 
 def test_consolidator_still_rejects_fabricated_owner_fact():

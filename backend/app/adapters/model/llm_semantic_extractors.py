@@ -1012,8 +1012,12 @@ class LLMExamPointEvidenceClassifier:
 
 
 class LLMExamPointKnowledgeConsolidator:
-    def __init__(self, client: JsonRequester) -> None:
+    def __init__(self, client: JsonRequester, *, reasoning_effort: str | None = None) -> None:
         self.client = client
+        # 与分类同款：思考档显式下发（organization_consolidate_reasoning_effort），
+        # 不依赖服务端 LLM_DISABLE_THINKING。归并单次调用实测平均 34s，思考同样是
+        # 输出预算与耗时的大头（输出里卡片 JSON 只占一部分）。
+        self.reasoning_effort = reasoning_effort
 
     def consolidate(
         self,
@@ -1162,6 +1166,7 @@ class LLMExamPointKnowledgeConsolidator:
             call_context=call_context,
             response_validator=validate_response,
             max_tokens=_CONSOLIDATION_MAX_TOKENS,
+            reasoning_effort=self.reasoning_effort,
         )
 
         # 合并各批卡片并去重（跨批语义键相同的卡片只保留一张）。

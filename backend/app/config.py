@@ -101,6 +101,10 @@ class Settings(BaseSettings):
     # 显式下发的意义：不依赖服务端 LLM_DISABLE_THINKING（若其为 false，网关不发
     # 档位、模型回落供应商默认档，分类会平白多花数倍时间）。
     organization_classify_reasoning_effort: str = "low"
+    # 归并环节的推理强度：同样显式钉 low。归并单次调用实测平均 34s，输出里
+    # 可评分卡片 JSON 只占一部分，其余仍是思考；不显式下发则依赖服务端
+    # LLM_DISABLE_THINKING，可能回落供应商默认档。
+    organization_consolidate_reasoning_effort: str = "low"
     # 抽取响应启用 json_schema 严格结构约束（官方 JSON Mode：json_schema+strict，
     # 2026-09-25 实测生产 step_plan 端点接受）：解码按 _ExtractionResponse 的
     # schema 走，必填字段在场由协议保证，从源头消灭「模型偷懒回 {} 缺
@@ -179,13 +183,13 @@ class Settings(BaseSettings):
     # 必须 ≤ 模型账号的并发上限（step_plan 上 step-5-preview 为 5），否则供应商
     # 直接掐断多余连接——表现为无 http_status 的 llm_transport_error 连环。
     # 2026-10-06 定 5：把账号额度用满。额度是**共享**的——批量分类与 AI 助手
-    # 问答走同一进程信号量，助手一轮问答占 1 个名额，因此分类阶段另有
-    # organization_classify_max_workers=4 的上限（4 批量 + 1 助手 = 5）。
+    # 问答走同一进程信号量，助手一轮问答占 1 个名额，因此批量阶段另有
+    # organization_model_max_workers=4 的上限（4 批量 + 1 助手 = 5）。
     llm_max_concurrency: int = Field(default=5, ge=1)
-    # 分类环节的并发上限（线程池 = min(organization_max_workers, 本值)）。
+    # 批量模型阶段（分类 / 归并）的并发上限：线程池 = min(organization_max_workers, 本值)。
     # 分类是知识目录的长尾（13 批累计 875s），放开到 4 路；同时给 AI 助手
-    # 固定留出 1 个网关名额（4+1=5，正好用满账号额度）。
-    organization_classify_max_workers: int = Field(default=4, gt=0)
+    # 固定留出 1 个网关名额（4+1=5，正好用满账号额度，互不饿死）。
+    organization_model_max_workers: int = Field(default=4, gt=0)
     seed_dev_data: bool = False
     upload_max_bytes: int = 209715200
     s3_endpoint: str = "http://localhost:9000"

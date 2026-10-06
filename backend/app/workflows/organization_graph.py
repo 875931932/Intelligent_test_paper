@@ -681,7 +681,7 @@ def build_organization_graph(
             for batch_codes in prepared["batches"]
         ]
         classify_pool = min(
-            settings.organization_max_workers, settings.organization_classify_max_workers
+            settings.organization_max_workers, settings.organization_model_max_workers
         )
         with ThreadPoolExecutor(max_workers=classify_pool) as executor:
             future_batches = {
@@ -839,7 +839,13 @@ def build_organization_graph(
             code: list(values)
             for code, values in (state.get("coverage_reasons") or {}).items()
         }
-        with ThreadPoolExecutor(max_workers=settings.organization_max_workers) as executor:
+        # 与分类同口径封顶（organization_model_max_workers=4）：归并也是批量模型阶段，
+        # 不封顶会用 organization_max_workers=16 个线程去抢网关信号量，把 AI 助手
+        # 的名额一起吃光（4 批量 + 1 助手 = 5 的约定就失效了）。
+        consolidate_pool = min(
+            settings.organization_max_workers, settings.organization_model_max_workers
+        )
+        with ThreadPoolExecutor(max_workers=consolidate_pool) as executor:
             future_points = {executor.submit(consolidate_point, point): point for point in points}
             for future in as_completed(future_points):
                 point = future_points[future]

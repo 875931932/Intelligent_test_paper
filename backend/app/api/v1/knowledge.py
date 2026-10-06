@@ -103,7 +103,10 @@ def get_exam_point_consolidator(request: Request) -> ExamPointKnowledgeConsolida
         client = _get_semantic_json_client(
             request, settings.llm_consolidate_model or settings.llm_model
         )
-        consolidator = LLMExamPointKnowledgeConsolidator(client)
+        consolidator = LLMExamPointKnowledgeConsolidator(
+            client,
+            reasoning_effort=settings.organization_consolidate_reasoning_effort,
+        )
         request.app.state.exam_point_knowledge_consolidator = consolidator
         return consolidator
 

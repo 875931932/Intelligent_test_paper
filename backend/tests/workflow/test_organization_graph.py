@@ -348,11 +348,11 @@ def test_classification_batches_run_concurrently_within_one_material(monkeypatch
 
     回归：分类并发原先只在「材料」层级做——同资料内的批次是串行 for 循环，
     单资料的课程（很常见）因此退化成 1 路。另外分类线程池须受
-    organization_classify_max_workers 封顶，给 AI 助手固定留 1 个网关名额。
+    organization_model_max_workers 封顶，给 AI 助手固定留 1 个网关名额。
     峰值 ==2 同时证明两件事：串行实现恒为 1，无封顶则会是 3。
     """
     monkeypatch.setattr(settings, "organization_max_workers", 16)
-    monkeypatch.setattr(settings, "organization_classify_max_workers", 2)
+    monkeypatch.setattr(settings, "organization_model_max_workers", 2)
     chunks = [
         StagingChunk(id=f"s{i}", material_version_id="material-1", content=f"知识点{i}")
         for i in range(1, 13)
