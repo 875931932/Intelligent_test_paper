@@ -348,6 +348,43 @@ def _migrate_generated_question_nullable(engine: Engine) -> None:
             )
 
 
+def _migrate_delete_preserved_nullable(engine: Engine) -> None:
+    """Idempotently 放开 paper_archives.exam_project_id / assistant_messages.task_run_id 非空。
+
+    这两列分别是「归档」「对话记录」指向项目的唯二引用，但两者都是课程级资产、
+    不随项目删除销毁：删项目时应置空而非连带删除（否则归档 500、对话被清）。
+    旧库这两列 NOT NULL，create_all 不会 ALTER 已存在表，需显式 DROP NOT NULL。
+    SQLite 无 ALTER COLUMN DROP NOT NULL 语法，且测试库均为 create_all 新建
+    （直接建出可空列），故旧库迁移只在 PostgreSQL 上执行。
+    """
+
+    if engine.dialect.name != "postgresql":
+        return
+    targets = (
+        ("paper_archives", "exam_project_id"),
+        ("assistant_messages", "task_run_id"),
+    )
+    try:
+        insp = inspect(engine)
+        pending = []
+        for table, column in targets:
+            if not insp.has_table(table):
+                continue
+            cols = {c["name"]: c for c in insp.get_columns(table)}
+            if column in cols and not cols[column].get("nullable", True):
+                pending.append((table, column))
+    except Exception:
+        # 迁移是尽力而为的幂等维护：无法内省时不阻断启动（同 generated_questions 口径）。
+        return
+    if not pending:
+        return
+    with engine.begin() as conn:
+        for table, column in pending:
+            conn.execute(
+                text(f"ALTER TABLE {table} ALTER COLUMN {column} DROP NOT NULL")
+            )
+
+
 def _seed_dev_data(bind: Engine | Connection) -> None:
     """Upsert the admin test account and fold any legacy 'owner-dev' data into it."""
 
@@ -440,6 +477,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             _migrate_assistant_session(engine)
             _migrate_course_columns(engine)
             _migrate_generated_question_nullable(engine)
+            _migrate_delete_preserved_nullable(engine)
             if seed:
                 with engine.begin() as conn:
                     _seed_dev_data(conn)
@@ -456,6 +494,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             _migrate_assistant_session(engine)
             _migrate_course_columns(engine)
             _migrate_generated_question_nullable(engine)
+            _migrate_delete_preserved_nullable(engine)
             if seed:
                 _seed_dev_data(engine)
     finally:

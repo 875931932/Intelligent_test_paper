@@ -155,3 +155,29 @@ def test_delete_nulls_active_back_references_first():
     svc.delete_project(session, course_id="c1", project_id="p1")
     nulled_cols = {col for table, col in session.nulled if table == "exam_projects"}
     assert {"active_blueprint_version_id", "active_generation_run_id", "active_paper_version_id"} <= nulled_cols
+
+
+def test_delete_preserves_archives_and_chat_messages():
+    """归档与 AI 对话记录是课程级资产，删项目只能摘引用、不能连带删除。
+
+    线上 500 根因（AI 构建的项目删不掉）：assistant_messages.task_run_id 非空
+    外键指向本项目的 task_runs，删 task_runs 时被挡住。归档同理
+    （paper_archives.exam_project_id）。两列已放开可空，删除序列必须先置空。
+    """
+    session = _RecordingSession()
+    svc.delete_project(session, course_id="c1", project_id="p1")
+
+    nulled = set(session.nulled)
+    assert ("assistant_messages", "task_run_id") in nulled
+    assert ("paper_archives", "exam_project_id") in nulled
+    # 两张表都不该出现在删除清单里
+    assert "assistant_messages" not in session.deleted
+    assert "paper_archives" not in session.deleted
+
+    # 置空必须发生在对应父表删除之前，否则外键违约
+    order = {t: i for i, t in enumerate(session.deleted)}
+    null_order = {}
+    for i, pair in enumerate(session.nulled):
+        null_order.setdefault(pair, i)
+    assert null_order[("assistant_messages", "task_run_id")] < order["task_runs"]
+    assert null_order[("paper_archives", "exam_project_id")] < order["exam_projects"]

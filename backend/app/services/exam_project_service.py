@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.schema import (
+    assistant_messages,
     blueprint_sections,
     blueprint_versions,
     exam_points,
@@ -18,6 +19,7 @@ from app.db.schema import (
     knowledge_cards,
     model_calls,
     outbox_events,
+    paper_archives,
     paper_items,
     paper_versions,
     plan_items,
@@ -370,6 +372,12 @@ def delete_project(session: Session, course_id: str, project_id: str) -> None:
     model_calls → quality_checks → paper_items → generated_questions →
     paper_versions → generation_attempts → generation_runs → outbox_events →
     plan_items → blueprint_sections → blueprint_versions → task_runs → exam_projects。
+
+    两处例外：paper_archives（资料库「试卷」归档）与 assistant_messages（AI 助手
+    对话记录）都是课程级资产、不随项目销毁——它们的外键非空，删除父表前先把
+    引用**置空**（归档是自包含快照，源项目没了仍可看/编辑/下载；对话记录保留
+    原文，只是不再关联本轮 task_run）。早期漏了这两处，AI 构建的项目删不掉
+    （assistant_messages 挡住了 task_runs，500）。
     整个操作在一个事务里，任一步失败整体回滚，不会留下半删的项目。
     """
     get_project(session, course_id, project_id)
@@ -493,6 +501,17 @@ def delete_project(session: Session, course_id: str, project_id: str) -> None:
             )
         # task_runs 之前必须先清 outbox_events（其 task_run_id 外键）
         if task_ids:
+            # 对话记录不随项目销毁：先摘掉对本项目 task_run 的引用（列可空），
+            # 否则删 task_runs 时被 assistant_messages 外键挡住——AI 助手自动
+            # 执行过主线的项目（messages 挂 task_run）必踩这条，整体 500。
+            session.execute(
+                update(assistant_messages)
+                .where(
+                    assistant_messages.c.course_id == course_id,
+                    assistant_messages.c.task_run_id.in_(task_ids),
+                )
+                .values(task_run_id=None)
+            )
             session.execute(
                 delete(outbox_events).where(
                     outbox_events.c.task_run_id.in_(task_ids),
@@ -528,6 +547,16 @@ def delete_project(session: Session, course_id: str, project_id: str) -> None:
         session.execute(
             text("DELETE FROM task_runs WHERE course_id = :cid AND payload->>'project_id' = :pid"),
             {"cid": course_id, "pid": project_id},
+        )
+        # 归档不随项目销毁：摘掉指向项目的引用（列可空）。归档是自包含快照，
+        # 源项目删除后仍应在资料库「试卷」文件夹可看/编辑/下载，而非连带删除。
+        session.execute(
+            update(paper_archives)
+            .where(
+                paper_archives.c.course_id == course_id,
+                paper_archives.c.exam_project_id == project_id,
+            )
+            .values(exam_project_id=None)
         )
         session.execute(
             delete(exam_projects).where(

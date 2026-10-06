@@ -590,7 +590,8 @@ export interface PaperVersionSummary {
  */
 export interface PaperArchiveSummary {
   id: string;
-  exam_project_id: string;
+  /** 源项目；项目被删后为 null（归档是自包含快照，不随项目销毁） */
+  exam_project_id: string | null;
   project_name: string | null;
   source_paper_version_id: string | null;
   source_version_no: number | null;
@@ -1003,7 +1004,8 @@ export interface AssistantAction {
 
 export interface AssistantMessage {
   id: string;
-  task_run_id: string;
+  /** 本轮任务；其项目被删除后为 null（对话记录保留，只摘掉任务关联） */
+  task_run_id: string | null;
   role: AssistantRole;
   content: string;
   /** 思考模型推理全文：与 content 分离，前端渲染成独立思考区（不进正文气泡） */

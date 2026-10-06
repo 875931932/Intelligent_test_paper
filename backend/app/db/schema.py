@@ -632,7 +632,9 @@ paper_items = _course_table(
 # 保留策略物理删除，归档必须在源卷消失后继续可看、可编辑、可下载。
 paper_archives = _course_table(
     "paper_archives",
-    Column("exam_project_id", String(64), ForeignKey("exam_projects.id"), nullable=False),
+    # 项目删除时置空（归档是自包含快照：须在源卷、乃至整个项目消失后继续可看可编辑，
+    # 因此值可空、不随项目级联删除——见 exam_project_service.delete_project）
+    Column("exam_project_id", String(64), ForeignKey("exam_projects.id"), nullable=True),
     # 溯源用：记录来自哪一版，源卷被删后此列只是历史线索，不参与外键
     Column("source_paper_version_id", String(64)),
     Column("source_version_no", Integer),
@@ -714,7 +716,9 @@ assistant_sessions = _course_table(
 # session_id：应用层恒写（历史任务 payload 缺失时允许 NULL，见 init_db 迁移注释）。
 assistant_messages = _course_table(
     "assistant_messages",
-    Column("task_run_id", String(64), ForeignKey("task_runs.id"), nullable=False),
+    # 建轮次时恒写；仅当所挂 task_run 所属项目被删除时置空（对话记录是课程级资产，
+    # 不随项目销毁——见 exam_project_service.delete_project）
+    Column("task_run_id", String(64), ForeignKey("task_runs.id"), nullable=True),
     Column("session_id", String(64), ForeignKey("assistant_sessions.id"), nullable=True),
     Column("role", String(20), nullable=False),
     Column("content", Text, nullable=False, default="", server_default=""),

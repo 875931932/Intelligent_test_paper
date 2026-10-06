@@ -387,16 +387,18 @@ export const useAssistantStore = create<AssistantState>()((set, get) => {
       return; // 在途（含 POST 未返回的瞬态）：不抢流，输入保持禁用（单在途约束）
     }
     const last = messages[messages.length - 1];
-    if (last && last.role === 'user' && !s.settledTaskIds.includes(last.task_run_id)) {
+    // task_run_id 可为 null（其项目已被删除，对话记录保留）：没有在途任务可续，按已完结处理
+    const lastTaskId = last?.role === 'user' ? last.task_run_id : null;
+    if (lastTaskId && !s.settledTaskIds.includes(lastTaskId)) {
       set({
         sending: true,
-        streamTaskId: last.task_run_id,
+        streamTaskId: lastTaskId,
         streamSessionId: sid,
         streamText: '',
         streamThink: '',
         streamHint: '正在思考…',
       });
-      openStream(courseId, last.task_run_id);
+      openStream(courseId, lastTaskId);
     }
   };
 
