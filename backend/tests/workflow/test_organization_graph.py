@@ -159,6 +159,32 @@ class RecordingClassifier:
         ]
 
 
+class PeakTrackingClassifier(RecordingClassifier):
+    """记录 classify_file 同时在飞的峰值，验证分类批次确实并发执行。"""
+
+    def __init__(self, *, fail_material: str | None = None):
+        super().__init__(fail_material=fail_material)
+        self._lock = threading.Lock()
+        self._in_flight = 0
+        self.peak_in_flight = 0
+
+    def classify_file(self, *, exam_points, material_version_id, chunks, call_context=None):
+        with self._lock:
+            self._in_flight += 1
+            self.peak_in_flight = max(self.peak_in_flight, self._in_flight)
+        try:
+            sleep(0.05)
+            return super().classify_file(
+                exam_points=exam_points,
+                material_version_id=material_version_id,
+                chunks=chunks,
+                call_context=call_context,
+            )
+        finally:
+            with self._lock:
+                self._in_flight -= 1
+
+
 class RecordingConsolidator:
     def __init__(self):
         self.calls: list[tuple[str, list[str]]] = []
@@ -315,6 +341,58 @@ def test_organization_graph_classifies_only_recalled_exam_point_file_pairs():
     )
     assert ep1_card.evidence_chunk_ids == ["chunk-1", "chunk-2"]
     assert "__interrupt__" in paused
+
+
+def test_classification_batches_run_concurrently_within_one_material(monkeypatch):
+    """材料内的多个分类批必须并发，且线程池受分类专用上限封顶。
+
+    回归：分类并发原先只在「材料」层级做——同资料内的批次是串行 for 循环，
+    单资料的课程（很常见）因此退化成 1 路。另外分类线程池须受
+    organization_classify_max_workers 封顶，给 AI 助手固定留 1 个网关名额。
+    峰值 ==2 同时证明两件事：串行实现恒为 1，无封顶则会是 3。
+    """
+    monkeypatch.setattr(settings, "organization_max_workers", 16)
+    monkeypatch.setattr(settings, "organization_classify_max_workers", 2)
+    chunks = [
+        StagingChunk(id=f"s{i}", material_version_id="material-1", content=f"知识点{i}")
+        for i in range(1, 13)
+    ]
+    state = _state(chunks)
+    point_codes = [f"EP-{index}" for index in range(1, 8)]
+    state["exam_points"] = [
+        _point(code, "rag" if index % 2 else "agent").model_dump(mode="json")
+        for index, code in enumerate(point_codes, start=1)
+    ]
+    state["material_version_ids"] = ["material-1"]
+    state["frozen_input"] = {
+        **state["frozen_input"],
+        "material_version_ids": ["material-1"],
+        "exam_points": [
+            {"id": f"db-{code}", "code": code} for code in point_codes
+        ],
+    }
+
+    class AllRecallRetriever:
+        def retrieve(self, exam_point, chunks):
+            return [
+                RankedChunk(chunk=chunk, score=0.9, lexical_score=0.8, semantic_score=0.95)
+                for chunk in chunks
+            ]
+
+    classifier = PeakTrackingClassifier()
+    graph, _, _, _, _ = _graph(
+        classifier=classifier,
+        retriever=AllRecallRetriever(),
+        extractor=RecordingExtractor(drop_ids=set()),
+        chunks=chunks,
+    )
+
+    graph.invoke(state, config={"configurable": {"thread_id": "classify-peak"}})
+
+    # 每考点召回 top_k=12 → 批=[EP-1..EP-3][EP-4..EP-6][EP-7]，共 3 批
+    assert len(classifier.calls) == 3
+    assert {material for _, material, _ in classifier.calls} == {"material-1"}
+    assert classifier.peak_in_flight == 2
 
 
 def test_no_recall_marks_exam_point_insufficient_without_classifier_call():

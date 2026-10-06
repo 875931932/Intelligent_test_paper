@@ -23,9 +23,12 @@ logger = logging.getLogger("model.gateway")
 # 用进程级信号量把所有模型调用（分类/归并/抽取/框架抽取共用同一网关）的并发数
 # 收敛到很小的常数，让 LLM 端始终处于可控负载；再用 429 长退避兜底
 # RPM 触顶。metagain 单租户工具，进程内所有 client 共享同一信号量协调并发。
-# 2026-10-04 常数改为 settings.llm_max_concurrency（LLM_MAX_CONCURRENCY，缺省 2）：
+# 2026-10-04 常数改为 settings.llm_max_concurrency（LLM_MAX_CONCURRENCY，缺省 5）：
 # 信号量按进程生效，多进程（uvicorn + celery worker）各持一份，实际并发 ≈
 # 进程数 × 本值，须 ≤ 模型账号并发上限（step-5-preview 为 5）。
+# 2026-10-06 定为账号额度上限 5：额度共享——批量分类与 AI 助手问答走同一
+# 信号量；分类线程池另封顶 4（organization_classify_max_workers），
+# 固定给助手留 1 个名额，两边刚好用满 5 路不互相饿死。
 _LLM_MAX_CONCURRENCY = settings.llm_max_concurrency
 _LLM_SEMAPHORE = threading.BoundedSemaphore(_LLM_MAX_CONCURRENCY)
 

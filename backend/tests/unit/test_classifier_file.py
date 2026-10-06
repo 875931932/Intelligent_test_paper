@@ -19,11 +19,13 @@ class FakeJsonClient:
         self.response = response
         self.payloads = []
         self.system_prompts = []
+        self.reasoning_efforts = []
 
     def request_json(self, *, system_prompt, payload, temperature,
-                     call_context=None, response_validator=None):
+                     call_context=None, response_validator=None, reasoning_effort=None):
         self.payloads.append(payload)
         self.system_prompts.append(system_prompt)
+        self.reasoning_efforts.append(reasoning_effort)
         if response_validator:
             response_validator(self.response)
         return self.response
@@ -89,7 +91,32 @@ def test_classify_file_returns_decisions_for_all_points():
     payload = client.payloads[0]
     assert [point["code"] for point in payload["exam_points"]] == ["EP1", "EP2"]
     assert payload["material_version_id"] == "M1"
-    assert {chunk["evidence_chunk_id"] for chunk in payload["chunks"]} == {"c1", "c2"}
+    # 下发给模型的是短代理编号（32 位 hex 的 id 会按考点重复出现在响应里，
+    # 是输出 token 的大头）；返回的 decisions 已还原为真实 chunk id。
+    # 本测试的假响应回显真实 id（c1/c2），顺带覆盖「容忍真实 id 回显」的路径。
+    assert {chunk["evidence_chunk_id"] for chunk in payload["chunks"]} == {"C1", "C2"}
+    assert "locator" not in payload["chunks"][0]
+    assert {d.evidence_chunk_id for item in decisions for d in item.decisions} == {"c1", "c2"}
+
+
+def test_classify_file_pins_reasoning_effort():
+    """分类必须显式下发思考档（low）。
+
+    回归：实测单次分类输出 6k~12.7k token，响应 JSON 只占 ~1.5k，其余全是思考，
+    单次调用 67s 的耗时大头在此。若不下发档位而服务端 LLM_DISABLE_THINKING=false，
+    模型回落供应商默认档（medium），整条链路平白多花数倍时间。
+    """
+    response = {"file_decisions": [_file_item("EP1", chunk_ids=("c1",))]}
+    client = FakeJsonClient(response)
+    classifier = LLMExamPointEvidenceClassifier(client, reasoning_effort="low")
+
+    classifier.classify_file(
+        exam_points=[_point("EP1")],
+        material_version_id="M1",
+        chunks=[_chunk("c1")],
+    )
+
+    assert client.reasoning_efforts == ["low"]
 
 
 def test_classify_file_completes_missing_pairs_as_out_of_scope():

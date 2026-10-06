@@ -82,7 +82,10 @@ def get_exam_point_classifier(request: Request) -> ExamPointEvidenceClassifier:
         client = _get_semantic_json_client(
             request, settings.llm_classify_model or settings.llm_model
         )
-        classifier = LLMExamPointEvidenceClassifier(client)
+        classifier = LLMExamPointEvidenceClassifier(
+            client,
+            reasoning_effort=settings.organization_classify_reasoning_effort,
+        )
         request.app.state.exam_point_evidence_classifier = classifier
         return classifier
 

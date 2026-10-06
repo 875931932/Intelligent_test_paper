@@ -96,6 +96,11 @@ class Settings(BaseSettings):
     # low/medium/high）。信息抽取用 low 最省预算，避免思考占满输出额度导致
     # content 为空/截断非 JSON。显式下发优先于全局 llm_disable_thinking。
     organization_extraction_reasoning_effort: str = "low"
+    # 分类环节的推理强度：与抽取同档显式钉 low。实测分类单次输出 6k~12.7k token，
+    # 其中响应 JSON 仅 ~1.5k，其余是思考——单次调用 67s 的耗时大头即在此。
+    # 显式下发的意义：不依赖服务端 LLM_DISABLE_THINKING（若其为 false，网关不发
+    # 档位、模型回落供应商默认档，分类会平白多花数倍时间）。
+    organization_classify_reasoning_effort: str = "low"
     # 抽取响应启用 json_schema 严格结构约束（官方 JSON Mode：json_schema+strict，
     # 2026-09-25 实测生产 step_plan 端点接受）：解码按 _ExtractionResponse 的
     # schema 走，必填字段在场由协议保证，从源头消灭「模型偷懒回 {} 缺
@@ -173,7 +178,14 @@ class Settings(BaseSettings):
     # 实际并发 ≈ 持信号量的进程数（uvicorn / celery worker 各算各的）× 本值，
     # 必须 ≤ 模型账号的并发上限（step_plan 上 step-5-preview 为 5），否则供应商
     # 直接掐断多余连接——表现为无 http_status 的 llm_transport_error 连环。
-    llm_max_concurrency: int = Field(default=2, ge=1)
+    # 2026-10-06 定 5：把账号额度用满。额度是**共享**的——批量分类与 AI 助手
+    # 问答走同一进程信号量，助手一轮问答占 1 个名额，因此分类阶段另有
+    # organization_classify_max_workers=4 的上限（4 批量 + 1 助手 = 5）。
+    llm_max_concurrency: int = Field(default=5, ge=1)
+    # 分类环节的并发上限（线程池 = min(organization_max_workers, 本值)）。
+    # 分类是知识目录的长尾（13 批累计 875s），放开到 4 路；同时给 AI 助手
+    # 固定留出 1 个网关名额（4+1=5，正好用满账号额度）。
+    organization_classify_max_workers: int = Field(default=4, gt=0)
     seed_dev_data: bool = False
     upload_max_bytes: int = 209715200
     s3_endpoint: str = "http://localhost:9000"

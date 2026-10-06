@@ -1160,7 +1160,7 @@ def test_database_model_call_recorder_does_not_commit_callers_pending_transactio
     engine.dispose()
 
 
-def test_material_classifier_sends_exam_points_and_one_file_with_locators():
+def test_material_classifier_sends_exam_points_and_one_file_with_short_ids():
     client = RecordingJsonClient(
         [
             {
@@ -1192,9 +1192,15 @@ def test_material_classifier_sends_exam_points_and_one_file_with_locators():
     request = client.recorded_payloads[-1]["user"]
     assert [item["code"] for item in request["exam_points"]] == ["rag-diagnosis"]
     assert request["material_version_id"] == "material-v1"
-    assert {item["material_version_id"] for item in request["chunks"]} == {"material-v1"}
-    assert request["chunks"][0]["locator"]["page"] == 3
+    # 块只送「短代理编号 + 正文 + material_version_id」三样：
+    # locator（页码/标题路径，实测平均 570 字符/块）不参与判定，送它是纯输入浪费。
+    payload_chunk = request["chunks"][0]
+    assert payload_chunk["evidence_chunk_id"] == "C1"
+    assert payload_chunk["material_version_id"] == "material-v1"
+    assert "locator" not in payload_chunk
+    assert payload_chunk["content"].startswith("检索失败可能由切分粒度不当造成")
     assert "exam_point" not in request
+    # 短编号在返回前还原为真实 chunk id（本用例的假响应回显了真实 id，一并容忍）
     assert result[0].decisions[0].evidence_chunk_id == "e1"
     assert "file_decisions" in client.recorded_payloads[-1]["system"]
     assert "out_of_scope" in client.recorded_payloads[-1]["system"]

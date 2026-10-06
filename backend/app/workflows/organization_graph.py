@@ -515,9 +515,7 @@ def build_organization_graph(
         ):
             pairs_by_material[pair["material_version_id"]].append(pair)
 
-        def classify_material(
-            material_version_id: str, material_pairs: list[dict]
-        ) -> tuple[list[ExamPointFileDecision], list[tuple[str, Exception]]]:
+        def prepare_material(material_version_id: str, material_pairs: list[dict]) -> dict:
             # 把同资料内的考点按 expected_pairs(考点数×chunk 并集) 做贪心打包，
             # 每批控制在分类模型单次可稳定覆盖的规模内：
             #   - 若像最初那样“整份资料一次调用”，expected_pairs 会达到几百上千，
@@ -525,6 +523,7 @@ def build_organization_graph(
             #   - 若像逐考点那样“一次只放 1 个考点”，调用次数会爆炸(资料×考点)，
             #     且同一 chunk 文本在多个批次里被重复传递 → token 消耗剧增。
             # 打包可在避免 scope violation 的同时复用 chunks、削减调用次数与重复 token。
+            # 这里只做纯计算不调模型：批次规划与执行分离，才能把「批」摊平进线程池。
             pairs_by_point: dict[str, list[dict]] = defaultdict(list)
             for pair in material_pairs:
                 pairs_by_point[pair["exam_point_code"]].append(pair)
@@ -561,92 +560,105 @@ def build_organization_graph(
                         head.append(code)
                         continue
                 batches.append([code])
+            return {
+                "material_version_id": material_version_id,
+                "pairs_by_point": pairs_by_point,
+                "point_chunk_ids": point_chunk_ids,
+                "batches": batches,
+            }
 
-            def classify_batch(batch_codes: list[str]) -> list[ExamPointFileDecision]:
-                # 调用一次分类并完成校验与 scope 过滤；失败时由调用方决定是否拆批重试。
-                batch_points = [points[code] for code in batch_codes]
-                batch_chunk_ids = sorted(
-                    set().union(*(point_chunk_ids[c] for c in batch_codes))
+        def run_classify_batch(
+            prepared: dict, batch_codes: list[str]
+        ) -> list[ExamPointFileDecision]:
+            # 调用一次分类并完成校验与 scope 过滤；失败时由调用方决定是否拆批重试。
+            material_version_id = prepared["material_version_id"]
+            pairs_by_point = prepared["pairs_by_point"]
+            point_chunk_ids = prepared["point_chunk_ids"]
+            batch_points = [points[code] for code in batch_codes]
+            batch_chunk_ids = sorted(
+                set().union(*(point_chunk_ids[c] for c in batch_codes))
+            )
+            chunks = [chunks_by_id[chunk_id] for chunk_id in batch_chunk_ids]
+            if any(
+                chunk.material_version_id != material_version_id for chunk in chunks
+            ):
+                raise ValueError(
+                    "classification pair contains chunks from another material"
                 )
-                chunks = [chunks_by_id[chunk_id] for chunk_id in batch_chunk_ids]
-                if any(
-                    chunk.material_version_id != material_version_id for chunk in chunks
-                ):
-                    raise ValueError(
-                        "classification pair contains chunks from another material"
-                    )
-                file_decisions = classifier.classify_file(
-                    exam_points=batch_points,
-                    material_version_id=material_version_id,
-                    chunks=chunks,
-                    call_context=ModelCallContext(
-                        course_id=state["course_id"],
-                        organization_run_id=state["run_id"],
-                        stage="classify_exam_point_file_pair",
-                    ),
+            file_decisions = classifier.classify_file(
+                exam_points=batch_points,
+                material_version_id=material_version_id,
+                chunks=chunks,
+                call_context=ModelCallContext(
+                    course_id=state["course_id"],
+                    organization_run_id=state["run_id"],
+                    stage="classify_exam_point_file_pair",
+                ),
+            )
+            by_point = {
+                item.exam_point_code: ExamPointFileDecision.model_validate(item)
+                for item in file_decisions
+            }
+            if set(by_point) != set(batch_codes):
+                raise ValueError(
+                    "classification response does not match its material points"
                 )
-                by_point = {
-                    item.exam_point_code: ExamPointFileDecision.model_validate(item)
-                    for item in file_decisions
-                }
-                if set(by_point) != set(batch_codes):
+            results: list[ExamPointFileDecision] = []
+            for code in batch_codes:
+                validated = by_point[code]
+                if validated.material_version_id != material_version_id:
                     raise ValueError(
-                        "classification response does not match its material points"
+                        "classification response does not match its pair"
                     )
-                results: list[ExamPointFileDecision] = []
-                for code in batch_codes:
-                    validated = by_point[code]
-                    if validated.material_version_id != material_version_id:
+                for pair in pairs_by_point[code]:
+                    allowed_ids = set(pair["evidence_chunk_ids"])
+                    scoped = [
+                        item
+                        for item in validated.decisions
+                        if item.evidence_chunk_id in allowed_ids
+                    ]
+                    admitted = [
+                        _admit_evidence(
+                            points[code],
+                            item,
+                            default_relevance=RelevanceClass.OUT_OF_SCOPE,
+                        )
+                        for item in scoped
+                    ]
+                    decision_ids = [item.evidence_chunk_id for item in scoped]
+                    if len(decision_ids) != len(set(decision_ids)):
                         raise ValueError(
-                            "classification response does not match its pair"
+                            "classification response contains duplicate evidence decisions"
                         )
-                    for pair in pairs_by_point[code]:
-                        allowed_ids = set(pair["evidence_chunk_ids"])
-                        scoped = [
-                            item
-                            for item in validated.decisions
-                            if item.evidence_chunk_id in allowed_ids
-                        ]
-                        admitted = [
-                            _admit_evidence(
-                                points[code],
-                                item,
-                                default_relevance=RelevanceClass.OUT_OF_SCOPE,
-                            )
-                            for item in scoped
-                        ]
-                        decision_ids = [item.evidence_chunk_id for item in scoped]
-                        if len(decision_ids) != len(set(decision_ids)):
-                            raise ValueError(
-                                "classification response contains duplicate evidence decisions"
-                            )
-                        if set(decision_ids) != allowed_ids:
-                            raise ValueError(
-                                "classification response must cover every recalled evidence chunk"
-                            )
-                        results.append(
-                            validated.model_copy(update={"decisions": admitted})
+                    if set(decision_ids) != allowed_ids:
+                        raise ValueError(
+                            "classification response must cover every recalled evidence chunk"
                         )
-                return results
+                    results.append(
+                        validated.model_copy(update={"decisions": admitted})
+                    )
+            return results
 
-            scoped_decisions: list[ExamPointFileDecision] = []
-            point_failures: list[tuple[str, Exception]] = []
-            for batch_codes in batches:
-                try:
-                    scoped_decisions.extend(classify_batch(batch_codes))
-                except Exception as exc:
-                    if len(batch_codes) == 1:
-                        point_failures.append((batch_codes[0], exc))
-                        continue
-                    # 多考点批次失败时拆成单考点重试：expected_pairs 与输入规模
-                    # 同时缩小，可显著降低 model_output_scope_violation / 传输超时；
-                    # 单考点重试失败的考点才记失败，不再整份材料整体放弃。
-                    for code in batch_codes:
-                        try:
-                            scoped_decisions.extend(classify_batch([code]))
-                        except Exception as single_exc:
-                            point_failures.append((code, single_exc))
-            return scoped_decisions, point_failures
+        def classify_batch_task(
+            prepared: dict, batch_codes: list[str]
+        ) -> tuple[list[ExamPointFileDecision], list[tuple[str, Exception]]]:
+            """一批的完整执行（含失败拆批自愈），供线程池按批直接调度。"""
+            try:
+                return run_classify_batch(prepared, batch_codes), []
+            except Exception as exc:
+                if len(batch_codes) == 1:
+                    return [], [(batch_codes[0], exc)]
+                # 多考点批次失败时拆成单考点重试：expected_pairs 与输入规模
+                # 同时缩小，可显著降低 model_output_scope_violation / 传输超时；
+                # 单考点重试失败的考点才记失败，不再整份材料整体放弃。
+                scoped_decisions: list[ExamPointFileDecision] = []
+                point_failures: list[tuple[str, Exception]] = []
+                for code in batch_codes:
+                    try:
+                        scoped_decisions.extend(run_classify_batch(prepared, [code]))
+                    except Exception as single_exc:
+                        point_failures.append((code, single_exc))
+                return scoped_decisions, point_failures
 
         decisions: list[ExamPointFileDecision] = []
         failures: list[dict] = list(state.get("failed_pairs") or [])
@@ -654,16 +666,32 @@ def build_organization_graph(
             code: list(values)
             for code, values in (state.get("coverage_reasons") or {}).items()
         }
-        with ThreadPoolExecutor(max_workers=settings.organization_max_workers) as executor:
-            future_materials = {
-                executor.submit(classify_material, material_version_id, material_pairs): (
-                    material_version_id,
-                    material_pairs,
-                )
-                for material_version_id, material_pairs in sorted(pairs_by_material.items())
+        # 批次级并发：材料内的多个批此前是串行执行——单资料的课程只能跑到 1 路，
+        # 多资料时上限也只是资料数（实测 4 资料 13 批 = 4 路）。这里把「批」摊平
+        # 进线程池，并发度 = min(organization_max_workers, classify_max_workers,
+        # 批次数)；分类线程池单独封顶（organization_classify_max_workers=4），
+        # 给 AI 助手固定留出 1 个网关名额（4+1=5，用满账号额度不互相饿死）。
+        prepared_by_material = {
+            material_version_id: prepare_material(material_version_id, material_pairs)
+            for material_version_id, material_pairs in sorted(pairs_by_material.items())
+        }
+        batch_tasks = [
+            (material_version_id, batch_codes)
+            for material_version_id, prepared in prepared_by_material.items()
+            for batch_codes in prepared["batches"]
+        ]
+        classify_pool = min(
+            settings.organization_max_workers, settings.organization_classify_max_workers
+        )
+        with ThreadPoolExecutor(max_workers=classify_pool) as executor:
+            future_batches = {
+                executor.submit(
+                    classify_batch_task, prepared_by_material[material_version_id], batch_codes
+                ): material_version_id
+                for material_version_id, batch_codes in batch_tasks
             }
-            for future in as_completed(future_materials):
-                material_version_id, _ = future_materials[future]
+            for future in as_completed(future_batches):
+                material_version_id = future_batches[future]
                 scoped, point_failures = future.result()
                 decisions.extend(scoped)
                 for code, exc in point_failures:

@@ -778,8 +778,13 @@ class LLMSyllabusExtractor:
 
 
 class LLMExamPointEvidenceClassifier:
-    def __init__(self, client: JsonRequester) -> None:
+    def __init__(self, client: JsonRequester, *, reasoning_effort: str | None = None) -> None:
         self.client = client
+        # 思考档显式下发（调用方从 organization_classify_reasoning_effort 注入）：
+        # 实测分类输出的 6k~12.7k token 里，响应 JSON 只占 ~1.5k，其余全是思考——
+        # 单次调用 67s 的大头在这里。显式钉 low 不依赖服务端 LLM_DISABLE_THINKING
+        # （该开关若为 false，网关不下发档位、模型回落供应商默认档，分类直接变慢）。
+        self.reasoning_effort = reasoning_effort
 
     def classify_file(
         self,
@@ -810,8 +815,25 @@ class LLMExamPointEvidenceClassifier:
                 "retrieval_intent": point.retrieval_intent,
             }
 
+        # 短代理 id：32 位 hex 的 chunk id 在响应里会按「每个考点各自列举一遍」
+        # 出现（out_of_scope/background 的大头），单个 id 就要十余 token——实测
+        # 单次分类输出 0.7k~12.7k token 主要耗在这串 id 上，还容易被模型记错。
+        # 一次调用内改用 C1..Cn 下发，模型原样回传后立刻还原为真实 id；
+        # 模型若回显真实 id（历史行为/测试注入）按原样容忍，未知 id 仍判 scope 违规。
+        alias_of: dict[str, str] = {
+            chunk.id: f"C{index}" for index, chunk in enumerate(chunks, start=1)
+        }
+        real_of_alias = {alias: real for real, alias in alias_of.items()}
+
+        def canonical_chunk_id(value: str) -> str:
+            """统一到本次调用的别名空间（真实 id → 别名；未知 id 原样保留待拦截）。"""
+            return alias_of.get(value, value)
+
+        def restore_chunk_id(value: str) -> str:
+            return real_of_alias.get(value, value)
+
         expected_pairs = {
-            (point.code, chunk.id) for point in exam_points for chunk in chunks
+            (point.code, alias_of[chunk.id]) for point in exam_points for chunk in chunks
         }
         collected: dict[str, ExamPointFileDecision] = {}
 
@@ -840,13 +862,19 @@ class LLMExamPointEvidenceClassifier:
                             "model_output_scope_violation",
                             "classification decision belongs to another exam point",
                         )
-                    seen.append((item.exam_point_code, decision.evidence_chunk_id))
+                    seen.append(
+                        (item.exam_point_code, canonical_chunk_id(decision.evidence_chunk_id))
+                    )
                 collected[item.exam_point_code] = ExamPointFileDecision(
                     exam_point_code=item.exam_point_code,
                     material_version_id=item.material_version_id,
                     decisions=[
                         EvidenceDecision.model_validate(
-                            d.model_dump(exclude={"source_locator"})
+                            {
+                                **d.model_dump(exclude={"source_locator"}),
+                                # 回传的短代理 id 在此还原为真实 chunk id
+                                "evidence_chunk_id": restore_chunk_id(d.evidence_chunk_id),
+                            }
                         )
                         for d in item.decisions
                     ],
@@ -866,14 +894,18 @@ class LLMExamPointEvidenceClassifier:
             system_prompt=(
                 "你判断一份教学资料文件与多个考试考点的证据关系。输入包含 exam_points 数组与该文件全部召回的 chunks。"
                 "必须返回 JSON 对象，顶层字段 file_decisions 为数组；每个元素对应一个考点，"
-                "包含 exam_point_code、material_version_id、decisions、background_chunk_ids、out_of_scope_chunk_ids。"
-                "与考点无关或仅提供背景的 chunk 占大多数：这类组合一律用 background_chunk_ids / "
-                "out_of_scope_chunk_ids 数组紧凑上报（只写 id），禁止把它们写成完整 decisions 条目；"
+                "包含 exam_point_code、material_version_id、decisions、background_chunk_ids（out_of_scope 可省略）。"
+                "与考点无关的 chunk 占大多数，一律不写（系统默认判 out_of_scope）；"
+                "仅提供背景的 chunk 用 background_chunk_ids 紧凑上报（只写编号），"
+                "禁止把无关/背景 chunk 写成完整 decisions 条目；"
                 "decisions 数组只收录 direct 与 supporting 两种判定，通常只占召回量的少数。"
                 "direct/supporting 判定写入 decisions 数组，每条包含 evidence_chunk_id、relevance_class、"
                 "support_claim、content_kind、confidence（无需重复 exam_point_code）；"
-                "background 判定只需把 evidence_chunk_id 列入 background_chunk_ids，"
-                "out_of_scope 判定只需把 evidence_chunk_id 列入 out_of_scope_chunk_ids，两者均不得输出其他字段。"
+                "evidence_chunk_id 一律原样回传输入中的短编号（C1、C2…），不要展开或改写。"
+                "background 判定只需把 evidence_chunk_id 列入 background_chunk_ids，不得输出其他字段；"
+                "out_of_scope 是**默认判定**：不必列举（系统会自动把未提及的 chunk 记为 out_of_scope），"
+                "确需显式说明时才写 out_of_scope_chunk_ids（只写编号）。"
+                "不要为了「完整覆盖」把大量无关 chunk 逐个写进 id 列表——那是最主要的输出浪费。"
                 "relevance_class 仅允许 direct、supporting、background、out_of_scope；"
                 "direct 表示该 chunk 的内容本身就是该考点考核知识的直接事实或依据："
                 "概念、定义、原理、机制、规则、公式、关系、比较、约束等知识本身，"
@@ -917,19 +949,22 @@ class LLMExamPointEvidenceClassifier:
                 "support_claim 用一句话概括该 chunk 提供的具体事实即可，无需补全归属或写成自包含命题；"
                 "归属补全与命题化由后续归并环节完成。"
                 "background/out_of_scope 不产出知识事实。"
-                "遵守各考点 operational_detail_policy，不使用任何课程专属黑名单。"
-                "来源页码和标题仅用于教师追溯，不得写入 support_claim 的正文。返回严格 JSON。"
+                "遵守各考点 operational_detail_policy，不使用任何课程专属黑名单。返回严格 JSON。"
             ),
             payload={
                 "exam_points": [compact_point_payload(point) for point in exam_points],
                 "material_version_id": material_version_id,
+                # 只送判定所需：短代理编号 + 片段正文。locator（页码/标题路径，
+                # 实测平均 570 字符/块，是输入的大头）不参与分类判定——support_claim
+                # 禁止写入来源信息，页码由系统按 chunk id 回填，送进来纯属 token 浪费。
                 "chunks": [
                     {
-                        "evidence_chunk_id": chunk.id,
+                        "evidence_chunk_id": alias_of[chunk.id],
+                        # material_version_id 保留在块上：响应里每个考点都要回填它，
+                        # 去掉后模型需从顶层复制，漏填即触发 scope 违规（不值得省这点）
                         "material_version_id": chunk.material_version_id,
                         "content": chunk.content
                         + "\n【该片段内容到此结束，其后内容属于其他片段，严禁在此片段内补全未展示的内容】",
-                        "locator": chunk.locator,
                     }
                     for chunk in chunks
                 ],
@@ -937,6 +972,7 @@ class LLMExamPointEvidenceClassifier:
             temperature=0.0,
             call_context=call_context,
             response_validator=validate_response,
+            reasoning_effort=self.reasoning_effort,
         )
         # 兜底补全：模型漏判的 (考点, chunk) 对默认 out_of_scope。
         # 分类阶段不再要求模型输出完整候选卡，故豁免规则的遗漏应由确定性补全承担，
