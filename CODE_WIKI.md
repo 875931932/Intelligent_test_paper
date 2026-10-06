@@ -177,13 +177,17 @@ class FrameworkCandidate(BaseModel):
 
 ```python
 def normalize_exam_rules(raw, *, anchor_keys) -> dict
-def type_rules_from_ratios(ratios, *, total_score=100) -> dict | None
+def type_rules_from_ratios(ratios, *, total_score=100,
+                           capacity=None) -> dict | None
 ```
 
 负责把模型 / 教师给的自由形态规则归一成内部约定：题型名统一英文枚举
 （"选择题" → `single_choice`）、剔除未知项、比例归一到 100、未声明的章节锚点补 0；
 `type_rules_from_ratios` 按题型比例推导蓝图 type_rules（题数折算后定点修正，
-保证总分精确闭合）。
+保证总分精确闭合）；`capacity`（知识卡池可出的题位数，`blueprint_persistence_service._atom_capacity`
+按合同同口径求得）小于推导题数时按题型分值份额等比缩容：每题型的分数预算不变
+（总分与题型占比不失真），题数吸附"能整除 2·S"的最近合法值（单题分值恒为 0.5 倍数、
+只升不降、题型不归零）。
 
 **考点模型**：[backend/app/domain/framework/exam_points.py](backend/app/domain/framework/exam_points.py)
 
@@ -524,7 +528,7 @@ app.include_router(paper_versions_router)    # /api/v1/courses/{course_id}/paper
 | [generation_service.py](backend/app/services/generation_service.py) | 单题质量校验、合同终检 |
 | [generation_runner_service.py](backend/app/services/generation_runner_service.py) | 生成任务运行器 |
 | [blueprint_service.py](backend/app/services/blueprint_service.py) | 蓝图分配引擎 |
-| [blueprint_persistence_service.py](backend/app/services/blueprint_persistence_service.py) | 蓝图持久化 + 默认题型分布推导 |
+| [blueprint_persistence_service.py](backend/app/services/blueprint_persistence_service.py) | 蓝图持久化 + 默认题型分布推导（考纲比例 + 卡池容量等比缩容，容量口径 `_atom_capacity` 与合同 `_point_capacity` 一致） |
 | [knowledge_tree_service.py](backend/app/services/knowledge_tree_service.py) | 知识树构建 |
 | [knowledge_publish_service.py](backend/app/services/knowledge_publish_service.py) | 知识目录发布 |
 | [document_processing_service.py](backend/app/services/document_processing_service.py) | 文档解析服务（MinerU 集成） |
@@ -612,7 +616,11 @@ class LLMJsonClient:
     """OpenAI 兼容的严格 JSON 客户端（供应商参数按型号档案下发）"""
     # 端点/模型无默认值：唯一配置来源是 settings(.env)，构造即打印生效配置
     def __init__(self, *, api_key, base_url, model, timeout=90.0, max_attempts=4,
-                 large_prompt_max_attempts=2, disable_thinking=True, recorder=None)
+                 large_prompt_max_attempts=2, disable_thinking=True,
+                 reasoning_effort=None, recorder=None)
+    # reasoning_effort（构造期钉档）：request_json 未显式指定档位时下发它——
+    # 单次类 AI 工具（评审/改题/建议等）借此把档位钉死 low，不受全局开关影响；
+    # 调用期 reasoning_effort 永远优先
     def request_json(self, *, system_prompt, payload, temperature,
                      call_context=None, response_validator=None, tool=None,
                      max_tokens=None, reasoning_effort=None,

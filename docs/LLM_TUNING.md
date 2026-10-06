@@ -79,6 +79,7 @@ class ModelProfile:
 | `ORGANIZATION_EXTRACTION_MAX_TOKENS` | `6144` | 单次抽取输出预算（历史根因与校准史见 §3 表） |
 | `ORGANIZATION_EXTRACTION_REASONING_EFFORT` | `low` | 抽取思考档（StepFun 信息抽取档） |
 | `AI_TOOL_REASONING_EFFORT` | `low` | 单次类 AI 工具（整卷评审/改题/建题/蓝图建议/考核规则提案/框架评审）统一思考档，显式钉 low、不依赖 `LLM_DISABLE_THINKING`（开关为 false 时若不钉档会回落供应商默认 medium，短调用平白多花数倍时间） |
+| `BLUEPRINT_SUGGEST_MODEL_TIMEOUT` | `150` | 蓝图调整建议读超时（秒）= 任务租约 300s ÷ 2 次尝试；曾写死 45s 跑不过实测 40~50s 的单次调用，两次尝试全超时 → `llm_transport_error` |
 | `ORGANIZATION_EXTRACTION_BATCH_SIZE` | `3` | 抽取批大小（输入 token 权衡） |
 
 ### 2.2 代码常量（改需带测试）

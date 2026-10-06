@@ -1,6 +1,6 @@
 # PaperPact·AI 命题系统 · 交接文档
 
-> 更新日期：2026-10-03
+> 更新日期：2026-10-07
 > 状态：引擎层 + 教师工作台 + 试卷模块（含考试侧重点与 AI 落点：考核规则助手 / 蓝图题位建议 / 框架候选评审 / 助手自然语言出卷提案链 / 使用引导卡）均已交付；出卷全链路可在浏览器端走通
 > 产品基线：`docs/superpowers/specs/2026-08-12-ai-final-exam-paper-design.md`（v2.3，务必先读）
 > 链路设计：`docs/superpowers/specs/2026-08-17-contract-first-generation-design.md`（合同优先生成）
@@ -136,7 +136,8 @@ MinerU 解析 → 双大纲框架确认 → 知识目录发布 → 蓝图/合同
         → 接口顶层 exam_rules（GET current / PATCH rules；难度与 type_formats
           未提供=保留现值、{}=显式清空）
         → 前端「考核规则」卡可查看可修改（含难度低/中/高三档输入）
-        → 蓝图：type_rules 按题型比例推导（总分精确闭合）；chapter_weights 优先取考纲声明值；
+        → 蓝图：type_rules 按题型比例推导（总分精确闭合；**卡池容量不足时按题型分值
+          份额等比缩容**，见 §5.1）；chapter_weights 优先取考纲声明值；
           assessment_focus 与 difficulty_distribution 创建蓝图时逐题型确定性落位
           （最大余数法，题型显式下发优先）→ plan_items.difficulty → 合同槽位 → 成卷三层一致
 ```
@@ -160,6 +161,7 @@ MinerU 解析 → 双大纲框架确认 → 知识目录发布 → 蓝图/合同
 | 种子扰动分配 | `contract.py _pick_atom` 评分元组末位 + `ContractRequest.allocation_seed` | 并列打破随机化：同种子复现同卷，异种子换原子组合（A/B 卷）；不传=确定性 |
 | 答案域互斥 | `boundaries_overlap`（归一化后相等或互含≥4字符） | 防两题答案可互抄 |
 | 核心度门槛阶梯 0.6→0.5→0.45 | demo 分配循环 | 0.45 是打分函数数学地板（基准0.5-最大罚分0.05），不静默降级也不硬失败 |
+| 蓝图题位容量缩容（2026-10-07） | `exam_rules.type_rules_from_ratios(capacity=...)` + `blueprint_persistence_service._atom_capacity` | 知识卡池可出题位（Σ 考点答案域容量，与合同同口径）小于蓝图题位数时，合同只给领到原子的题位建槽、其余按题号顺序静默丢弃——排在各章末尾的**综合题先全灭**（实测 42 题位 → 29 题、综合 0 道、卷面 45 分）。缩容保持每题型的**分值预算不变**（总分 100 与题型占比不失真），题数按容量比例缩减并吸附"能整除 2·S"的最近合法值（单题分值恒为 0.5 倍数、只升不降、题型不归零）；该课缩容后 = 单选 8×2.5 / 判断 10×2 / 填空 4×2.5 / 简答 4×5 / 综合 2×15 = 28 题 100 分。⚠️ 冻结即不可变：缩容只对**新建**蓝图生效，改动前创建的蓝图需重建后才按比例出卷 |
 
 ### 5.2 事实质量三道入库防线（知识卡是 RAG 检索库源头，污染即后患）
 
@@ -222,6 +224,7 @@ MinerU 解析 → 双大纲框架确认 → 知识目录发布 → 蓝图/合同
 | temperature=0 响应缓存 | `llm_gateway.request_json` | 同 `(model, prompt_hash)` 复用成功响应，知识目录重建成本趋零；换模型/改 prompt 自动失效 |
 | 大 prompt 重试收紧（>60k 字符 → 2 次） | `LLMJsonClient` | 分类批重发一次 = 等额再烧数万 token 输入 |
 | 孤儿 run 读路径自愈 | `knowledge.py _heal_interrupted_run` | 重启后线程已死、行卡 `running`，前端永远轮询 200——读取时就地判 `failed(interrupted_by_restart)`；⚠️ 依赖单进程部署，多 worker 须换租约心跳 |
+| 单次类 AI 工具思考档显式钉低（2026-10-07） | `AI_TOOL_REASONING_EFFORT`（默认 low）+ `LLMJsonClient` 构造期钉档 + 六服务注入 | 整卷评审/改题/建题/蓝图建议/考核规则提案/框架评审原先只靠 `LLM_DISABLE_THINKING` 推导档案缺省档：该开关为 false 时网关不发档位、模型回落供应商默认 medium，短调用平白多花数倍时间。显式下发优先于开关与档案缺省，换开关/换模型都不漂移（生成/知识目录/助手各有独立档位配置，互不影响） |
 
 ---
 
@@ -338,9 +341,44 @@ frontend\src\
   重抛 + 发布失败 warning；exam_projects 两处静默 `except` 补带 course/task 上下文的
   `logger.exception`——此前派发失败无日志可查（01:27/01:32 事件成悬案），现首次复现
   即可从 api.log 定位
-- ✅ 后端门禁全绿：`uv run pytest -q` **1457 passed / 1 xfailed**（唯一 xfail=编造检测的
-  联合 bigram 阈值已知缺口，测试 docstring 注明根因）+ 覆盖率 **86.52%**（≥80 门禁，
-  2026-10-05 实测于 HEAD `092363b`）；前端 `npm run build` 0 error、
+- ✅ **生成任务收尾口径**（2026-10-05，`21312db`/`d44e324`）：收尾只看任务 owner +
+  进度心跳续租（长任务不被误判 stale 抢跑）；终态耗时按服务端完成时刻收表，不再随页面
+  打开时长虚增；生成思考档钉死 `generation_reasoning_effort=low`
+- ✅ **助手气泡与时间线重做**（2026-10-06，`c60c1be`）：单头像接力 + 详情弹窗 + 阶段深链
+- ✅ **稳定性与体验修复**（2026-10-06）：
+  - 删课程 500 根治（`2f9c5fc`）：改逆依赖序 + 先解 FK 环；
+  - 删试卷项目不再被归档/助手对话外键挡死（`01b5dcd`）：引用字段先置空、课程级资产保留；
+  - 课程被删后资料列表停止无限轮询 404（`6eb7707`）；
+  - **管理员建号**（`d72bcfb`）：`POST /auth/users` 仅管理员（教师 403/未登录 401），
+    用户名≥3 位、密码≥6 位、姓名必填，重名 409；登录页去掉测试账号提示
+- ✅ **AI 发起的蓝图建议恢复可执行**（2026-10-06，`9e001de`）：读超时 45s 写死而实测单次
+  40~50s，两次尝试全超时 → `llm_transport_error`、任务失败；改为可配
+  `BLUEPRINT_SUGGEST_MODEL_TIMEOUT`（默认 150s = 租约 300s ÷ 2 次尝试）
+- ✅ **知识目录检索查询集确定性装配**（2026-10-06，`52b93d5`）：考点名恒进查询 +
+  retrieval_intent + 「考点名：考核要求」三路合并（候选规模由 top_k 封顶，退役 expand 开关）；
+  多路查询的词法分用各自原文打分——修复 retrieval_intent 被框架模型同填一句空话时的
+  零召回与考点覆盖不足
+- ✅ **知识目录批量并发与档位统一**（2026-10-06，`29073f7`/`5e65b09`）：分类批次并发 + 短代理
+  id + 思考档钉低，并发额度 4（批量）+1（助手）用满账号 5；归并钉 low，并发口径统一为
+  `ORGANIZATION_MODEL_MAX_WORKERS`
+- ✅ **前端加载可靠性**（2026-10-06，`91ccb9a`/`2f69937`/`467669c`）：nginx 静态资源 gzip +
+  `/assets/` 长缓存（immutable）+ `index.html` no-cache；路由 chunk 拉取失败退避重试
+  （300ms/900ms）+ 整页 reload 兜底；`/assets/` 缺失 chunk 明确 404，不再落回 index.html
+  触发 MIME 报错
+- ✅ **蓝图题位容量缩容**（2026-10-07，`3fc3c1a`）：见 §5.1 行——卡池容量不足时题型按分值
+  份额等比缩容（总分 100 与题型占比不变、单题分值只升不降、综合题不再全灭）；容量口径与
+  合同 `_point_capacity` 一致，纠正循环兜题数吸附的进位误差（+5 测试）
+- ✅ **助手卷面口径**（2026-10-07，`06b7ac2`）：`_paper_summary` 补成卷实际构成
+  `item_count/total_score/by_type`（逐题解析口径与试卷页 `get_paper_version` 一致：
+  题型 override→payload、分值 override→plan_items→payload、无槽位题回落 payload）；
+  段1 提示词硬规则「卷面实况一律读 paper，蓝图=计划题位不得顶替」；「试卷」结果卡加
+  题量与题型分布两列。根因：模型只能拿蓝图计划数字回答卷面（实测蓝图综合题 3 道、
+  成卷 0 道，模型答「3 道」）
+- ✅ **单次类 AI 工具思考档钉低**（2026-10-07，`e715845`）：见 §5.6 行（评审/改题/建题/
+  蓝图建议/考核规则提案/框架评审统一 `AI_TOOL_REASONING_EFFORT=low`）
+- ✅ 后端门禁全绿：`uv run pytest -q` **1488 passed / 1 xfailed**（唯一 xfail=编造检测的
+  联合 bigram 阈值已知缺口，测试 docstring 注明根因）+ 覆盖率 **86.65%**（≥80 门禁，
+  2026-10-07 实测于 HEAD `e715845`）；前端 `npm run build` 0 error、
   oxlint 0 error（warning 均为既有文件基线）
 
 ### 已知问题（不阻塞，接手时留意）

@@ -888,11 +888,17 @@ schema 自 `1.2.0` 起新增该字段；逐题带 `rubric`（主观题评分细�
 - 新表 `assistant_sessions`（v3 多会话，会话 = 时间线与记忆边界）：
   `course_id` + `title` + `created_at`/`updated_at`（活跃排序用），按 `course_id` 隔离；
   历史消息按课程回填会话的幂等迁移见 §10.6。
-- 只读工具（结果卡）：`course_overview` / `list_materials` / `framework_status` /
-  `blueprint_status` / `contract_status` / `paper_status` / `list_exam_projects`。
-  项目级工具（overview/blueprint/contract/paper/list_exam_projects）支持可选
-  `args={project_id}`——教师点名项目时卡片只呈现该项目（与提案同一套 id 白名单硬校验），
-  未点名呈现全部；前端单项目卡片 CTA 深链 `?project={id}`；
+- 只读工具（结果卡）：`course_overview` + `usage_guide`（原 list_materials/framework_status/
+  blueprint_status/contract_status/paper_status/list_exam_projects 已合并进 course_overview——
+  返回同一份课程快照，`args.section` 选卡片视图：overview（缺省）/ materials / framework /
+  blueprint / contract / paper / projects；项目级 section 支持可选 `args={project_id}`，
+  教师点名项目时只呈现该项目（与提案同一套 id 白名单硬校验）；前端单项目卡片 CTA 深链
+  `?project={id}`）。
+  **计划口径 vs 成卷口径**（2026-10-07）：快照里 `projects[].blueprint.item_count/by_type`
+  是**计划题位**（合同分配与生成会剔除题位，可小于计划数）；`projects[].paper` 带**成卷实际
+  构成** `item_count / total_score / by_type`（逐题解析口径与试卷页 `get_paper_version` 一致：
+  题型 override→payload、分值 override→plan_items→payload），§10.3 段1 提示词硬规则要求
+  「问试卷多少题/各题型几道/总分」一律读 paper，回答实际卷面不得用蓝图或合同的数字顶替；
 - **使用引导（`usage_guide`，能力地图 + 操作引导）**：`kind="result"` 引导卡（前端 `GuideCard`），
   `args={}` 恒定、不触库——载荷 `payload:{steps:[{key,label,nav,status,hint}…], pages:[{label,nav,desc}…],
   current_step}`。步骤 = 出卷主线六步（上传解析 → 框架 → 目录 → 蓝图 → 合同生成 → 审核导出），
