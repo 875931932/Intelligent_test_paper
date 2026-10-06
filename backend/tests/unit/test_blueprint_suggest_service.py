@@ -681,6 +681,32 @@ def test_execute_suggest_task_uses_configured_read_timeout(session, monkeypatch)
     assert captured["timeout"] * captured["max_attempts"] <= 300, "不得超出任务租约"
 
 
+def test_execute_suggest_task_pins_low_reasoning_effort(session, monkeypatch):
+    """思考档显式钉 low：建议生成实测 40~50s 的大头是思考，不依赖全局开关。
+
+    开关 LLM_DISABLE_THINKING=false 时网关不发档位、模型回落供应商默认
+    medium，蓝图建议会平白多花数倍时间（2026-10-07 定死要求）。
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(blueprint_suggest_service, "llm_configured", lambda: True)
+    captured: dict = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def request_json(self, **kwargs):
+            return _raw_good()
+
+    monkeypatch.setattr("app.adapters.model.llm_gateway.LLMJsonClient", FakeClient)
+    blueprint_suggest_service.execute_suggest_task(
+        session, payload={"course_id": "c1", "project_id": "proj1", "instruction": ""}
+    )
+    assert captured["reasoning_effort"] == "low"
+    assert captured["reasoning_effort"] == settings.ai_tool_reasoning_effort
+
+
 # ─── 任务入队 ───
 
 

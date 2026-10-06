@@ -36,6 +36,7 @@ from app.services.ai_create_service import (
     TASK_TYPE,
     build_create_prompt,
     enqueue_ai_create,
+    execute_ai_create_task,
     load_create_context,
     normalize_proposal,
     run_ai_create,
@@ -377,6 +378,30 @@ def test_run_ai_create_single_shot_when_first_passes(session):
     assert result["attempts"] == 1
     assert result["validation"]["passed"] is True
     assert result["change_summary"] == "新出一道考查通信开销的单选题。"
+
+
+def test_execute_ai_create_task_pins_low_reasoning_effort(session, monkeypatch):
+    """worker 入口思考档显式钉 low（不依赖全局 llm_disable_thinking 的缺省档）。"""
+    from app.config import settings
+
+    monkeypatch.setattr("app.services.ai_create_service.llm_configured", lambda: True)
+    captured: dict = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def request_json(self, **kwargs):
+            return _raw_good()
+
+    monkeypatch.setattr("app.adapters.model.llm_gateway.LLMJsonClient", FakeClient)
+    result = execute_ai_create_task(
+        session,
+        payload={"course_id": "c1", "paper_version_id": "pv1", "instruction": "出一道单选题"},
+    )
+    assert result["validation"]["passed"] is True
+    assert captured["reasoning_effort"] == "low"
+    assert captured["reasoning_effort"] == settings.ai_tool_reasoning_effort
 
 
 # ─── 任务入队 ───

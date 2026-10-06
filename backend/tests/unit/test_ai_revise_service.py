@@ -35,6 +35,7 @@ from app.services.ai_revise_service import (
     TASK_TYPE,
     build_revise_prompt,
     enqueue_ai_revise,
+    execute_ai_revise_task,
     load_revise_context,
     normalize_proposal,
     run_ai_revise,
@@ -323,6 +324,33 @@ def test_run_ai_revise_single_shot_when_first_passes(session):
     assert len(client.calls) == 1
     assert result["attempts"] == 1
     assert result["validation"]["passed"] is True
+
+
+def test_execute_ai_revise_task_pins_low_reasoning_effort(session, monkeypatch):
+    """worker 入口思考档显式钉 low（不依赖全局 llm_disable_thinking 的缺省档）。"""
+    from app.config import settings
+
+    monkeypatch.setattr("app.services.ai_revise_service.llm_configured", lambda: True)
+    captured: dict = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def request_json(self, **kwargs):
+            return _raw_good()
+
+    monkeypatch.setattr("app.adapters.model.llm_gateway.LLMJsonClient", FakeClient)
+    result = execute_ai_revise_task(
+        session,
+        payload={
+            "course_id": "c1", "paper_version_id": "pv1",
+            "item_index": 1, "instruction": "重写选项",
+        },
+    )
+    assert result["validation"]["passed"] is True
+    assert captured["reasoning_effort"] == "low"
+    assert captured["reasoning_effort"] == settings.ai_tool_reasoning_effort
 
 
 # ─── 任务入队 ───

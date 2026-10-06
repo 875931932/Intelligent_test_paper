@@ -171,6 +171,11 @@ class LLMJsonClient:
         large_prompt_max_attempts: int = 2,
         large_prompt_threshold_chars: int = 60_000,
         disable_thinking: bool = True,
+        # 构造期钉死的思考档：request_json 未显式指定档位时下发它（None=维持
+        # 原行为，走 disable_thinking 推导出的档案缺省档）。单次类 AI 工具
+        # （整卷评审/改题/建题/建议等）在构造期把档位钉死 low——显式下发优先
+        # 于全局开关，服务器 LLM_DISABLE_THINKING=false 时也不会滑回默认档。
+        reasoning_effort: str | None = None,
         client: httpx.Client | None = None,
         recorder: ModelCallRecorder | None = None,
     ) -> None:
@@ -190,6 +195,7 @@ class LLMJsonClient:
         self.large_prompt_max_attempts = max(1, large_prompt_max_attempts)
         self.large_prompt_threshold_chars = large_prompt_threshold_chars
         self.disable_thinking = disable_thinking
+        self.reasoning_effort = reasoning_effort
         self.client = client or httpx.Client(
             trust_env=False,
             # 连接 15s / 读写 self.timeout：连接阶段卡死（历史上曾单请求挂
@@ -213,6 +219,10 @@ class LLMJsonClient:
         on_think: Callable[[str], None] | None = None,
         stream: bool = False,
     ) -> dict:
+        # 构造期钉死的思考档兜底：调用方未显式指定时用构造期值（None 维持原
+        # 语义——由 disable_thinking 推导档案缺省档）；显式档位永远优先。
+        if reasoning_effort is None:
+            reasoning_effort = self.reasoning_effort
         prompt = payload.model_dump(mode="json") if hasattr(payload, "model_dump") else dict(payload)
         canonical_prompt = json.dumps(prompt, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         prompt_hash = hashlib.sha256(f"{system_prompt}\n{canonical_prompt}".encode()).hexdigest()

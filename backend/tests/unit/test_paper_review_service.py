@@ -37,6 +37,7 @@ from app.services.paper_review_service import (
     PaperReviewError,
     build_review_prompt,
     enqueue_review,
+    execute_review_task,
     load_review_context,
     normalize_result,
     run_review,
@@ -557,6 +558,34 @@ def test_run_review_reports_needs_review_count_and_unavailable_final_check(sessi
         "needs_review_count": 1,
         "final_check_available": False,
     }
+
+
+def test_execute_review_task_pins_low_reasoning_effort(session, monkeypatch):
+    """worker 入口思考档显式钉 low：评审一问一答即出结果，思考占时长大头。
+
+    不依赖服务端 LLM_DISABLE_THINKING——该开关为 false 时网关不发档位、模型
+    回落供应商默认 medium，单次调用平白多花数倍时间（2026-10-07 定死要求）。
+    """
+    from app.config import settings
+
+    monkeypatch.setattr("app.services.paper_review_service.llm_configured", lambda: True)
+    captured: dict = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def request_json(self, **kwargs):
+            return _raw_good()
+
+    monkeypatch.setattr("app.adapters.model.llm_gateway.LLMJsonClient", FakeClient)
+    result = execute_review_task(
+        session,
+        payload={"course_id": "c1", "paper_version_id": "pv1", "instruction": ""},
+    )
+    assert result["validated"] is True
+    assert captured["reasoning_effort"] == "low"
+    assert captured["reasoning_effort"] == settings.ai_tool_reasoning_effort
 
 
 # ─── 任务入队 ───

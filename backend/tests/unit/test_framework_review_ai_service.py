@@ -387,10 +387,15 @@ def test_execute_review_task_requires_configured_llm(session, monkeypatch):
 
 
 def test_execute_review_task_builds_client_and_runs(session, monkeypatch):
+    """worker 入口构造客户端并跑通评审；思考档显式钉 low（见 config 注释）。"""
+    from app.config import settings
+
     monkeypatch.setattr(framework_review_ai_service, "llm_configured", lambda: True)
+    captured: dict = {}
 
     class FakeClient:
         def __init__(self, **kwargs):
+            captured.update(kwargs)
             self.kwargs = kwargs
 
         def request_json(self, **kwargs):
@@ -401,6 +406,8 @@ def test_execute_review_task_builds_client_and_runs(session, monkeypatch):
         session, payload={"course_id": "c1", "instruction": "重点看权重"}
     )
     assert result["verdict"] == "ready" and result["findings"]
+    assert captured["reasoning_effort"] == "low"
+    assert captured["reasoning_effort"] == settings.ai_tool_reasoning_effort
 
 
 # ─── 任务入队 ───

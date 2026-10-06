@@ -312,11 +312,19 @@ def test_execute_propose_task_requires_configured_llm(session, monkeypatch):
 
 
 def test_execute_propose_task_builds_client_and_runs(session, monkeypatch):
-    """worker 入口按 settings 构造真实客户端并跑通提案（客户端打桩不发请求）。"""
+    """worker 入口按 settings 构造真实客户端并跑通提案（客户端打桩不发请求）。
+
+    思考档必须显式钉 low：不依赖服务端 LLM_DISABLE_THINKING 的档案缺省档
+    ——开关为 false 时网关不发档位、模型回落供应商默认 medium，调用时长翻倍。
+    """
+    from app.config import settings
+
     monkeypatch.setattr(exam_rules_ai_service, "llm_configured", lambda: True)
+    captured: dict = {}
 
     class FakeClient:
         def __init__(self, **kwargs):
+            captured.update(kwargs)
             self.kwargs = kwargs
 
         def request_json(self, **kwargs):
@@ -328,6 +336,8 @@ def test_execute_propose_task_builds_client_and_runs(session, monkeypatch):
     )
     assert result["proposal"]["question_type_ratios"]
     assert result["explanation"]
+    assert captured["reasoning_effort"] == "low"
+    assert captured["reasoning_effort"] == settings.ai_tool_reasoning_effort
 
 
 # ─── 任务入队 ───

@@ -186,6 +186,13 @@ class Settings(BaseSettings):
     # 生成也固定走 low（2026-10-05 要求）：低档思考已足够单批命题，且把
     # 单次调用从分钟级压回十几秒，直接缩短整卷时长。
     generation_reasoning_effort: str = "low"
+    # 单次类 AI 工具（整卷评审 / AI 改题 / AI 建题 / 蓝图调整建议 / 考核规则提案 /
+    # 框架 AI 评审）的统一思考档，显式钉 low：这些调用都是一问一答即出结果，
+    # 思考占输出预算的大头——显式下发优先于 llm_disable_thinking 推导出的档案
+    # 缺省档，服务器开关为 false（网关不发档位、回落供应商默认 medium）或换型号
+    # 后也不会滑回高档（2026-10-07 要求：定死 low、压调用时长）。生成/知识目录
+    # 阶段各有自己的档位配置，互不影响；AI 助手不走本配置。
+    ai_tool_reasoning_effort: str = "low"
     # 网关进程内信号量的并发上限（LLM_MAX_CONCURRENCY）。信号量按**进程**生效：
     # 实际并发 ≈ 持信号量的进程数（uvicorn / celery worker 各算各的）× 本值，
     # 必须 ≤ 模型账号的并发上限（step_plan 上 step-5-preview 为 5），否则供应商

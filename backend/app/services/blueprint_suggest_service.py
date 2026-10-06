@@ -767,6 +767,9 @@ def execute_suggest_task(session: Session, *, payload: dict) -> dict:
         base_url=settings.llm_base_url,
         model=settings.llm_model,
         disable_thinking=settings.llm_disable_thinking,
+        # 思考档钉死 low（优先于 disable_thinking 的档案缺省档，见 config 注释）：
+        # 建议生成实测 40~50s 的大头是思考，钉 low 后单次调用显著缩短。
+        reasoning_effort=settings.ai_tool_reasoning_effort,
         timeout=settings.blueprint_suggest_model_timeout,
         max_attempts=_CLIENT_MAX_ATTEMPTS,
         recorder=DatabaseModelCallRecorder(get_session_factory()),

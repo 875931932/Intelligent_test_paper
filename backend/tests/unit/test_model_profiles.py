@@ -140,6 +140,27 @@ def test_gateway_clamps_effort_to_profile_support():
     assert requests[0]["reasoning_effort"] == "low"
 
 
+def test_explicit_pinned_effort_survives_disable_thinking_off():
+    """显式钉档优先于 disable_thinking 推导——AI 工具"定死 low"的语义依据。
+
+    开关 LLM_DISABLE_THINKING=false 时不发档位、模型回落供应商默认
+    medium；调用方显式传 low 必须照发，短调用（评审/改题/建议）才不会
+    平白多花数倍时间（2026-10-07 定死要求）。
+    """
+    client, requests = _client_with_capture(
+        "step-3.7-flash", _STEPFUN_BASE,
+        disable_thinking=False, reasoning_effort="low",
+    )
+    _call(client)
+    assert requests[0]["reasoning_effort"] == "low"
+    # 对照组：不钉档 + 开关关掉 → 不发档位（回落供应商默认 medium）
+    plain, plain_requests = _client_with_capture(
+        "step-3.7-flash", _STEPFUN_BASE, disable_thinking=False
+    )
+    _call(plain)
+    assert "reasoning_effort" not in plain_requests[0]
+
+
 def test_gateway_tool_choice_gated_by_profile():
     tool = {"name": "f", "parameters": {"type": "object", "properties": {}}}
     step_client, step_requests = _client_with_capture(

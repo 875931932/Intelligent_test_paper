@@ -354,6 +354,8 @@ def execute_ai_create_task(session: Session, *, payload: dict) -> dict:
         base_url=settings.llm_base_url,
         model=settings.llm_model,
         disable_thinking=settings.llm_disable_thinking,
+        # 思考档钉死 low（优先于 disable_thinking 的档案缺省档，见 config 注释）
+        reasoning_effort=settings.ai_tool_reasoning_effort,
         timeout=_CLIENT_TIMEOUT_SECONDS,
         max_attempts=_CLIENT_MAX_ATTEMPTS,
         recorder=DatabaseModelCallRecorder(get_session_factory()),

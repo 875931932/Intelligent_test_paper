@@ -465,6 +465,9 @@ def execute_review_task(session: Session, *, payload: dict) -> dict:
         base_url=settings.llm_base_url,
         model=settings.llm_model,
         disable_thinking=settings.llm_disable_thinking,
+        # 思考档钉死 low（优先于 disable_thinking 的档案缺省档，见 config 注释）：
+        # 报告类调用都是一问一答、思考占输出大头，压 low 直接缩短调用时长。
+        reasoning_effort=settings.ai_tool_reasoning_effort,
         timeout=_CLIENT_TIMEOUT_SECONDS,
         max_attempts=_CLIENT_MAX_ATTEMPTS,
         recorder=DatabaseModelCallRecorder(get_session_factory()),
