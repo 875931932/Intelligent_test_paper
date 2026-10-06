@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.db.schema import Base, Course
+from app.db.schema import Base, Course, exam_projects
 from app.domain.course.category_profiles import normalize_category
 
 
@@ -103,13 +103,33 @@ def update_course(session: Session, owner_id: str, course_id: str, **changes: ob
 def delete_course(session: Session, owner_id: str, course_id: str) -> None:
     """硬删课程及其全部课程域数据。
 
-    course_id 外键是裸引用（无 ON DELETE CASCADE），必须显式清理：
-    按 metadata.sorted_tables 拓扑序删除所有带 course_id 列的表，
-    未来新增课程域表自动纳入。不带 course_id 的表不可能引用课程域
-    （已用元数据自省验证：40 表中 38 个带 course_id，其余无一指向课程域）。
+    course_id 外键是裸引用（无 ON DELETE CASCADE），必须显式清理，且顺序有两条硬约束：
+
+    1. **先解除 FK 环**：exam_projects 的 active_blueprint_version_id /
+       active_generation_run_id / active_paper_version_id 反向引用
+       blueprint_versions / generation_runs / paper_versions，与它们构成复合外键环
+       （Match SIMPLE：任一项置空即不再受约束）。不先置空，删这三张表时项目行
+       还在引用，直接外键违约（与 exam_project_service.delete_project 同一处置）。
+    2. **子表先于父表**：按依赖逆序删除。metadata.sorted_tables 是「建表序」
+       （父表在前），正向遍历删除会先删 exam_projects 再删 blueprint_versions，
+       触发 ForeignKeyViolation（线上首页删课程 500 的根因）。
+
+    不带 course_id 的表不可能引用课程域（已用元数据自省验证：40 表中 38 个带
+    course_id，其余无一指向课程域），因此逐表按 course_id 清理即覆盖全部课程数据。
     """
     course = get_owned_course(session, owner_id, course_id)
-    for table in Base.metadata.sorted_tables:
+    # 1) 解除环：三个反向引用列整体置空（课程内项目本就要全删，置空无副作用）
+    session.execute(
+        update(exam_projects)
+        .where(exam_projects.c.course_id == course_id)
+        .values(
+            active_blueprint_version_id=None,
+            active_generation_run_id=None,
+            active_paper_version_id=None,
+        )
+    )
+    # 2) 逆依赖序清理：子表先删，父表后删（未来新增课程域表自动纳入）
+    for table in reversed(Base.metadata.sorted_tables):
         if "course_id" in table.c:
             session.execute(table.delete().where(table.c.course_id == course_id))
     session.delete(course)
