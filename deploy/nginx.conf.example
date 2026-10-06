@@ -6,6 +6,24 @@ server {
     root /opt/intelligent-test-paper/frontend/dist;
     index index.html;
 
+    # 静态资源压缩：Vite 产物的大头是 JS/CSS（index-*.js ~260KB、ui-*.js ~160KB），
+    # nginx 默认只压 text/html——不显式列出 gzip_types 时这些文件原样传输，
+    # 慢链路（公网/校园网）首屏与切页会凭空多等好几秒。
+    gzip on;
+    gzip_comp_level 5;
+    gzip_min_length 1024;
+    gzip_vary on;
+    gzip_types text/plain text/css application/javascript application/json image/svg+xml application/wasm;
+
+    # Vite 产物是内容哈希命名：命中 /assets/ 的资源可长缓存（文件名变了才会重新下载）。
+    # index.html 反过来必须不缓存，否则新版本发布后浏览器仍引用旧 hash 的资源。
+    location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable";
+    }
+    location = /index.html {
+        add_header Cache-Control "no-cache";
+    }
+
     location /api/ {
         proxy_pass http://127.0.0.1:8000;
         proxy_http_version 1.1;
