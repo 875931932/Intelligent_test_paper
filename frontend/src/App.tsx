@@ -1,23 +1,26 @@
-import { lazy, Suspense } from 'react';
+import { Suspense } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { Outlet } from 'react-router-dom';
 import { ProtectedRoute } from '@/pages/auth/ProtectedRoute';
 import { useAuthStore } from '@/stores/auth';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Layout } from '@/components/layout/Layout';
+import { lazyWithRetry } from '@/lib/lazyWithRetry';
 
 /* 路由级代码分割：首屏只带外壳与共享 UI，九个页面按需加载，
-   避免单 bundle 越过 500kB 警戒线（vite 打包警告的根治路径） */
-const CourseSpacePage = lazy(() => import('@/pages/course-space'));
-const Dashboard = lazy(() => import('@/pages/dashboard'));
-const Materials = lazy(() => import('@/pages/materials'));
-const Framework = lazy(() => import('@/pages/framework'));
-const Knowledge = lazy(() => import('@/pages/knowledge'));
-const PaperPage = lazy(() => import('@/pages/paper'));
+   避免单 bundle 越过 500kB 警戒线（vite 打包警告的根治路径）。
+   走 lazyWithRetry：链路偶发 RST/挂起导致 chunk 拉取失败时自动换新连接
+   重试、必要时整页重载，不再让用户手动刷新。 */
+const CourseSpacePage = lazyWithRetry(() => import('@/pages/course-space'));
+const Dashboard = lazyWithRetry(() => import('@/pages/dashboard'));
+const Materials = lazyWithRetry(() => import('@/pages/materials'));
+const Framework = lazyWithRetry(() => import('@/pages/framework'));
+const Knowledge = lazyWithRetry(() => import('@/pages/knowledge'));
+const PaperPage = lazyWithRetry(() => import('@/pages/paper'));
 /* 资料库「试卷」文件夹的归档快照编辑页（与试卷页同款双栏阅读器） */
-const PaperArchivePage = lazy(() => import('@/pages/paper-archive'));
-const AssistantPage = lazy(() => import('@/pages/assistant'));
-const LoginPage = lazy(() =>
+const PaperArchivePage = lazyWithRetry(() => import('@/pages/paper-archive'));
+const AssistantPage = lazyWithRetry(() => import('@/pages/assistant'));
+const LoginPage = lazyWithRetry(() =>
   import('@/pages/auth/LoginPage').then((m) => ({ default: m.LoginPage }))
 );
 
