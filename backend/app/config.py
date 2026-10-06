@@ -172,6 +172,12 @@ class Settings(BaseSettings):
     # 连带失守、卷面缺两道综合题。生成已异步化（Celery），放长超时不占请求线程；
     # 与 organization 同口径 480s。
     generation_model_timeout: float = Field(default=480.0, gt=0)
+    # 蓝图调整建议（suggest_blueprint_adjustments）的读超时。曾经写死 45s：
+    # 而该调用实测单次就要 40~50s（大 prompt + 思考模型），于是 45s 刀口上
+    # 掷硬币——两次尝试都超时就 llm_transport_error，任务失败、助手卡片停在
+    # 「执行中/可重试」，表现为「AI 发起的蓝图建议无法执行」（2026-10-06）。
+    # 150s = 任务租约 300s ÷ 2 次尝试的硬上限，相对实测留 3 倍余量。
+    blueprint_suggest_model_timeout: float = Field(default=150.0, gt=0)
     # 命题生成的思考档（StepFun reasoning_effort：low/medium/high），生成网关
     # 显式下发，优先于 llm_generation_disable_thinking 推导出的档案缺省档——
     # 服务器上即使把该开关设为 false（不发档位、回落模型默认 medium），

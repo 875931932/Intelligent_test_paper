@@ -655,6 +655,32 @@ def test_execute_suggest_task_builds_client_and_runs(session, monkeypatch):
     assert result["suggestions"] and result["summary"]
 
 
+def test_execute_suggest_task_uses_configured_read_timeout(session, monkeypatch):
+    """回归：读超时曾写死 45s，而该调用实测单次就要 40~50s（大 prompt + 思考
+    模型），于是每次调用都在刀口上掷硬币——两次尝试都超时就 llm_transport_error，
+    任务失败、助手卡片停在「可重试」，表现为「AI 发起的蓝图建议无法执行」。
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(blueprint_suggest_service, "llm_configured", lambda: True)
+    captured: dict = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def request_json(self, **kwargs):
+            return _raw_good()
+
+    monkeypatch.setattr("app.adapters.model.llm_gateway.LLMJsonClient", FakeClient)
+    blueprint_suggest_service.execute_suggest_task(
+        session, payload={"course_id": "c1", "project_id": "proj1", "instruction": ""}
+    )
+    assert captured["timeout"] == settings.blueprint_suggest_model_timeout
+    assert captured["timeout"] > 45.0, "必须显著高于实测耗时，不能停在旧写死值"
+    assert captured["timeout"] * captured["max_attempts"] <= 300, "不得超出任务租约"
+
+
 # ─── 任务入队 ───
 
 

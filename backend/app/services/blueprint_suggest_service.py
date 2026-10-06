@@ -44,7 +44,8 @@ from app.services.framework_service import (
 TASK_TYPE = "suggest_blueprint_adjustments"
 _INPUT_VERSION = "blueprint_suggest_v1"
 _TASK_LEASE_SECONDS = 300  # 与 worker.py 的 _LEASE_SECONDS_BY_TYPE 保持一致
-_CLIENT_TIMEOUT_SECONDS = 45.0
+# 读超时不再写死：该调用实测单次 40~50s，旧的 45s 让每次调用都在掷硬币
+# （详见 config.blueprint_suggest_model_timeout 注释）。150s = 租约 ÷ 2 次尝试。
 _CLIENT_MAX_ATTEMPTS = 2
 
 # 建议可动的字段 = 既有 PATCH plan-items 端点的 allowed（蓝图草稿阶段逐题
@@ -766,7 +767,7 @@ def execute_suggest_task(session: Session, *, payload: dict) -> dict:
         base_url=settings.llm_base_url,
         model=settings.llm_model,
         disable_thinking=settings.llm_disable_thinking,
-        timeout=_CLIENT_TIMEOUT_SECONDS,
+        timeout=settings.blueprint_suggest_model_timeout,
         max_attempts=_CLIENT_MAX_ATTEMPTS,
         recorder=DatabaseModelCallRecorder(get_session_factory()),
     )
