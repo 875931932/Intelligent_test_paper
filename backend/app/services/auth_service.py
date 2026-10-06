@@ -12,8 +12,10 @@ import hmac
 import json
 import secrets
 import time
+from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -28,6 +30,10 @@ class AuthenticationError(Exception):
 
 class UserNotFoundError(Exception):
     """Raised when the user implied by a valid token no longer exists."""
+
+
+class UsernameTakenError(Exception):
+    """Raised when the username is already occupied."""
 
 
 # ── Password hashing ─────────────────────────────────────────────────────────
@@ -104,6 +110,39 @@ def user_from_payload(session: Session, payload: dict) -> User:
     user = session.get(User, payload.get("sub"))
     if user is None:
         raise UserNotFoundError
+    return user
+
+
+def create_user(
+    session: Session,
+    *,
+    username: str,
+    password: str,
+    display_name: str,
+    role: str = "teacher",
+) -> User:
+    """创建账号。唯一入口是管理员建号端点（本系统不开放自助注册）。
+
+    重名由「先查后插 + 唯一约束兜底」双重保证：查询挡住常规重名，并发下
+    两个管理员同时建同名账号时唯一约束报 IntegrityError，同样归一为
+    UsernameTakenError，避免把 500 抛给调用方。
+    """
+    if session.scalar(select(User).where(User.username == username)) is not None:
+        raise UsernameTakenError(username)
+    user = User(
+        id=str(uuid4()),
+        username=username,
+        password_hash=hash_password(password),
+        display_name=display_name,
+        role=role,
+    )
+    session.add(user)
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise UsernameTakenError(username) from exc
+    session.refresh(user)
     return user
 
 

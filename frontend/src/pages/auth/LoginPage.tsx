@@ -96,10 +96,6 @@ export function LoginPage() {
             {loading ? '登录中…' : '登录'}
           </Button>
         </form>
-
-        <p className="login-hint">
-          测试账号：admin / 123456
-        </p>
       </div>
 
       <style>{loginStyles}</style>
@@ -167,12 +163,5 @@ const loginStyles = `
   .login-btn {
     margin-top: 4px;
     width: 100%;
-  }
-
-  .login-hint {
-    text-align: center;
-    font-size: 0.75rem;
-    color: var(--text-tertiary);
-    margin-top: 20px;
   }
 `;

@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { BookOpen, Plus, ChevronRight, LogOut } from 'lucide-react';
+import { BookOpen, Plus, ChevronRight, LogOut, UserPlus } from 'lucide-react';
 import { useCourseStore, type Course } from '@/stores/course';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { api } from '@/api/client';
+import { ApiError } from '@/api/errors';
 import { Modal, Input, Select } from '@/components/ui';
 import type { CourseCategoryInfo } from '@/types/api';
 
@@ -15,12 +16,20 @@ export default function CourseSpacePage() {
   const setActiveCourse = useCourseStore((s) => s.setActiveCourse);
   const removeCourse = useCourseStore((s) => s.removeCourse);
   const logout = useAuthStore((s) => s.logout);
+  const currentUser = useAuthStore((s) => s.user);
+  const isAdmin = currentUser?.role === 'admin';
   const addToast = useToastStore((s) => s.addToast);
 
   const [loading, setLoading] = useState(true);
   const [createOpen, setCreateOpen] = useState(false);
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
+  // 管理员建号（本系统不开放自助注册）：弹窗内的三个字段与提交态
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [accountUsername, setAccountUsername] = useState('');
+  const [accountName, setAccountName] = useState('');
+  const [accountPassword, setAccountPassword] = useState('');
+  const [creatingAccount, setCreatingAccount] = useState(false);
   // 课程类别：清单来自后端类别档案（单一来源）；空 = 尚未加载/加载失败，
   // 此时不渲染下拉且创建请求不带 category（后端落默认 general）
   const [categories, setCategories] = useState<CourseCategoryInfo[]>([]);
@@ -94,6 +103,36 @@ export default function CourseSpacePage() {
       addToast('创建课程失败', 'error');
     } finally {
       setCreating(false);
+    }
+  };
+
+  const handleCreateAccount = async () => {
+    const username = accountUsername.trim();
+    const name = accountName.trim();
+    if (!username || !name || !accountPassword) {
+      addToast('请填写用户名、姓名和密码', 'info');
+      return;
+    }
+    if (username.length < 3) {
+      addToast('用户名至少 3 个字符', 'info');
+      return;
+    }
+    if (accountPassword.length < 6) {
+      addToast('密码至少 6 位', 'info');
+      return;
+    }
+    setCreatingAccount(true);
+    try {
+      const user = await api.auth.createUser({ username, name, password: accountPassword });
+      addToast(`已创建账号「${user.name}」（${user.username}），请告知本人首次登录`, 'success');
+      setAccountOpen(false);
+      setAccountUsername('');
+      setAccountName('');
+      setAccountPassword('');
+    } catch (err) {
+      addToast(err instanceof ApiError ? err.message : '创建账号失败，请重试', 'error');
+    } finally {
+      setCreatingAccount(false);
     }
   };
 
@@ -188,7 +227,25 @@ export default function CourseSpacePage() {
             <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)' }}>AI 命题系统</div>
           </div>
         </div>
-        <button onClick={logout} title="退出登录" style={{
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          {isAdmin && (
+            <button
+              onClick={() => setAccountOpen(true)}
+              title="创建教师账号"
+              style={{
+                display: 'flex', alignItems: 'center', gap: '6px',
+                background: 'none', border: 'none', cursor: 'pointer',
+                padding: '8px 12px', borderRadius: 'var(--radius-sm)',
+                color: 'var(--text-secondary)', fontSize: '0.8125rem',
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--fill-strong)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
+            >
+              <UserPlus size={15} />
+              新建账号
+            </button>
+          )}
+          <button onClick={logout} title="退出登录" style={{
           display: 'flex', alignItems: 'center', gap: '6px',
           background: 'none', border: 'none', cursor: 'pointer',
           padding: '8px 12px', borderRadius: 'var(--radius-sm)',
@@ -199,7 +256,8 @@ export default function CourseSpacePage() {
         >
           <LogOut size={15} />
           退出登录
-        </button>
+          </button>
+        </div>
       </header>
 
       {/* 内容区 */}
@@ -323,6 +381,43 @@ export default function CourseSpacePage() {
             </p>
           </>
         )}
+      </Modal>
+
+      {/* 管理员建号弹窗（不开放自助注册，账号一律由此创建） */}
+      <Modal
+        open={accountOpen}
+        onClose={() => setAccountOpen(false)}
+        title="新建账号"
+        confirmLabel="创建"
+        loading={creatingAccount}
+        onConfirm={handleCreateAccount}
+      >
+        <Input
+          label="用户名"
+          placeholder="登录用，如 li_laoshi"
+          value={accountUsername}
+          onChange={(e) => setAccountUsername(e.target.value)}
+          autoComplete="off"
+          autoFocus
+        />
+        <Input
+          label="姓名"
+          placeholder="显示名称，如 李老师"
+          value={accountName}
+          onChange={(e) => setAccountName(e.target.value)}
+          autoComplete="off"
+        />
+        <Input
+          label="初始密码"
+          type="password"
+          placeholder="至少 6 位"
+          value={accountPassword}
+          onChange={(e) => setAccountPassword(e.target.value)}
+          autoComplete="new-password"
+        />
+        <p style={{ margin: 0, fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
+          新账号为教师角色，创建后请把用户名和初始密码告知本人。
+        </p>
       </Modal>
 
       {/* 长按课程卡的删除确认弹窗 */}
