@@ -218,20 +218,33 @@ body：`{ "source_paper_version_id":"uuid|null", "name":"string|null" }`
 ### 4.8 修改考核规则
 `PATCH /api/v1/courses/{course_id}/framework-versions/current/rules`
 body 同 `exam_rules` 结构（`question_type_ratios` / `chapter_weights` /
-`assessment_focus` 考试侧重点等）。
+`assessment_focus` 考试侧重点 / `difficulty_distribution` 难度比例 / `type_formats`
+题型格式覆盖等）。
 → 200 `{ "status":"ok", "framework_version_id":"uuid", "exam_rules":{...} }`
+
+**条件键的保留/清空语义**（`type_formats` 与 `difficulty_distribution` 同约定）：
+请求**未携带**（缺 key 或 `null`）= 保留现值——旧前端/AI 提案不带新字段时不能把已设置的
+格式与难度抹掉；传 **`{}` = 显式清空**（难度回退「未声明」缺省 = 蓝图全 `medium`，
+格式恢复类别/全局默认）。
 
 归一化规则：题型名映射到英文枚举（"选择题"→`single_choice`）、剔除未知项、比例归一到 100、
 未声明的章节锚点补 0；考纲完全没有章节权重表时返回空列表，由消费方回退到考点权重。
 `assessment_focus` 是教师声明的**考试侧重点**：五项 `assessment_mode`
 （`theory_recall` / `conceptual` / `application` / `problem_solving` /
 `practical_operation`）的 `%` 权重，归一到 100、零值剔除、空数组 = 均衡。
+`difficulty_distribution` 是**全卷难度比例** `{low, medium, high}`（`%` 数值，归一到 100；
+非法条目剔除后对其余项缩放——与题型比例丢未知项同口径；剔后为空则省略该键 = 未声明）。
 
 **消费**：蓝图在未下发 `type_rules` 时按 `question_type_ratios` 推导题型分布（题数折算后
 定点修正，保证总分精确 100）；创建蓝图时 `chapter_weights` 优先取 `chapter_weights`。
 `assessment_focus` 由蓝图构造**确定性**折算为题位 `assessment_mode` 分布（按权重分配，
 两层收敛兜底：无实操可考单元时先降级到邻近考查方式、再按可考性归并）——权重异常/无可考
 单元只会让分布收敛，不会让出卷失败。
+`difficulty_distribution` 在**创建蓝图时逐题型注入**：每个题型各自按同一比例用最大余数法
+把比例落成题数（如单选 10 题 × 20/60/20 → 2/6/2），题型规则里显式下发的难度永远优先；
+蓝图把难度拷进 `plan_items.difficulty` → 合同槽位继承 → 成卷三层一致。**已确认/冻结的
+蓝图不受改规则影响**，改完要新建蓝图版本并确认才生效；未声明难度的课程沿用历史缺省
+（全 `medium`）。
 
 ### 4.9 考核规则 AI 助手（提案，需教师保存）
 `POST /api/v1/courses/{course_id}/framework-versions/current/rules/ai-propose`
@@ -242,12 +255,13 @@ LLM 未配置 503；无命题框架 404（detail 含「命题框架」）；空�
 - **只产提案，不写规则**：worker（`task_type=propose_exam_rules`，租约 300s）把当前
   `exam_rules`、允许题型、章节锚点作事实数据喂给模型（比例/难度等约束检查在代码里，不
   进 prompt 让模型自觉遵守）；提案整包过既有 `normalize_exam_rules` 归一（英文枚举、
-  比例与侧重点归一 100、锚点按已知过滤），模型未提及的字段照抄当前规则，防止清空教师已有设置。
+  比例与侧重点归一 100、难度 `{low,medium,high}` 归一且未提及就照抄当前/未声明则省略键、
+  锚点按已知过滤），模型未提及的字段照抄当前规则，防止清空教师已有设置。
 - 校验收口：`ratios_empty`（题型比例为空）、`fields_lost`（提案清空教师已有的章节权重 /
   考试形式 / 时长 / 总分）——未过带 `previous_validation_error` 纠错 1 次，仍不过如实报错。
 - 结果存 `task_runs.result`：`{ course_id, instruction, proposal:{ exam_form,
   duration_minutes, total_score, question_type_ratios, chapter_weights,
-  assessment_focus }, explanation }`；用 §8.14 `GET /exam-projects/task-runs/{id}` 轮询，
+  assessment_focus, difficulty_distribution }, explanation }`；用 §8.14 `GET /exam-projects/task-runs/{id}` 轮询，
   `succeeded` 后前端把 proposal 回填考核规则卡**编辑草稿**，教师核对/修改后点「保存」走
   §4.8 PATCH 落库——AI 提案不直接生效。
 - 幂等：同课同要求的**在途**任务复用同一 `task_run_id`；已到终态换新键重新提案。
@@ -396,6 +410,10 @@ body：`{ "exam_point_code": "string" }`
   "units":[ {...UnitCoverage...} ],
   "card_semantic_profiles":{}, "card_question_types":{} }
 ```
+服务端缺省注入：`type_rules`/`chapter_weights` 未显式下发时按**当前考核规则**补齐——题型
+比例推导题型题数（总分精确闭合）、章节权重取规则声明值、`assessment_focus` 与
+`difficulty_distribution` 逐题型确定性落位到题位（难度为全卷一份比例，每个题型各自配比；
+显式下发的 type_rules 永远优先——语义详见 §4.8「消费」）。
 响应：`{ "blueprint_version_id":"uuid", "plan":[ ...PlanItem... ] }`
 PlanItem（`list_plan_items` 响应，8.6 同构）：
 `{ "id":"","item_index":0,"question_type":"","score":0.0,"difficulty":"","cognitive_level":"","assessment_mode":"","exam_point_id":"","exam_point_title":"","exam_point_code":"","anchor_key":"","knowledge_card_id":"","knowledge_card_name":"","assessment_unit_id":"","assessment_unit_title":"","section_index":null }`
@@ -892,10 +910,14 @@ schema 自 `1.2.0` 起新增该字段；逐题带 `rubric`（主观题评分细�
   `REFUSED_TOOLS` 硬拒。
 - **出卷主线逐级提案（阶梯）**：教师要出卷、继续出卷或直接给出出卷要求时，模型按 snapshot 的项目
   状态选**下一步**提案、一次一张卡推进：`create_exam_project` → `update_exam_rules`（考核要求落点）
-  → `create_blueprint`（综合题原型白名单等）→ `enqueue_blueprint_suggest`（难度比例 → 指令）→
+  → `create_blueprint`（综合题原型白名单等）→ `enqueue_blueprint_suggest`（已有蓝图微调：
+  难度比例 → 指令）→
   `confirm_blueprint` → `confirm_contract` → `start_generation`；卡片确认成功后前端自动追问
-  「继续」，模型按阶梯接续，不要求教师手动输入。教师具体要求的确定性落点表：难度比例 → 建议指令
-  （**系统确定性换算**，模型不自行换算、不承诺达标）、偏理论/侧重理解 → `assessment_focus`、
+  「继续」，模型按阶梯接续，不要求教师手动输入。教师具体要求的确定性落点表：难度比例 →
+  蓝图创建前 `update_exam_rules.difficulty_distribution`（全卷一份 `{low,medium,high}`，
+  蓝图创建时逐题型确定性落位，已存在蓝图不受影响）、蓝图已存在待确认时
+  `enqueue_blueprint_suggest`（难度比例 → 指令，**系统确定性换算**目标分布，模型不自行
+  换算、不承诺达标）、偏理论/侧重理解 → `assessment_focus`、
   题型比例/章节权重 → `update_exam_rules`、综合题形态（如不出代码题）→
   `create_blueprint.comprehensive_archetypes`、单题型格式 → `update_question_type_format`、
   整卷质量检查 → `enqueue_paper_review`。停点按项目 `status` 优先判定：`review`/`exported` →

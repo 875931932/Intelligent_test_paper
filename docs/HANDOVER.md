@@ -124,20 +124,25 @@ MinerU 解析 → 双大纲框架确认 → 知识目录发布 → 蓝图/合同
 答案域互斥、禁用上下文、原型轮换**全部在命题前的合同分配阶段用确定性算法算死，生成阶段
 零跨题协调。模型调用从 ~50 次/卷降到 ~12 次。
 
-### 4.2 考核规则的链路（新增，2026-09）
+### 4.2 考核规则的链路（新增，2026-09；难度比例 2026-10-05 补齐）
 
 考纲写明的"选择题占 20%…"与"第1章 5%…"命题权重表，现在**全链路可达**：
 
 ```
-考纲 PDF → 提取提示词要求填 final_exam_rules
-        → domain/framework/exam_rules.py 归一化（题型名映射英文枚举、比例归一到 100）
+考纲 PDF → 提取提示词要求填 final_exam_rules（题型比例/章节权重/难度比例/考试侧重点）
+        → domain/framework/exam_rules.py 归一化（题型名映射英文枚举、比例归一到 100、
+          难度 {low,medium,high} 归一到 100 且未声明/非法则省略键）
         → 框架 payload 持久化（发布时继承）
-        → 接口顶层 exam_rules（GET current / PATCH rules）
-        → 前端「考核规则」卡可查看可修改
-        → 蓝图：type_rules 按题型比例推导（总分精确闭合）；chapter_weights 优先取考纲声明值
+        → 接口顶层 exam_rules（GET current / PATCH rules；难度与 type_formats
+          未提供=保留现值、{}=显式清空）
+        → 前端「考核规则」卡可查看可修改（含难度低/中/高三档输入）
+        → 蓝图：type_rules 按题型比例推导（总分精确闭合）；chapter_weights 优先取考纲声明值；
+          assessment_focus 与 difficulty_distribution 创建蓝图时逐题型确定性落位
+          （最大余数法，题型显式下发优先）→ plan_items.difficulty → 合同槽位 → 成卷三层一致
 ```
 
 > 引擎铁律依旧：这套归一化是**确定性**的，不交给模型；模型只负责从考纲里把数字读出来。
+> 难度未声明的课程沿用历史缺省（蓝图全 `medium`），改规则只影响**新建**蓝图版本（冻结即不可变）。
 
 ---
 
@@ -201,6 +206,11 @@ MinerU 解析 → 双大纲框架确认 → 知识目录发布 → 蓝图/合同
 - **画像字段持久化**：knowledge_cards 表的 concept_cluster / answer_proposition / prompt_material
   三列（曾因发布时丢弃导致后端链路防重复机制静默退化——这是一个深刻教训：**改机制必须检查
   demo 和后端两条链路**）
+- **难度比例确定性落位**（2026-10-05 根治）：考核规则 `difficulty_distribution`（全卷一份）
+  在蓝图创建时**逐题型**注入 type_rules（最大余数法各自配比，题型显式下发永远优先）→
+  `plan_items.difficulty` → 合同槽位 → 成卷三层一致；未声明 = 历史缺省全 medium，改规则
+  只影响新建蓝图（冻结不可变）。根因曾是 schema 无此字段、引擎支持从未被喂而产出 42 题全
+  medium——难度/比例换算永远在代码里、不进 prompt；normalize/注入/API roundtrip 单测锁定
 
 ### 5.6 模型调用鲁棒性与运行自愈（2026-09 根治，操作手册 `docs/LLM_TUNING.md`）
 
@@ -289,8 +299,9 @@ frontend\src\
   （提案→diff→确认/撤销）、AI 整题生成（回填表单）、整卷质量评审保留（`docs/backend-api.md`
   §4.9、§4.10、§8.7b、§9.3e–g）
 - ✅ 考核规则全链路：提取 → 归一化 → 持久化 → 查看/修改（含考试侧重点 `assessment_focus`
-  五项权重，预设+微调）→ 蓝图消费（题型比例、章节权重与侧重点**确定性**折算题位考查方式
-  分布，无实操可考单元两层收敛、出卷不失败）
+  五项权重，预设+微调；含难度比例 `difficulty_distribution`，低/中/高三档 UI）→
+  蓝图消费（题型比例、章节权重与侧重点**确定性**折算题位考查方式分布，无实操可考单元
+  两层收敛、出卷不失败；难度**逐题型确定性落位**，见下条）
 - ✅ 四份导出按高校卷面模板渲染：学生卷 / 答卷（信息头 + 题次表 + 装订线 + 答案速查表）/
   答题卡 / 答案细则 JSON（schema 1.1.0 起逐题带 `rubric`、1.2.0 起带卷面题号 `no`，
   生成→编辑→导出全链路贯通）；**卷面题号每种题型从 1 重新计数**（2026-10-03，前端与四份
@@ -314,9 +325,22 @@ frontend\src\
   （existing 过滤与注释意图相反的根因）、蓝图建议面板 StrictMode 下刷新恢复失效、进入合同
   阶段先落库蓝图确认、生成状态双读（助手按 `generation_task_status` 判停 + 前端徽章细分
   生成中/待生成/生成失败）、概览/资料库 hero 卡排版根治
-- ✅ 后端门禁全绿：`uv run pytest -q` **1415 passed / 1 xfailed**（唯一 xfail=编造检测的
-  联合 bigram 阈值已知缺口，测试 docstring 注明根因）+ 覆盖率 **86.27%**（≥80 门禁，
-  2026-10-03 实测于 HEAD `882e127` 干净快照）；前端 `npm run build` 0 error、
+- ✅ **难度比例全链路根治**（2026-10-05，`63bb227`）：根因 = exam_rules schema 无难度字段，
+  蓝图引擎的 `difficulty_distribution` 支持从未被喂、缺键默认全 medium。落点：归一化接难度
+  （剔坏项再缩放）→ `PATCH /rules` 未提供=保留现值、`{}`=显式清空 → 蓝图创建**逐题型注入**
+  （最大余数法各题型各自配比，题型显式下发优先）→ 合同槽位 → 成卷三层保真；前端考核规则卡
+  三档输入、AI 提案白名单与助手 `update_exam_rules` 同口径、考纲提取 prompt 补字段（+9 测试）。
+  E2E 实测（step-3.7-flash）：规则 20/60/20 → 题位 8/25/9（单选 2/6/2、判断 4/12/4、
+  填空 1/3/1 逐题型精确）；`conceptual=85` → 题位考查方式 conceptual 37/42；两道代码综合题
+  按 archetype 落位；42 题 3.2 分钟、16 次生成调用零重试零失败、>0.72 查重零命中
+  （对照：同指令在旧代码产出 42 全 medium——同一助手同一句话，修复前后各落一次）
+- ✅ **dispatch 失败留痕**（2026-10-05，`092363b`）：outbox 加载相位 `logger.exception`
+  重抛 + 发布失败 warning；exam_projects 两处静默 `except` 补带 course/task 上下文的
+  `logger.exception`——此前派发失败无日志可查（01:27/01:32 事件成悬案），现首次复现
+  即可从 api.log 定位
+- ✅ 后端门禁全绿：`uv run pytest -q` **1457 passed / 1 xfailed**（唯一 xfail=编造检测的
+  联合 bigram 阈值已知缺口，测试 docstring 注明根因）+ 覆盖率 **86.52%**（≥80 门禁，
+  2026-10-05 实测于 HEAD `092363b`）；前端 `npm run build` 0 error、
   oxlint 0 error（warning 均为既有文件基线）
 
 ### 已知问题（不阻塞，接手时留意）

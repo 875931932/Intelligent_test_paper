@@ -129,6 +129,14 @@ class ModelProfile:
 **回退演练**：结构约束出问题时 `.env` 加 `ORGANIZATION_EXTRACTION_JSON_SCHEMA=false`
 即回老行为，无需回滚代码。
 
+**生产验证记录**：
+
+- 2026-10-05 切 `step-3.7-flash`（走上述流程，只改 `.env`）：出卷窗口 22 次调用全部
+  `succeeded`——6 次 `assistant_turn` + 16 次 `paper_generation`，`details.attempts=[]`
+  零重试、`error_code=None`；42 题整卷端到端 **3.2 分钟**（对照 `step-5-preview`：
+  67 分钟 + 窗口内 17 次 failed）。核对方法：`model_calls` 按 `stage/status` 聚合 +
+  逐调用看 `duration_ms`/`details.attempts`（§3 第一现场）。
+
 ---
 
 ## 5. 相关测试与文档

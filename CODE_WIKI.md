@@ -162,7 +162,7 @@ class AssessmentOutline(BaseModel):
     """考核大纲提取结果"""
     anchors: list[AssessmentAnchor]        # 考核范围
     exam_points: list[ExamPoint]            # 考点列表
-    final_exam_rules: dict                  # 期末考试规则（题型比例/章节权重/考试形式）
+    final_exam_rules: dict                  # 期末考试规则（题型比例/章节权重/考试形式/难度比例/考试侧重点）
 
 class FrameworkCandidate(BaseModel):
     """框架候选版本"""
@@ -438,7 +438,7 @@ app.include_router(paper_versions_router)    # /api/v1/courses/{course_id}/paper
 | POST | `/api/v1/courses/{course_id}/framework-runs/{run_id}/confirm` | 教师确认并发布框架 |
 | POST | `/api/v1/courses/{course_id}/framework-runs/{run_id}/reject` | 教师拒绝框架 |
 | GET | `/api/v1/courses/{course_id}/framework-versions/current` | 获取当前框架（含 `exam_rules`） |
-| PATCH | `/api/v1/courses/{course_id}/framework-versions/current/rules` | 修改考核规则（题型比例 / 章节权重 / 考试侧重点） |
+| PATCH | `/api/v1/courses/{course_id}/framework-versions/current/rules` | 修改考核规则（题型比例 / 章节权重 / 考试侧重点 / 难度比例） |
 | POST | `/api/v1/courses/{course_id}/framework-versions/current/rules/ai-propose` | 考核规则 AI 助手提案（202，回填编辑草稿） |
 | POST | `/api/v1/courses/{course_id}/framework-versions/current/ai-review` | 框架候选 AI 评审报告（202，只读） |
 
@@ -884,10 +884,12 @@ frontend/src/
 
 **文件**：[frontend/src/pages/framework/ExamRulesCard.tsx](frontend/src/pages/framework/ExamRulesCard.tsx)
 
-**职责**：展示考核大纲抽取出的考试形式、题型比例、章节命题权重与考试侧重点（五项
-`assessment_mode` 权重，空 = 均衡），并支持教师修改后保存（PATCH
+**职责**：展示考核大纲抽取出的考试形式、题型比例、章节命题权重、考试侧重点（五项
+`assessment_mode` 权重，空 = 均衡）与难度比例（`difficulty_distribution`，低/中/高三档，
+未声明 = 蓝图缺省全中等），并支持教师修改后保存（PATCH
 `/framework-versions/current/rules`）。蓝图按这里的比例推导题型分布、按侧重点确定性
-折算题位考查方式；编辑态附「AI 助手」一句话生成规则提案——回填编辑草稿，教师核对后
+折算题位考查方式、按难度比例**逐题型**落位题位难度（蓝图创建时生效，冻结蓝图不受影响）；
+编辑态附「AI 助手」一句话生成规则提案——回填编辑草稿，教师核对后
 点保存才生效。
 
 #### AI 助手面板（提案 → 教师确认，不绕确认流）
@@ -1282,7 +1284,7 @@ backend/tests/
 
 ```bash
 cd backend
-uv run pytest -q                    # 全量门禁（基线：1415 passed / 1 xfailed，2026-10-03）
+uv run pytest -q                    # 全量门禁（基线：1457 passed / 1 xfailed，2026-10-05）
 uv run pytest --cov=app --cov-fail-under=80   # 覆盖率门禁
 ```
 
@@ -1334,7 +1336,7 @@ deploy/
 | 术语 | 英文 | 说明 |
 |------|------|------|
 | 评估导向大纲 | Assessment-Led Syllabus | 以考核大纲为主线构建的课程框架 |
-| 考核规则 | Exam Rules | 考纲声明的题型比例与章节命题权重，可查看可修改 |
+| 考核规则 | Exam Rules | 考纲声明的题型比例、章节命题权重、难度比例与考试侧重点，可查看可修改 |
 | 合同 | Contract | 试卷生成前的确定性题位约束 |
 | 原子 | Atom | 知识卡片中的最小可考查单元 |
 | 考点 | Exam Point | 课程中需要考核的知识点 |
