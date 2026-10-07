@@ -5,6 +5,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.domain.blueprint.models import AssessmentMode
 from app.domain.generation.archetypes import ARCHETYPE_CONTRACTS, ComprehensiveArchetype, MaterialForm
 from app.domain.generation.batching import QuestionBatch
+from app.domain.generation.difficulty_standard import difficulty_spec as build_difficulty_spec
 from app.domain.generation.question_formats import (
     COURSE_TYPE_FORMATS_KEY,
     QUESTION_SCHEMAS,
@@ -64,6 +65,10 @@ class BatchQuestionSpec(BaseModel):
     score: float
     difficulty: str
     cognitive_level: str
+    # 难度档的特征规格（D1~D6，由 difficulty_standard 确定性给出）：
+    # 与 difficulty 裸标签一起下发，让模型看到的是"这一档长什么样"而不是
+    # 一个无定义的枚举值；终检按同一份规格做确定性校验（判定权在代码）。
+    difficulty_spec: dict = Field(default_factory=dict)
     assessment_mode: AssessmentMode = "conceptual"
     card_name: str = ""
     performance_statement: str = ""
@@ -148,6 +153,7 @@ def compile_batch_generation_payload(
             score=slot.score,
             difficulty=slot.difficulty,
             cognitive_level=slot.cognitive_level,
+            difficulty_spec=build_difficulty_spec(slot.difficulty, slot.question_type),
             assessment_mode=slot.assessment_mode,
             card_name=str(card.get("name", "") or ""),
             performance_statement=slot.performance_statement or (card.get("performance_statement") or ""),
@@ -171,6 +177,8 @@ def compile_batch_generation_payload(
         f"为本批 {len(specs)} 道题目一次性命题，返回 JSON 对象（顶层字段 questions 为数组），数组每个元素必须含 item_index 字段及对应 output_schema 要求的全部字段。"
         "这些字段必须平铺在元素顶层（与 item_index 同级），不得嵌套进 output_schema 键内。"
         "同批各题考查视角必须互补：题型与认知层级已指定，不得从同一角度重复考查同一内容。"
+        "每题的 difficulty_spec 是该题难度档的特征规格（认知层次/知识跨度/推理步骤/情境/信息方式），"
+        "题面必须落在规格内——终检按同一份规格做确定性校验，不是修辞建议。"
         "每题的 card_name 是该知识卡的概念语境：题干涉及参数、命令或工具特性时，"
         "必须写清其归属（哪个框架/工具/流程的参数），使题干脱离语境仍可独立理解，不得出现无主语的参数或命令。"
         "每题的 forbidden_atoms 与 forbidden_answer_cores 是**该题**不得使用的原子与答案核心，"

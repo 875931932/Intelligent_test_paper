@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 
+from app.domain.generation.difficulty_standard import check_difficulty_fit
+
 
 def _compact_text(value) -> str:
     if isinstance(value, bool):
@@ -51,25 +53,16 @@ def answer_option_keys(answer, options) -> set[str]:
 def validate_generated_question(question: dict, atom_text: str = "") -> dict:
     qtype = question.get("question_type")
     stem = str(question.get("stem", "")).strip()
-    difficulty = question.get("difficulty", "medium")
     if not stem:
         return {"status": "blocker", "code": "stem_missing", "message": "题目缺少题干"}
     if re.search(r"根据(课件|资料)|第\s*\d+\s*(页|章|讲)|实验\s*\d+", stem, re.IGNORECASE):
         return {"status": "blocker", "code": "source_language", "message": "题目包含来源话术"}
-    # 难度合理性检查：低难度题不应出现"分析、评价、设计"等高级认知关键词。
-    # 豁免：关键词同时出现在合同原子原文中时，它是被考查的术语本身
-    # （如原子"指标比较可通过……完成"中的"比较"），不是对学生的认知要求。
-    if difficulty == "low":
-        high_order_hints = [
-            "分析", "评价", "评估", "设计", "创造", "比较", "对比",
-            "综合", "判断并说明", "论证", "批判", "优化",
-        ]
-        if any(hint in stem for hint in high_order_hints if hint not in atom_text):
-            return {
-                "status": "blocker",
-                "code": "difficulty_mismatch",
-                "message": "低难度题目题干包含高级认知要求关键词，与指定难度不匹配",
-            }
+    # 难度标准校验（低档：高阶关键词 + 认知层次一致性，标准定义见
+    # domain/generation/difficulty_standard.py）。难度/认知层次由合同槽位
+    # 盖章后传入（generation_graph 先 _stamp_question 再校验）。
+    fit = check_difficulty_fit(question, atom_text=atom_text)
+    if fit["status"] != "pass":
+        return fit
     if qtype == "single_choice":
         opts = question.get("options") or []
         answer_raw = question.get("answer")
