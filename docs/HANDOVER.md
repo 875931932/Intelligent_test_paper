@@ -199,6 +199,15 @@ MinerU 解析 → 双大纲框架确认 → 知识目录发布 → 蓝图/合同
 
 - **难度关键词豁免**：低难度题干含"比较/分析"等词，若该词同时出现在合同原子原文中→是被考查
   术语本身，不拦截（`generation_service.py validate_generated_question(atom_text=...)`）
+- **难度特征化标准 v1**（2026-10-07，`ae905d3`）：难度从"配额残余裸标签 + prompt 穿透"升级为
+  六维特征三档操作定义（D1 认知操作 / D2 知识跨度 / D3 推理步骤 / D4 情境 / D5 信息方式 /
+  D6 干扰项），全部判定在代码——`domain/generation/difficulty_standard.py` ①词表归一
+  （easy/hard/中文别名→low/medium/high，**补齐终检只认 low、表单写 easy 绕过检查的缺口**）；
+  ②`difficulty_spec` 三档规格随 `BatchQuestionSpec` 结构化字段下发（D1 允许集与蓝图
+  `_DIFFICULTY_COGNITIVE_WEIGHTS` 同源，**对齐守护测试**防两处漂移）；③低档终检两规则
+  （高阶关键词+原子术语豁免、认知超 remember/understand 拦截）确定性判废重试。中高档只随规格
+  下发不做文本判定，留问卷 P 值实证校准收紧。封存 `generation_graph` 零改动（盖章先于校验）。
+  设计：`docs/superpowers/specs/2026-10-07-difficulty-feature-standard-design.md`（+13 测试）
 - **综合题原型池教师可控**：`type_rules.comprehensive.archetypes` 白名单（文科可只留
   case_analysis 等），顺序即偏好序、不参与洗牌；未指定或全非法时回退默认池，
   默认池按 allocation_seed **确定性洗牌**（sha256 排序，`_shuffled_default_pool`）+
@@ -235,6 +244,7 @@ backend\app\
 ├─ domain\generation\
 │   ├─ contract.py          ★合同领域模型：PoolAtom/聚类/贪心分配/互斥/门槛
 │   ├─ archetypes.py        综合题 8 原型契约（模板+材料形式+认知序列）
+│   ├─ difficulty_standard.py  ★难度特征标准：词表归一/三档规格下发/低档确定性终检
 │   └─ batching.py          按考点分批(≤6)，子批携带禁用上下文
 ├─ domain\framework\
 │   ├─ exam_rules.py        ★考核规则归一化 + 按比例推导题型分布
@@ -383,8 +393,13 @@ frontend\src\
   发对应卡、工具覆盖不到时**不得臆造工具名或发空动作**（action 置 null，说明并给手动出路）；
   ③ 两次校验失败的兜底文案改为「我暂时无法回答这个问题，您可以手动操作看看。」——原始错误
   （如 `action.tool 缺失`）只留日志，不再暴露给教师；段2 问答同样按该话术诚实收口
-- ✅ 后端门禁全绿：`uv run pytest -q` **1490 passed / 1 xfailed**（唯一 xfail=编造检测的
-  联合 bigram 阈值已知缺口，测试 docstring 注明根因）+ 覆盖率 **86.65%**（≥80 门禁，
+- ✅ **难度特征化标准 v1**（2026-10-07，`ae905d3`）：见 §5.5 行——六维特征三档操作定义落成
+  `domain/generation/difficulty_standard.py`（词表归一补 easy 缺口 + `difficulty_spec` 任务卡
+  结构化下发 + 低档终检两规则 + 蓝图配对表对齐守护测试），封存 `generation_graph` 零改动；
+  设计 `docs/superpowers/specs/2026-10-07-difficulty-feature-standard-design.md`，
+  作品方案 v5 已写入对应章节（三(一)6 + 问卷校准闭环）
+- ✅ 后端门禁全绿：`uv run pytest -q` **1504 passed / 1 xfailed**（唯一 xfail=编造检测的
+  联合 bigram 阈值已知缺口，测试 docstring 注明根因）+ 覆盖率 **86.69%**（≥80 门禁，
   2026-10-07 实测）；前端 `npm run build` 0 error、
   oxlint 0 error（warning 均为既有文件基线）
 
@@ -436,6 +451,7 @@ frontend\src\
 | 对话式出卷提案 | `docs/CONVERSATIONAL_GENERATION.md` | 接线建议 + 红线自查清单；出卷提案链已按其红线部分落地（干跑预览未实现） |
 | 产品设计基线 v2.3 | `docs/superpowers/specs/2026-08-12-ai-final-exam-paper-design.md` | 产品对象/权限/数据边界/P0-P5/27条必测场景（**接手必读**） |
 | 合同优先生成设计 | `docs/superpowers/specs/2026-08-17-contract-first-generation-design.md` | 命题引擎重构的完整设计 rationale |
+| 难度特征标准设计 | `docs/superpowers/specs/2026-10-07-difficulty-feature-standard-design.md` | 六维特征 D1~D6 / 三档操作定义 / 四段管线 / v1 范围与 v2 展望（问卷实证校准） |
 | 实施计划存档 | `docs/superpowers/plans/` | 历轮迭代的实施记录（历史档案，路径可能已变） |
 | 部署 | `docs/DEPLOY_UBUNTU.md` | Ubuntu 部署前置条件与验收顺序 |
 | 演示素材 | `docs/素材/` | 考核大纲 + 17 份实验报告 + 答卷/评分标准范本 |

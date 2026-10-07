@@ -244,6 +244,21 @@ class PaperContract(BaseModel):
 - `cluster_pool_atoms()`: 基于 bigram Jaccard + 术语锚 + concept_cluster 的并查集聚类
 - `assign_atoms_to_items()`: 同考点题位按 item_index 顺序，软评分贪心 + 答案域互斥地取原子
 
+**难度特征化标准**（2026-10-07，设计：[docs/superpowers/specs/2026-10-07-difficulty-feature-standard-design.md](docs/superpowers/specs/2026-10-07-difficulty-feature-standard-design.md)）：
+
+核心模型：[backend/app/domain/generation/difficulty_standard.py](backend/app/domain/generation/difficulty_standard.py)
+
+```python
+canonical_difficulty(raw)      # easy/hard/中文别名 → low/medium/high 词表归一（未知→medium）
+difficulty_spec(tier, qtype)   # 三档特征规格：D1 认知允许集（与蓝图配对表同源）+ D2~D6 档位语义，
+                               # 随 BatchQuestionSpec.difficulty_spec 结构化字段随 payload 下发
+check_difficulty_fit(q, atom)  # 低档确定性终检：高阶认知关键词（原子术语豁免）+
+                               # 认知层次超出 remember/understand 拦截，由 validate_generated_question 调用
+```
+
+判定权在代码：难度 = 六维特征（D1 认知操作/D2 知识跨度/D3 推理步骤/D4 情境/D5 信息方式/D6 干扰项）
+的确定性组合，不靠 prompt 穿透；实证校准（CTT P 值）由学生/教师问卷回收闭环。
+
 ### 4.3 Knowledge（知识图谱）
 
 **职责**：将材料内容组织为以考点为核心的知识卡片和证据链。
@@ -381,7 +396,7 @@ class GenerationState(TypedDict, total=False):
 **核心特性**：
 - 按考点分批并行生成
 - 三级回退策略：batch 重试 → 单 slot 重试 → 原子替换
-- 合同约束校验（配额、难度、认知层级、答案域）
+- 合同约束校验（配额、难度、认知层级、答案域）；难度一致性按 `difficulty_standard` 特征标准确定性判定（低档两规则，见 §4.2）
 - 出题模型只见纯净知识卡（原子 / 答案域 / 禁用上下文），来源关系由后端生成后回链
 
 ### 5.3 Knowledge Catalog Subgraph
@@ -525,7 +540,7 @@ app.include_router(paper_versions_router)    # /api/v1/courses/{course_id}/paper
 | [framework_service.py](backend/app/services/framework_service.py) | 框架构建的持久化、发布与规则修改 |
 | [contract_service.py](backend/app/services/contract_service.py) | 试卷合同的分配与审计 |
 | [contract_execution_service.py](backend/app/services/contract_execution_service.py) | 合同执行与原子分配 |
-| [generation_service.py](backend/app/services/generation_service.py) | 单题质量校验、合同终检 |
+| [generation_service.py](backend/app/services/generation_service.py) | 单题质量校验（含难度特征标准低档校验，规则源 `domain/generation/difficulty_standard.py`）、合同终检 |
 | [generation_runner_service.py](backend/app/services/generation_runner_service.py) | 生成任务运行器 |
 | [blueprint_service.py](backend/app/services/blueprint_service.py) | 蓝图分配引擎 |
 | [blueprint_persistence_service.py](backend/app/services/blueprint_persistence_service.py) | 蓝图持久化 + 默认题型分布推导（考纲比例 + 卡池容量等比缩容，容量口径 `_atom_capacity` 与合同 `_point_capacity` 一致） |
@@ -1256,6 +1271,7 @@ Nginx 配置模板见 `deploy/nginx.conf.example`，详细步骤见
 | `type_rules_from_ratios` | framework/exam_rules.py | 按题型比例推导 type_rules |
 | `answer_option_keys` | generation_service.py | 答案解析成选项字母 |
 | `validate_generated_question` | generation_service.py | 单题质量门禁 |
+| `difficulty_spec` / `check_difficulty_fit` | generation/difficulty_standard.py | 难度特征标准：三档规格下发 + 低档确定性终检 |
 | `BlueprintRequest` | blueprint/models.py | 蓝图请求 |
 | `LLMJsonClient` | adapters/model/llm_gateway.py | LLM 客户端（供应商参数按档案下发） |
 | `ModelProfile` / `resolve_model_profile` | adapters/model/model_profiles.py | 型号调优档案（换模型只改 .env） |
@@ -1349,6 +1365,7 @@ deploy/
 | 原子 | Atom | 知识卡片中的最小可考查单元 |
 | 考点 | Exam Point | 课程中需要考核的知识点 |
 | 蓝图 | Blueprint | 试卷的结构规划（题型、分值、分布） |
+| 难度特征化标准 | Difficulty Feature Standard | 六维特征（D1认知操作/D2知识跨度/D3推理步骤/D4情境/D5信息方式/D6干扰项）+ 三档操作定义；规格随任务卡结构化下发、低档终检确定性校验，判定权在代码（`difficulty_standard.py`） |
 | 知识卡片 | Knowledge Card | 原子化组织后的知识单元 |
 | 证据块 | Evidence Chunk | 知识卡片的内容来源引用 |
 | 出卷流水线 | Pipeline | 蓝图 → 合同 → 生成三个阶段 |
