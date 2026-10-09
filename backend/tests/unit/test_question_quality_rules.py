@@ -61,8 +61,8 @@ def test_legitimate_model_weight_filename_wording_is_not_source_leakage():
 
 
 def test_low_difficulty_keyword_in_examined_term_is_exempted():
-    # "指标比较"中的"比较"是被考查的术语本身（出现在合同原子原文中），
-    # 不是对学生的认知要求 → 豁免
+    # "指标比较""评估中"的局部窗口与合同原子共现 → 位置级术语豁免（v2），
+    # 不是对学生的认知要求 → 干净通过
     question = {
         "question_type": "single_choice",
         "difficulty": "low",
@@ -70,9 +70,14 @@ def test_low_difficulty_keyword_in_examined_term_is_exempted():
         "options": ["甲", "乙", "丙", "丁"], "answer": "甲",
     }
     atom = "模型评估中指标比较可通过对比不同模型版本在公式识别任务上的表现来完成。"
-    assert validate_generated_question(question, atom_text=atom)["status"] == "pass"
-    # 原子不含该关键词时（真认知要求）仍拦截
-    assert validate_generated_question(question, atom_text="模型评估的基本流程")["status"] == "blocker"
+    clean = validate_generated_question(question, atom_text=atom)
+    assert clean["status"] == "pass"
+    assert clean["risks"] == []
+    # 原子不含这些术语、题干也非任务表达（"…下列说法正确的是"是名词用法）
+    # → v2 降级为风险提示，交教师复核，不再断言难度不符（改进方案 1.5）
+    risky = validate_generated_question(question, atom_text="模型评估的基本流程")
+    assert risky["status"] == "pass"
+    assert risky["risks"]
 
 
 def test_missing_stem_reports_missing_not_source_language():

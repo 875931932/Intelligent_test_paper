@@ -57,9 +57,10 @@ def validate_generated_question(question: dict, atom_text: str = "") -> dict:
         return {"status": "blocker", "code": "stem_missing", "message": "题目缺少题干"}
     if re.search(r"根据(课件|资料)|第\s*\d+\s*(页|章|讲)|实验\s*\d+", stem, re.IGNORECASE):
         return {"status": "blocker", "code": "source_language", "message": "题目包含来源话术"}
-    # 难度标准校验（低档：高阶关键词 + 认知层次一致性，标准定义见
-    # domain/generation/difficulty_standard.py）。难度/认知层次由合同槽位
-    # 盖章后传入（generation_graph 先 _stamp_question 再校验）。
+    # 难度标准校验（v2 报告式：枚举严格校验 + 任务表达识别 + 风险/未验证分层，
+    # 标准定义见 domain/generation/difficulty_standard.py）。难度/认知层次由合同
+    # 槽位盖章后传入（generation_graph 先 _stamp_question 再校验）。blocker 与
+    # 最终 pass 都携带 checks/risks/unverified——随 question["quality"] 持久化。
     fit = check_difficulty_fit(question, atom_text=atom_text)
     if fit["status"] != "pass":
         return fit
@@ -156,7 +157,14 @@ def validate_generated_question(question: dict, atom_text: str = "") -> dict:
                     "code": "code_scenario_subquestions",
                     "message": "代码填空综合题固定两个分问：补全代码与问题分析",
                 }
-    return {"status": "pass", "code": "ok", "message": "通过基础质量检查"}
+    return {
+        "status": "pass", "code": "ok", "message": "通过基础质量检查",
+        # 难度标准 v2 报告透传：实际检查了什么（checks）、疑似不匹配（risks）、
+        # 无法自动判定的维度（unverified）——不是"没报错就是通过"。
+        "checks": fit.get("checks", []),
+        "risks": fit.get("risks", []),
+        "unverified": fit.get("unverified", ()),
+    }
 
 
 def audit_paper_against_contract(slots, questions) -> dict:
@@ -219,5 +227,28 @@ def audit_paper_against_contract(slots, questions) -> dict:
         "passed": all(b["anchor_key"] for b in backfilled),
         "detail": {"backfilled_slots": backfilled, "count": len(backfilled)},
     })
+
+    # 难度一致性汇总（信息层）：blocker 在单题门禁已拦，这里把"检查了什么、
+    # 还有什么没验证"汇总进 final_check——AI 整卷评审与教师端据此可读到风险项
+    # 与未验证项（情境陌生度/推理复杂度），而不是只见一个笼统的 passed。
+    difficulty_risks: list[dict] = []
+    unverified_codes: set[str] = set()
+    difficulty_passed = True
+    for q in questions:
+        report = check_difficulty_fit(q, atom_text=str(q.get("coverage_atom") or ""))
+        difficulty_passed = difficulty_passed and report["status"] == "pass"
+        for risk in report.get("risks", []):
+            difficulty_risks.append({"item_index": q.get("item_index"), "risk": risk})
+        unverified_codes.update(report.get("unverified", ()))
+    checks.append({
+        "code": "difficulty_consistency",
+        "passed": difficulty_passed,
+        "detail": {
+            "items_checked": len(questions),
+            "risks": difficulty_risks,
+            "unverified": sorted(unverified_codes),
+        },
+    })
+
     return {"passed": all(c["passed"] for c in checks), "checks": checks,
             "backfilled_slots": backfilled}
