@@ -4,6 +4,7 @@ from __future__ import annotations
 import html
 import re
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import delete, func, select, update
@@ -21,6 +22,7 @@ from app.db.schema import (
     plan_items,
     quality_checks,
 )
+from app.domain.generation.difficulty_standard import difficulty_spec as build_difficulty_spec
 from app.services.generation_service import answer_option_keys
 
 
@@ -647,6 +649,9 @@ def create_paper_version_from_generation(
                     "needs_review": needs_review,
                     "quality": quality,
                     "quality_checks": list(quality.get("quality_checks") or []),
+                    # 模型难度自陈快照（改进方案 2.1）：随卷归档，教师复核
+                    # "难度依据"时对照目标规格看的就是它。
+                    "self_report": payload.get("difficulty_self_report") or {},
                     "generation_run_id": generation_run_id,
                 },
             })
@@ -739,6 +744,8 @@ def get_paper_version(
             paper_items.c.needs_review_reason,
             paper_items.c.quality_audit,
             paper_items.c.finalized_text,
+            paper_items.c.difficulty_confirmed_at,
+            paper_items.c.difficulty_confirmed_by,
             generated_questions.c.payload.label("gq_payload"),
             generated_questions.c.plan_item_id,
             generated_questions.c.knowledge_card_id,
@@ -799,6 +806,17 @@ def get_paper_version(
             "has_override": bool(override),
             "finalized_text": d.get("finalized_text"),
             "quality_audit": d.get("quality_audit") or {},
+            # 难度依据面板（改进方案 2.4）：目标规格按现行标准确定性重建
+            # （difficulty_spec 是纯函数，历史题同样给出）；自陈从生成 payload 读出；
+            # 确认状态来自专用列（改题即重置，见 update_paper_item）。
+            "difficulty_spec": build_difficulty_spec(
+                override.get("difficulty") or payload.get("difficulty") or "",
+                override.get("question_type") or payload.get("question_type") or "",
+            ),
+            "difficulty_self_report": payload.get("difficulty_self_report") or {},
+            "difficulty_confirmed": d.get("difficulty_confirmed_at") is not None,
+            "difficulty_confirmed_at": d.get("difficulty_confirmed_at"),
+            "difficulty_confirmed_by": d.get("difficulty_confirmed_by"),
         })
     # 汇总总分：按每题解析后的分值求和（teacher_override.score 优先于
     # plan_items 原值），确保教师改分后总分实时反映，供试卷页签“总分 N 分”展示。
@@ -877,8 +895,16 @@ def update_paper_item(
     item_index: int,
     teacher_override_patch: dict,
     clear_needs_review: bool = False,
+    difficulty_confirmed: bool | None = None,
+    actor: str = "",
 ) -> dict:
-    """覆写单题 teacher_override 字段；可同时清除 needs_review 标记。"""
+    """覆写单题 teacher_override 字段；可同时清除 needs_review 标记。
+
+    难度依据确认（改进方案 2.4）：``difficulty_confirmed=True`` 落确认专用列
+    （谁、何时），``False`` 撤销；**内容补丁恒重置确认**——确认绑定的是确认
+    时刻的题目内容，改题后旧确认立即失效置"待复核"。同请求内既改题又确认时
+    以显式确认为准（教师确认的就是刚改完的内容）。
+    """
     try:
         # 校验 paper_version 归属且未 finalized
         pv_row = session.execute(
@@ -956,6 +982,16 @@ def update_paper_item(
         if clear_needs_review:
             values["needs_review"] = False
             values["needs_review_reason"] = None
+        # 难度依据确认：内容变更先重置（旧确认对应旧内容），显式确认/撤销随后覆盖
+        if teacher_override_patch:
+            values["difficulty_confirmed_at"] = None
+            values["difficulty_confirmed_by"] = None
+        if difficulty_confirmed is True:
+            values["difficulty_confirmed_at"] = datetime.now(timezone.utc)
+            values["difficulty_confirmed_by"] = (actor or "").strip() or None
+        elif difficulty_confirmed is False:
+            values["difficulty_confirmed_at"] = None
+            values["difficulty_confirmed_by"] = None
 
         session.execute(
             paper_items.update()
@@ -973,7 +1009,10 @@ def update_paper_item(
                 paper_items.c.course_id == course_id,
             )
         ).one()
-        return _row_to_dict(refreshed)
+        out = _row_to_dict(refreshed)
+        # 派生布尔：PATCH 响应直接带"是否已确认"，前端确认按钮不必自行判空时间戳
+        out["difficulty_confirmed"] = out.get("difficulty_confirmed_at") is not None
+        return out
 
     except (PaperVersionError, Conflict):
         session.rollback()

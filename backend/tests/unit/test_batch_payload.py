@@ -5,7 +5,7 @@ from app.domain.generation.question_formats import (
     QUESTION_SCHEMAS,
     QUESTION_TEMPLATES,
 )
-from app.schemas.generation import compile_batch_generation_payload
+from app.schemas.generation import _SELF_REPORT_FIELD, compile_batch_generation_payload
 
 
 def _slot(index: int, **overrides) -> ContractSlot:
@@ -138,8 +138,12 @@ def test_course_type_format_override_replaces_template_per_type():
     specs = {q.item_index: q for q in payload.questions}
     assert specs[1].question_template == "课程自定义单选格式"
     assert specs[2].question_template == QUESTION_TEMPLATES["fill_blank"]
-    # output_schema 恒用全局档案（JSON 字段形状与出题风格无关）
-    assert specs[1].output_schema == QUESTION_SCHEMAS["single_choice"]
+    # output_schema 恒用全局档案（JSON 字段形状与出题风格无关），
+    # 再统一注入难度自陈字段（改进方案 2.1：全题型一份、课程覆盖也绕不开）
+    assert specs[1].output_schema == {
+        **QUESTION_SCHEMAS["single_choice"],
+        "difficulty_self_report": _SELF_REPORT_FIELD,
+    }
 
 
 def test_course_type_format_override_ignores_malformed_entries():
@@ -186,3 +190,26 @@ def test_course_type_format_override_by_archetype_key():
     assert payload.questions[0].question_template == "课程自定义代码补全格式"
     default = compile_batch_generation_payload(batch, {"C1": {}})
     assert payload.questions[0].output_schema == default.questions[0].output_schema
+
+
+def test_self_report_field_injected_into_all_schemas():
+    """难度自陈字段对普通题型与综合题统一注入，且写进批指令（改进方案 2.1）。"""
+    batch = split_contract_into_batches(
+        [_slot(1), _slot(2, question_type="fill_blank")]
+    )[0]
+    payload = compile_batch_generation_payload(batch, {})
+    for spec in payload.questions:
+        assert spec.output_schema["difficulty_self_report"] == _SELF_REPORT_FIELD
+    assert "difficulty_self_report" in payload.batch_instruction
+
+    comp = _slot(
+        1, question_type="comprehensive", assessment_mode="application",
+        comprehensive_archetype="case_analysis", material_form="case_text",
+        cognitive_sequence=["understand", "apply"],
+        subquestion_count_range=[2, 3], subquestion_actions=["提取事实", "解释因果"],
+        answer_boundaries=["事实边界", "因果边界"],
+    )
+    payload = compile_batch_generation_payload(
+        split_contract_into_batches([comp])[0], {}
+    )
+    assert payload.questions[0].output_schema["difficulty_self_report"] == _SELF_REPORT_FIELD

@@ -623,6 +623,11 @@ paper_items = _course_table(
     Column("needs_review", Boolean, nullable=False, default=False, server_default=false()),
     Column("needs_review_reason", String(200)),
     Column("quality_audit", JSON, nullable=False, default=dict, server_default="{}"),
+    # 难度依据确认（改进方案 2.4）：教师对"这道题的目标难度/规格/风险/自陈"的复核结论。
+    # 专用列一次性落库（不寄存 JSON，避免日后把数据搬出来）；改题即重置（见
+    # update_paper_item），确认绑定的是确认时刻的题目内容。by 存确认时的用户名快照。
+    Column("difficulty_confirmed_at", DateTime(timezone=True)),
+    Column("difficulty_confirmed_by", String(120)),
     constraints=(UniqueConstraint("paper_version_id", "display_order", name="uq_paper_items_version_order"),),
 )
 

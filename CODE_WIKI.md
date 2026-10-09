@@ -255,10 +255,12 @@ difficulty_spec(tier, qtype)   # 三档特征规格 v2：operation 档级任务�
                                # 配对表同源）+ D2~D6 档位语义（单主原子口径）+ 按题型
                                # reasoning_step_range/step_definition + standard_version，
                                # 随 BatchQuestionSpec.difficulty_spec 结构化字段随 payload 下发
-check_difficulty_fit(q, atom)  # 低档确定性终检 v2：枚举严格校验（difficulty/cognitive 存在但
+check_difficulty_fit(q, atom)  # 终检 v2：枚举严格校验（difficulty/cognitive 存在但
                                # 非法→blocker）+ 任务表达识别（_DEMAND_PATTERNS 六类拦截；术语按
                                # 局部窗口与原子共现豁免；裸词→risks）+ 认知超
-                               # remember/understand 拦截；返回 {checks, risks, unverified}，
+                               # remember/understand 拦截 + 自陈交叉核对（_self_report_risks：
+                               # difficulty_self_report 与规格比步数/情境/认知，不一致只记
+                               # risks，全档位生效、不拦截不重试）；返回 {checks, risks, unverified}，
                                # 由 validate_generated_question 调用并经 question["quality"] 持久化
 ```
 
@@ -266,6 +268,9 @@ check_difficulty_fit(q, atom)  # 低档确定性终检 v2：枚举严格校验�
 的确定性组合（v2：三档围绕单主原子，难度靠任务要求与情境承载；干扰项三档统一底线"同质、错误项
 合理、不泄露答案线索"），不靠 prompt 穿透；"通过"的含义由 checks/risks/unverified 分层给出——
 情境陌生度与推理复杂度明确列 unverified 交教师复核；实证校准（CTT P 值）由学生/教师问卷回收闭环。
+第二轮（2026-10-10）：任务卡 output_schema 注入模型自陈 `difficulty_self_report`（待核查说明
+不是证据）；教师"难度依据"折叠区（`QuestionDetail.tsx`）展示目标/规格/自陈/报告，确认结果一次性
+落 `paper_items.difficulty_confirmed_at/by` 专用列（改题自动重置，init_db 幂等迁移）。
 
 ### 4.3 Knowledge（知识图谱）
 
@@ -1279,7 +1284,7 @@ Nginx 配置模板见 `deploy/nginx.conf.example`，详细步骤见
 | `type_rules_from_ratios` | framework/exam_rules.py | 按题型比例推导 type_rules |
 | `answer_option_keys` | generation_service.py | 答案解析成选项字母 |
 | `validate_generated_question` | generation_service.py | 单题质量门禁 |
-| `difficulty_spec` / `check_difficulty_fit` | generation/difficulty_standard.py | 难度特征标准 v2：三档规格下发（单主原子口径/按题型步数/standard_version）+ 低档确定性终检（枚举严格校验 + 任务表达识别 + 风险/未验证分层） |
+| `difficulty_spec` / `check_difficulty_fit` | generation/difficulty_standard.py | 难度特征标准 v2：三档规格下发（单主原子口径/按题型步数/standard_version）+ 终检（枚举严格校验 + 任务表达识别 + 自陈交叉核对 + 风险/未验证分层） |
 | `BlueprintRequest` | blueprint/models.py | 蓝图请求 |
 | `LLMJsonClient` | adapters/model/llm_gateway.py | LLM 客户端（供应商参数按档案下发） |
 | `ModelProfile` / `resolve_model_profile` | adapters/model/model_profiles.py | 型号调优档案（换模型只改 .env） |
@@ -1373,7 +1378,7 @@ deploy/
 | 原子 | Atom | 知识卡片中的最小可考查单元 |
 | 考点 | Exam Point | 课程中需要考核的知识点 |
 | 蓝图 | Blueprint | 试卷的结构规划（题型、分值、分布） |
-| 难度特征化标准 | Difficulty Feature Standard | 六维特征（D1认知操作/D2知识跨度/D3推理步骤/D4情境/D5信息方式/D6干扰项）+ 三档操作定义；规格随任务卡结构化下发、低档终检确定性校验，判定权在代码（`difficulty_standard.py`）。v2（2026-10-10）：三档统一单主原子口径、按题型步骤范围、干扰项统一底线、枚举存在但非法即阻断、关键词改任务表达识别（裸词→风险）、返回 checks/risks/unverified 分层报告 |
+| 难度特征化标准 | Difficulty Feature Standard | 六维特征（D1认知操作/D2知识跨度/D3推理步骤/D4情境/D5信息方式/D6干扰项）+ 三档操作定义；规格随任务卡结构化下发、终检确定性校验，判定权在代码（`difficulty_standard.py`）。v2（2026-10-10）：三档统一单主原子口径、按题型步骤范围、干扰项统一底线、枚举存在但非法即阻断、关键词改任务表达识别（裸词→风险）、返回 checks/risks/unverified 分层报告；第二轮：模型自陈 `difficulty_self_report` 交叉核对（不一致只记风险）+ 教师"难度依据"确认落 `paper_items` 专用列（改题重置） |
 | 知识卡片 | Knowledge Card | 原子化组织后的知识单元 |
 | 证据块 | Evidence Chunk | 知识卡片的内容来源引用 |
 | 出卷流水线 | Pipeline | 蓝图 → 合同 → 生成三个阶段 |

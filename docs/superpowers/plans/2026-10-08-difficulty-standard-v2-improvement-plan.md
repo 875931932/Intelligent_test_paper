@@ -1,7 +1,7 @@
 # 难度标准改进方案 v2：先一致性 → 再可验证性 → 后实证校准
 
-> 日期：2026-10-08（方案）/ 2026-10-10（第一轮实施）
-> 状态：**第一轮一致性 + 2.3 报告结构已落地**（门禁 1514 passed、覆盖率 86.76%，封存 graph 零改动）；第二轮其余（候选自陈、教师端展开区）与第三轮对照实验**未启动**
+> 日期：2026-10-08（方案）/ 2026-10-10（第一轮实施）/ 2026-10-10（第二轮实施）
+> 状态：**第一轮 + 第二轮全部落地**（门禁 1525 passed、覆盖率 86.80%，封存 graph 零改动）；第三轮对照实验**未启动**
 > 前置：`docs/superpowers/specs/2026-10-07-difficulty-feature-standard-design.md`（v1 设计——第一轮须同步修订其 §3.2 三档文义）→ **已同步修订（v2 权威口径）**
 > 一句话：最值得改进的不是把标准写得更复杂，而是让系统能清楚回答——**这道题要求什么、实际检查了什么、哪些仍需要教师或真实作答验证。**
 
@@ -63,7 +63,8 @@
 - ✅ **第一轮已实现**：`reasoning_step_range`（按题型：客观 1/1~2/2~3 步、简答 1~2/2~3/3~4 步、
   综合 2~3/3~4/4~5 步）、`step_definition`、`standard_version`、`operation`（1.1 的档级任务操作定义）
   ——随 `difficulty_spec` 进 payload；`target_cognitive_level` / `allowed_knowledge_ids` /
-  `context_type` / `information_operations` / `distractor_policy` 依赖**候选自陈字段**，归第二轮。
+  `distractor_policy` 仍属候选自陈扩展（未做，避免过度设计）；`context_type`/认知自陈
+  已由第二轮 `difficulty_self_report`（`context_type`/`cognitive_claim`）承载。
 
 ### 1.3 干扰项标准修订
 
@@ -130,6 +131,11 @@
 - 现状：`cognitive_level` 只有"合同目标"一个语义（盖章进题，模型不输出）；"题目实际认知要求"
   没有独立字段——第二轮新增**候选自陈字段**与目标字段并列，不复用同一个字段。
 - 原则：合同盖章不能代替内容判断，模型自陈不能当证据。
+- ✅ **第二轮已落地（2026-10-10）**：任务卡 output_schema 全题型注入 `difficulty_self_report`
+  （`steps`/`context_type`/`cognitive_claim`/`basis`，`schemas/generation.py` 注入 + 批指令声明
+  "待核查说明，不作通过依据"）；模型返回后由 `check_difficulty_fit._self_report_risks` 与
+  `difficulty_spec` **交叉核对**（步数超档、情境错档、认知超出允许集 → 全部只记 risk 不拦截）；
+  自陈随 gq payload 与 `quality_audit.self_report` 快照持久化，读端 `difficulty_self_report` 透出。
 
 ### 2.2 证据强度分层（完整口径）
 
@@ -155,7 +161,7 @@
   供教师端展示。
 - 只增不改：不改变现有 blocker 语义（新增的枚举阻断见 1.4）。
 
-### 2.4 教师端"难度依据"展开区（轻量，不新建页面）—— **未启动（第二轮剩余项）**
+### 2.4 教师端"难度依据"展开区（轻量，不新建页面）✅ 已落地（2026-10-10）
 
 ```
 目标：中等
@@ -166,10 +172,17 @@
 操作：确认 / 调整 / 局部重生成
 ```
 
-- 挂在既有试卷阅读器题目详情处的折叠区；
+- 挂在既有试卷阅读器题目详情处的折叠区——`QuestionDetail.tsx` 新增 `<details>难度依据`，
+  展示目标（难度/认知）、规格（`difficulty_spec` 由后端纯函数确定性重建，历史题同样给）、
+  模型自陈（待核查说明）、分层报告（已检查/风险/未验证，v2 之前的卷显示降级文案）；
 - 教师修改题干、答案或选项后 → **重新检查，原确认标记置"待复核"**——难度控制进入审核流程；
-- 确认结果落库可查（谁、何时、对哪版题目）。
-- 前端改动 → 门禁 `npm run build` + `npm run lint`。
+  实现：`update_paper_item` 收到内容补丁即重置确认列（服务端规则，AI 改题提案落库同样触发）；
+- 确认结果落库可查（谁、何时、对哪版题目）——**一次性落 `paper_items` 专用列**
+  `difficulty_confirmed_at/by`（负责人拍板"不寄存 JSON、避免日后搬数据"），
+  init_db 幂等迁移，空库/既有库双跑 schema 一致已验证；
+- 操作面：确认 / 撤销确认走既有 `PATCH items/{item_index}`（`difficulty_confirmed` 布尔），
+  调整 = 既有编辑器、局部重生成 = 既有 AI 改题提案链路（不新建重生成端点）；
+- 前端改动 → 门禁 `npm run build` + `npm run lint` ✅ 双绿。
 
 ---
 
@@ -215,22 +228,27 @@
 | 轮次 | 交付物 | 验证 | 状态 |
 |---|---|---|---|
 | 第一轮 | 三档定义/干扰项底线/按题型规格 + 严格校验与任务表达识别 + 2.3 报告结构 | 终检逻辑改动必带单测 + 全量 pytest + 覆盖率 ≥80 | ✅ 2026-10-10 完成（1514 passed / 86.76%） |
-| 第二轮 | 候选自陈字段与四数据分离 + 教师展开区（2.1/2.2 消费端、2.4） | pytest 全量 + `npm run build/lint`；涉封存 graph → 负责人确认 + 全量验证 | 未启动 |
+| 第二轮 | 候选自陈字段与四数据分离 + 教师展开区（2.1/2.2 消费端、2.4） | pytest 全量 + `npm run build/lint`；涉封存 graph → 负责人确认 + 全量验证 | ✅ 2026-10-10 完成（1525 passed / 86.80%；前端双门禁绿；封存 graph 零改动——授权在案但实现未用到） |
 | 第三轮 | 对照实验记录与结论 | 实验记录归档 `docs/superpowers/plans/` | 未启动 |
 
 - 涉及封存的 `generation_graph.py`（`_check_question` 调用点）：**负责人确认 → 改动 → 全量验证**，缺一不可。
-- 表结构变更只走 `app/db/schema.py` + `init_db` 幂等迁移（本项目无 Alembic）。
+  （第二轮负责人已授权动 graph，实际实现全部落在非封存面——自陈注入在 `schemas/generation.py`、
+  交叉校验在 `difficulty_standard.py`、确认列在 `paper_version_service.py`，graph 透传 `dict(raw)` 天然携带新字段。）
+- 表结构变更只走 `app/db/schema.py` + `init_db` 幂等迁移（本项目无 Alembic）；
+  第二轮新增 `paper_items.difficulty_confirmed_at/by`，已按 §8 验证空库/既有库双跑 schema 一致。
 
-## 开放问题（实施前需拍板；括号内为 2026-10-10 第一轮现状）
+## 开放问题（实施前需拍板；括号内为 2026-10-10 第二轮落地后现状）
 
 1. **报告存储**：`difficulty_report` 进 `generated_questions.payload`（免迁移、不可索引）还是
    独立列（可查询、需 init_db 迁移）？
-   （**现状：已选 payload 路线**——quality dict + final_check 免迁移落库；独立列待教师端
-   展示/查询需求明确后再定。）
+   （**现状：已选 payload 路线**——quality dict + final_check 免迁移落库；教师**确认结果**
+   属另一类数据，已按"一次性落专用列"落 `paper_items.difficulty_confirmed_at/by`，不寄存 JSON。）
 2. **风险层是否自动局部重生成**：建议先"提示 + 人工确认"，第三轮误拦/漏拦数据齐了再开自动。
-   （**现状：按建议落地**——风险不触发重生成，仅随 quality/final_check 落报告。）
+   （**现状：已拍板按建议落地**——风险不触发重生成，仅随 quality/final_check 落报告 + 前端面板展示；
+   负责人第二轮授权"可以动graph"，自动重生成留待第三轮数据齐后再议，授权在案。）
 3. **目标认知字段命名**：复用既有 `cognitive_level`（合同目标）作 target，新增字段仅存"候选自陈"，
-   避免双字段漂移——是否同意？（**现状：未动**，第二轮实现自陈字段时拍板。）
+   避免双字段漂移——是否同意？（**已拍板并落地**：target 恒读既有 `difficulty`/`cognitive_level`
+   盖章字段；新增 `difficulty_self_report` 对象存自陈，两字段并列不复用；交叉核对不一致只记 risk。）
 4. **`standard_version` 冻结载体**：合同级（整卷一份）还是槽位级（逐题）？建议合同级、槽位引用。
    （**现状：已随规格进任务卡 payload**，生成运行 prompt 记录可追溯；合同级冻结待拍板后升级。）
 

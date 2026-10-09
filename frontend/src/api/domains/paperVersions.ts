@@ -38,7 +38,7 @@ export const paperVersionsApi = {
     request('/courses/' + courseId + '/exam-projects/' + projectId + '/paper-versions/' + pvId + '/activate', { method: 'POST' }, token),
   getNeedsReview: (courseId: string, pvId: string, token?: string): Promise<NeedsReviewItem[]> =>
     request('/courses/' + courseId + '/paper-versions/' + pvId + '/needs-review', undefined, token),
-  patchItem: (courseId: string, pvId: string, itemIndex: number, body: { teacher_override_patch?: Record<string, unknown>; clear_needs_review?: boolean }, token?: string) =>
+  patchItem: (courseId: string, pvId: string, itemIndex: number, body: { teacher_override_patch?: Record<string, unknown>; clear_needs_review?: boolean; difficulty_confirmed?: boolean }, token?: string) =>
     request('/courses/' + courseId + '/paper-versions/' + pvId + '/items/' + itemIndex, { method: 'PATCH', body: JSON.stringify(body) }, token),
   reorderItems: (courseId: string, pvId: string, orderedIndices: number[], token?: string): Promise<PaperVersion> =>
     request('/courses/' + courseId + '/paper-versions/' + pvId + '/items/reorder', { method: 'PUT', body: JSON.stringify({ ordered_indices: orderedIndices }) }, token),

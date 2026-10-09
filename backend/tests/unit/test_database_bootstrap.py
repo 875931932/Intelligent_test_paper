@@ -11,6 +11,7 @@ from app.db.init_db import (
     _migrate_assistant_session,
     _migrate_evidence_chunk_columns,
     _migrate_knowledge_link_role,
+    _migrate_paper_item_confirmation,
     bootstrap_database,
     extension_exists,
     table_exists,
@@ -131,6 +132,26 @@ def test_migrate_evidence_chunk_columns_adds_embedding_model(database_url):
         assert {"kind", "source_evidence_chunk_id", "embedding_model"} <= columns
         # 幂等：重复迁移不重复加列、不报错。
         _migrate_evidence_chunk_columns(engine)
+    finally:
+        engine.dispose()
+
+
+def test_migrate_paper_item_confirmation_adds_columns(database_url):
+    """旧库 paper_items 缺难度依据确认列时幂等补齐（改进方案 2.4）。"""
+    engine = create_engine(database_url)
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql(
+                "CREATE TABLE paper_items (id VARCHAR(64) PRIMARY KEY)"
+            )
+        _migrate_paper_item_confirmation(engine)
+        columns = {
+            column["name"]
+            for column in inspect(engine).get_columns("paper_items")
+        }
+        assert {"difficulty_confirmed_at", "difficulty_confirmed_by"} <= columns
+        # 幂等：重复迁移不重复加列、不报错。
+        _migrate_paper_item_confirmation(engine)
     finally:
         engine.dispose()
 

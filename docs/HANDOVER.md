@@ -221,6 +221,18 @@ MinerU 解析 → 双大纲框架确认 → 知识目录发布 → 蓝图/合同
   **封存 graph 零改动**（严格校验走"存在但非法"口径，`_check_question` 签名未动）。
   方案：`docs/superpowers/plans/2026-10-08-difficulty-standard-v2-improvement-plan.md`（+10 测试）；
   作品方案 v6 已同步三(一)6 措辞（v5 原稿保留，v4/…/v6 同目录并存）
+- **难度特征化标准 v2 第二轮**（2026-10-10）：四数据分离 + 教师"难度依据"面板落地——
+  ①**模型自陈字段** `difficulty_self_report`（steps/context_type/cognitive_claim/basis）由
+  `schemas/generation.py` 全题型注入任务卡 output_schema（批指令声明"待核查说明，不作通过依据"），
+  终检 `_self_report_risks` 与 `difficulty_spec` 交叉核对（步数超档/情境错档/认知超集 → **只记
+  risk 不拦截不重试**，全档位生效）；②**教师确认结果一次性落 `paper_items.difficulty_confirmed_at/by`
+  专用列**（不寄存 JSON 免日后搬数据；内容改题即重置，改题路径含编辑器与 AI 改题提案），
+  `PATCH items/{idx}` 加 `difficulty_confirmed` 布尔（谁=用户名快照、何时）；③读端 `get_paper_version`
+  每题附 `difficulty_spec`（纯函数确定性重建，历史题同样给）+ `difficulty_self_report` + 确认状态；
+  ④前端 `QuestionDetail` 新增折叠区"难度依据"（目标/规格/自陈/已检查/风险/未验证/确认按钮），
+  v2 前旧卷显示降级文案。**封存 graph 零改动**（负责人授权在案但实现未用到——graph `dict(raw)`
+  透传天然携带新字段）；`init_db` 空库/既有库双跑 schema 一致已验证。**门禁 1525 passed /
+  86.80%，前端 build+lint 双绿**；开放问题 3 已拍板（target 恒读盖章字段，自陈独立并列）。
 - **综合题原型池教师可控**：`type_rules.comprehensive.archetypes` 白名单（文科可只留
   case_analysis 等），顺序即偏好序、不参与洗牌；未指定或全非法时回退默认池，
   默认池按 allocation_seed **确定性洗牌**（sha256 排序，`_shuffled_default_pool`）+
@@ -416,10 +428,15 @@ frontend\src\
   风险提示）、`{checks, risks, unverified}` 报告经 `question["quality"]` 持久化 + 终检
   `difficulty_consistency` 进 `final_check`；封存 graph 零改动；方案与实施状态
   `docs/superpowers/plans/2026-10-08-difficulty-standard-v2-improvement-plan.md`（+10 测试）
-- ✅ 后端门禁全绿：`uv run pytest -q` **1514 passed / 1 xfailed**（唯一 xfail=编造检测的
-  联合 bigram 阈值已知缺口，测试 docstring 注明根因）+ 覆盖率 **86.76%**（≥80 门禁，
+- ✅ **难度特征化标准 v2 第二轮**（2026-10-10）：`difficulty_self_report` 自陈字段注入与终检
+  交叉核对（不一致只记 risk）、`paper_items.difficulty_confirmed_at/by` 确认专用列（改题重置、
+  init_db 幂等迁移 + 空库/既有库双跑验证）、读端附 `difficulty_spec`/自陈/确认状态、前端
+  `QuestionDetail`"难度依据"折叠区；开放问题 1/2/3 拍板（报告=payload、风险=提示+人工、
+  自陈独立字段）；**封存 graph 零改动**（+11 测试）
+- ✅ 后端门禁全绿：`uv run pytest -q` **1525 passed / 1 xfailed**（唯一 xfail=编造检测的
+  联合 bigram 阈值已知缺口，测试 docstring 注明根因）+ 覆盖率 **86.80%**（≥80 门禁，
   2026-10-10 实测）；前端 `npm run build` 0 error、
-  oxlint 0 error（warning 均为既有文件基线，最近一次实测 2026-10-07）
+  oxlint 0 error（warning 均为既有文件基线，最近一次实测 2026-10-10）
 
 ### 已知问题（不阻塞，接手时留意）
 

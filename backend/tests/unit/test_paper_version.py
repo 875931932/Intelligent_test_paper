@@ -344,6 +344,64 @@ def test_update_validation_skips_contentless_patch_but_blocks_content_patch(sess
         )
 
 
+# --- 难度依据确认（改进方案 2.4）：专用列一次到位，改题即重置 ---
+
+
+def test_difficulty_confirmation_confirm_reset_revoke(session):
+    pv_id, _ = _full_pipeline_to_candidate_paper(session)
+
+    # 初始未确认
+    pv = get_paper_version(session, pv_id, course_id="c1")
+    q = next(q for q in pv["questions"] if q["item_index"] == 1)
+    assert q["difficulty_confirmed"] is False
+    assert q["difficulty_confirmed_at"] is None
+
+    # 确认：落专用列（谁、何时），PATCH 响应带派生布尔
+    updated = update_paper_item(
+        session, course_id="c1", paper_version_id=pv_id, item_index=1,
+        teacher_override_patch={}, difficulty_confirmed=True, actor="张三",
+    )
+    assert updated["difficulty_confirmed"] is True
+    assert updated["difficulty_confirmed_by"] == "张三"
+    assert updated["difficulty_confirmed_at"] is not None
+
+    # 内容改题 → 旧确认立即失效（确认绑定的是确认时刻的题目内容）
+    updated = update_paper_item(
+        session, course_id="c1", paper_version_id=pv_id, item_index=1,
+        teacher_override_patch={"stem": "改后的题干"},
+    )
+    assert updated["difficulty_confirmed"] is False
+    assert updated["difficulty_confirmed_at"] is None
+    assert updated["difficulty_confirmed_by"] is None
+
+    # 撤销确认
+    update_paper_item(
+        session, course_id="c1", paper_version_id=pv_id, item_index=1,
+        teacher_override_patch={}, difficulty_confirmed=True, actor="张三",
+    )
+    updated = update_paper_item(
+        session, course_id="c1", paper_version_id=pv_id, item_index=1,
+        teacher_override_patch={}, difficulty_confirmed=False, actor="张三",
+    )
+    assert updated["difficulty_confirmed"] is False
+    assert updated["difficulty_confirmed_at"] is None
+
+
+def test_get_paper_version_exposes_difficulty_basis(session):
+    """难度依据面板数据：目标规格确定性重建 + 自陈快照 + 确认状态。"""
+    pv_id, _ = _full_pipeline_to_candidate_paper(session)
+    pv = get_paper_version(session, pv_id, course_id="c1")
+    assert pv["questions"]
+    for q in pv["questions"]:
+        spec = q["difficulty_spec"]
+        assert spec["tier"] in {"low", "medium", "high"}
+        assert spec["standard_version"] == "difficulty-standard-v2.0"
+        assert "operation" in spec["features"]
+        # mock 图未返回自陈 → 空字典（读端恒给 dict，前端不必判 null）
+        assert isinstance(q["difficulty_self_report"], dict)
+        assert q["difficulty_confirmed"] is False
+
+
 # --- TR-5.2 ---
 
 def test_confirm_rejects_pending_needs_review_unless_forced(session):

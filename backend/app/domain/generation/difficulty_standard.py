@@ -17,6 +17,10 @@ v2 相对 v1 的变化（2026-10-10 落地 = 改进方案第一轮 + 第二轮�
    情境陌生度与推理复杂度无法自动判定 → 明确列 ``unverified`` 交教师复核；
    报告经 ``question["quality"]`` 随题目持久化，并由 ``audit_paper_against_contract``
    汇总进 ``final_check``（AI 整卷评审与教师端可读"检查了什么、还有什么没验证"）。
+7. 第二轮：任务卡新增 ``difficulty_self_report`` 自陈字段（步数/情境/认知/依据），
+   本模块终检与 ``difficulty_spec`` 交叉核对——自陈是**待核查说明不是证据**，
+   不一致只记 risk（不 block、不重试），由教师在"难度依据"面板对照目标复核确认
+   （确认结果落 ``paper_items`` 专用列，改题自动重置）。
 """
 
 from __future__ import annotations
@@ -106,6 +110,40 @@ def _step_family(question_type: str) -> str | None:
     if question_type == "comprehensive":
         return "comprehensive"
     return None
+
+
+# ---- 难度自陈（difficulty_self_report）交叉校验用词表（改进方案 2.1）----
+# 自陈是模型对本题难度特征的待核查说明：终检拿它与 difficulty_spec 核对，
+# 不一致只记 risk——自陈不能当证据，也不能因为模型"自己说了"就算通过。
+SELF_REPORT_CONTEXT_TYPES = ("none", "textbook_original", "regular_variant", "novel", "investigative")
+_CONTEXT_LABELS = {
+    "none": "无情境",
+    "textbook_original": "教材原情境",
+    "regular_variant": "常规新情境",
+    "novel": "陌生情境",
+    "investigative": "探究性任务",
+}
+# 情境三档预期，与 _FEATURE_TEXT[tier]["context"] 同口径：
+# 低档只认无情境/教材原情境；高档若自陈"教材原情境"即疑似仅直接回忆。
+_CONTEXT_TIER_ALLOWED: dict[str, frozenset[str]] = {
+    "low": frozenset({"none", "textbook_original"}),
+    "medium": frozenset({"none", "textbook_original", "regular_variant"}),
+    "high": frozenset({"regular_variant", "novel", "investigative"}),
+}
+_STEP_RANGE_RE = re.compile(r"^(\d+)(?:\s*~\s*(\d+))?\s*步$")
+
+
+def _step_bounds(question_type: str, tier: str) -> tuple[int, int] | None:
+    """该档该题型的步数范围 (lo, hi)；未知题型或格式异常 → None（跳过核对）。"""
+    family = _step_family(question_type)
+    if family is None:
+        return None
+    m = _STEP_RANGE_RE.match(_STEP_RANGES[family][tier].strip())
+    if not m:
+        return None
+    lo = int(m.group(1))
+    hi = int(m.group(2) or m.group(1))
+    return lo, hi
 
 
 # 任务表达模式（改进方案 1.5）：高精度断言，只认"对学生提出认知要求"的形态；
@@ -209,6 +247,54 @@ def _occurrence_exempt(stem: str, start: int, end: int, atom_text: str) -> bool:
     return any(window in atom_text for window in windows)
 
 
+def _self_report_risks(question: dict, tier: str) -> tuple[list[str], str]:
+    """难度自陈与规格的交叉核对 → (风险列表, 检查结果)。
+
+    结果三态：``absent``（未返回自陈，选填字段不记风险）/ ``ok`` / ``risk``。
+    任何不一致都只是 risk（交教师复核），绝不升级为 blocker——自陈是模型的
+    待核查说明，既不能当通过证据，也不能当拦截证据。
+    """
+    report = question.get("difficulty_self_report")
+    if not isinstance(report, dict) or not report:
+        return [], "absent"
+    risks: list[str] = []
+    label = TIER_LABELS[tier]
+
+    steps = report.get("steps")
+    if steps is not None:
+        if isinstance(steps, bool) or not isinstance(steps, (int, float)):
+            risks.append(f"模型自陈步数非法（steps={steps!r}），无法与规格核对，建议复核")
+        else:
+            bounds = _step_bounds(str(question.get("question_type") or ""), tier)
+            if bounds is not None and not (bounds[0] <= float(steps) <= bounds[1]):
+                risks.append(
+                    f"模型自陈步数 {steps} 超出「{label}」档该题型范围 "
+                    f"{bounds[0]}~{bounds[1]} 步（自陈待核查，交教师确认）"
+                )
+
+    context = str(report.get("context_type") or "").strip()
+    if context:
+        if context not in SELF_REPORT_CONTEXT_TYPES:
+            risks.append(f"模型自陈情境值非法（context_type={context!r}），建议复核")
+        elif context not in _CONTEXT_TIER_ALLOWED[tier]:
+            risks.append(
+                f"模型自陈情境「{_CONTEXT_LABELS[context]}」不在「{label}」档预期范围"
+                "（自陈待核查，交教师确认）"
+            )
+
+    claim = str(report.get("cognitive_claim") or "").strip()
+    if claim:
+        if claim not in COGNITIVE_LEVELS:
+            risks.append(f"模型自陈认知层次非法（cognitive_claim={claim!r}），建议复核")
+        elif claim not in DIFFICULTY_COGNITIVE_ALLOWED[tier]:
+            risks.append(
+                f"模型自陈认知「{claim}」超出「{label}」档允许集"
+                "（自陈待核查，交教师确认）"
+            )
+
+    return risks, ("risk" if risks else "ok")
+
+
 def check_difficulty_fit(question: dict, atom_text: str = "") -> dict:
     """难度一致性校验，返回带证据分层的报告。
 
@@ -227,7 +313,9 @@ def check_difficulty_fit(question: dict, atom_text: str = "") -> dict:
     2. 低档 + 任务表达（请分析/比较…异同/…并说明…）→ blocker；
     3. 低档 + 认知层次超出允许集 → blocker；
     4. 低档 + 裸高阶词（非任务表达、也未在原子中确认为术语局部）→ risk，不断言；
-    5. 情境陌生度/推理复杂度 → unverified，交教师复核。
+    5. 情境陌生度/推理复杂度 → unverified，交教师复核；
+    6. 模型自陈（difficulty_self_report）与规格不一致 → risk（全档位生效，
+       自陈是待核查说明不是证据，绝不拦截）；缺失 → absent，不记风险。
     """
     checks: list[dict] = []
     risks: list[str] = []
@@ -266,6 +354,12 @@ def check_difficulty_fit(question: dict, atom_text: str = "") -> dict:
             "unverified": unverified,
         }
     checks.append({"code": "cognitive_enum", "result": "ok" if cognitive else "absent"})
+
+    # ---- 1c. 自陈交叉校验（改进方案 2.1）：全档位生效，先于中/高档早退 ----
+    # 模型自陈是待核查说明，与规格不一致只记 risk 交教师复核，不 block、不重试。
+    sr_risks, sr_result = _self_report_risks(question, tier)
+    risks.extend(sr_risks)
+    checks.append({"code": "self_report_cross_check", "result": sr_result})
 
     if tier != "low":
         # 中/高档：v1 起即只随规格下发、不做内容级文本判定（误伤率高），留实证校准收紧。

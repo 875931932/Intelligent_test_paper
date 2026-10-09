@@ -295,6 +295,108 @@ def test_audit_final_check_surfaces_difficulty_risks():
 
 
 # ---------------------------------------------------------------------------
+# 难度自陈交叉校验（改进方案 2.1：自陈是待核查说明，不是证据）
+# ---------------------------------------------------------------------------
+
+
+def _self_report(**overrides) -> dict:
+    report = {"steps": 1, "context_type": "textbook_original", "cognitive_claim": "understand", "basis": "单步直取"}
+    report.update(overrides)
+    return report
+
+
+def test_self_report_absent_is_not_a_risk():
+    # 选填字段：模型未返回 → absent，不记风险（兼容 AI 单题创建等入口）
+    result = validate_generated_question(_low_question(cognitive_level="understand"))
+    assert result["status"] == "pass"
+    entry = next(c for c in result["checks"] if c["code"] == "self_report_cross_check")
+    assert entry["result"] == "absent"
+    assert result["risks"] == []
+
+
+def test_consistent_self_report_passes_clean():
+    result = validate_generated_question(_low_question(
+        cognitive_level="understand", difficulty_self_report=_self_report(),
+    ))
+    assert result["status"] == "pass"
+    assert result["risks"] == []
+    entry = next(c for c in result["checks"] if c["code"] == "self_report_cross_check")
+    assert entry["result"] == "ok"
+
+
+def test_self_report_step_out_of_range_is_risk_not_blocker():
+    # 客观题容易档 = 1 步；自陈 4 步 → 与规格不一致只记风险（不拦截、不重试）
+    result = validate_generated_question(_low_question(
+        cognitive_level="understand",
+        difficulty_self_report=_self_report(steps=4),
+    ))
+    assert result["status"] == "pass"
+    assert any("步数 4" in risk and "交教师确认" in risk for risk in result["risks"])
+    entry = next(c for c in result["checks"] if c["code"] == "self_report_cross_check")
+    assert entry["result"] == "risk"
+
+
+def test_self_report_context_mismatch_is_risk():
+    # 容易档自陈陌生情境 → 疑似要求超纲
+    low_novel = validate_generated_question(_low_question(
+        cognitive_level="understand", difficulty_self_report=_self_report(context_type="novel"),
+    ))
+    assert low_novel["status"] == "pass"
+    assert any("陌生情境" in risk and "容易" in risk for risk in low_novel["risks"])
+    # 困难档自陈教材原情境 → 疑似仅直接回忆（改进方案 2.2 第三行）
+    high_textbook = validate_generated_question(_low_question(
+        difficulty="high", cognitive_level="apply",
+        difficulty_self_report=_self_report(steps=3, context_type="textbook_original"),
+    ))
+    assert high_textbook["status"] == "pass"
+    assert any("教材原情境" in risk and "困难" in risk for risk in high_textbook["risks"])
+
+
+def test_self_report_cognitive_claim_outside_tier_is_risk():
+    result = validate_generated_question(_low_question(
+        cognitive_level="remember",
+        difficulty_self_report=_self_report(cognitive_claim="analyze"),
+    ))
+    assert result["status"] == "pass"
+    assert any("analyze" in risk and "容易" in risk for risk in result["risks"])
+
+
+def test_self_report_invalid_values_are_risk_not_blocker():
+    # 自陈值非法是数据质量问题 → 同样只记风险，绝不升级为 blocker
+    for bad in (
+        _self_report(steps="很多"),
+        _self_report(context_type="仙境"),
+        _self_report(cognitive_claim="analysis"),
+    ):
+        result = validate_generated_question(_low_question(
+            cognitive_level="understand", difficulty_self_report=bad,
+        ))
+        assert result["status"] == "pass"
+        assert result["risks"], bad
+
+
+def test_self_report_risk_flows_into_final_check():
+    # 单题风险不拦截，但汇总进 final_check——AI 整卷评审与教师端可读到
+    slot = ContractSlot(
+        item_index=1, question_type="single_choice", score=2, difficulty="low",
+        cognitive_level="remember", exam_point_id="EP1", anchor_key="A1",
+        unit_id="U1", card_id="C1", coverage_atom="原子1", answer_boundary="边界1",
+    )
+    question = {
+        "item_index": 1, "exam_point_id": "EP1", "unit_id": "U1", "card_id": "C1",
+        "coverage_atom": "原子1", "answer_boundary": "边界1",
+        "question_type": "single_choice", "difficulty": "low",
+        "cognitive_level": "remember", "stem": "题干", "answer": "甲",
+        "difficulty_self_report": _self_report(steps=4, context_type="novel"),
+    }
+    report = audit_paper_against_contract([slot], [question])
+    check = next(c for c in report["checks"] if c["code"] == "difficulty_consistency")
+    risks = [entry["risk"] for entry in check["detail"]["risks"]]
+    assert any("步数 4" in risk for risk in risks)
+    assert any("陌生情境" in risk for risk in risks)
+
+
+# ---------------------------------------------------------------------------
 # 任务卡注入：payload 每题带 difficulty_spec
 # ---------------------------------------------------------------------------
 

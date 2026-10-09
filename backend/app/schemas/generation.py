@@ -16,6 +16,24 @@ from app.domain.generation.question_formats import (
 # 多选题校验要求"两个及以上正确项"、单选题要求"唯一"，二者都依赖选项集合。
 MULTI_ANSWER_TYPES = {"multiple_choice"}
 
+# 难度自陈字段（改进方案 2.1）：注入每题 output_schema，模型平铺返回后由
+# check_difficulty_fit 与 difficulty_spec 交叉核对——自陈是**待核查说明**，
+# 不一致只记 risk 交教师复核（不拦截、不重试）；字段缺失按 absent 跳过。
+_SELF_REPORT_FIELD: dict = {
+    "type": "object",
+    "description": (
+        "对本题难度特征的自陈说明（待核查，不作为通过依据）："
+        "终检会与 difficulty_spec 交叉核对，不一致只记为风险交教师复核"
+    ),
+    "properties": {
+        "steps": "integer — 按 difficulty_spec.step_definition 计的求解步数，须落在 reasoning_step_range 内",
+        "context_type": "string — none | textbook_original | regular_variant | novel | investigative，与 difficulty_spec.context 对应",
+        "cognitive_claim": "string — 你判断本题实际要求的认知层次：remember/understand/apply/analyze/evaluate/create 之一",
+        "basis": "string — 一句话：依据 difficulty_spec 的哪些特征判定本题难度",
+    },
+    "required": ["steps", "context_type", "cognitive_claim", "basis"],
+}
+
 
 def _comprehensive_template_and_schema(
     archetype: ComprehensiveArchetype | None,
@@ -147,6 +165,9 @@ def compile_batch_generation_payload(
             custom = overrides.get(slot.question_type)
             if isinstance(custom, str) and custom.strip():
                 question_template = custom.strip()
+        # 难度自陈字段对全部题型（含综合题）统一注入：不改动题型档案本身，
+        # 课程级格式覆盖也绕不开它。
+        output_schema = {**output_schema, "difficulty_self_report": _SELF_REPORT_FIELD}
         specs.append(BatchQuestionSpec(
             item_index=slot.item_index,
             question_type=slot.question_type,
@@ -183,6 +204,9 @@ def compile_batch_generation_payload(
         "必须写清其归属（哪个框架/工具/流程的参数），使题干脱离语境仍可独立理解，不得出现无主语的参数或命令。"
         "每题的 forbidden_atoms 与 forbidden_answer_cores 是**该题**不得使用的原子与答案核心，"
         "它们不得出现在这道题的题干、选项、答案或解析中。"
+        "每题的 difficulty_self_report 是你对该题难度特征的自陈"
+        "（steps/context_type/cognitive_claim/basis），必须随题返回——它是待核查说明："
+        "终检会与 difficulty_spec 交叉核对，不一致只记为风险交教师复核，不作为通过依据。"
     )
     if batch.forbidden_context.atoms or batch.forbidden_context.answer_cores:
         instruction += "严格执行上述禁用清单，任何泄漏都视为废题。"

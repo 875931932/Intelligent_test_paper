@@ -96,19 +96,19 @@ medium 只是配额残余。这正合项目核心纪律：**确定性算法保�
   标准校验自然取到。
 - 门禁：`uv run pytest -q` 全量 1504 passed；覆盖率 ≥80 达标。
 
-## 6. 展望（v2 仍未做：改进方案第二/三轮）
+## 6. 展望（尚未做：改进方案第三轮与后续）
 
-- **模型自陈字段**：output_schema 增加 `difficulty_features`（步骤数/情境类型自陈），
-  作为待校验数据与规格交叉验证——需评估对 schema 校验重试面的影响后落地；
-- **目标难度与自陈分离**：`target`（合同盖章）/ 自陈 / 校验结果 / 教师确认四数据分离
-  ——自陈只是待核查说明，不能当证据；
-- **教师端"难度依据"面板**：把 checks/risks/unverified 展示给教师确认（第二轮）；
 - **中/高档文本规则**：步骤链词表、情境标记的启发式判定（先在问卷数据上标定误伤率）；
 - **实证回归**：A/B/C 对照 + 问卷 P 值回流后，特征赋值 + 回归权重替代部分规则阈值
   （对齐江苏/宁波模型路径）；
-- **D6 干扰项启发式**：干扰项长度同质度 / 两两混淆度。
+- **D6 干扰项启发式**：干扰项长度同质度 / 两两混淆度；
+- **风险 → 自动局部重生成**：第三轮误拦/漏拦数据齐后再开（第二轮按"提示 + 人工"落地，
+  负责人已授权动 graph，授权在案）。
 
-## 7. v2 修订（2026-10-10 落地 = 改进方案第一轮 + 报告结构）
+> 原第二轮三项（模型自陈字段、目标/自陈/校验/确认四数据分离、教师端"难度依据"面板）
+> 已于 2026-10-10 随改进方案第二轮落地，见 §7 第 2.1/2.4 行。
+
+## 7. v2 修订（2026-10-10 落地 = 改进方案第一轮 + 第二轮，报告结构见 2.3）
 
 权威口径以 `difficulty_standard.py` 现行为准；相对 v1 的变化：
 
@@ -119,10 +119,14 @@ medium 只是配额残余。这正合项目核心纪律：**确定性算法保�
 | 1.3 | 干扰项三档统一底线（同质、错误项合理、不泄露答案线索），难度不靠措辞刁钻制造 | `_FEATURE_TEXT.distractor` |
 | 1.4 | 枚举严格校验：存在但非法 → blocker，缺失保持兼容（正式路径由合同盖章保证字段恒在合法，**故无需触碰封存 `_check_question` 调用点**） | `check_difficulty_fit` |
 | 1.5 | 关键词 → 任务表达识别（六类高精度模式）；术语豁免收窄到局部窗口共现；模糊形态 → risks | `_DEMAND_PATTERNS` / `_occurrence_exempt` |
+| 2.1 | 模型自陈字段 `difficulty_self_report`（steps/context_type/cognitive_claim/basis）全题型注入任务卡 output_schema；终检与 `difficulty_spec` 交叉核对——自陈是待核查说明，不一致只记 risk（全档位生效、不拦截不重试）；目标恒读合同盖章字段，自陈与目标两字段并列 | `schemas/generation.py` / `_self_report_risks` |
 | 2.3 | 报告结构 `{checks, risks, unverified}` 向后兼容透传；经 `question["quality"]` 随题持久化；`audit_paper_against_contract` 汇总 `difficulty_consistency` 进 `final_check`（AI 整卷评审与教师端可读"检查了什么、还有什么没验证"） | `generation_service.py` |
+| 2.4 | 教师端"难度依据"折叠区（目标/规格/自陈/报告/确认）；确认结果一次性落 `paper_items.difficulty_confirmed_at/by` 专用列（改题自动重置，谁/何时可追溯），读端附 `difficulty_spec`（纯函数确定性重建）与 `difficulty_self_report` | `paper_version_service.py` / `QuestionDetail.tsx` |
 
 - **封存边界**：`generation_graph.py` 等三个封存 graph **零改动**（`quality` 整 dict
-  持久化、`final_check` 由既有 audit 组装，均为既有出口）；
+  持久化、`final_check` 由既有 audit 组装，均为既有出口；graph 的 `dict(raw)` 透传天然
+  携带自陈字段——第二轮实现全部落在非封存面，动 graph 授权在案但未用到）；
 - `standard_version = "difficulty-standard-v2.0"` 随规格进任务卡 payload（生成运行
   的 prompt 记录可追溯）；合同级冻结属改进方案开放问题 4，待定；
-- 门禁：`uv run pytest -q` 全量 **1514 passed**、覆盖率 **86.76%**（≥80 达标）。
+- 门禁：`uv run pytest -q` 全量 **1525 passed**、覆盖率 **86.80%**（≥80 达标）；
+  前端 `npm run build` + `npm run lint` 双绿；`init_db` 空库/既有库双跑 schema 一致已验证。

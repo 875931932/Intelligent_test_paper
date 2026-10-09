@@ -549,6 +549,20 @@ export interface PaperVersionItem {
   has_override: boolean;
   finalized_text?: Record<string, unknown> | null;
   quality_audit: Record<string, unknown>;
+  /** 难度依据（改进方案 2.4）：目标规格由后端按现行标准确定性重建（纯函数） */
+  difficulty_spec?: {
+    tier?: string;
+    label?: string;
+    standard_version?: string;
+    features?: Record<string, unknown>;
+    source?: string;
+  };
+  /** 模型难度自陈（待核查说明，非证据）：steps/context_type/cognitive_claim/basis */
+  difficulty_self_report?: Record<string, unknown>;
+  /** 教师对难度依据的确认（专用列）；内容改题由后端自动重置为未确认 */
+  difficulty_confirmed?: boolean;
+  difficulty_confirmed_at?: string | null;
+  difficulty_confirmed_by?: string | null;
 }
 
 export interface PaperVersion {

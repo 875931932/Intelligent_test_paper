@@ -203,6 +203,21 @@ export default function PaperPanel({
     }
   };
 
+  // 难度依据确认（改进方案 2.4）：确认/撤销走同一 PATCH；内容改题在后端自动重置，
+  // onChanged() 重拉试卷以拿到后端重置后的确认状态。
+  const handleDifficultyConfirm = async (idx: number, confirmed: boolean) => {
+    setSaving(true);
+    try {
+      await api.paperVersions.patchItem(courseId, pv.id, idx, { difficulty_confirmed: confirmed });
+      addToast(confirmed ? `第 ${idx} 题难度依据已确认` : `第 ${idx} 题已撤销难度确认`, 'success');
+      onChanged();
+    } catch (e) {
+      addToast('操作失败: ' + getErrorMessage(e), 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handleDelete = async (idx: number) => {
     if (!window.confirm(`确认删除第 ${displayNo(idx)} 题？删除后该题型后续题目的题号会前移。`)) return;
     setSaving(true);
@@ -641,6 +656,7 @@ export default function PaperPanel({
               onPrev={() => step(-1)}
               onNext={() => step(1)}
               onDirtyChange={reportDirty}
+              onSetDifficultyConfirm={(confirmed) => handleDifficultyConfirm(current.item_index, confirmed)}
             />
           ) : (
             <div

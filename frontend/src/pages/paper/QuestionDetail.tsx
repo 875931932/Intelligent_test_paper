@@ -13,9 +13,34 @@ import {
 
 // ─── 右栏：当前题目详情 / 编辑器 ───
 
+// 难度依据面板的展示词表（码 → 中文；未知码原样显示，不掩盖新增检查项）
+const CHECK_LABELS: Record<string, string> = {
+  difficulty_enum: '难度枚举',
+  cognitive_enum: '认知枚举',
+  self_report_cross_check: '自陈交叉核对',
+  cognitive_tier_fit: '认知档次匹配',
+  task_expression: '任务表达识别',
+};
+const CHECK_RESULTS: Record<string, string> = {
+  ok: '通过', absent: '未返回', absent_default_medium: '缺省中档',
+  risk: '有风险', violation: '违反', invalid: '非法', skipped_absent: '未检验',
+};
+const UNVERIFIED_LABELS: Record<string, string> = {
+  context_novelty: '情境陌生度',
+  reasoning_depth: '推理复杂度',
+};
+const SELF_CONTEXT_LABELS: Record<string, string> = {
+  none: '无情境',
+  textbook_original: '教材原情境',
+  regular_variant: '常规新情境',
+  novel: '陌生情境',
+  investigative: '探究性任务',
+};
+
 export function QuestionDetail({
   item, no, examPointName, editing, readonly, submitting,
   hasPrev, hasNext, onEdit, onAiRevise, onCancelEdit, onSave, onDelete, onMove, onPrev, onNext, onDirtyChange,
+  onSetDifficultyConfirm,
 }: {
   item: PaperVersionItem;
   /** 卷面题号（每题型从 1）；item_index 仍作编辑/删除端点的稳定 id */
@@ -36,11 +61,24 @@ export function QuestionDetail({
   onPrev: () => void;
   onNext: () => void;
   onDirtyChange?: (dirty: boolean) => void;
+  /** 难度依据确认（改进方案 2.4）：true=确认、false=撤销；内容改题由后端自动重置 */
+  onSetDifficultyConfirm?: (confirmed: boolean) => void;
 }) {
   const flagged = item.needs_review || !!item.needs_review_reason;
   const opts = optionsToEntries(item.options);
   const keys = optionKeysOf(item.answer, opts.map((o) => o.text));
   const answerText = normalizeAnswer(item.answer);
+
+  // 难度依据（改进方案 2.4）：v2 报告 {checks, risks, unverified} 存于 quality_audit.quality；
+  // v2 之前生成的卷没有分层报告 → hasReport=false 显示降级文案
+  const quality = (item.quality_audit as { quality?: Record<string, unknown> } | undefined)?.quality;
+  const rep = quality as
+    | { checks?: Array<{ code?: string; result?: string }>; risks?: string[]; unverified?: string[] }
+    | undefined;
+  const hasReport = Array.isArray(rep?.checks);
+  const sr = (item.difficulty_self_report ?? {}) as {
+    steps?: unknown; context_type?: unknown; cognitive_claim?: unknown; basis?: unknown;
+  };
 
   // 元数据（考点/难度/认知/审核原因）默认收进一行摘要徽标，details 展开看详情（F2 渐进披露）
   const epText = examPointName || (item.exam_point_id ? friendlyId(item.exam_point_id, '未匹配考点') : '');
@@ -180,6 +218,124 @@ export function QuestionDetail({
               <div style={{ marginTop: '6px', color: 'var(--text-secondary)', lineHeight: 1.75, whiteSpace: 'pre-wrap' }}>{rubricText(item.rubric)}</div>
             </details>
           )}
+
+          {/* 难度依据（改进方案 2.4）：目标/规格/模型自陈/分层报告/教师确认，阅读态可见 */}
+          <details
+            style={{
+              marginTop: '14px', fontSize: '0.875rem',
+              border: '1px solid var(--line-soft)', borderRadius: '8px', padding: '8px 12px',
+            }}
+          >
+            <summary style={{ cursor: 'pointer', color: 'var(--text-tertiary)', userSelect: 'none' }}>
+              难度依据{item.difficulty_confirmed ? ' · 已确认' : ''}
+            </summary>
+            <div style={{ marginTop: '8px', display: 'grid', gap: '8px', color: 'var(--text-secondary)', lineHeight: 1.7 }}>
+              {/* 目标：难度档 + 认知层次（头部徽标是摘要，这里是面板的对照基准） */}
+              <div>
+                <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>目标：</span>
+                {dlabel(item.difficulty ?? '')} · {clabel(item.cognitive_level ?? '')}
+              </div>
+
+              {/* 规格：difficulty_standard 确定性给出，历史题同样重建 */}
+              {item.difficulty_spec?.features && (
+                <div>
+                  <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>
+                    要求（{item.difficulty_spec.label || item.difficulty_spec.tier}）
+                    {item.difficulty_spec.standard_version ? ` · ${item.difficulty_spec.standard_version}` : ''}：
+                  </span>
+                  <div>
+                    {String(item.difficulty_spec.features.operation ?? '')}
+                    {typeof item.difficulty_spec.features.reasoning_step_range === 'string' &&
+                      `；推理步数 ${item.difficulty_spec.features.reasoning_step_range}`}
+                    {typeof item.difficulty_spec.features.context === 'string' &&
+                      `；${item.difficulty_spec.features.context}`}
+                  </div>
+                </div>
+              )}
+
+              {/* 模型自陈：待核查说明，不是证据——展示供教师对照目标复核 */}
+              {(sr.steps !== undefined || !!sr.context_type || !!sr.cognitive_claim || !!sr.basis) && (
+                <div>
+                  <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>模型自陈（待核查说明）：</span>
+                  {[
+                    sr.steps !== undefined ? `步数 ${String(sr.steps)}` : '',
+                    sr.context_type ? SELF_CONTEXT_LABELS[String(sr.context_type)] ?? String(sr.context_type) : '',
+                    sr.cognitive_claim ? clabel(String(sr.cognitive_claim)) : '',
+                  ].filter(Boolean).join(' · ')}
+                  {typeof sr.basis === 'string' && sr.basis && (
+                    <div style={{ color: 'var(--text-tertiary)' }}>依据：{sr.basis}</div>
+                  )}
+                </div>
+              )}
+
+              {/* 分层报告：检查了什么 / 风险 / 还有什么没验证 */}
+              {hasReport ? (
+                <div>
+                  <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>已检查：</span>
+                  {(rep?.checks ?? [])
+                    .map((c) => `${CHECK_LABELS[c.code ?? ''] ?? c.code ?? '?'}（${CHECK_RESULTS[c.result ?? ''] ?? c.result ?? '?'}）`)
+                    .join('、')}
+                  <div>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>风险：</span>
+                    {(rep?.risks ?? []).length === 0 ? '无' : (
+                      <ul style={{ margin: '2px 0 0', paddingLeft: '18px' }}>
+                        {(rep?.risks ?? []).map((risk, i) => (
+                          <li key={i} style={{ color: '#b45309' }}>{risk}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  <div>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>未验证（需人工）：</span>
+                    {(rep?.unverified ?? []).map((u) => UNVERIFIED_LABELS[u] ?? u).join('、') || '无'}
+                  </div>
+                </div>
+              ) : (
+                <div style={{ color: 'var(--text-tertiary)' }}>
+                  本卷按难度标准 v2 之前生成，暂无分层检查报告。
+                </div>
+              )}
+
+              {/* 确认：谁、何时；改题后由后端自动重置回待确认 */}
+              <div
+                style={{
+                  display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap',
+                  borderTop: '1px dashed var(--line-soft)', paddingTop: '8px',
+                }}
+              >
+                {item.difficulty_confirmed ? (
+                  <>
+                    <Badge variant="success">已确认</Badge>
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)' }}>
+                      {item.difficulty_confirmed_by || '—'}
+                      {item.difficulty_confirmed_at
+                        ? ` · ${new Date(item.difficulty_confirmed_at).toLocaleString()}`
+                        : ''}
+                    </span>
+                    {!readonly && onSetDifficultyConfirm && (
+                      <Button variant="secondary" size="sm" onClick={() => onSetDifficultyConfirm(false)}>
+                        撤销确认
+                      </Button>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <Badge variant="default">待确认</Badge>
+                    {!readonly && onSetDifficultyConfirm && (
+                      <Button
+                        size="sm"
+                        onClick={() => onSetDifficultyConfirm(true)}
+                        icon={<Check size={14} />}
+                        disabled={submitting}
+                      >
+                        确认难度依据
+                      </Button>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          </details>
 
           {/* marginTop:auto 把按钮行推到卡片底部（拉伸后的卡片内部留白落在内容与按钮之间） */}
           <div style={{ display: 'flex', gap: '8px', marginTop: 'auto', paddingTop: '16px', borderTop: '1px solid var(--line-soft)', flexWrap: 'wrap', alignItems: 'center' }}>

@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.v1.auth import get_current_user
-from app.db.schema import paper_versions
+from app.db.schema import User, paper_versions
 from app.db.session import get_session
 from app.services import ai_create_service, ai_revise_service, paper_review_service
 from app.services.ai_create_service import AiCreateConflict, AiCreateError
@@ -150,8 +150,9 @@ def patch_paper_item(
     item_index: int,
     body: dict,
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
-    allowed = {"teacher_override_patch", "clear_needs_review"}
+    allowed = {"teacher_override_patch", "clear_needs_review", "difficulty_confirmed"}
     if not isinstance(body, dict) or not set(body.keys()).issubset(allowed):
         if not isinstance(body, dict):
             raise HTTPException(status_code=422, detail="body must be a dict")
@@ -159,6 +160,9 @@ def patch_paper_item(
         raise HTTPException(status_code=422, detail=f"unsupported keys: {bad}")
     teacher_override_patch = body.get("teacher_override_patch") or {}
     clear_needs_review = bool(body.get("clear_needs_review", False))
+    difficulty_confirmed = body.get("difficulty_confirmed")
+    if difficulty_confirmed is not None and not isinstance(difficulty_confirmed, bool):
+        raise HTTPException(status_code=422, detail="difficulty_confirmed must be a boolean")
     try:
         return update_paper_item(
             session,
@@ -167,6 +171,9 @@ def patch_paper_item(
             item_index=item_index,
             teacher_override_patch=teacher_override_patch,
             clear_needs_review=clear_needs_review,
+            difficulty_confirmed=difficulty_confirmed,
+            # 确认结果可追溯：存确认时的用户名快照（改名/删除后历史仍可读）
+            actor=str(getattr(current_user, "username", "") or current_user.id),
         )
     except Conflict as exc:
         raise HTTPException(status_code=409, detail=str(exc))

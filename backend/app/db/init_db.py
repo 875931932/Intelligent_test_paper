@@ -385,6 +385,38 @@ def _migrate_delete_preserved_nullable(engine: Engine) -> None:
             )
 
 
+def _migrate_paper_item_confirmation(engine: Engine) -> None:
+    """Idempotently 给 paper_items 补难度依据确认列（改进方案 2.4）。
+
+    教师"确认结果"一次性落专用列（difficulty_confirmed_at/by），不寄存 JSON——
+    否则数据多了再迁出就是一次搬数据。旧表无此列，create_all 不 ALTER 已存在表。
+    方言 DDL 对齐各自 create_all 产出（PostgreSQL TIMESTAMPTZ / SQLite DATETIME）。
+    """
+
+    try:
+        insp = inspect(engine)
+        if not insp.has_table("paper_items"):
+            return
+        existing = {c["name"] for c in insp.get_columns("paper_items")}
+    except Exception:
+        # 迁移是尽力而为的幂等维护：无法内省时不阻断启动（同 evidence_chunks 口径）。
+        return
+    at_ddl = "TIMESTAMP WITH TIME ZONE" if engine.dialect.name == "postgresql" else "DATETIME"
+    to_add = [
+        (name, ddl)
+        for name, ddl in (
+            ("difficulty_confirmed_at", at_ddl),
+            ("difficulty_confirmed_by", "VARCHAR(120)"),
+        )
+        if name not in existing
+    ]
+    if not to_add:
+        return
+    with engine.begin() as conn:
+        for name, ddl in to_add:
+            conn.execute(text(f"ALTER TABLE paper_items ADD COLUMN {name} {ddl}"))
+
+
 def _seed_dev_data(bind: Engine | Connection) -> None:
     """Upsert the admin test account and fold any legacy 'owner-dev' data into it."""
 
@@ -478,6 +510,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             _migrate_course_columns(engine)
             _migrate_generated_question_nullable(engine)
             _migrate_delete_preserved_nullable(engine)
+            _migrate_paper_item_confirmation(engine)
             if seed:
                 with engine.begin() as conn:
                     _seed_dev_data(conn)
@@ -495,6 +528,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             _migrate_course_columns(engine)
             _migrate_generated_question_nullable(engine)
             _migrate_delete_preserved_nullable(engine)
+            _migrate_paper_item_confirmation(engine)
             if seed:
                 _seed_dev_data(engine)
     finally:
