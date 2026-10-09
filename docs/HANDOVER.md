@@ -197,8 +197,9 @@ MinerU 解析 → 双大纲框架确认 → 知识目录发布 → 蓝图/合同
 
 ### 5.5 其他已校准细节
 
-- **难度关键词豁免**：低难度题干含"比较/分析"等词，若该词同时出现在合同原子原文中→是被考查
-  术语本身，不拦截（`generation_service.py validate_generated_question(atom_text=...)`）
+- **难度关键词豁免（v2 收紧为位置级）**：低难度题干含"比较/分析"等词，只有当该词的**局部术语
+  窗口**（词的左/右 1~2 字）与合同原子共现→是被考查术语本身，不拦截；v1 的整题全局豁免已取消
+  （`difficulty_standard.py _occurrence_exempt`，经 `validate_generated_question(atom_text=...)` 传入）
 - **难度特征化标准 v1**（2026-10-07，`ae905d3`）：难度从"配额残余裸标签 + prompt 穿透"升级为
   六维特征三档操作定义（D1 认知操作 / D2 知识跨度 / D3 推理步骤 / D4 情境 / D5 信息方式 /
   D6 干扰项），全部判定在代码——`domain/generation/difficulty_standard.py` ①词表归一
@@ -208,6 +209,18 @@ MinerU 解析 → 双大纲框架确认 → 知识目录发布 → 蓝图/合同
   （高阶关键词+原子术语豁免、认知超 remember/understand 拦截）确定性判废重试。中高档只随规格
   下发不做文本判定，留问卷 P 值实证校准收紧。封存 `generation_graph` 零改动（盖章先于校验）。
   设计：`docs/superpowers/specs/2026-10-07-difficulty-feature-standard-design.md`（+13 测试）
+- **难度特征化标准 v2**（2026-10-10）：改进方案第一轮 + 2.3 报告结构落地——①三档定义统一
+  **单主原子**口径（v1"双原子/跨原子"与合同 `coverage_atom` 矛盾），新增 `operation` 档级任务
+  操作；②按题型 `reasoning_step_range`（客观 1/1~2/2~3 步、简答 1~2/2~3/3~4、综合 2~3/3~4/4~5）
+  + `step_definition` 定义"什么算一步"；③干扰项三档统一底线（同质、错误项合理、不泄露线索）；
+  ④枚举**存在但非法→阻断**（`difficulty_enum_invalid`/`cognitive_enum_invalid`），字段缺失保持
+  兼容缺省；⑤关键词→**任务表达识别**（请分析/比较…异同/…并说明等六类模式拦截，名词用法裸词→
+  `risks` 风险提示不误拦）；⑥返回扩展 `{checks, risks, unverified}`——经 `question["quality"]`
+  随题持久化 + 合同终检 `difficulty_consistency` 汇总进 `final_check`（AI 整卷评审可读
+  "检查了什么、还有什么没验证"）；`standard_version=difficulty-standard-v2.0` 随 payload 可追溯。
+  **封存 graph 零改动**（严格校验走"存在但非法"口径，`_check_question` 签名未动）。
+  方案：`docs/superpowers/plans/2026-10-08-difficulty-standard-v2-improvement-plan.md`（+10 测试）；
+  作品方案 v6 已同步三(一)6 措辞（v5 原稿保留，v4/…/v6 同目录并存）
 - **综合题原型池教师可控**：`type_rules.comprehensive.archetypes` 白名单（文科可只留
   case_analysis 等），顺序即偏好序、不参与洗牌；未指定或全非法时回退默认池，
   默认池按 allocation_seed **确定性洗牌**（sha256 排序，`_shuffled_default_pool`）+
@@ -398,10 +411,15 @@ frontend\src\
   结构化下发 + 低档终检两规则 + 蓝图配对表对齐守护测试），封存 `generation_graph` 零改动；
   设计 `docs/superpowers/specs/2026-10-07-difficulty-feature-standard-design.md`，
   作品方案 v5 已写入对应章节（三(一)6 + 问卷校准闭环）
-- ✅ 后端门禁全绿：`uv run pytest -q` **1504 passed / 1 xfailed**（唯一 xfail=编造检测的
-  联合 bigram 阈值已知缺口，测试 docstring 注明根因）+ 覆盖率 **86.69%**（≥80 门禁，
-  2026-10-07 实测）；前端 `npm run build` 0 error、
-  oxlint 0 error（warning 均为既有文件基线）
+- ✅ **难度特征化标准 v2**（2026-10-10）：改进方案第一轮 + 2.3 报告结构落地——单主原子口径
+  统一、按题型步骤范围、干扰项统一底线、枚举存在但非法→阻断、关键词→任务表达识别（裸词→
+  风险提示）、`{checks, risks, unverified}` 报告经 `question["quality"]` 持久化 + 终检
+  `difficulty_consistency` 进 `final_check`；封存 graph 零改动；方案与实施状态
+  `docs/superpowers/plans/2026-10-08-difficulty-standard-v2-improvement-plan.md`（+10 测试）
+- ✅ 后端门禁全绿：`uv run pytest -q` **1514 passed / 1 xfailed**（唯一 xfail=编造检测的
+  联合 bigram 阈值已知缺口，测试 docstring 注明根因）+ 覆盖率 **86.76%**（≥80 门禁，
+  2026-10-10 实测）；前端 `npm run build` 0 error、
+  oxlint 0 error（warning 均为既有文件基线，最近一次实测 2026-10-07）
 
 ### 已知问题（不阻塞，接手时留意）
 
