@@ -770,3 +770,39 @@ def test_migrate_model_call_indexes_idempotent(database_url):
     _migrate_model_call_indexes(engine)
     _migrate_model_call_indexes(engine)
     assert expected <= {ix["name"] for ix in inspect(engine).get_indexes("model_calls")}
+
+
+def test_seed_llm_registry_respects_fk_order_under_enforced_foreign_keys(monkeypatch):
+    """回归：种子三表在 FK 强制执行（PG 语义）下必须按依赖序落库。
+
+    SQLite 默认不强制外键，曾掩盖同 flush 跨表乱序——llm_bindings 先于 llm_models
+    INSERT 发出，PG 上直接违约（2026-10-11 生产 init_db 事故）。此处开
+    PRAGMA foreign_keys=ON 复现 PG 语义。
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import Session
+    from sqlalchemy.pool import StaticPool
+
+    from app.config import settings
+    from app.db import init_db
+    from app.db.schema import LlmBinding, LlmModel, LlmProvider
+
+    monkeypatch.setattr(settings, "llm_api_key", "sk-test")
+    monkeypatch.setattr(settings, "llm_base_url", "https://api.stepfun.com/v1")
+    monkeypatch.setattr(settings, "llm_model", "step-3.7-flash")
+
+    engine = create_engine(
+        "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool
+    )
+    event.listen(engine, "connect", lambda connection, _: connection.execute("PRAGMA foreign_keys=ON"))
+    Base.metadata.create_all(engine)
+
+    init_db._seed_llm_registry(engine)
+    init_db._seed_llm_registry(engine)  # 幂等：二次执行整段跳过，行数不变
+
+    with Session(engine) as session:
+        assert [p.id for p in session.scalars(select(LlmProvider)).all()] == ["llmprov_default"]
+        assert [m.id for m in session.scalars(select(LlmModel)).all()] == ["llmmodel_default"]
+        assert [
+            (b.purpose, b.model_id) for b in session.scalars(select(LlmBinding)).all()
+        ] == [("default", "llmmodel_default")]

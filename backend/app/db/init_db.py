@@ -552,6 +552,10 @@ def _seed_llm_registry(bind: Engine | Connection) -> None:
     with Session(bind=bind) as session:
         if session.scalar(select(func.count()).select_from(LlmProvider)):
             return
+        # 分段 flush 按外键依赖序落库：UOW 不保证跨表插入顺序，同 commit 里
+        # llm_bindings 可能先于 llm_models 发出——SQLite 默认不强制外键会掩盖，
+        # PostgreSQL 直接违约（2026-10-11 生产 init_db 事故，回归测试
+        # test_seed_llm_registry_respects_fk_order_under_enforced_foreign_keys）。
         session.add(
             LlmProvider(
                 id="llmprov_default",
@@ -561,6 +565,7 @@ def _seed_llm_registry(bind: Engine | Connection) -> None:
                 remark="init_db 从 .env 幂等镜像；此后在后台管理界面维护。",
             )
         )
+        session.flush()
         session.add(
             LlmModel(
                 id="llmmodel_default",
@@ -570,6 +575,7 @@ def _seed_llm_registry(bind: Engine | Connection) -> None:
                 profile=_env_model_profile(wire_model),
             )
         )
+        session.flush()
         session.add(LlmBinding(purpose="default", model_id="llmmodel_default"))
         session.commit()
 
