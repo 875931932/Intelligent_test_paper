@@ -32,6 +32,7 @@ from app.domain.blueprint.models import (
     UnitCoverage,
 )
 from app.domain.generation.contract import PaperContract
+from app.domain.generation.difficulty_standard import STANDARD_VERSION
 from app.services.contract_service import (
     ContractRequest,
     allocate_paper_contract,
@@ -475,6 +476,11 @@ def revise_and_confirm(
         conflicts_pre = [c.model_dump(mode="json") for c in contract.conflicts]
         slots_ser = [s.model_dump(mode="json") for s in contract.slots]
         contract_snapshot: dict[str, Any] = {
+            # 难度标准版本（改进方案开放问题 4 拍板：**合同级、整卷一份**）：
+            # 随合同快照一次写入即随"确认即冻结"锁死，标准升版后历史合同可
+            # 自证"按哪版口径出题与终检"；读端 get_current_contract_snapshot
+            # 与展示增强均原样透传，不回写（冻结即不可变）。
+            "standard_version": STANDARD_VERSION,
             "slots": slots_ser,
             "slot_revisions_applied": slot_revisions,
             "centrality_threshold_used": used_threshold,

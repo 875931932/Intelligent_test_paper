@@ -23,6 +23,7 @@ from app.db.schema import (
     knowledge_cards,
     knowledge_catalog_versions,
 )
+from app.domain.generation.difficulty_standard import STANDARD_VERSION
 from app.services.blueprint_persistence_service import (
     confirm_blueprint,
     create_draft_blueprint,
@@ -370,6 +371,34 @@ def test_current_contract_snapshot_exposes_allocation_seed(session):
     assert current.get("allocation_seed") == 2, (
         f"读回快照缺 allocation_seed，实际 {current.get('allocation_seed')}"
     )
+
+
+def test_contract_snapshot_freezes_difficulty_standard_version(session):
+    # 难度标准版本合同级冻结（开放问题 4 拍板）：确认合同时随快照一次写入，
+    # 标准升版后历史合同可自证"按哪版口径出题与终检"；且读端原样透传。
+    bv_id = _setup_confirmed_blueprint(
+        session,
+        total_items=5,
+        per_score=20.0,
+        unit_card_ids={
+            "au1": ["c1a", "c1b", "c1c"],
+            "au2": ["c2a", "c2b", "c2c"],
+        },
+    )
+    result = revise_and_confirm(
+        session, course_id="c1", project_id="ep1",
+        blueprint_version_id=bv_id, slot_revisions=[],
+    )
+    snap = _run_snapshot(session, result["generation_run_id"])
+    assert snap.get("standard_version") == STANDARD_VERSION, (
+        f"合同快照未冻结 standard_version，实际 {snap.get('standard_version')}"
+    )
+    # 读端透传：前端 hydrate 数据源必须带上它（冻结字段只读不回写）
+    current = get_current_contract_snapshot(
+        session, course_id="c1", project_id="ep1",
+    )
+    assert current is not None
+    assert current.get("standard_version") == STANDARD_VERSION
 
 
 def test_current_contract_snapshot_enriches_display_names(session):

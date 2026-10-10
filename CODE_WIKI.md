@@ -1284,7 +1284,7 @@ Nginx 配置模板见 `deploy/nginx.conf.example`，详细步骤见
 | `type_rules_from_ratios` | framework/exam_rules.py | 按题型比例推导 type_rules |
 | `answer_option_keys` | generation_service.py | 答案解析成选项字母 |
 | `validate_generated_question` | generation_service.py | 单题质量门禁 |
-| `difficulty_spec` / `check_difficulty_fit` | generation/difficulty_standard.py | 难度特征标准 v2：三档规格下发（单主原子口径/按题型步数/standard_version）+ 终检（枚举严格校验 + 任务表达识别 + 自陈交叉核对 + 风险/未验证分层） |
+| `difficulty_spec` / `check_difficulty_fit` | generation/difficulty_standard.py | 难度特征标准 v2：三档规格下发（单主原子口径/按题型步数/standard_version）+ 终检（枚举严格校验 + 任务表达识别 + 自陈交叉核对 + 风险/未验证分层）；标准版本合同级冻结（`contract_snapshot.standard_version`，确认时锁定） |
 | `BlueprintRequest` | blueprint/models.py | 蓝图请求 |
 | `LLMJsonClient` | adapters/model/llm_gateway.py | LLM 客户端（供应商参数按档案下发） |
 | `ModelProfile` / `resolve_model_profile` | adapters/model/model_profiles.py | 型号调优档案（换模型只改 .env） |

@@ -127,6 +127,8 @@ medium 只是配额残余。这正合项目核心纪律：**确定性算法保�
   持久化、`final_check` 由既有 audit 组装，均为既有出口；graph 的 `dict(raw)` 透传天然
   携带自陈字段——第二轮实现全部落在非封存面，动 graph 授权在案但未用到）；
 - `standard_version = "difficulty-standard-v2.0"` 随规格进任务卡 payload（生成运行
-  的 prompt 记录可追溯）；合同级冻结属改进方案开放问题 4，待定；
-- 门禁：`uv run pytest -q` 全量 **1525 passed**、覆盖率 **86.80%**（≥80 达标）；
+  的 prompt 记录可追溯）；**合同级冻结已落地**（开放问题 4 拍板：确认合同时写入
+  `generation_runs.contract_snapshot.standard_version`，随"确认即冻结"锁死，
+  读端白名单透传、预览不带——预览未冻结）；
+- 门禁：`uv run pytest -q` 全量 **1526 passed**、覆盖率 **86.80%**（≥80 达标）；
   前端 `npm run build` + `npm run lint` 双绿；`init_db` 空库/既有库双跑 schema 一致已验证。

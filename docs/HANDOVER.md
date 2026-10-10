@@ -230,9 +230,11 @@ MinerU 解析 → 双大纲框架确认 → 知识目录发布 → 蓝图/合同
   `PATCH items/{idx}` 加 `difficulty_confirmed` 布尔（谁=用户名快照、何时）；③读端 `get_paper_version`
   每题附 `difficulty_spec`（纯函数确定性重建，历史题同样给）+ `difficulty_self_report` + 确认状态；
   ④前端 `QuestionDetail` 新增折叠区"难度依据"（目标/规格/自陈/已检查/风险/未验证/确认按钮），
-  v2 前旧卷显示降级文案。**封存 graph 零改动**（负责人授权在案但实现未用到——graph `dict(raw)`
-  透传天然携带新字段）；`init_db` 空库/既有库双跑 schema 一致已验证。**门禁 1525 passed /
-  86.80%，前端 build+lint 双绿**；开放问题 3 已拍板（target 恒读盖章字段，自陈独立并列）。
+  v2 前旧卷显示降级文案；⑤**开放问题 4 拍板落地：合同级 `standard_version` 冻结**——确认合同时
+  写入 `generation_runs.contract_snapshot.standard_version`（随"确认即冻结"锁死，读端白名单
+  透传，allocate/修订预览不带）。**封存 graph 零改动**（负责人授权在案但实现未用到——graph `dict(raw)`
+  透传天然携带新字段）；`init_db` 空库/既有库双跑 schema 一致已验证。**门禁 1526 passed /
+  86.80%，前端 build+lint 双绿**；开放问题 1/2/3 已拍板（target 恒读盖章字段，自陈独立并列）。
 - **综合题原型池教师可控**：`type_rules.comprehensive.archetypes` 白名单（文科可只留
   case_analysis 等），顺序即偏好序、不参与洗牌；未指定或全非法时回退默认池，
   默认池按 allocation_seed **确定性洗牌**（sha256 排序，`_shuffled_default_pool`）+
@@ -432,8 +434,12 @@ frontend\src\
   交叉核对（不一致只记 risk）、`paper_items.difficulty_confirmed_at/by` 确认专用列（改题重置、
   init_db 幂等迁移 + 空库/既有库双跑验证）、读端附 `difficulty_spec`/自陈/确认状态、前端
   `QuestionDetail`"难度依据"折叠区；开放问题 1/2/3 拍板（报告=payload、风险=提示+人工、
-  自陈独立字段）；**封存 graph 零改动**（+11 测试）
-- ✅ 后端门禁全绿：`uv run pytest -q` **1525 passed / 1 xfailed**（唯一 xfail=编造检测的
+  自陈独立字段）；**封存 graph 零改动**（+12 测试）
+- ✅ **难度标准版本合同级冻结**（2026-10-10，开放问题 4 拍板）：确认合同时
+  `STANDARD_VERSION` 写入 `generation_runs.contract_snapshot.standard_version`，随"确认即
+  冻结"锁死（旧合同缺键按可选处理，不原地改历史）；`get_current_contract_snapshot` 白名单
+  透传该键，allocate/修订预览不带（预览未冻结）
+- ✅ 后端门禁全绿：`uv run pytest -q` **1526 passed / 1 xfailed**（唯一 xfail=编造检测的
   联合 bigram 阈值已知缺口，测试 docstring 注明根因）+ 覆盖率 **86.80%**（≥80 门禁，
   2026-10-10 实测）；前端 `npm run build` 0 error、
   oxlint 0 error（warning 均为既有文件基线，最近一次实测 2026-10-10）
