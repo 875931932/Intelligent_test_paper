@@ -244,15 +244,17 @@ def _default_graph_invoke(
     ``progress`` 注入时改用流式消费：每完成一批考点题目回调一次
     ``(done, total)``，让调用方在十余分钟的生成过程中持续上报进度。
     """
+    from app.adapters.model.client_factory import build_llm_client
     from app.adapters.model.llm_gateway import LLMGateway
     from app.config import settings
     from app.db.session import get_session_factory
     from app.domain.generation.contract import ContractSlot
     from app.domain.model_calls import ModelCallContext
+    from app.services.llm_registry import llm_ready
     from app.services.model_call_service import DatabaseModelCallRecorder
     from app.workflows.generation_graph import build_generation_graph
 
-    if not settings.llm_configured():
+    if not llm_ready("generation"):
         raise GenerationRunnerError("LLM model is not configured")
 
     raw_slots = contract_snapshot.get("slots") if isinstance(contract_snapshot, dict) else None
@@ -285,16 +287,24 @@ def _default_graph_invoke(
     if not expected_indexes.issubset(plan_item_ids):
         raise GenerationRunnerError("generation contract does not match blueprint plan items")
 
+    # 型号/供应商走 registry（DB 权威、.env 兜底），思考档/超时仍由 gateway
+    # 逐请求显式下发——与档案化之前语义完全一致，只换配置来源。
+    json_client = build_llm_client(
+        "generation",
+        disable_thinking=settings.llm_generation_disable_thinking,
+        timeout=settings.generation_model_timeout,
+        recorder=DatabaseModelCallRecorder(get_session_factory()),
+    )
     gateway = LLMGateway(
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
-        model=settings.llm_model,
+        api_key=json_client.api_key,
+        base_url=json_client.base_url,
+        model=json_client.model,
         disable_thinking=settings.llm_generation_disable_thinking,
         # 思考档显式钉死（优先于 disable_thinking 的档案缺省，见配置注释）
         reasoning_effort=settings.generation_reasoning_effort,
         # 综合题思考+输出长，默认 90s 会 transport 连环（见 generation_model_timeout 注释）
         timeout=settings.generation_model_timeout,
-        recorder=DatabaseModelCallRecorder(get_session_factory()),
+        json_client=json_client,
         call_context=ModelCallContext(course_id=course_id, stage="paper_generation"),
     )
     graph = build_generation_graph(gateway)

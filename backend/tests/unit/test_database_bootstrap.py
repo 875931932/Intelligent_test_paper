@@ -11,6 +11,7 @@ from app.db.init_db import (
     _migrate_assistant_session,
     _migrate_evidence_chunk_columns,
     _migrate_knowledge_link_role,
+    _migrate_model_call_indexes,
     _migrate_paper_item_confirmation,
     bootstrap_database,
     extension_exists,
@@ -29,7 +30,13 @@ EXPECTED_CORE_TABLES = {
     "generation_runs", "generation_attempts", "generated_questions", "quality_checks", "paper_versions",
     "paper_items", "paper_archives", "model_calls", "task_runs", "outbox_events", "assistant_sessions",
     "assistant_messages",
+    "organizations",
+    "llm_providers", "llm_models", "llm_bindings",
 }
+
+# 平台级全局表（后台管理设计 §8 的显式边界）：不属于任何课程域，不带 course_id。
+# 除 users/courses/organizations 与 llm_* 三表外的每一张表都必须带 course_id（红线守护）。
+GLOBAL_TABLES = {"users", "courses", "organizations", "llm_providers", "llm_models", "llm_bindings"}
 
 
 @pytest.fixture
@@ -275,7 +282,7 @@ def test_migrate_assistant_session_adds_column_and_backfills(database_url):
 
 
 def test_core_business_schema_declares_course_isolation_and_key_constraints():
-    course_owned_tables = CORE_TABLE_NAMES - {"users", "courses"}
+    course_owned_tables = CORE_TABLE_NAMES - GLOBAL_TABLES
     assert all("course_id" in Base.metadata.tables[name].columns for name in course_owned_tables)
     assert any(constraint.name == "uq_courses_owner_slug" for constraint in Base.metadata.tables["courses"].constraints)
     assert {"ix_materials_course_id", "uq_materials_course_name"} <= {
@@ -614,6 +621,8 @@ def test_postgresql_bootstrap_uses_transactional_advisory_lock(monkeypatch):
     # 该迁移步骤内部用 sqlalchemy.inspect 探测列结构，假 Engine 不支持；
     # 本测试只关心 advisory lock 语句，跳过列迁移。
     monkeypatch.setattr(init_db, "_migrate_evidence_chunk_columns", lambda _: None)
+    # 种子步骤要开真 Session 执行 SQL，假 Engine 同样不支持（同上，跳过）。
+    monkeypatch.setattr(init_db, "_seed_llm_registry", lambda _: None)
 
     init_db.bootstrap_database("postgresql+psycopg://example/exam", seed=False)
 
@@ -739,3 +748,25 @@ def test_knowledge_schema_can_represent_l1_l2_l3_l4_tree():
         {element.target_fullname for element in constraint.elements} >= {"content_domains.id", "content_domains.course_id"}
         for constraint in domains.foreign_key_constraints
     )
+
+
+def test_migrate_model_call_indexes_idempotent(database_url):
+    """监控聚合索引（设计 §6.1）：create_all 建于新库；既有库由迁移幂等补建。"""
+
+    engine = create_engine(database_url)
+    Base.metadata.create_all(engine)
+    insp = inspect(engine)
+    expected = {
+        "ix_model_calls_created_at",
+        "ix_model_calls_model_created",
+        "ix_model_calls_stage_created",
+        "ix_model_calls_status_created",
+    }
+    assert expected <= {ix["name"] for ix in insp.get_indexes("model_calls")}
+
+    # 模拟旧库缺索引：删一条 → 迁移补回；重复执行幂等
+    with engine.begin() as conn:
+        conn.exec_driver_sql("DROP INDEX ix_model_calls_created_at")
+    _migrate_model_call_indexes(engine)
+    _migrate_model_call_indexes(engine)
+    assert expected <= {ix["name"] for ix in inspect(engine).get_indexes("model_calls")}

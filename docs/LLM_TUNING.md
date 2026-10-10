@@ -1,7 +1,8 @@
 # 模型调优与换模型运行手册
 
-> 状态：生效中（2026-09-25 落地，StepFun 官方文档核对）。
-> 目标：**换模型、调模型不动业务代码**——调优配置集中在独立文件，经 `.env` 插入。
+> 状态：生效中（2026-09-25 落地，StepFun 官方文档核对；2026-10-10 增 DB 权威配置层）。
+> 目标：**换模型、调模型不动业务代码**——配置分两层：后台「模型管理」（DB 权威，
+`llm_providers`/`llm_models`/`llm_bindings` 三表）与 `.env`（兜底与种子）。
 > 权威约束见 `AGENTS.md` 核心纪律第 1 条（模型只负责写题）与第 7.2 节（外部系统只走 `adapters/`）。
 
 ---
@@ -22,16 +23,37 @@
 ## 1. 分层架构（调优配置放哪）
 
 ```
-.env                        ← 开关与预算（换模型/回退在这里操作）
+后台「模型管理」（DB 权威）      ← 平台管理员在系统内切换/绑定/加型号（免重启，TTL 30s 生效）
+llm_providers / llm_models / llm_bindings
+  ↓ 未绑定或 DB 不可用时回落
+.env                        ← 兜底开关与预算（种子来源；DB 关闭时的唯一来源）
   ↓
 backend/app/config.py       ← Settings 键（默认值 + 注释写明依据）
   ↓
-backend/app/adapters/model/model_profiles.py   ← ★型号调优档案（独立文件）
+backend/app/services/llm_registry.py   ← ★配置解析（DB→env 逐级回落 + 30s 快照缓存）
+  ↓ resolve_llm_config(purpose) 产出 LlmConfig
+backend/app/adapters/model/client_factory.py   ← build_llm_client(purpose, ...) 统一构造
   ↓ 按模型名匹配档案，插供应商参数
+backend/app/adapters/model/model_profiles.py   ← ★型号调优档案（DB 档案→代码档案→base_url 回退）
+  ↓
 backend/app/adapters/model/llm_gateway.py      ← 网关组装请求（统一出口）
   ↓
 llm_semantic_extractors.py / generation 调用点  ← 只带业务 schema、prompt、effort 意图
 ```
+
+### 1.0 配置权威顺序（DB 优先，.env 兜底）
+
+- **DB 权威**：`llm_bindings`（按用途绑定型号：`generation` / `extract` / `classify` /
+  `consolidate` / `default`）→ `llm_models`（型号+价格+启停）→ `llm_providers`
+  （供应商 base_url/api_key）。后台 `/admin/models` 即这套表的管理界面；切绑定后
+  **TTL 30 秒内自动生效**，无需重启。
+- **`.env` 兜底**：未绑定任何用途、DB 查询失败、或 `llm_registry.set_db_enabled(False)`
+  时回落 env（按 purpose 取专属变量，语义与迁移前一致）。`init_db` 会用 `.env`
+  三件套种子 `llm_providers`/`llm_models`（幂等，表非空即跳过）。
+- **故障降级**：DB 查询失败不阻断调用链路（记负缓存 30s 防雪崩），自动落回 env 配置。
+- **运维开关**：`llm_registry.set_db_enabled(False)` 可整体关闭 DB 解析（应急回 env-only）。
+- ⚠️ 业务代码禁止直接读这三张表拼配置——一律经 `resolve_llm_config(purpose)` /
+  `build_llm_client(purpose)`（AGENTS.md 7.2：外部系统只走 adapters，构造点已收敛）。
 
 ### 1.1 型号档案 `model_profiles.py`
 
@@ -67,7 +89,7 @@ class ModelProfile:
 
 ## 2. 关键旋钮速查（改哪里 → 什么效果）
 
-### 2.1 `.env`（运行时开关，重启 API + Worker 生效）
+### 2.1 `.env`（兜底与种子，重启 API + Worker 生效；日常换模型走后台「模型管理」）
 
 | 变量 | 默认 | 作用 |
 |---|---|---|
@@ -119,14 +141,18 @@ class ModelProfile:
 
 ## 4. 换模型标准流程
 
-1. **已收录型号**：只改 `.env` 的 `LLM_MODEL`（或分阶段 `LLM_EXTRACT_MODEL` 等），
-   业务代码零改动。
-2. **未收录型号**：先按 §3 探针实测其参数接受度（effort 档位 / json_schema / tool_choice），
-   在 `MODEL_PROFILES` 加一条档案；不加也不会坏（回退通用档），但可能错过降本档位。
-3. 跑档案测试：`cd backend && uv run pytest tests/unit/test_model_profiles.py -q`。
-4. **重启 API + Worker**（`LLMJsonClient` 构造读 settings）。
-5. 验证：跑一次知识目录构建，查 `model_calls` 的 `stage` / 耗时 / `error_code`，
-   确认新模型生效且无 §3 表中的失败模式。
+1. **系统内切换（首选）**：后台 `/admin/models`——型号已存在则直接切用途绑定
+   （`PUT /bindings/{purpose}`），30 秒内生效；缺型号则先在「供应商/型号」区添加
+   （填 base_url/api_key/价格），可用「测试连通性」当场验证（10s 超时）。
+   切换后核对：后台「模型调用监控」看新型号的调用量/成功率。
+2. **改 `.env`（兜底路径 / 禁用 DB 时）**：只改 `LLM_MODEL`（或分阶段
+   `LLM_EXTRACT_MODEL` 等），业务代码零改动；重启 API + Worker。
+3. **未收录型号**：先按 §3 探针实测其参数接受度（effort 档位 / json_schema / tool_choice），
+   在 `MODEL_PROFILES` 加一条代码档案（或用后台测试连通性先行验证）；不加也不会坏
+   （回退通用档），但可能错过降本档位。
+4. 跑档案测试：`cd backend && uv run pytest tests/unit/test_model_profiles.py -q`。
+5. 验证：后台监控看新型号调用（或跑一次知识目录构建，查 `model_calls` 的 `stage` /
+   耗时 / `error_code`），确认新模型生效且无 §3 表中的失败模式。
 
 **回退演练**：结构约束出问题时 `.env` 加 `ORGANIZATION_EXTRACTION_JSON_SCHEMA=false`
 即回老行为，无需回滚代码。
@@ -143,6 +169,8 @@ class ModelProfile:
 
 ## 5. 相关测试与文档
 
+- 配置解析（DB 优先/env 兜底/TTL/降级）：`backend/tests/unit/test_llm_registry.py`
+- 模型管理端点（CRUD/绑定/探测/权限）：`backend/tests/integration/test_admin_llm_api.py`
 - 档案与网关参数下发：`backend/tests/unit/test_model_profiles.py`（11 测试）
 - 抽取端到端（schema_constrained 开关）：`backend/tests/unit/test_llm_semantic_extractors.py`
 - 配置键定义与注释（含预算校准依据）：`backend/app/config.py`

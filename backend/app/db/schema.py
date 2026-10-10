@@ -24,6 +24,32 @@ def _course_id_column() -> Column[str]:
     return Column("course_id", String(64), ForeignKey("courses.id"), nullable=False)
 
 
+class Organization(Base):
+    """平台级组织（学校→学院两级；平台管理员所在的平台层不建行）。
+
+    全局表，不带 course_id：组织是账号归属与管理范围的载体，不属于任何课程域
+    （后台管理设计 §8 的显式边界）。parent_id 为空 ⇔ kind='school'；
+    kind='college' 的 parent 必须指向学校，由服务层校验（固定两级，拒绝更深挂载）。
+    """
+
+    __tablename__ = "organizations"
+    __table_args__ = (
+        UniqueConstraint("code", name="uq_organizations_code"),
+        Index("ix_organizations_parent", "parent_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    parent_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id"))
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    code: Mapped[str | None] = mapped_column(String(60))
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="active", server_default="active"
+    )
+    created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class User(Base):
     __tablename__ = "users"
     __table_args__ = (UniqueConstraint("username", name="uq_users_username"),)
@@ -33,7 +59,20 @@ class User(Base):
     username: Mapped[str | None] = mapped_column(String(120))
     password_hash: Mapped[str | None] = mapped_column(String(255))
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # admin=平台管理员 / org_admin=单位管理员 / teacher=教师（存量数据只有前两种语义的旧值）
     role: Mapped[str] = mapped_column(String(50), nullable=False, default="teacher")
+    # ── 后台管理扩展列（组织账号设计 §4.2）：全部可空，兼容存量行 ──
+    organization_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id"))
+    title: Mapped[str | None] = mapped_column(String(40))
+    employee_no: Mapped[str | None] = mapped_column(String(60))
+    # 停用取代删除：status != 'active' 禁止登录，历史数据保留（课程外键不悬空）
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="active", server_default="active"
+    )
+    last_login_at = mapped_column(DateTime(timezone=True))
+    created_by: Mapped[str | None] = mapped_column(String(64), ForeignKey("users.id"))
+    created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 class Course(Base):
@@ -674,6 +713,13 @@ model_calls = _course_table(
     Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
 )
 
+# 监控聚合索引（设计 §6.1）：时间过滤 + 按 model/stage/status 的分组趋势都走这四条；
+# init_db 对既有库幂等补建（见 _migrate_model_call_indexes）。
+Index("ix_model_calls_created_at", model_calls.c.created_at)
+Index("ix_model_calls_model_created", model_calls.c.model, model_calls.c.created_at)
+Index("ix_model_calls_stage_created", model_calls.c.stage, model_calls.c.created_at)
+Index("ix_model_calls_status_created", model_calls.c.status, model_calls.c.created_at)
+
 task_runs = _course_table(
     "task_runs",
     Column("task_type", String(80), nullable=False),
@@ -780,6 +826,62 @@ Index(
     sqlite_where=outbox_events.c.status.in_(("pending", "claimed")),
     postgresql_where=outbox_events.c.status.in_(("pending", "claimed")),
 )
+
+
+# ── 模型管理（后台管理设计 §5：3 张全局表，不带 course_id）─────────────────
+class LlmProvider(Base):
+    """供应商/渠道（对应 OneAPI 的 channel）。api_key 明文列存、接口只回掩码。"""
+
+    __tablename__ = "llm_providers"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    base_url: Mapped[str] = mapped_column(String(300), nullable=False)
+    api_key: Mapped[str | None] = mapped_column(String(300))
+    # 可选：改从环境变量名取值（优先于 api_key 列），密钥不入库的轻量方案
+    api_key_env: Mapped[str | None] = mapped_column(String(80))
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="active", server_default="active"
+    )
+    remark: Mapped[str | None] = mapped_column(String(300))
+    created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class LlmModel(Base):
+    """型号（OneAPI 的模型 + 本项目 model_profiles 调优档案的 DB 化）。"""
+
+    __tablename__ = "llm_models"
+    __table_args__ = (
+        UniqueConstraint("provider_id", "model_id", name="uq_llm_models_provider_model"),
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider_id: Mapped[str] = mapped_column(ForeignKey("llm_providers.id"), nullable=False)
+    # 线上报给供应商的型号名（如 step-5-preview），与 profile 同为运行时解析输入
+    model_id: Mapped[str] = mapped_column(String(120), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(120), nullable=False)
+    # 调优档案 JSON（结构对齐 ModelProfile dataclass，见设计 §5.2）
+    profile: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default="{}")
+    # 计价（元/百万 tokens，可空=不计价）：监控的成本估算用
+    price_input_per_mtk = mapped_column(Float)
+    price_output_per_mtk = mapped_column(Float)
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="active", server_default="active"
+    )
+    created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class LlmBinding(Base):
+    """用途绑定（一键切换的落点）：purpose → 型号。缺行 = 回落 .env。"""
+
+    __tablename__ = "llm_bindings"
+
+    # default|extract|classify|consolidate|generation（与 .env 变量语义对应，见设计 §5.1）
+    purpose: Mapped[str] = mapped_column(String(30), primary_key=True)
+    model_id: Mapped[str] = mapped_column(ForeignKey("llm_models.id"), nullable=False)
+    updated_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 def _same_course_fk(child_name: str, parent_column: str, parent_name: str, *, use_alter: bool = False) -> None:

@@ -417,6 +417,63 @@ def _migrate_paper_item_confirmation(engine: Engine) -> None:
             conn.execute(text(f"ALTER TABLE paper_items ADD COLUMN {name} {ddl}"))
 
 
+def _migrate_user_admin_columns(engine: Engine) -> None:
+    """Idempotently 给 users 补后台管理扩展列（组织账号设计 §4.2）。
+
+    旧库无这些列，create_all 不会 ALTER 已存在表。组织/账号/状态列全部可空，
+    存量行保持 NULL（仅平台管理员可见可管），无需数据回填。
+    """
+
+    try:
+        insp = inspect(engine)
+        if not insp.has_table("users"):
+            return
+        existing = {c["name"] for c in insp.get_columns("users")}
+    except Exception:
+        # 迁移是尽力而为的幂等维护：无法内省时不阻断启动（同 evidence_chunks 口径）。
+        return
+    ts_ddl = "TIMESTAMP WITH TIME ZONE" if engine.dialect.name == "postgresql" else "DATETIME"
+    to_add = [
+        (name, ddl)
+        for name, ddl in (
+            ("organization_id", "VARCHAR(64)"),
+            ("title", "VARCHAR(40)"),
+            ("employee_no", "VARCHAR(60)"),
+            ("status", "VARCHAR(20) NOT NULL DEFAULT 'active'"),
+            ("last_login_at", ts_ddl),
+            ("created_by", "VARCHAR(64)"),
+            ("created_at", ts_ddl),
+            ("updated_at", ts_ddl),
+        )
+        if name not in existing
+    ]
+    if not to_add:
+        return
+    with engine.begin() as conn:
+        for name, ddl in to_add:
+            conn.execute(text(f"ALTER TABLE users ADD COLUMN {name} {ddl}"))
+
+
+def _migrate_model_call_indexes(engine: Engine) -> None:
+    """幂等补建监控聚合索引（设计 §6.1）：既有库缺这四条，create_all 不补已存在表的索引。"""
+
+    try:
+        if not inspect(engine).has_table("model_calls"):
+            return
+    except Exception:
+        # 与其余迁移同口径：尽力而为，无法内省不阻断启动。
+        return
+    statements = (
+        "CREATE INDEX IF NOT EXISTS ix_model_calls_created_at ON model_calls (created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_model_calls_model_created ON model_calls (model, created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_model_calls_stage_created ON model_calls (stage, created_at)",
+        "CREATE INDEX IF NOT EXISTS ix_model_calls_status_created ON model_calls (status, created_at)",
+    )
+    with engine.begin() as conn:
+        for statement in statements:
+            conn.execute(text(statement))
+
+
 def _seed_dev_data(bind: Engine | Connection) -> None:
     """Upsert the admin test account and fold any legacy 'owner-dev' data into it."""
 
@@ -463,6 +520,60 @@ def _drop_all(engine: Engine) -> None:
     Base.metadata.drop_all(engine)
 
 
+def _env_model_profile(model_name: str) -> dict:
+    """代码档案 → profile JSON 镜像；未收录型号留空（三级解析照旧走 base_url 回退）。"""
+    from dataclasses import asdict
+
+    from app.adapters.model.model_profiles import MODEL_PROFILES
+
+    profile = MODEL_PROFILES.get(model_name)
+    return asdict(profile) if profile is not None else {}
+
+
+def _seed_llm_registry(bind: Engine | Connection) -> None:
+    """幂等种子：首次初始化把 .env 镜像成 provider + model + default 绑定（设计 §5.6）。
+
+    管理员首次进后台即看到现状镜像，此后一切在界面操作、.env 只作兜底。
+    ``llm_providers`` 已有行（含管理员清空后再跑 init_db）或 .env 三件套不全
+    （裸环境，不落任何密钥）都跳过。
+    """
+    from sqlalchemy import func, select
+
+    from app.config import settings
+    from app.db.schema import LlmBinding, LlmModel, LlmProvider
+
+    # getattr 容忍被精简打桩的 settings（如裸 CLI 回退测试只提供 database_url）：
+    # 任一字段缺失/为空都视为"未配置"，跳过种子。
+    api_key = str(getattr(settings, "llm_api_key", "") or "")
+    base_url = str(getattr(settings, "llm_base_url", "") or "")
+    wire_model = str(getattr(settings, "llm_model", "") or "")
+    if not (api_key.strip() and base_url.strip() and wire_model.strip()):
+        return
+    with Session(bind=bind) as session:
+        if session.scalar(select(func.count()).select_from(LlmProvider)):
+            return
+        session.add(
+            LlmProvider(
+                id="llmprov_default",
+                name="StepFun（默认，.env 种子）",
+                base_url=base_url,
+                api_key=api_key,
+                remark="init_db 从 .env 幂等镜像；此后在后台管理界面维护。",
+            )
+        )
+        session.add(
+            LlmModel(
+                id="llmmodel_default",
+                provider_id="llmprov_default",
+                model_id=wire_model,
+                display_name=wire_model,
+                profile=_env_model_profile(wire_model),
+            )
+        )
+        session.add(LlmBinding(purpose="default", model_id="llmmodel_default"))
+        session.commit()
+
+
 def bootstrap_database(database_url: str | None = None, seed: bool | None = None, drop: bool = False) -> None:
     """Create extensions, tables, indexes and optional idempotent dev seed.
 
@@ -501,6 +612,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             with engine.begin() as conn:
                 Base.metadata.create_all(conn)
             _migrate_user_columns(engine)
+            _migrate_user_admin_columns(engine)
             _migrate_evidence_link_fk(engine)
             _migrate_evidence_chunk_columns(engine)
             _migrate_evidence_link_score(engine)
@@ -511,6 +623,8 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             _migrate_generated_question_nullable(engine)
             _migrate_delete_preserved_nullable(engine)
             _migrate_paper_item_confirmation(engine)
+            _migrate_model_call_indexes(engine)
+            _seed_llm_registry(engine)
             if seed:
                 with engine.begin() as conn:
                     _seed_dev_data(conn)
@@ -519,6 +633,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
                 _drop_all(engine)
             Base.metadata.create_all(engine)
             _migrate_user_columns(engine)
+            _migrate_user_admin_columns(engine)
             _migrate_evidence_link_fk(engine)
             _migrate_evidence_chunk_columns(engine)
             _migrate_evidence_link_score(engine)
@@ -529,6 +644,8 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             _migrate_generated_question_nullable(engine)
             _migrate_delete_preserved_nullable(engine)
             _migrate_paper_item_confirmation(engine)
+            _migrate_model_call_indexes(engine)
+            _seed_llm_registry(engine)
             if seed:
                 _seed_dev_data(engine)
     finally:

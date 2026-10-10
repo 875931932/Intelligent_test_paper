@@ -125,8 +125,9 @@ docs/                         # 设计文档，范围声明的唯一权威来源
 | 知识卡/原子 | 一张卡只承载一个可独立判分的原子事实 |
 | 出卷流水线 | PipelinePanel：蓝图 → 合同 → 生成 |
 | 试卷页签 | PaperPanel：双栏阅读器，查看/编辑/定稿/导出（与流水线同属项目详情页的两个页签） |
+| 后台管理 | `/admin`：账号（组织两级学校→学院、职务/工号/状态、停用取代删除）、模型管理（用途绑定切换/连通测试，平台管理员专属）、模型调用监控（`model_calls` 只读聚合，org_admin 只看本单位课程）。设计权威 `docs/ADMIN_CONSOLE_DESIGN.md` |
 | 四份导出 | 学生卷 / 答卷 / 答题卡 HTML + 答案细则 JSON（阅卷端直接输入） |
-| 型号调优档案 | `adapters/model/model_profiles.py`：按型号登记供应商参数（effort 档位/json_schema/思考控制），换模型只改 `.env`，手册 `docs/LLM_TUNING.md` |
+| 型号调优档案 | `adapters/model/model_profiles.py`：按型号登记供应商参数（effort 档位/json_schema/思考控制）；配置权威顺序：后台模型管理（DB 三表）→ `.env` 兜底，经 `llm_registry` 解析、`build_llm_client(purpose)` 收敛构造点，手册 `docs/LLM_TUNING.md` |
 
 ## 7. 代码规范
 

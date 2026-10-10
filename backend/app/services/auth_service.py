@@ -12,10 +12,9 @@ import hmac
 import json
 import secrets
 import time
-from uuid import uuid4
+from datetime import UTC, datetime
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -30,10 +29,6 @@ class AuthenticationError(Exception):
 
 class UserNotFoundError(Exception):
     """Raised when the user implied by a valid token no longer exists."""
-
-
-class UsernameTakenError(Exception):
-    """Raised when the username is already occupied."""
 
 
 # ── Password hashing ─────────────────────────────────────────────────────────
@@ -101,8 +96,20 @@ def decode_token(token: str) -> dict:
 
 def authenticate_user(session: Session, *, username: str, password: str) -> User:
     user = session.scalar(select(User).where(User.username == username))
-    if user is None or not verify_password(password, user.password_hash):
+    if user is None or user.password_hash is None or not verify_password(password, user.password_hash):
         raise AuthenticationError("用户名或密码错误")
+    # 停用取代删除：status != 'active' 一律拒绝登录（数据保留，课程外键不悬空）
+    if user.status != "active":
+        raise AuthenticationError("账号已停用，请联系管理员")
+    # 登录成功即刷新最近登录时间（仅在确实有变化时提交，避免每次登录都写库）
+    now = datetime.now(UTC)
+    prev = user.last_login_at
+    if prev is not None and prev.tzinfo is None:
+        # SQLite 存取为 naive UTC，PG 为 aware：统一按 UTC 解释后再比较
+        prev = prev.replace(tzinfo=UTC)
+    if prev is None or (now - prev).total_seconds() > 1:
+        user.last_login_at = now
+        session.commit()
     return user
 
 
@@ -113,43 +120,15 @@ def user_from_payload(session: Session, payload: dict) -> User:
     return user
 
 
-def create_user(
-    session: Session,
-    *,
-    username: str,
-    password: str,
-    display_name: str,
-    role: str = "teacher",
-) -> User:
-    """创建账号。唯一入口是管理员建号端点（本系统不开放自助注册）。
-
-    重名由「先查后插 + 唯一约束兜底」双重保证：查询挡住常规重名，并发下
-    两个管理员同时建同名账号时唯一约束报 IntegrityError，同样归一为
-    UsernameTakenError，避免把 500 抛给调用方。
-    """
-    if session.scalar(select(User).where(User.username == username)) is not None:
-        raise UsernameTakenError(username)
-    user = User(
-        id=str(uuid4()),
-        username=username,
-        password_hash=hash_password(password),
-        display_name=display_name,
-        role=role,
-    )
-    session.add(user)
-    try:
-        session.commit()
-    except IntegrityError as exc:
-        session.rollback()
-        raise UsernameTakenError(username) from exc
-    session.refresh(user)
-    return user
-
-
 def user_to_public_dict(user: User) -> dict:
+    """登录/me 的公开画像。组织名走 api 层单独查询，这里保持纯字段直出。"""
     return {
         "id": user.id,
         "username": user.username,
         "name": user.display_name,
         "role": user.role,
+        "organization_id": user.organization_id,
+        "title": user.title,
+        "employee_no": user.employee_no,
+        "status": user.status,
     }

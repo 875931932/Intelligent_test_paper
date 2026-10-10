@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.adapters.model.client_factory import build_llm_client
 from app.adapters.model.llm_gateway import LLMJsonClient, LLMModelError
 from app.adapters.model.llm_semantic_extractors import (
     LLMExamPointEvidenceClassifier,
@@ -31,6 +32,7 @@ from app.domain.knowledge.models import (
 )
 from app.domain.knowledge.relevance import ExamPointEvidenceClassifier
 from app.services import course_service, knowledge_publish_service
+from app.services.llm_registry import RegistryNotConfigured, llm_ready, resolve_llm_config
 from app.services.model_call_service import DatabaseModelCallRecorder
 from app.services.staging_retrieval_service import EmbeddingClient, HybridStagingRetriever
 from app.workflows.organization_graph import build_organization_graph
@@ -69,122 +71,113 @@ def get_organization_embedder(request: Request) -> EmbeddingClient:
         return embedder
 
 
-def get_exam_point_classifier(request: Request) -> ExamPointEvidenceClassifier:
-    classifier = getattr(request.app.state, "exam_point_evidence_classifier", None)
-    if classifier is not None:
-        return classifier
+def _config_key(purpose: str) -> str:
+    """当前配置键（base_url|model）：registry 切换（30s TTL）后与缓存键不符即重建。"""
+    try:
+        cfg = resolve_llm_config(purpose)
+    except RegistryNotConfigured:
+        return ""
+    return f"{cfg.base_url}|{cfg.model}"
+
+
+def _cached_with_config(request: Request, attr: str, purpose: str, build):
+    """带配置键的 app.state 缓存：型号切换后实例自动重建（最长 30s 生效）。
+
+    stored_key 为 None 表示测试/外部注入的实例（未经本函数构建），直接复用；
+    key 为空（配置当前不可解析）时也没有"新配置"可切换，同样复用既有实例——
+    只有两侧都能解析且键不同才算真的换了配置。
+    """
+    key = _config_key(purpose)
+    value = getattr(request.app.state, attr, None)
+    stored = getattr(request.app.state, attr + "_key", None)
+    if value is not None and (not key or stored is None or stored == key):
+        return value
     with _organization_state_lock:
-        classifier = getattr(request.app.state, "exam_point_evidence_classifier", None)
-        if classifier is not None:
-            return classifier
-        if not _llm_configured():
+        value = getattr(request.app.state, attr, None)
+        stored = getattr(request.app.state, attr + "_key", None)
+        if value is not None and (not key or stored is None or stored == key):
+            return value
+        value = build()
+        setattr(request.app.state, attr, value)
+        setattr(request.app.state, attr + "_key", key)
+        return value
+
+
+def get_exam_point_classifier(request: Request) -> ExamPointEvidenceClassifier:
+    def _build() -> ExamPointEvidenceClassifier:
+        if not llm_ready("classify"):
             raise HTTPException(status_code=503, detail="semantic classifier is not configured")
-        client = _get_semantic_json_client(
-            request, settings.llm_classify_model or settings.llm_model
-        )
-        classifier = LLMExamPointEvidenceClassifier(
+        client = _get_semantic_json_client(request, "classify")
+        return LLMExamPointEvidenceClassifier(
             client,
             reasoning_effort=settings.organization_classify_reasoning_effort,
         )
-        request.app.state.exam_point_evidence_classifier = classifier
-        return classifier
+
+    return _cached_with_config(request, "exam_point_evidence_classifier", "classify", _build)
 
 
 def get_exam_point_consolidator(request: Request) -> ExamPointKnowledgeConsolidator:
-    consolidator = getattr(request.app.state, "exam_point_knowledge_consolidator", None)
-    if consolidator is not None:
-        return consolidator
-    with _organization_state_lock:
-        consolidator = getattr(request.app.state, "exam_point_knowledge_consolidator", None)
-        if consolidator is not None:
-            return consolidator
-        if not _llm_configured():
+    def _build() -> ExamPointKnowledgeConsolidator:
+        if not llm_ready("consolidate"):
             raise HTTPException(status_code=503, detail="knowledge consolidator is not configured")
-        client = _get_semantic_json_client(
-            request, settings.llm_consolidate_model or settings.llm_model
-        )
-        consolidator = LLMExamPointKnowledgeConsolidator(
+        client = _get_semantic_json_client(request, "consolidate")
+        return LLMExamPointKnowledgeConsolidator(
             client,
             reasoning_effort=settings.organization_consolidate_reasoning_effort,
         )
-        request.app.state.exam_point_knowledge_consolidator = consolidator
-        return consolidator
+
+    return _cached_with_config(request, "exam_point_knowledge_consolidator", "consolidate", _build)
 
 
 def get_knowledge_point_extractor(request: Request) -> LLMKnowledgePointExtractor:
-    extractor = getattr(request.app.state, "knowledge_point_extractor", None)
-    if extractor is not None:
-        return extractor
-    with _organization_state_lock:
-        extractor = getattr(request.app.state, "knowledge_point_extractor", None)
-        if extractor is not None:
-            return extractor
-        if not _llm_configured():
+    def _build() -> LLMKnowledgePointExtractor:
+        if not llm_ready("extract"):
             raise HTTPException(status_code=503, detail="knowledge point extractor is not configured")
-        client = _get_semantic_json_client(
-            request, settings.llm_extract_model or settings.llm_model
-        )
-        extractor = LLMKnowledgePointExtractor(
+        client = _get_semantic_json_client(request, "extract")
+        return LLMKnowledgePointExtractor(
             client,
             reasoning_effort=settings.organization_extraction_reasoning_effort,
             schema_constrained=settings.organization_extraction_json_schema,
         )
-        request.app.state.knowledge_point_extractor = extractor
-        return extractor
+
+    return _cached_with_config(request, "knowledge_point_extractor", "extract", _build)
 
 
 def get_supplement_recommender(request: Request) -> LLMSupplementRecommender:
     """补证据推荐器：复用分类模型客户端，独立缓存实例。"""
-    recommender = getattr(request.app.state, "supplement_recommender", None)
-    if recommender is not None:
-        return recommender
-    with _organization_state_lock:
-        recommender = getattr(request.app.state, "supplement_recommender", None)
-        if recommender is not None:
-            return recommender
-        if not _llm_configured():
+
+    def _build() -> LLMSupplementRecommender:
+        if not llm_ready("classify"):
             raise HTTPException(status_code=503, detail="semantic recommender is not configured")
-        client = _get_semantic_json_client(
-            request, settings.llm_classify_model or settings.llm_model
-        )
-        recommender = LLMSupplementRecommender(client)
-        request.app.state.supplement_recommender = recommender
-        return recommender
+        client = _get_semantic_json_client(request, "classify")
+        return LLMSupplementRecommender(client)
+
+    return _cached_with_config(request, "supplement_recommender", "classify", _build)
 
 
-def _get_semantic_json_client(request: Request, model: str) -> LLMJsonClient:
+def _get_semantic_json_client(request: Request, purpose: str) -> LLMJsonClient:
+    """按用途取语义调用客户端：registry 解析（DB 优先/.env 兜底），按配置键缓存。"""
+    cfg = resolve_llm_config(purpose)  # 调用方已过 llm_ready 门禁，必有配置
+    key = f"{cfg.base_url}|{cfg.model}"
     clients = getattr(request.app.state, "semantic_json_clients", None)
     if clients is None:
         clients = {}
         request.app.state.semantic_json_clients = clients
-    client = clients.get(model)
+    client = clients.get(key)
     if client is not None:
         return client
     with _organization_state_lock:
-        client = clients.get(model)
+        client = clients.get(key)
         if client is not None:
             return client
-        client = LLMJsonClient(
-            api_key=settings.llm_api_key,
-            base_url=settings.llm_base_url,
-            model=model,
+        client = build_llm_client(
+            purpose,
             disable_thinking=settings.llm_disable_thinking,
             timeout=settings.organization_model_timeout,
             recorder=DatabaseModelCallRecorder(get_session_factory()),
         )
-        clients[model] = client
+        clients[key] = client
         return client
-
-
-def _llm_configured() -> bool:
-    return all(
-        value.strip()
-        for value in (
-            settings.llm_api_key,
-            settings.llm_base_url,
-            settings.llm_model,
-        )
-    )
 
 
 def _not_found() -> HTTPException:

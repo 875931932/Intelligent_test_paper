@@ -4,7 +4,7 @@ export interface User {
   id: string;
   username: string;
   name: string;
-  role: 'teacher' | 'admin';
+  role: 'teacher' | 'admin' | 'org_admin';
 }
 
 interface AuthState {

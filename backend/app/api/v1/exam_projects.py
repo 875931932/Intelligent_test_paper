@@ -17,8 +17,8 @@ from app.db.schema import (
 )
 from app.api.v1.auth import get_current_user
 from app.db.session import get_session, get_session_factory
-from app.config import settings
 from app.services import blueprint_suggest_service, exam_project_service
+from app.services.llm_registry import llm_ready
 from app.services.blueprint_persistence_service import (
     BlueprintPersistenceError,
     BlueprintValidationError,
@@ -575,7 +575,7 @@ def generate(
 ) -> dict:
     _get_project_or_404(session, course_id=course_id, project_id=project_id)
     mock_graph = bool(body.mock_graph) if body is not None else False
-    if not mock_graph and not settings.llm_configured():
+    if not mock_graph and not llm_ready("generation"):
         raise HTTPException(status_code=503, detail="LLM model is not configured")
 
     try:

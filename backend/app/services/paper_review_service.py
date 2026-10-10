@@ -452,7 +452,7 @@ def run_review(
 
 def execute_review_task(session: Session, *, payload: dict) -> dict:
     """worker 入口：构造真实 LLM 客户端并执行整卷评审（不写任何业务表）。"""
-    from app.adapters.model.llm_gateway import LLMJsonClient
+    from app.adapters.model.client_factory import build_llm_client
     from app.config import settings
     from app.db.session import get_session_factory
     from app.services.model_call_service import DatabaseModelCallRecorder
@@ -460,10 +460,8 @@ def execute_review_task(session: Session, *, payload: dict) -> dict:
     if not llm_configured():
         raise PaperReviewError("LLM model is not configured")
 
-    client = LLMJsonClient(
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
-        model=settings.llm_model,
+    client = build_llm_client(
+        "default",
         disable_thinking=settings.llm_disable_thinking,
         # 思考档钉死 low（优先于 disable_thinking 的档案缺省档，见 config 注释）：
         # 报告类调用都是一问一答、思考占输出大头，压 low 直接缩短调用时长。

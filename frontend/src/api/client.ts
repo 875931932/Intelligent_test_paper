@@ -10,6 +10,7 @@ import { frameworkApi } from './domains/framework';
 import { examProjectsApi } from './domains/examProjects';
 import { paperVersionsApi } from './domains/paperVersions';
 import { paperArchivesApi } from './domains/paperArchives';
+import { adminApi } from './domains/admin';
 
 export const api = {
   health: () => request('/health'),
@@ -22,5 +23,6 @@ export const api = {
   examProjects: examProjectsApi,
   paperVersions: paperVersionsApi,
   paperArchives: paperArchivesApi,
+  admin: adminApi,
   uploadBinary,
 };

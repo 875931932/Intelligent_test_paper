@@ -2,8 +2,10 @@ import { Suspense } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import { Outlet } from 'react-router-dom';
 import { ProtectedRoute } from '@/pages/auth/ProtectedRoute';
+import { AdminRoute } from '@/pages/auth/AdminRoute';
 import { useAuthStore } from '@/stores/auth';
 import { Sidebar } from '@/components/layout/Sidebar';
+import { AdminSidebar } from '@/components/layout/AdminSidebar';
 import { Layout } from '@/components/layout/Layout';
 import { lazyWithRetry } from '@/lib/lazyWithRetry';
 
@@ -23,6 +25,12 @@ const AssistantPage = lazyWithRetry(() => import('@/pages/assistant'));
 const LoginPage = lazyWithRetry(() =>
   import('@/pages/auth/LoginPage').then((m) => ({ default: m.LoginPage }))
 );
+/* 后台管理（/admin）：概览 + 组织账号 + 模型管理 + 调用监控；仅 admin/org_admin 可进 */
+const AdminOverview = lazyWithRetry(() => import('@/pages/admin'));
+const AdminOrganizations = lazyWithRetry(() => import('@/pages/admin/organizations'));
+const AdminUsers = lazyWithRetry(() => import('@/pages/admin/users'));
+const AdminModels = lazyWithRetry(() => import('@/pages/admin/models'));
+const AdminMonitoring = lazyWithRetry(() => import('@/pages/admin/monitoring'));
 
 /** 懒加载路由占位：由最近的 Suspense 边界接管（内容区或独立页） */
 function RouteFallback() {
@@ -39,6 +47,19 @@ function AppShell() {
   return (
     <Layout sidebar={<Sidebar onLogout={logout} />}>
       {/* 内容区独立边界：切页懒加载时侧栏保持在场，只换内容 */}
+      <Suspense fallback={<RouteFallback />}>
+        <Outlet />
+      </Suspense>
+    </Layout>
+  );
+}
+
+/** 后台管理外壳：AdminSidebar + 内容区（与业务端同布局机制，路由组级复用） */
+function AdminShell() {
+  const logout = useAuthStore((s) => s.logout);
+
+  return (
+    <Layout sidebar={<AdminSidebar onLogout={logout} />}>
       <Suspense fallback={<RouteFallback />}>
         <Outlet />
       </Suspense>
@@ -79,6 +100,21 @@ export default function App() {
           <Route path="assistant" element={<AssistantPage />} />
           <Route path="exam-projects" element={<Navigate to="../paper" replace />} />
           <Route path="paper-center" element={<Navigate to="../paper" replace />} />
+        </Route>
+        {/* 后台管理：仅 admin/org_admin（AdminRoute 守卫；授权以后端为准） */}
+        <Route
+          path="/admin"
+          element={
+            <AdminRoute>
+              <AdminShell />
+            </AdminRoute>
+          }
+        >
+          <Route index element={<AdminOverview />} />
+          <Route path="organizations" element={<AdminOrganizations />} />
+          <Route path="users" element={<AdminUsers />} />
+          <Route path="llm" element={<AdminModels />} />
+          <Route path="monitoring" element={<AdminMonitoring />} />
         </Route>
         <Route path="*" element={<Navigate to="/courses" replace />} />
       </Routes>

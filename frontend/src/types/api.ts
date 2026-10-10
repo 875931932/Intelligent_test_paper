@@ -17,6 +17,11 @@ export interface UserProfile {
   username: string;
   name: string;
   role: string;
+  /** 后台管理扩展字段（可选，旧会话缓存可能没有） */
+  organization_id?: string | null;
+  title?: string | null;
+  employee_no?: string | null;
+  status?: string;
 }
 export interface LoginResponse {
   token: string;

@@ -40,10 +40,9 @@ export function LoginPage() {
     setLoading(true);
     try {
       const { token, user } = await api.auth.login(username.trim(), password);
-      setAuth(
-        { id: user.id, username: user.username, name: user.name, role: user.role === 'admin' ? 'admin' : 'teacher' },
-        token
-      );
+      // 后端角色三值原样透传（teacher/admin/org_admin），不再把 org_admin 压成 teacher
+      const role = user.role === 'admin' || user.role === 'org_admin' ? user.role : 'teacher';
+      setAuth({ id: user.id, username: user.username, name: user.name, role }, token);
       addToast('登录成功，欢迎回来！', 'success');
       navigate('/courses', { replace: true });
     } catch (err) {

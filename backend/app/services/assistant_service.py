@@ -2533,17 +2533,15 @@ def run_turn(session: Session, *, payload: dict, client, sink: TurnEventSink) ->
 
 def build_client():
     """构造真实 LLM 客户端（worker 入口默认使用）。"""
-    from app.adapters.model.llm_gateway import LLMJsonClient
+    from app.adapters.model.client_factory import build_llm_client
     from app.config import settings
     from app.db.session import get_session_factory
     from app.services.model_call_service import DatabaseModelCallRecorder
 
     if not llm_configured():
         raise AssistantError("LLM model is not configured")
-    return LLMJsonClient(
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
-        model=settings.llm_model,
+    return build_llm_client(
+        "default",
         disable_thinking=settings.llm_disable_thinking,
         timeout=_CLIENT_TIMEOUT_SECONDS,
         max_attempts=_CLIENT_MAX_ATTEMPTS,

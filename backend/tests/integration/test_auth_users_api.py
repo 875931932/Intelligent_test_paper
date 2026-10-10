@@ -1,7 +1,9 @@
-"""管理员建号端点：创建成功可登录、非管理员拒绝、重名冲突、入参校验。
+"""旧建号端点（POST /api/v1/auth/users）已下线：账号管理统一走 /api/v1/admin/users。
 
-照抄 tests/integration/test_courses_api.py 的既有模式：
-SQLite + dependency_overrides 替换 get_session，真实登录拿 Bearer token。
+保留两类护栏：
+1. 旧路由不再注册（404），防止旧客户端误依赖；
+2. 新端点的入参校验（422 矩阵）与匿名准入（401）。
+建号成功链路/重名 409/教师 403 已由 test_admin_api.py 覆盖，此处不重复。
 """
 from __future__ import annotations
 
@@ -66,61 +68,37 @@ def _client(factory, username: str) -> TestClient:
     return TestClient(app, headers={"Authorization": "Bearer " + login.json()["token"]})
 
 
-def test_admin_creates_account_and_new_user_can_login(env):
-    admin = _client(env, "admin")
-    created = admin.post(
-        "/api/v1/auth/users",
-        json={"username": "li_laoshi", "password": "pw123456", "name": "李老师"},
-    )
-    assert created.status_code == 201, created.text
-    body = created.json()
-    assert body["username"] == "li_laoshi"
-    assert body["name"] == "李老师"
-    assert body["role"] == "teacher"  # 建号固定教师角色，不接受调用方指定
-    assert "password" not in body
-
-    # 新账号立即可登录（哈希与登录链路打通）
-    login = TestClient(app).post(
-        "/api/v1/auth/login", json={"username": "li_laoshi", "password": "pw123456"}
-    )
-    assert login.status_code == 200, login.text
-    assert login.json()["user"]["name"] == "李老师"
-
-
-def test_teacher_cannot_create_account(env):
-    teacher = _client(env, "teacher1")
-    resp = teacher.post(
-        "/api/v1/auth/users",
-        json={"username": "another", "password": "pw123456", "name": "王老师"},
-    )
-    assert resp.status_code == 403, resp.text
-
-
-def test_duplicate_username_conflicts(env):
+def test_legacy_create_user_route_is_gone(env):
+    """旧路由已注销：任何角色 POST /auth/users 一律 404。"""
     admin = _client(env, "admin")
     resp = admin.post(
         "/api/v1/auth/users",
-        json={"username": "teacher1", "password": "pw123456", "name": "重名"},
+        json={"username": "li_laoshi", "password": "pw123456", "name": "李老师"},
     )
-    assert resp.status_code == 409, resp.text
+    assert resp.status_code == 404, resp.text
+    anon = TestClient(app).post(
+        "/api/v1/auth/users",
+        json={"username": "ghost", "password": "pw123456", "name": "匿名"},
+    )
+    assert anon.status_code == 404, anon.text
 
 
-def test_create_user_validates_payload(env):
+def test_admin_create_user_validates_payload(env):
+    """入参校验矩阵迁移到 /api/v1/admin/users（约束与旧端点一致）。"""
     admin = _client(env, "admin")
-    # 用户名过短 / 含非法字符，密码过短，姓名缺失 → 422
     for bad in (
-        {"username": "ab", "password": "pw123456", "name": "短名"},
-        {"username": "bad name", "password": "pw123456", "name": "空格"},
-        {"username": "okname", "password": "12345", "name": "密码太短"},
-        {"username": "okname", "password": "pw123456"},
+        {"username": "ab", "password": "pw123456", "name": "短名"},          # 用户名过短
+        {"username": "bad name", "password": "pw123456", "name": "空格"},    # 非法字符
+        {"username": "okname", "password": "12345", "name": "密码太短"},     # 密码过短
+        {"username": "okname", "password": "pw123456"},                      # 缺姓名
     ):
-        resp = admin.post("/api/v1/auth/users", json=bad)
+        resp = admin.post("/api/v1/admin/users", json=bad)
         assert resp.status_code == 422, f"{bad} -> {resp.status_code}"
 
 
-def test_anonymous_cannot_create_account(env):
+def test_anonymous_cannot_create_account_via_admin_route(env):
     resp = TestClient(app).post(
-        "/api/v1/auth/users",
+        "/api/v1/admin/users",
         json={"username": "ghost", "password": "pw123456", "name": "匿名"},
     )
     assert resp.status_code == 401, resp.text

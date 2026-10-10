@@ -77,17 +77,47 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
 
 
 def resolve_model_profile(model: str, *, base_url: str) -> ModelProfile:
-    """按模型名查档案；未收录时按 base_url 判定供应商，再回退通用档。
+    """按模型名查档案；三级解析：DB 档案 → 代码 MODEL_PROFILES → base_url 回退。
 
-    顺序：型号档案优先（换模型档案自动跟随）→ base_url 含 stepfun 的
-    未收录型号按端点特性回退（保持档案化之前的行为）→ 通用 OpenAI 兼容档。
+    DB 档案（后台管理界面维护，经 llm_registry 快照加载时注册）优先——
+    管理员改档案 30s 内全进程生效；未注册时行为与档案化之前完全一致
+    （代码档案 → stepfun 端点特性回退 → 通用 OpenAI 兼容档）。
     """
+    profile = _DB_PROFILES.get(model)
+    if profile is not None:
+        return profile
     profile = MODEL_PROFILES.get(model)
     if profile is not None:
         return profile
     if "stepfun" in base_url.lower():
         return _stepfun_profile(model)
     return ModelProfile(model_id=model, thinking_style="thinking_disabled")
+
+
+# ── DB 档案注册表（llm_registry 快照加载时整体替换）──────────────────────────
+# 进程内字典，读多写少：_build_body 每次请求都读，只在快照刷新时写，
+# 用锁保证替换的原子性（读侧不加锁：dict 赋值在 Python 里是原子的）。
+_DB_PROFILES: dict[str, ModelProfile] = {}
+
+
+def register_db_profiles(profiles: dict[str, ModelProfile]) -> None:
+    """整体替换 DB 档案注册表（快照刷新时调用；空表=清空，回到代码档案）。"""
+    _DB_PROFILES.clear()
+    _DB_PROFILES.update(profiles)
+
+
+def profile_from_dict(model_id: str, data: dict | None) -> ModelProfile | None:
+    """DB profile JSON → ModelProfile；空/缺 thinking_style 视为未配置（返回 None）。"""
+    if not data or not data.get("thinking_style"):
+        return None
+    return ModelProfile(
+        model_id=model_id,
+        thinking_style=str(data["thinking_style"]),
+        supports_tool_choice=bool(data.get("supports_tool_choice", True)),
+        supported_efforts=tuple(str(e) for e in data.get("supported_efforts") or ()),
+        default_effort=data.get("default_effort"),
+        supports_json_schema=bool(data.get("supports_json_schema", False)),
+    )
 
 
 def normalize_effort(effort: str | None, profile: ModelProfile) -> str | None:

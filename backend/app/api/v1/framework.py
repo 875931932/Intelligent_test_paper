@@ -9,13 +9,14 @@ from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
-from app.adapters.model.llm_gateway import LLMJsonClient
+from app.adapters.model.client_factory import build_llm_client
 from app.adapters.model.llm_semantic_extractors import LLMSyllabusExtractor
 from app.config import settings
 from app.db.session import get_session
 from app.db.session import get_session_factory
 from app.domain.framework.models import FrameworkConfirmation, SyllabusExtractor
 from app.services import course_service, exam_rules_ai_service, framework_review_ai_service, framework_service
+from app.services.llm_registry import RegistryNotConfigured, llm_ready, resolve_llm_config
 from app.services.model_call_service import DatabaseModelCallRecorder
 from app.workflows.framework_graph import build_framework_graph
 
@@ -30,38 +31,46 @@ class FrameworkRunCreate(BaseModel):
     assessment_material_version_id: str
 
 
+def _config_key(purpose: str) -> str:
+    """当前配置键（base_url|model）：registry 切换（30s TTL）后与缓存键不符即重建。"""
+    try:
+        cfg = resolve_llm_config(purpose)
+    except RegistryNotConfigured:
+        return ""
+    return f"{cfg.base_url}|{cfg.model}"
+
+
 def get_syllabus_extractor(request: Request) -> SyllabusExtractor:
+    # 键控缓存：管理端切换型号后最长 30s 自动重建；stored_key 为 None 表示
+    # 测试/外部注入的实例（未经本函数构建），key 为空表示配置当前不可解析
+    # （无新配置可切）——这两种情况都直接复用既有实例。
+    key = _config_key("default")
     extractor = getattr(request.app.state, "syllabus_extractor", None)
-    if extractor is not None:
+    stored = getattr(request.app.state, "syllabus_extractor_key", None)
+    if extractor is not None and (not key or stored is None or stored == key):
         return extractor
     with _syllabus_extractor_lock:
         extractor = getattr(request.app.state, "syllabus_extractor", None)
-        if extractor is not None:
+        stored = getattr(request.app.state, "syllabus_extractor_key", None)
+        if extractor is not None and (not key or stored is None or stored == key):
             return extractor
         if not _llm_configured():
             raise HTTPException(status_code=503, detail="syllabus semantic extractor is not configured")
-        client = LLMJsonClient(
-            api_key=settings.llm_api_key,
-            base_url=settings.llm_base_url,
-            model=settings.llm_model,
+        client = build_llm_client(
+            "default",
             disable_thinking=settings.llm_disable_thinking,
             timeout=settings.framework_model_timeout,
             recorder=DatabaseModelCallRecorder(get_session_factory()),
         )
         extractor = LLMSyllabusExtractor(client)
         request.app.state.syllabus_extractor = extractor
+        request.app.state.syllabus_extractor_key = key
         return extractor
 
 
 def _llm_configured() -> bool:
-    return all(
-        value.strip()
-        for value in (
-            settings.llm_api_key,
-            settings.llm_base_url,
-            settings.llm_model,
-        )
-    )
+    # 收口到 llm_registry：DB 绑定优先、.env 兜底（与运行时构造同一读路径）
+    return llm_ready("default")
 
 
 def _not_found() -> HTTPException:
