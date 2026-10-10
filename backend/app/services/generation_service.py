@@ -174,7 +174,10 @@ def audit_paper_against_contract(slots, questions) -> dict:
     （question.backfilled_from 记录原考点），对合同而言该题位的产出已兑现，
     因此计回原考点；回补明细单独放在 backfilled_slots 供教师与审计查看。
     """
-    from app.domain.generation.contract import boundaries_overlap
+    from app.domain.generation.contract import (
+        boundaries_overlap,
+        boundaries_share_proposition,
+    )
 
     checks: list[dict] = []
     slot_counts: dict[str, int] = {}
@@ -201,7 +204,11 @@ def audit_paper_against_contract(slots, questions) -> dict:
     collisions = []
     for i, left in enumerate(ordered):
         for right in ordered[i + 1:]:
-            if boundaries_overlap(str(left.get("answer_boundary", "")), str(right.get("answer_boundary", ""))):
+            left_boundary = str(left.get("answer_boundary", ""))
+            right_boundary = str(right.get("answer_boundary", ""))
+            if boundaries_overlap(left_boundary, right_boundary) or boundaries_share_proposition(
+                left_boundary, right_boundary
+            ):
                 collisions.append([left.get("item_index"), right.get("item_index")])
     checks.append({"code": "answer_mutex", "passed": not collisions, "detail": {"collisions": collisions}})
 

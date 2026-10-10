@@ -113,6 +113,64 @@ def test_revision_rejects_unknown_item_index(contract, units, cards):
         )
 
 
+def test_revision_trims_newly_introduced_proposition_overlap(contract, units, cards):
+    # 修订把一张"与卷面首题换措辞共享命题"的新卡派进同考点：
+    # 后位题确定性让出重叠分句（命题唯一归属靠前题位），剔除记录合并进审计
+    anchor = contract.slots[0]
+    anchor_boundary = anchor.answer_boundary
+    patched = dict(cards)
+    patched["C1d"] = {
+        "is_core": True, "performance_statement": "掌握提示词要素综合组织",
+        "assessable_content": [f"{anchor_boundary}的另一种组织方式"],
+        "preferred_terms": [],
+        "answer_boundary": f"{anchor_boundary}的另一种组织方式，附加独立的评估约束说明",
+    }
+    patched_units = units + [
+        UnitCoverage(unit_id="U1d", exam_point_id="EP1", anchor_key="A1", card_ids=["C1d"]),
+    ]
+    target = next(s for s in reversed(contract.slots) if s.item_index > anchor.item_index)
+
+    revised = apply_slot_revisions(
+        contract,
+        revisions=[{"item_index": target.item_index,
+                    "coverage_atom": f"{anchor_boundary}的另一种组织方式"}],
+        units=patched_units, knowledge_cards=patched,
+    )
+    trimmed = next(s for s in revised.slots if s.item_index == target.item_index)
+    assert trimmed.answer_boundary == "附加独立的评估约束说明"
+    anchor_after = next(s for s in revised.slots if s.item_index == anchor.item_index)
+    assert anchor_after.answer_boundary == anchor_boundary  # 归属方不动
+
+    trims = revised.audit_summary.boundary_trims
+    assert len(trims) == 1
+    assert trims[0].item_index == target.item_index
+    assert trims[0].kept_with_item_index == anchor.item_index
+    assert trims[0].removed_clauses == [f"{anchor_boundary}的另一种组织方式"]
+
+
+def test_revision_rejects_unresolvable_proposition_overlap(contract, units, cards):
+    # 新卡答案域整段覆盖卷面首题边界且无独有分句 → 剔空，显式拒绝而非静默降级
+    anchor = contract.slots[0]
+    patched = dict(cards)
+    patched["C1e"] = {
+        "is_core": True, "performance_statement": "掌握提示词要素复述",
+        "assessable_content": [f"{anchor.answer_boundary}的全部补充说明"],
+        "preferred_terms": [],
+        "answer_boundary": f"{anchor.answer_boundary}的全部补充说明",
+    }
+    patched_units = units + [
+        UnitCoverage(unit_id="U1e", exam_point_id="EP1", anchor_key="A1", card_ids=["C1e"]),
+    ]
+    target = next(s for s in reversed(contract.slots) if s.item_index > anchor.item_index)
+    with pytest.raises(ContractRevisionError, match="命题重叠"):
+        apply_slot_revisions(
+            contract,
+            revisions=[{"item_index": target.item_index,
+                        "coverage_atom": f"{anchor.answer_boundary}的全部补充说明"}],
+            units=patched_units, knowledge_cards=patched,
+        )
+
+
 def test_empty_revisions_returns_equivalent_contract(contract, units, cards):
     revised = apply_slot_revisions(contract, revisions=[], units=units, knowledge_cards=cards)
     assert revised.model_dump() == contract.model_dump()

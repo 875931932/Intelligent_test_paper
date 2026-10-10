@@ -64,3 +64,32 @@ def _validate_comprehensive_contract(
 
 def _normalized(value: str) -> str:
     return re.sub(r"[^\w\u4e00-\u9fff]", "", value).lower()
+
+
+# 分句边界：句读与顿号均切（答案域是短句列举，"；"与"，"承载同等的命题分界）
+_CLAUSE_SPLIT = re.compile(r"[。；;，,、！!？?\n]")
+
+
+def split_boundary_clauses(text: str) -> list[str]:
+    """按句读标点切分答案域为分句（保留原文，调用方自行归一化）。"""
+    return [part.strip() for part in _CLAUSE_SPLIT.split(str(text or "")) if part.strip()]
+
+
+def cjk_compact(value: str) -> str:
+    """只保留中文字符：英文术语（LangChain/content/字段名）在同考点兄弟题位
+    间是共享词汇而非共享命题，会稀释字面比对；同命题的中文主体仍留连续片段。"""
+    return re.sub(r"[^一-鿿]", "", str(value or ""))
+
+
+def longest_common_run(left: str, right: str) -> int:
+    """最长公共连续子串长度（动态规划，O(n·m)；答案域为短句，代价可忽略）。"""
+    best = 0
+    prev = [0] * (len(right) + 1)
+    for i in range(1, len(left) + 1):
+        cur = [0] * (len(right) + 1)
+        for j in range(1, len(right) + 1):
+            if left[i - 1] == right[j - 1]:
+                cur[j] = prev[j - 1] + 1
+                best = max(best, cur[j])
+        prev = cur
+    return best

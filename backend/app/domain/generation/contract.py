@@ -13,7 +13,13 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domain.blueprint.models import PlanItem, UnitCoverage
 from app.domain.generation.archetypes import ComprehensiveArchetype, MaterialForm
-from app.domain.generation.coverage import _normalized, _validate_comprehensive_contract
+from app.domain.generation.coverage import (
+    _normalized,
+    _validate_comprehensive_contract,
+    cjk_compact,
+    longest_common_run,
+    split_boundary_clauses,
+)
 from app.domain.knowledge.relevance import semantic_text_key
 
 # 原子核心度阈值：打分基准 0.5、唯一扣分项 -0.05（含括号），
@@ -91,6 +97,35 @@ def boundaries_overlap(left: str, right: str) -> bool:
     return min(len(a), len(b)) >= 4 and (a in b or b in a)
 
 
+# 分句级命题重叠阈值：真实 42 题合同样本上，中文分句共享 ≥6 连续字符恰好
+# 命中 3 对同考点重叠（含线上重复题事故对），零跨考点误报；降到 5 会让
+# "结构化输出"这类领域术语把 10 对不同命题题位误判为重叠。
+_PROPOSITION_CLAUSE_MIN_RUN = 6
+
+
+def boundaries_share_proposition(left: str, right: str) -> bool:
+    """分句级命题重叠：任一中文分句对共享 ≥6 连续字符视为同一命题。
+
+    整串互含（boundaries_overlap）看不见换措辞的同命题——线上事故中两张卡的
+    答案域分别写作"最终回复需通过['messages'][-1].content获取"与"最终回复为
+    消息列表最后一项的content字段"，互不包含却考查同一事实，两题重复计分。
+    英文术语（content/LangChain）与引导语在同考点兄弟题位间是共享词汇而非
+    共享命题，故比对限定中文分句。
+    """
+    left_frags = [
+        frag for frag in (cjk_compact(clause) for clause in split_boundary_clauses(left))
+        if len(frag) >= _PROPOSITION_CLAUSE_MIN_RUN
+    ]
+    right_frags = [
+        frag for frag in (cjk_compact(clause) for clause in split_boundary_clauses(right))
+        if len(frag) >= _PROPOSITION_CLAUSE_MIN_RUN
+    ]
+    return any(
+        longest_common_run(a, b) >= _PROPOSITION_CLAUSE_MIN_RUN
+        for a in left_frags for b in right_frags
+    )
+
+
 class ForbiddenContext(BaseModel):
     """该题生成时必须避开的同考点其他题内容。"""
     model_config = ConfigDict(extra="forbid")
@@ -145,7 +180,7 @@ class ContractSlot(BaseModel):
 class ContractConflict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    code: str  # atom_pool_insufficient | cluster_exhausted | missing_exam_point
+    code: str  # atom_pool_insufficient | cluster_exhausted | missing_exam_point | boundary_overlap
     exam_point_id: str = ""
     message: str
     detail: dict = Field(default_factory=dict)
@@ -171,6 +206,22 @@ class BackfilledPoint(BaseModel):
     anchor_key: str
 
 
+class BoundaryTrim(BaseModel):
+    """同考点兄弟答案域命题重叠时，后位题被确定性剔除的分句（命题唯一归属）。
+
+    重叠命题只能归一个题位考：卷面靠前题位保留完整答案域，后位题剔除重叠
+    分句；被剔除命题仍经前位题的 forbidden_context 流入后位题的禁用面，
+    生成端得到一致指令（自己的答案域不再含该命题，且明确禁用它）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    item_index: int
+    kept_with_item_index: int
+    exam_point_id: str
+    removed_clauses: list[str]
+
+
 class ContractAuditSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -178,6 +229,7 @@ class ContractAuditSummary(BaseModel):
     type_counts: dict[str, int] = Field(default_factory=dict)
     difficulty_counts: dict[str, int] = Field(default_factory=dict)
     backfilled_points: list[BackfilledPoint] = Field(default_factory=list)
+    boundary_trims: list[BoundaryTrim] = Field(default_factory=list)
 
 
 class PaperContract(BaseModel):
@@ -187,6 +239,91 @@ class PaperContract(BaseModel):
     slots: list[ContractSlot]
     conflicts: list[ContractConflict] = Field(default_factory=list)
     audit_summary: ContractAuditSummary = Field(default_factory=ContractAuditSummary)
+
+
+# 剔除判据：共享中文连续片段 ≥4 字符，且覆盖该分句紧凑文本 ≥25%。
+# 比对判据（≥6 触发整对修剪）更宽——触发即说明两答案域确有命题交集，须把
+# 后位题的命题本体一并让出；但覆盖比守住 25%，避免"类中间件"这类仅共享
+# 领域术语（占长分句一小截）的分句被误剔。
+_TRIM_MIN_RUN = 4
+_TRIM_RATIO = 0.25
+
+
+def trim_sibling_proposition_overlap(
+    slots: list[ContractSlot],
+) -> tuple[list[ContractSlot], list[BoundaryTrim], list[ContractConflict]]:
+    """同考点兄弟答案域命题重叠时，确定性剔除后位题的重叠分句。
+
+    同考点两张知识卡的答案域可能各自包含同一命题（线上事故：单选与判断同考
+    "最终回复在消息列表最后一项 content"，两题重复计分）。重叠命题必须唯一归属：
+    卷面靠前题位保留完整答案域，后位题让出与前位共享命题的分句；被剔除命题仍
+    经前位题的 forbidden_context 流入后位题禁用面，生成端得到一致指令。剔除后
+    仍重叠、或剔除会清空答案域时不动边界、显式报 conflict 交教师处置，绝不静默
+    降级。返回（更新后的槽位、剔除记录、冲突）。
+    """
+    updated = {slot.item_index: slot.model_copy(deep=True) for slot in slots}
+    trims: list[BoundaryTrim] = []
+    conflicts: list[ContractConflict] = []
+    ordered = sorted(slots, key=lambda slot: slot.item_index)
+    for i, left in enumerate(ordered):
+        for right in ordered[i + 1:]:
+            if left.exam_point_id != right.exam_point_id:
+                continue
+            if not boundaries_share_proposition(left.answer_boundary, right.answer_boundary):
+                continue
+            keeper, loser = left, right  # 卷面靠前题位保留命题归属
+            keeper_frags = [
+                frag for frag in (
+                    cjk_compact(clause)
+                    for clause in split_boundary_clauses(updated[keeper.item_index].answer_boundary)
+                )
+                if len(frag) >= _TRIM_MIN_RUN
+            ]
+            loser_now = updated[loser.item_index]
+            kept: list[str] = []
+            removed: list[str] = []
+            for clause in split_boundary_clauses(loser_now.answer_boundary):
+                frag = cjk_compact(clause)
+                shared = (
+                    max(longest_common_run(frag, kf) for kf in keeper_frags)
+                    if frag else 0
+                )
+                if (
+                    frag
+                    and len(frag) >= _TRIM_MIN_RUN
+                    and shared >= _TRIM_MIN_RUN
+                    and shared / len(frag) >= _TRIM_RATIO
+                ):
+                    removed.append(clause)
+                else:
+                    kept.append(clause)
+            if kept and removed:
+                updated[loser.item_index] = loser_now.model_copy(
+                    update={"answer_boundary": "；".join(kept)}
+                )
+                trims.append(BoundaryTrim(
+                    item_index=loser.item_index,
+                    kept_with_item_index=keeper.item_index,
+                    exam_point_id=left.exam_point_id,
+                    removed_clauses=removed,
+                ))
+            if boundaries_share_proposition(
+                updated[keeper.item_index].answer_boundary,
+                updated[loser.item_index].answer_boundary,
+            ):
+                conflicts.append(ContractConflict(
+                    code="boundary_overlap",
+                    exam_point_id=left.exam_point_id,
+                    message=(
+                        f"题位 {loser.item_index} 与题位 {keeper.item_index} 答案域命题重叠"
+                        "且无法确定性剔除，需教师修订后重新分配"
+                    ),
+                    detail={
+                        "keeper_item_index": keeper.item_index,
+                        "loser_item_index": loser.item_index,
+                    },
+                ))
+    return [updated[slot.item_index] for slot in slots], trims, conflicts
 
 
 @dataclass(frozen=True)

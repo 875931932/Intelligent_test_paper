@@ -1,5 +1,6 @@
 from app.domain.blueprint.models import BlueprintRequest, UnitCoverage
-from app.domain.generation.contract import boundaries_overlap
+from app.domain.generation.contract import boundaries_overlap, boundaries_share_proposition
+from app.domain.generation.coverage import split_boundary_clauses
 from app.services.contract_service import ContractRequest, allocate_paper_contract
 
 
@@ -414,3 +415,44 @@ def test_cross_point_boundary_collision_reports_conflict():
     exhausted = [c for c in contract.conflicts if c.code == "cluster_exhausted"]
     assert exhausted and exhausted[0].exam_point_id == "EP2"
     assert [s.exam_point_id for s in contract.slots] == ["EP1"]
+
+
+def test_allocate_trims_sibling_proposition_overlap_and_records():
+    # 同考点三张卡两两换措辞共享同一命题（线上重复题事故形态）：
+    # 分配后后位题确定性让出重叠分句，命题唯一归属靠前题位，剔除留痕。
+    cards = _cards()
+    cards["C1a"]["answer_boundary"] = (
+        "Agent调用invoke的返回值为包含完整消息历史的列表，"
+        "最终回复需通过['messages'][-1].content获取；"
+        "AIMessage的content字段存储模型回执文本"
+    )
+    cards["C1b"]["answer_boundary"] = (
+        "Agent invoke返回完整消息历史，最终回复为消息列表最后一项的content字段；"
+        "纯文本回复时tool_calls为空列表"
+    )
+    cards["C1c"]["answer_boundary"] = (
+        "Agent执行返回的完整消息历史供调试，最终回复在消息列表末项的content里；"
+        "超时重试由stop_reason标记终止原因"
+    )
+    contract = allocate_paper_contract(_request(knowledge_cards=cards))
+
+    ep1 = sorted(
+        (s for s in contract.slots if s.exam_point_id == "EP1"),
+        key=lambda s: s.item_index,
+    )
+    assert len(ep1) == 2
+    # 修剪后兄弟答案域不再共享命题（重复通道关闭）
+    assert not boundaries_share_proposition(ep1[0].answer_boundary, ep1[1].answer_boundary)
+    # 靠前题位保留完整答案域，后位题只留非共享分句
+    assert len(ep1[0].answer_boundary) > len(ep1[1].answer_boundary)
+    assert len(split_boundary_clauses(ep1[1].answer_boundary)) == 1
+
+    trims = contract.audit_summary.boundary_trims
+    assert len(trims) == 1
+    assert trims[0].item_index == ep1[1].item_index
+    assert trims[0].kept_with_item_index == ep1[0].item_index
+    assert len(trims[0].removed_clauses) == 2
+    # 可净剔 → 不产生显式冲突
+    assert all(c.code != "boundary_overlap" for c in contract.conflicts)
+    # 后位题禁用面来自靠前题完整答案域：被让出的命题仍被禁用，生成端指令一致
+    assert set(ep1[1].forbidden_context.answer_cores) >= {ep1[0].answer_boundary}

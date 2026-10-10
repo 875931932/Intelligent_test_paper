@@ -20,6 +20,7 @@ from app.config import settings
 from app.domain.framework.exam_rules import canonical_question_type
 from app.domain.generation.batching import QuestionBatch, split_contract_into_batches
 from app.domain.generation.contract import ContractSlot, _normalized, boundaries_overlap
+from app.domain.generation.coverage import longest_common_run, split_boundary_clauses
 from app.schemas.generation import compile_batch_generation_payload
 from app.services.generation_service import (
     answer_option_keys,
@@ -60,16 +61,7 @@ def _compact_text(value) -> str:
 
 
 def _longest_common_run(left: str, right: str) -> int:
-    best = 0
-    prev = [0] * (len(right) + 1)
-    for i in range(1, len(left) + 1):
-        cur = [0] * (len(right) + 1)
-        for j in range(1, len(right) + 1):
-            if left[i - 1] == right[j - 1]:
-                cur[j] = prev[j - 1] + 1
-                best = max(best, cur[j])
-        prev = cur
-    return best
+    return longest_common_run(left, right)
 
 
 def _answer_hits_boundary(question: dict, boundary: str) -> bool:
@@ -130,6 +122,13 @@ def _check_question(question: dict, slot: ContractSlot) -> dict:
         core = _normalized(core_raw)
         if len(core) >= 6 and core in surface:
             reasons.append(f"题干泄漏同考点其他题答案核心：{core_raw[:24]}…")
+            continue
+        # 分句级：整段未照抄但照抄了兄弟答案核心的单个分句（换措辞拼接的
+        # 漏网形态），同样构成互避失效——线上重复题事故即由此路径穿过
+        for clause in split_boundary_clauses(core_raw):
+            part = _normalized(clause)
+            if len(part) >= 6 and part in surface:
+                reasons.append(f"题干泄漏同考点其他题答案核心分句：{clause[:24]}…")
     # 判断题答案是对原子的真伪判断，不以答案域文本承载：
     # 跳过答案边界命中检查，其质量由布尔校验 + 禁用上下文泄漏检查保障
     if slot.question_type != "true_false" and not _answer_hits_boundary(question, slot.answer_boundary):

@@ -21,6 +21,7 @@ from app.domain.generation.contract import (
     boundaries_overlap,
     build_exam_point_pools,
     cluster_pool_atoms,
+    trim_sibling_proposition_overlap,
 )
 from app.services.blueprint_service import allocate_plan_items
 
@@ -367,6 +368,11 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract:
                 **extra,
             ))
 
+    # 同考点命题唯一归属：兄弟答案域共享命题时，确定性剔除后位题重叠分句
+    # （剔除后仍重叠或会剔空则显式报 conflict，绝不静默生成重复题）
+    slots, boundary_trims, overlap_conflicts = trim_sibling_proposition_overlap(slots)
+    conflicts.extend(overlap_conflicts)
+
     # 禁用上下文：同考点兄弟题位
     final_slots: list[ContractSlot] = []
     for slot in slots:
@@ -402,6 +408,7 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract:
             for level in sorted({s.difficulty for s in final_slots})
         },
         backfilled_points=backfilled_points,
+        boundary_trims=boundary_trims,
     )
     return PaperContract(total_score=total, slots=final_slots, conflicts=conflicts, audit_summary=summary)
 
@@ -438,6 +445,11 @@ def apply_slot_revisions(
         slot.answer_boundary = match.boundary
 
     slots = list(updated.values())
+    # 同考点命题唯一归属：教师换单原子可能把兄弟共享命题重新引入答案域，
+    # 先确定性让出重叠分句；仍无法让出（剔空/剔不净）即显式拒绝修订
+    slots, boundary_trims, overlap_conflicts = trim_sibling_proposition_overlap(slots)
+    if overlap_conflicts:
+        raise ContractRevisionError(overlap_conflicts[0].message)
     # 修订后全卷原子唯一性（空 answer_boundary 可绕过边界互斥，需显式去重）
     seen_atoms: dict[str, int] = {}
     for slot in slots:
@@ -464,4 +476,10 @@ def apply_slot_revisions(
             answer_cores=[s.answer_boundary for s in siblings if s.answer_boundary],
         )}))
     final.sort(key=lambda s: s.item_index)
-    return contract.model_copy(update={"slots": final})
+    # 剔除记录按题位合并进审计（本题位的新记录覆盖分配时的旧记录）
+    merged_trims = {t.item_index: t for t in contract.audit_summary.boundary_trims}
+    merged_trims.update({t.item_index: t for t in boundary_trims})
+    summary = contract.audit_summary.model_copy(
+        update={"boundary_trims": list(merged_trims.values())}
+    )
+    return contract.model_copy(update={"slots": final, "audit_summary": summary})

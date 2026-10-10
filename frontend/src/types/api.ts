@@ -460,11 +460,20 @@ export interface BackfilledPoint {
   to_exam_point_title?: string;
 }
 
+export interface BoundaryTrim {
+  item_index: number;
+  kept_with_item_index: number;
+  exam_point_id: string;
+  removed_clauses: string[];
+}
+
 export interface ContractAuditSummary {
   exam_points: ExamPointProportion[];
   type_counts: Record<string, number>;
   difficulty_counts: Record<string, number>;
   backfilled_points?: BackfilledPoint[];
+  /** 同考点命题唯一归属：后位题被确定性剔除的重叠分句记录 */
+  boundary_trims?: BoundaryTrim[];
 }
 
 // ── Exam Projects ──

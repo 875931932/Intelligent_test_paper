@@ -1,6 +1,6 @@
 # PaperPact·AI 命题系统 · 交接文档
 
-> 更新日期：2026-10-07
+> 更新日期：2026-10-10
 > 状态：引擎层 + 教师工作台 + 试卷模块（含考试侧重点与 AI 落点：考核规则助手 / 蓝图题位建议 / 框架候选评审 / 助手自然语言出卷提案链 / 使用引导卡）均已交付；出卷全链路可在浏览器端走通
 > 产品基线：`docs/superpowers/specs/2026-08-12-ai-final-exam-paper-design.md`（v2.3，务必先读）
 > 链路设计：`docs/superpowers/specs/2026-08-17-contract-first-generation-design.md`（合同优先生成）
@@ -159,7 +159,7 @@ MinerU 解析 → 双大纲框架确认 → 知识目录发布 → 蓝图/合同
 | 补抽机制 | demo topup 调用 | 首轮不足目标时二轮抽取 |
 | 聚类三信号：bigram Jaccard>0.5 + 共享英文术语锚 + **相同 concept_cluster 标签** | `contract.py cluster_pool_atoms` | 纯中文枚举类原子（"提示词要素"系列）字面相似度极低且无英文锚，只有画像标签能识别为同簇 |
 | 种子扰动分配 | `contract.py _pick_atom` 评分元组末位 + `ContractRequest.allocation_seed` | 并列打破随机化：同种子复现同卷，异种子换原子组合（A/B 卷）；不传=确定性 |
-| 答案域互斥 | `boundaries_overlap`（归一化后相等或互含≥4字符） | 防两题答案可互抄 |
+| 答案域互斥 → 命题唯一归属（2026-10-10 升级） | `boundaries_overlap`（归一化后相等或互含≥4字符）+ `boundaries_share_proposition`（中文分句共享连续片段≥6，`coverage.py split_boundary_clauses/cjk_compact/longest_common_run`）；命中即 `contract.py trim_sibling_proposition_overlap` 确定性让出后位题重叠分句，记录 `audit_summary.boundary_trims`，剔空报 `boundary_overlap` 冲突绝不静默 | 防两题答案可互抄；换措辞的同命题整串互含看不见（线上事故：单选3与判断1同考"最终回复在最后一项content"，重复计分）——合同分配与教师修订两处修剪、生成终检 `_check_question` 分句泄漏拦截、整卷审计 `answer_mutex` 同步升级三层兜底 |
 | 核心度门槛阶梯 0.6→0.5→0.45 | demo 分配循环 | 0.45 是打分函数数学地板（基准0.5-最大罚分0.05），不静默降级也不硬失败 |
 | 蓝图题位容量缩容（2026-10-07） | `exam_rules.type_rules_from_ratios(capacity=...)` + `blueprint_persistence_service._atom_capacity` | 知识卡池可出题位（Σ 考点答案域容量，与合同同口径）小于蓝图题位数时，合同只给领到原子的题位建槽、其余按题号顺序静默丢弃——排在各章末尾的**综合题先全灭**（实测 42 题位 → 29 题、综合 0 道、卷面 45 分）。缩容保持每题型的**分值预算不变**（总分 100 与题型占比不失真），题数按容量比例缩减并吸附"能整除 2·S"的最近合法值（单题分值恒为 0.5 倍数、只升不降、题型不归零）；该课缩容后 = 单选 8×2.5 / 判断 10×2 / 填空 4×2.5 / 简答 4×5 / 综合 2×15 = 28 题 100 分。⚠️ 冻结即不可变：缩容只对**新建**蓝图生效，改动前创建的蓝图需重建后才按比例出卷 |
 
@@ -439,9 +439,23 @@ frontend\src\
   `STANDARD_VERSION` 写入 `generation_runs.contract_snapshot.standard_version`，随"确认即
   冻结"锁死（旧合同缺键按可选处理，不原地改历史）；`get_current_contract_snapshot` 白名单
   透传该键，allocate/修订预览不带（预览未冻结）
-- ✅ 后端门禁全绿：`uv run pytest -q` **1526 passed / 1 xfailed**（唯一 xfail=编造检测的
-  联合 bigram 阈值已知缺口，测试 docstring 注明根因）+ 覆盖率 **86.80%**（≥80 门禁，
-  2026-10-10 实测）；前端 `npm run build` 0 error、
+- ✅ **同考点重复命题根治（命题唯一归属）**（2026-10-10）：线上卷单选 3 与判断 1
+  换措辞同考"最终回复在消息列表最后一项 content"重复计分——根因 = 答案域互斥只认
+  整串互含，换措辞即漏网。三层根治（封存 `generation_graph.py` 改动经用户授权，
+  改后全量套件重跑）：①合同层 `boundaries_share_proposition`（中文分句共享连续片段
+  ≥6；真实 42 题合同 4 轮标定：恰命中 3 对同考点、零跨考点误报）+
+  `trim_sibling_proposition_overlap` 确定性让出后位题重叠分句（命题唯一归属靠前
+  题位、被剔分句仍进前位题 forbidden 面、剔空报 `boundary_overlap` 冲突交教师绝不
+  静默），`allocate` 与 `apply_slot_revisions` 两处接线，`audit_summary.boundary_trims`
+  留痕（前端 `api.ts` 镜像）；②生成终检 `_check_question` 泄漏校验升级为**分句级**
+  （整段未抄、抄单分句也拦）；③整卷审计 `answer_mutex` 升级为
+  `boundaries_overlap or boundaries_share_proposition`。（+12 测试）
+  设计：`docs/superpowers/specs/2026-10-10-sibling-proposition-ownership-design.md`
+- ✅ 后端门禁（2026-10-10 实测）：本任务 +12 测试全过；全量 **1539 passed /
+  1 xfailed**（唯一 xfail=编造检测的联合 bigram 阈值已知缺口，测试 docstring 注明
+  根因）+ 覆盖率 **86.83%**（≥80 门禁）。⚠️ 同工作树并行在途的管理控制台改动使
+  `test_database_bootstrap` 2 项暂红（新增 `organizations` 表尚未同步测试期望，
+  属该工作线非本任务引入）；前端 `npm run build` 0 error、
   oxlint 0 error（warning 均为既有文件基线，最近一次实测 2026-10-10）
 
 ### 已知问题（不阻塞，接手时留意）
@@ -493,6 +507,7 @@ frontend\src\
 | 产品设计基线 v2.3 | `docs/superpowers/specs/2026-08-12-ai-final-exam-paper-design.md` | 产品对象/权限/数据边界/P0-P5/27条必测场景（**接手必读**） |
 | 合同优先生成设计 | `docs/superpowers/specs/2026-08-17-contract-first-generation-design.md` | 命题引擎重构的完整设计 rationale |
 | 难度特征标准设计 | `docs/superpowers/specs/2026-10-07-difficulty-feature-standard-design.md` | 六维特征 D1~D6 / 三档操作定义 / 四段管线 / v1 范围与 v2 展望（问卷实证校准） |
+| 命题唯一归属设计 | `docs/superpowers/specs/2026-10-10-sibling-proposition-ownership-design.md` | 重复题事故根因 / 分句命题判据（阈值 6 标定）/ 修剪三条判据 / 三层防线与测试清单 |
 | 实施计划存档 | `docs/superpowers/plans/` | 历轮迭代的实施记录（历史档案，路径可能已变） |
 | 部署 | `docs/DEPLOY_UBUNTU.md` | Ubuntu 部署前置条件与验收顺序 |
 | 演示素材 | `docs/素材/` | 考核大纲 + 17 份实验报告 + 答卷/评分标准范本 |

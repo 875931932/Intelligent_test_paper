@@ -114,6 +114,19 @@ def test_forbidden_context_leak_is_caught_and_retried():
     assert len(gateway.retry_payloads) == 1
 
 
+def test_forbidden_answer_core_clause_leak_is_caught_and_retried():
+    # 整段答案核心未照抄、但照抄了其中单个分句（换措辞拼接的漏网形态）：
+    # 旧整段判据看不见，分句判据必须拦下并触发重试——线上重复题的终检防线
+    core = "最终回复需通过messages1content获取；AIMessage的content字段存储模型回执文本"
+    slot1 = _slot(1, forbidden_context={"atoms": [], "answer_cores": [core]})
+    leaking = _question(1, stem="关于AIMessage的content字段存储模型回执文本的说法，下列正确的是")
+    gateway = FakeBatchGateway(scenarios={1: [leaking, _question(1)]})
+    result = build_generation_graph(gateway).invoke(_state([slot1, _slot(2)]))
+    question = next(q for q in result["questions"] if q["item_index"] == 1)
+    assert question["quality"]["status"] == "pass"
+    assert len(gateway.retry_payloads) == 1
+
+
 def test_answer_must_hit_boundary():
     off_boundary = _question(1, answer="完全无关的答案内容样例文本")
     gateway = FakeBatchGateway(scenarios={1: [off_boundary, _question(1)]})
