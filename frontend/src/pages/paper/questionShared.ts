@@ -171,6 +171,55 @@ export function draftFromProposal(p: AiCreateProposal): Draft {
   };
 }
 
+// ─── 综合题分问显示 ───
+
+/**
+ * 分问编号前缀剥离：模型常把「（1）」「2、」写进分问 prompt，而界面自己编号，
+ * 不剥掉会叠成「（1）（1）」。与后端导出 _SUB_INDEX_RE 同口径。
+ */
+const SUB_INDEX_RE = /^\s*(?:[（(]\s*\d{1,2}\s*[）)]|\d{1,2}\s*[、．.)])\s*/;
+
+export function stripSubIndex(text: string): string {
+  return text.replace(SUB_INDEX_RE, '');
+}
+
+/**
+ * 内联分问列表拆行：题干/答案里的「（1）…（2）…」连排成一段时按编号断行，
+ * 不再糊成一坨。只在出现「从 1 起连续递增、至少 2 个编号」的簇时生效，
+ * 避免误伤正文里单独出现的「（1）」或「（2024）」年份；已在行首的编号不动。
+ */
+export function splitInlineSubList(text: string): string {
+  if (!text) return text;
+  const ms: Array<{ idx: number; n: number }> = [];
+  const re = /[（(]\s*(\d{1,2})\s*[）)]/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) ms.push({ idx: m.index, n: Number(m[1]) });
+  if (ms.length < 2) return text;
+
+  const cuts: number[] = [];
+  let start = 0;
+  for (let i = 1; i <= ms.length; i++) {
+    if (i < ms.length && ms[i].n === ms[i - 1].n + 1) continue;
+    // 簇结束于 i-1：长度 ≥2 且从 1 起步才拆（保守判据）
+    if (i - 1 > start && ms[start].n === 1) {
+      for (let j = start + 1; j <= i - 1; j++) {
+        const p = ms[j].idx;
+        if (p > 0 && text[p - 1] !== '\n') cuts.push(p);
+      }
+    }
+    start = i;
+  }
+  if (cuts.length === 0) return text;
+
+  let out = '';
+  let last = 0;
+  for (const p of cuts) {
+    out += text.slice(last, p) + '\n';
+    last = p;
+  }
+  return out + text.slice(last);
+}
+
 /** 可导出的三份卷面 + 答案细则 JSON；前三种同时也是整体预览的页签 */
 export type ExportKind = PaperExportKind;
 export type PreviewKind = Exclude<ExportKind, 'json'>;

@@ -9,6 +9,7 @@ import { StemBlocks } from './StemBlocks';
 import {
   type EditorSubmit,
   draftFromItem, normalizeAnswer, optionKeysOf, optionsToEntries, rubricText,
+  splitInlineSubList, stripSubIndex,
 } from './questionShared';
 
 // ─── 右栏：当前题目详情 / 编辑器 ───
@@ -68,6 +69,19 @@ export function QuestionDetail({
   const opts = optionsToEntries(item.options);
   const keys = optionKeysOf(item.answer, opts.map((o) => o.text));
   const answerText = normalizeAnswer(item.answer);
+
+  // 综合题分问：subquestions 此前从未在站内渲染（教师只能看到引导段 + 一坨合并答案）。
+  // 结构化逐问题面/答案各自成块，与导出 HTML 的 q-sub 形态对齐。
+  const subs = (Array.isArray(item.subquestions) ? item.subquestions : []).map((s) => {
+    const o = (s ?? {}) as Record<string, unknown>;
+    return {
+      prompt: stripSubIndex(typeof o.prompt === 'string' ? o.prompt : ''),
+      score: typeof o.score === 'number' ? o.score : null,
+      answer: normalizeAnswer(o.answer),
+    };
+  });
+  // 逐问答案齐全才走逐问展示；有缺漏则回落原合并答案块，不藏信息
+  const subAnswersComplete = subs.length > 0 && subs.every((s) => s.answer.trim());
 
   // 难度依据（改进方案 2.4）：v2 报告 {checks, risks, unverified} 存于 quality_audit.quality；
   // v2 之前生成的卷没有分层报告 → hasReport=false 显示降级文案
@@ -174,6 +188,32 @@ export function QuestionDetail({
             </div>
           )}
 
+          {/* 综合题分问：每问独立成块（浅底 + 左侧强调线），题面与分值分列两端 */}
+          {subs.length > 0 && (
+            <div style={{ marginTop: '12px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {subs.map((s, i) => (
+                <div key={i} style={{
+                  display: 'flex', gap: '10px', alignItems: 'flex-start',
+                  padding: '8px 14px', borderRadius: 'var(--radius-sm)',
+                  background: 'var(--fill)', borderLeft: '3px solid var(--accent)',
+                  fontSize: '0.95rem', lineHeight: 1.75,
+                }}>
+                  <span style={{ fontWeight: 600, color: 'var(--accent)', flexShrink: 0 }}>（{i + 1}）</span>
+                  <span style={{ flex: 1, minWidth: 0 }}>
+                    {s.prompt
+                      ? <StemBlocks text={s.prompt} />
+                      : <span style={{ color: 'var(--text-tertiary)' }}>（缺分问题面）</span>}
+                  </span>
+                  {s.score != null && (
+                    <span style={{ flexShrink: 0, fontSize: '0.8rem', color: 'var(--text-tertiary)', whiteSpace: 'nowrap', marginTop: 2 }}>
+                      （{formatScore(s.score)} 分）
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
           {opts.length > 0 ? (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginTop: '14px' }}>
               {opts.map((o) => {
@@ -191,6 +231,34 @@ export function QuestionDetail({
                 );
               })}
             </div>
+          ) : subAnswersComplete ? (
+            /* 逐问答案：每问独立成块（成功色底），合并答案收进折叠区可查 */
+            <div style={{ marginTop: '14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              {subs.map((s, i) => (
+                <div key={i} style={{
+                  padding: '8px 14px', borderRadius: 'var(--radius-sm)',
+                  background: 'var(--success-subtle)', fontSize: '0.925rem', lineHeight: 1.75,
+                  whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                }}>
+                  <span style={{ fontWeight: 600, fontSize: '0.78rem', display: 'block', marginBottom: 3, opacity: 0.7, color: 'var(--success)' }}>
+                    答案（{i + 1}）
+                  </span>
+                  {splitInlineSubList(s.answer)}
+                </div>
+              ))}
+              {answerText && (
+                <details style={{ fontSize: '0.875rem' }}>
+                  <summary style={{ cursor: 'pointer', color: 'var(--text-tertiary)', userSelect: 'none' }}>整题合并答案</summary>
+                  <div style={{
+                    marginTop: '6px', padding: '10px 14px', borderRadius: 'var(--radius-sm)',
+                    background: 'var(--accent-subtle)', fontSize: '0.925rem', lineHeight: 1.75,
+                    whiteSpace: 'pre-wrap', wordBreak: 'break-word',
+                  }}>
+                    {splitInlineSubList(answerText)}
+                  </div>
+                </details>
+              )}
+            </div>
           ) : (
             <div style={{
               marginTop: '14px', padding: '10px 14px', borderRadius: 'var(--radius-sm)', fontSize: '0.925rem', lineHeight: 1.75,
@@ -199,7 +267,8 @@ export function QuestionDetail({
               whiteSpace: 'pre-wrap', wordBreak: 'break-word',
             }}>
               <span style={{ fontWeight: 600, fontSize: '0.78rem', display: 'block', marginBottom: 3, opacity: 0.7 }}>答案</span>
-              {answerText || '未填写答案 —— 这道题导出答卷时会标注为「缺答案」，请补上'}
+              {/* 内联「（1）…（2）…」合并答案同样拆行，不再连排一段 */}
+              {splitInlineSubList(answerText) || '未填写答案 —— 这道题导出答卷时会标注为「缺答案」，请补上'}
             </div>
           )}
 

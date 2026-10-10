@@ -1,4 +1,5 @@
 import { useMemo, type CSSProperties } from 'react';
+import { splitInlineSubList } from './questionShared';
 
 // ─── 阅读态题干分块：与后端导出 _stem_html 同一套解析规则 ───
 // GFM 管道表格 → 真表格，``` 围栏 → 等宽代码块，其余保持 pre-wrap 原文。
@@ -135,7 +136,8 @@ export function StemBlocks({ text }: { text: string }) {
           );
         }
         return (
-          <div key={i} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{b.text}</div>
+          // 内联「（1）…（2）…」拆行：综合题分问连排时各自成行，代码/表格块不参与
+          <div key={i} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{splitInlineSubList(b.text)}</div>
         );
       })}
     </>
