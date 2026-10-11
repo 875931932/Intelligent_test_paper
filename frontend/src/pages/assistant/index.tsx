@@ -122,12 +122,22 @@ const PROPOSAL_META: Record<string, { label: string; impact: string }> = {
   },
 };
 
-/** 首屏空状态的引导问题（点击即发送） */
+/**
+ * 首屏空状态的引导问题（点击即发送）——覆盖两类意图，让用户一眼知道
+ * 助手能问什么：职责类（你会干什么）、进度类、资料类、流程类（使用引导）。
+ */
 const SUGGESTIONS = [
+  '你会干什么？',
   '课程现在到哪一步了？',
   '总结教学大纲讲了什么？',
-  '有哪些试卷项目？',
+  '出卷流程是什么？',
 ];
+
+/** 欢迎卡的职责简介：与后端提示词「身份与职责」同口径（代劳/引导/界限） */
+const ASSISTANT_INTRO =
+  '我能代劳：查询课程进度与卷面状态、资料内容问答与总结、出卷主线的操作提案（由你确认后执行）；' +
+  '出题改题、试卷定稿与导出、删除资料，我会引导你到对应页面亲自完成；' +
+  '在线考试与阅卷不在系统范围内，我也只操作本课程的数据。';
 
 /**
  * 提案卡详情弹窗的跳转目标：蓝图/合同类走试卷页阶段深链（?stage=），
@@ -1159,12 +1169,6 @@ function ProposalCard({
         <Badge variant={auto ? 'purple' : 'info'}>{auto ? '自动执行' : '待确认提案'}</Badge>
         <strong style={{ fontSize: '0.85rem' }}>{meta?.label ?? tool}</strong>
       </div>
-      {/* 模型回复的重点：卡面只留结论与关键数字，重表收进详情弹窗 */}
-      {message.content && (
-        <p style={{ fontSize: '0.83rem', lineHeight: 1.65, color: 'var(--text-secondary)', margin: 0 }}>
-          {message.content}
-        </p>
-      )}
       <KVTable rows={rows} />
       {hasDetails && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -1777,10 +1781,7 @@ const AssistantPage: FC = () => {
               </span>
               <strong style={{ fontSize: '0.9rem' }}>你好，我是本课程的 AI 助手</strong>
             </div>
-            <p style={muted}>
-              我能回答课程进度、资料解析、蓝图/合同/试卷状态的问题，也能基于已解析的
-              资料正文总结与问答；修改类操作会生成提案卡，由你确认后执行。
-            </p>
+            <p style={muted}>{ASSISTANT_INTRO}</p>
             <Button onClick={() => void handleNewSession()} icon={<Plus size={15} />}>
               开始新对话
             </Button>
@@ -1795,10 +1796,7 @@ const AssistantPage: FC = () => {
               </span>
               <strong style={{ fontSize: '0.9rem' }}>你好，我是本课程的 AI 助手</strong>
             </div>
-            <p style={muted}>
-              我能回答课程进度、资料解析、蓝图/合同/试卷状态的问题，也能基于已解析的
-              资料正文总结与问答；修改类操作会生成提案卡，由你确认后执行。试试：
-            </p>
+            <p style={muted}>{ASSISTANT_INTRO}试试：</p>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {SUGGESTIONS.map((s) => (
                 <Button key={s} size="sm" variant="secondary" className="chat-suggestion" onClick={() => void send(s)}>
@@ -1891,22 +1889,30 @@ const AssistantPage: FC = () => {
                       )}
                     </>
                   ) : m.action.kind === 'proposal' ? (
-                    <ProposalCard
-                      message={m}
-                      busy={busyMessageId === m.id}
-                      progress={autoProgress[m.id]}
-                      generation={
-                        m.action.payload?.project_id
-                          ? generationProgress[m.action.payload.project_id]
-                          : undefined
-                      }
-                      courseId={courseId}
-                      onNavigate={navigate}
-                      onConfirm={(msg) => void handleConfirm(msg)}
-                      onDismiss={(msg) => void handleDismiss(msg)}
-                      onRetry={(msg) => retryProposal(msg.id)}
-                      onOpenPaper={(pid) => navigate(`/courses/${courseId}/paper?project=${pid}`)}
-                    />
+                    <>
+                      {/* 与 result/sources 一致：正文气泡在上、提案卡在下 */}
+                      {m.content && (
+                        <div className="chat-text">
+                          <MarkdownText text={m.content} />
+                        </div>
+                      )}
+                      <ProposalCard
+                        message={m}
+                        busy={busyMessageId === m.id}
+                        progress={autoProgress[m.id]}
+                        generation={
+                          m.action.payload?.project_id
+                            ? generationProgress[m.action.payload.project_id]
+                            : undefined
+                        }
+                        courseId={courseId}
+                        onNavigate={navigate}
+                        onConfirm={(msg) => void handleConfirm(msg)}
+                        onDismiss={(msg) => void handleDismiss(msg)}
+                        onRetry={(msg) => retryProposal(msg.id)}
+                        onOpenPaper={(pid) => navigate(`/courses/${courseId}/paper?project=${pid}`)}
+                      />
+                    </>
                   ) : m.action.kind === 'sources' ? (
                     <>
                       <div className="chat-text">
