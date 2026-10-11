@@ -456,3 +456,15 @@ def test_allocate_trims_sibling_proposition_overlap_and_records():
     assert all(c.code != "boundary_overlap" for c in contract.conflicts)
     # 后位题禁用面来自靠前题完整答案域：被让出的命题仍被禁用，生成端指令一致
     assert set(ep1[1].forbidden_context.answer_cores) >= {ep1[0].answer_boundary}
+
+
+def test_seed_insensitive_points_flag_exam_points_without_slack():
+    """容量无富余的考点登记为换版不敏感：EP2 恰好 3 卡对 3 题 → 在列；
+    EP1 容量 3 > 配额 2（有富余，seed 可扰动）→ 不在列。审计字段随
+    model_dump 进快照透传前端。"""
+    contract = allocate_paper_contract(_request())
+
+    assert contract.audit_summary.seed_insensitive_points == ["EP2"]
+    assert contract.audit_summary.model_dump()["seed_insensitive_points"] == ["EP2"]
+    # 有富余的考点必须不在列——否则前端会对可换出差异的考点误报「换版不变」
+    assert "EP1" not in contract.audit_summary.seed_insensitive_points

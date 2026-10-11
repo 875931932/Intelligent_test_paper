@@ -230,6 +230,10 @@ class ContractAuditSummary(BaseModel):
     difficulty_counts: dict[str, int] = Field(default_factory=dict)
     backfilled_points: list[BackfilledPoint] = Field(default_factory=list)
     boundary_trims: list[BoundaryTrim] = Field(default_factory=list)
+    # 换版不敏感的考点（原子容量 ≤ 实际配额，无富余）：指派已被容量钉死，
+    # seed 只在完全并列时打破平局——切换分配方案不会改变这些考点的选题，
+    # 前端据此提示教师省去无意义的换版。旧快照缺省空列表，向后兼容。
+    seed_insensitive_points: list[str] = Field(default_factory=list)
 
 
 class PaperContract(BaseModel):

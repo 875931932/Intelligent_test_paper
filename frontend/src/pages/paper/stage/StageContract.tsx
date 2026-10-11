@@ -102,6 +102,15 @@ export function renderContract({
     const deficit = plannedScore - actualScore;
     const conflicts = contractSnapshot.conflicts ?? [];
     const backfilled = contractSnapshot.audit_summary?.backfilled_points ?? [];
+    // 换版不敏感提示：原子容量无富余的考点，seed 无从扰动——换方案也不会
+    // 改变其选题，提示教师省去在这些考点上反复切版找差异。
+    const tightIds = contractSnapshot.audit_summary?.seed_insensitive_points ?? [];
+    const tightNames = tightIds.slice(0, 4).map((id) =>
+      examPointLabel(
+        maps, id,
+        contractSnapshot.slots.find((s) => s.exam_point_id === id)?.exam_point_title,
+      ),
+    );
     return (
       <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
         <StageHeading
@@ -122,6 +131,16 @@ export function renderContract({
             切换方案会自动重新分配；同一版本结果固定，方便与他人讨论同一份卷子。
           </p>
         </div>
+        {tightIds.length > 0 && (
+          <div style={{
+            padding: '8px 12px', borderRadius: 'var(--radius-sm)', fontSize: '0.78rem',
+            background: 'var(--fill)', color: 'var(--text-secondary)', lineHeight: 1.7,
+          }}>
+            这些考点的原子刚好够当前配额（无富余），切换方案通常不会改变其选题：
+            {tightNames.join('、')}
+            {tightIds.length > 4 ? ` 等 ${tightIds.length} 个考点` : ''}
+          </div>
+        )}
         {deficit > 0 && (
           <div style={{ padding: '10px 14px', borderRadius: 'var(--radius-sm)', background: 'var(--warning-subtle)', border: '1px solid var(--warning-line)', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
             蓝图计划 <strong>{plannedScore}</strong> 分，实际分配 <strong>{actualScore}</strong> 分，缺 <strong>{deficit}</strong> 分。

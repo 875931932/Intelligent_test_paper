@@ -389,6 +389,13 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract:
     for unit in request.blueprint.units:
         if unit.exam_point_id:
             weights[unit.exam_point_id] = request.blueprint.chapter_weights.get(unit.anchor_key, 0.0)
+    # 换版敏感度：考点容量（不同答案域数）≤ 实际配额时指派已被容量钉死，
+    # seed 只在完全并列时打破平局、无从扰动——登记进审计，前端据此提示
+    # 教师「换版不变」，省去在无富余考点上反复切方案。
+    seed_insensitive = [
+        point for point in sorted(quota)
+        if _point_capacity(pools.get(point, [])) <= quota[point]
+    ]
     summary = ContractAuditSummary(
         exam_points=[
             ExamPointProportion(
@@ -409,6 +416,7 @@ def allocate_paper_contract(request: ContractRequest) -> PaperContract:
         },
         backfilled_points=backfilled_points,
         boundary_trims=boundary_trims,
+        seed_insensitive_points=seed_insensitive,
     )
     return PaperContract(total_score=total, slots=final_slots, conflicts=conflicts, audit_summary=summary)
 

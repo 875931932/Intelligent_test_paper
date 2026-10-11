@@ -89,6 +89,26 @@ export interface MaterialParseStatus {
   error_summary?: string;
 }
 
+/** 解析内容预览块（GET materials/{id}/content；与助手 RAG 同语料 content_blocks） */
+export interface MaterialContentBlock {
+  id: string;
+  page_index?: number | null;
+  heading_path: string[];
+  content: string;
+}
+
+export interface MaterialContentResponse {
+  material_id: string;
+  material_name: string;
+  /** 可浏览的解析块总数（未解析为 0） */
+  total: number;
+  offset: number;
+  returned: number;
+  blocks: MaterialContentBlock[];
+  /** block_id 定位模式的焦点；index=null 表示旧引用已不在当前解析结果（资料重解析过） */
+  focus?: { id: string; index: number | null } | null;
+}
+
 export interface UploadSessionResponse {
   session_id: string;
   object_key: string;
@@ -477,6 +497,8 @@ export interface ContractAuditSummary {
   type_counts: Record<string, number>;
   difficulty_counts: Record<string, number>;
   backfilled_points?: BackfilledPoint[];
+  /** 换版不敏感的考点（原子容量≤配额无富余）：切换分配方案不会改变其选题 */
+  seed_insensitive_points?: string[];
   /** 同考点命题唯一归属：后位题被确定性剔除的重叠分句记录 */
   boundary_trims?: BoundaryTrim[];
 }
