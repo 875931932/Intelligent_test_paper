@@ -132,6 +132,8 @@ _RAG_SNIPPET_CHARS = 160        # 来源卡摘要长度
 _RAG_EXPAND_MIN_CHARS = 60      # 邻域扩展的正文下限（低于此为又一个标题）
 _RAG_EXPAND_PER_HIT = 2         # 每个命中最多带几个邻域正文块
 _RAG_EXPAND_MAX_TOTAL = 6       # 单轮邻域扩展总块数封顶（生成上下文可控）
+_RAG_SECTION_PER_HIT_CHARS = 600   # 无页码标题锚点：单锚点同节正文字数预算
+_RAG_SECTION_MAX_CHARS = 1000      # 无页码标题锚点：同节正文拉取总字数封顶
 _RAG_BLOCK_PROMPT_CHARS = 1500  # 单块进段2 prompt 的上限
 _RAG_FALLBACK_REPLY = "已检索到相关资料，回答见下："
 
@@ -1389,48 +1391,120 @@ def _rank_rag_chunks(
     )
 
 
+def _pageless_section_bodies(
+    anchor: RankedChunk, chunks: list[StagingChunk], picked: set[str]
+) -> list[StagingChunk]:
+    """无页码标题锚点的同节正文：heading_path 前缀匹配的正文块，按解析位置顺序。
+
+    md/txt 解析不产 page_index，「命中标题 → 带回本节正文」只能以章节结构为
+    邻域：前缀匹配把更深小节（如「术语定义」段落）一并纳入，字符预算在调用
+    侧封顶。
+    """
+
+    path = [str(h) for h in (anchor.chunk.locator.get("heading_path") or [])]
+    if not path:
+        return []
+    material_id = anchor.chunk.locator.get("material_id")
+    level = len(path)
+    return [
+        chunk
+        for chunk in chunks
+        if chunk.id not in picked
+        and chunk.locator.get("material_id") == material_id
+        and [str(h) for h in (chunk.locator.get("heading_path") or [])][:level] == path
+        and chunk.id != anchor.chunk.id
+        and len(chunk.content) >= _RAG_EXPAND_MIN_CHARS
+    ]
+
+
+def _pageless_neighbors(
+    anchor: RankedChunk,
+    chunks: list[StagingChunk],
+    positions: dict[str, int],
+    picked: set[str],
+) -> list[StagingChunk]:
+    """无页码正文锚点的邻块：同资料解析顺序（装载序 = block_index 序）取前后邻块。
+
+    后邻优先（正文/定义通常跟在命中块之后），再按距离、长度确定性排序。
+    """
+
+    anchor_pos = positions.get(anchor.chunk.id)
+    if anchor_pos is None:
+        return []
+    material_id = anchor.chunk.locator.get("material_id")
+    candidates = [
+        chunk
+        for chunk in chunks
+        if chunk.id not in picked
+        and positions.get(chunk.id) is not None
+        and chunk.locator.get("material_id") == material_id
+        and len(chunk.content) >= _RAG_EXPAND_MIN_CHARS
+    ]
+    candidates.sort(
+        key=lambda chunk: (
+            abs(positions[chunk.id] - anchor_pos),
+            positions[chunk.id] < anchor_pos,  # False（后邻）先于 True（前邻）
+            -len(chunk.content),
+        )
+    )
+    return candidates
+
+
 def _expand_rag_neighborhood(
     ranked: list[RankedChunk], chunks: list[StagingChunk]
 ) -> list[RankedChunk]:
-    """命中块邻域扩展：排序不变，每个命中附带同资料同/邻页的正文块。
+    """命中块邻域扩展：排序不变，每个命中附带同资料的邻近正文块。
 
     「总结/讲了什么」类查询与正文天然低相似（实测正文表 rank #291），而命中
-    标题的同/邻页恰好是被短块洪泛淹没的正文表——确定性地把它们带回生成上下文
+    标题的同节正文恰好是被短块洪泛淹没的正文表——确定性地把它们带回生成上下文
     与来源卡：
-    - 同资料、页码差 ≤1、正文（len ≥ _RAG_EXPAND_MIN_CHARS，排除又一个标题）；
-    - 同页优先于邻页，同页内正文越长信息量越大；同块只带一次（多命中共享
-      邻域去重，命中本身永不重复带入）；
-    - **轮转分配**：每轮每个命中取一个最优未选邻域（预算 _RAG_EXPAND_MAX_TOTAL
-      内保证每个命中至少贡献一块，前位命中不吃光预算），轮数封顶
-      _RAG_EXPAND_PER_HIT；
+    - 有页码定位（PDF 解析）：同资料、页码差 ≤1 的正文，同页优先于邻页；
+    - 无页码定位（md/txt 解析不产 page_index——旧版在此整条兜底链路死亡，
+      「术语定义」段落被更近的碎片挤出召回，2026-10-12 修复）：
+      * 标题块（正文 == heading_path 末级）→ 同节正文按解析位置顺序装入，
+        单锚点与全局各设字数预算——命中标题必然带回本节正文；
+      * 非标题块 → 前后邻块，走与页码邻域同款的轮转分配；
+    - 正文（len ≥ _RAG_EXPAND_MIN_CHARS，排除又一个标题）；同块只带一次
+      （多命中共享邻域去重，命中本身永不重复带入）；
     - 扩展块分数继承锚点（分数只用于召回排序，扩展按附着顺序进入段2与来源卡）。
     """
 
     if not ranked:
         return ranked
     picked = {item.chunk.id for item in ranked}
+    positions = {chunk.id: index for index, chunk in enumerate(chunks)}
     candidate_lists: list[tuple[RankedChunk, list[StagingChunk]]] = []
+    section_pulls: list[tuple[RankedChunk, list[StagingChunk]]] = []
     for anchor in ranked:
         anchor_page = anchor.chunk.locator.get("page_index")
-        if anchor_page is None:
-            continue
-        material_id = anchor.chunk.locator.get("material_id")
-        candidates = [
-            chunk
-            for chunk in chunks
-            if chunk.id not in picked
-            and chunk.locator.get("material_id") == material_id
-            and chunk.locator.get("page_index") is not None
-            and abs(chunk.locator["page_index"] - anchor_page) <= 1
-            and len(chunk.content) >= _RAG_EXPAND_MIN_CHARS
-        ]
-        candidates.sort(
-            key=lambda chunk: (
-                abs(chunk.locator["page_index"] - anchor_page),
-                -len(chunk.content),
+        if anchor_page is not None:
+            material_id = anchor.chunk.locator.get("material_id")
+            candidates = [
+                chunk
+                for chunk in chunks
+                if chunk.id not in picked
+                and chunk.locator.get("material_id") == material_id
+                and chunk.locator.get("page_index") is not None
+                and abs(chunk.locator["page_index"] - anchor_page) <= 1
+                and len(chunk.content) >= _RAG_EXPAND_MIN_CHARS
+            ]
+            candidates.sort(
+                key=lambda chunk: (
+                    abs(chunk.locator["page_index"] - anchor_page),
+                    -len(chunk.content),
+                )
             )
-        )
-        candidate_lists.append((anchor, candidates))
+            candidate_lists.append((anchor, candidates))
+            continue
+        heading = [str(h) for h in (anchor.chunk.locator.get("heading_path") or [])]
+        if heading and anchor.chunk.content.strip() == heading[-1]:
+            section_pulls.append(
+                (anchor, _pageless_section_bodies(anchor, chunks, picked))
+            )
+        else:
+            candidate_lists.append(
+                (anchor, _pageless_neighbors(anchor, chunks, positions, picked))
+            )
 
     expanded: list[RankedChunk] = []
     for _round in range(_RAG_EXPAND_PER_HIT):
@@ -1451,6 +1525,30 @@ def _expand_rag_neighborhood(
                     semantic_score=anchor.semantic_score,
                 )
             )
+
+    # 同节正文拉取（无页码标题锚点）：按锚点名次依次装入，单锚点/全局双字数
+    # 预算；不占轮转的块数封顶——字数预算已是上下文可控的同款约束
+    section_budget = _RAG_SECTION_MAX_CHARS
+    for anchor, bodies in section_pulls:
+        if section_budget <= 0:
+            break
+        taken = 0
+        for target in bodies:
+            if taken >= _RAG_SECTION_PER_HIT_CHARS or section_budget <= 0:
+                break
+            if target.id in picked:
+                continue
+            picked.add(target.id)
+            expanded.append(
+                RankedChunk(
+                    chunk=target,
+                    score=anchor.score,
+                    lexical_score=anchor.lexical_score,
+                    semantic_score=anchor.semantic_score,
+                )
+            )
+            taken += len(target.content)
+            section_budget -= len(target.content)
     return ranked + expanded
 
 

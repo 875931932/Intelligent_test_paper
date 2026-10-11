@@ -66,6 +66,21 @@ def lexical_overlap(left: str, right: str) -> float:
     return len(left_tokens & right_tokens) / len(union)
 
 
+def query_token_coverage(query: str, content: str) -> float:
+    """查询侧覆盖率：|查询 ∩ 内容| / |查询|，分母与内容长度无关。
+
+    Jaccard（lexical_overlap）的分母是并集，块越长分越低——长正文无论多相关
+    都过不了阈值、只有含查询词的短碎片轻松过线。纯词面降级若沿用它排序，
+    召回会系统性丢掉全部正文、只剩标题/代码碎片（2026-10-12 修复）。
+    """
+
+    query_tokens = _lexical_tokens(query)
+    if not query_tokens:
+        return 0.0
+    content_tokens = _lexical_tokens(content)
+    return len(query_tokens & content_tokens) / len(query_tokens)
+
+
 def cosine_similarity(left: list[float], right: list[float]) -> float:
     left_norm = math.hypot(*left)
     right_norm = math.hypot(*right)
@@ -290,9 +305,12 @@ def lexical_rank_for_question(
     top_k: int,
     minimum_score: float,
 ) -> list[RankedChunk]:
-    """纯词面降级：嵌入不可用（未配置/调用失败/向量缺失）时按词面单独打分。
+    """纯词面降级：嵌入不可用（未配置/调用失败/向量缺失）时按查询覆盖率打分。
 
-    semantic=0、score=词面分，同款 3 位量化与 content_hash 决胜，排序依旧确定。
+    覆盖率分母是查询 token 集（见 query_token_coverage）：长正文块不再被并集
+    分母系统性挤出阈值——否则语义降级时召回只剩标题/代码碎片，正文彻底出局。
+    semantic=0、score=覆盖率，同款 3 位量化；同覆盖度时正文长者优先（更长 =
+    信息量越大，与邻域扩展同选块原则），content_hash 决胜，排序依旧确定。
     """
 
     _validate_configuration(top_k=top_k, minimum_score=minimum_score)
@@ -300,13 +318,13 @@ def lexical_rank_for_question(
         return []
     ranked: list[RankedChunk] = []
     for chunk in chunks:
-        lexical_score = lexical_overlap(question, chunk.content)
-        if lexical_score >= float(minimum_score):
+        coverage = query_token_coverage(question, chunk.content)
+        if coverage >= float(minimum_score):
             ranked.append(
                 RankedChunk(
                     chunk=chunk,
-                    score=lexical_score,
-                    lexical_score=lexical_score,
+                    score=coverage,
+                    lexical_score=coverage,
                     semantic_score=0.0,
                 )
             )
@@ -315,6 +333,7 @@ def lexical_rank_for_question(
     ranked.sort(
         key=lambda item: (
             -item.score,
+            -len(item.chunk.content),
             _chunk_content_hash(item.chunk),
             item.chunk.id,
         )

@@ -1534,7 +1534,7 @@ def test_expand_rag_neighborhood_attaches_body_and_respects_rules():
 
 
 def test_expand_rag_neighborhood_dedup_cap_and_degenerate():
-    """已命中长块去重、总扩封顶、无页码锚点跳过、空排名直通。"""
+    """已命中长块去重、总扩封顶、无页码锚点按解析顺序取邻块、空排名直通。"""
     # 命中 h5 自身是长正文（与 h4 同页且是其最优邻域候选）→ 已命中必须去重
     hits = [
         _rag_hit(
@@ -1555,12 +1555,83 @@ def test_expand_rag_neighborhood_dedup_cap_and_degenerate():
         ranked, [item.chunk for item in ranked] + bodies
     )
 
-    # 无页码锚点跳过；6 个有页码锚点各带邻域，总数被 _RAG_EXPAND_MAX_TOTAL 封顶
+    # 无页码锚点走解析顺序邻块（取最近的 b0）；7 个锚点轮转，总数被
+    # _RAG_EXPAND_MAX_TOTAL 封顶 → 末位锚点 h5 落空
     assert [item.chunk.id for item in out[:7]] == ["hN", "h0", "h1", "h2", "h3", "h4", "h5"]
+    assert out[7].chunk.id == "b0"
     assert len(out) == len(ranked) + assistant_service._RAG_EXPAND_MAX_TOTAL
     assert "h5" not in [item.chunk.id for item in out[len(ranked):]]  # 已命中不重复带
     # 空排名直通
     assert assistant_service._expand_rag_neighborhood([], bodies) == []
+
+
+def _md_chunk(
+    cid: str, content: str, heading_path: list[str], *, material: str = "m1"
+) -> StagingChunk:
+    """md/txt 解析块：无页码，靠 heading_path 定位章节。"""
+    return StagingChunk(
+        id=cid,
+        material_version_id="v1",
+        content=content,
+        locator={
+            "material_id": material,
+            "material_name": "讲义.md",
+            "page_index": None,
+            "heading_path": heading_path,
+        },
+    )
+
+
+def test_expand_rag_neighborhood_md_heading_pulls_section_bodies():
+    """无页码标题锚点按同节正文拉取：前缀匹配覆盖更深小节（「术语定义」段落
+    不再被更近的碎片挤出），跨节与短块排除（2026-10-12 md 兜底链路死亡修复）。"""
+    head = _rag_hit(
+        _md_chunk("h", "第一步：LangChain 到底是什么", ["讲义", "第一步：LangChain 到底是什么"])
+    )
+    near = _md_chunk("s1", "直观理解" * 15, ["讲义", "第一步：LangChain 到底是什么", "直观理解"])
+    definition = _md_chunk(
+        "d", "术语定义正文" * 15, ["讲义", "第一步：LangChain 到底是什么", "术语定义"]
+    )
+    other_section = _md_chunk("x", "别节正文" * 20, ["讲义", "别的章节"])
+    short = _md_chunk("t", "小标题", ["讲义", "第一步：LangChain 到底是什么"])
+
+    out = assistant_service._expand_rag_neighborhood(
+        [head], [head.chunk, near, definition, other_section, short]
+    )
+
+    # 同节正文按解析位置顺序进入（含更深小节的定义段），跨节/短块排除，
+    # 分数继承锚点
+    assert [item.chunk.id for item in out] == ["h", "s1", "d"]
+    assert out[1].score == head.score and out[1].semantic_score == head.semantic_score
+
+
+def test_expand_rag_neighborhood_md_section_respects_char_budget():
+    """同节正文装入到单锚点字数预算耗尽即止（装满制：保证首块必进，超量至多一块）。"""
+    head = _rag_hit(_md_chunk("h", "本节标题", ["讲义", "本节标题"]))
+    bodies = [_md_chunk(f"b{i}", f"正文{i}" * 40, ["讲义", "本节标题"]) for i in range(6)]
+
+    out = assistant_service._expand_rag_neighborhood([head], [head.chunk, *bodies])
+
+    # 每块 120 字：装到累计 ≥600（单锚点预算）即止 → b0..b4（恰 600）
+    assert [item.chunk.id for item in out[1:]] == ["b0", "b1", "b2", "b3", "b4"]
+
+
+def test_expand_rag_neighborhood_md_body_anchor_uses_position_neighbors():
+    """无页码正文锚点按解析顺序取前后邻块：距离近者先（同距离后邻优先于前邻），
+    跨资料与短块排除。"""
+    anchor_chunk = _md_chunk("a", "锚点正文" * 20, ["讲义", "某节"])
+    before = _md_chunk("p1", "前邻正文" * 15, ["讲义", "某节"])
+    after = _md_chunk("n1", "后邻正文" * 15, ["讲义", "某节"])
+    short_mid = _md_chunk("s", "短", ["讲义", "某节"])
+    other = _md_chunk("x", "别资料正文" * 15, ["别册", "某节"], material="m2")
+    anchor = _rag_hit(anchor_chunk)
+
+    out = assistant_service._expand_rag_neighborhood(
+        [anchor], [before, anchor_chunk, after, short_mid, other]
+    )
+
+    # 后邻（距离 1）先于前邻（距离 1 但方向在后）；短块/跨资料排除
+    assert [item.chunk.id for item in out] == ["a", "n1", "p1"]
 
 
 def test_rag_route_targets_named_material_lexical_mode(monkeypatch):

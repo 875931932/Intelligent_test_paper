@@ -546,6 +546,29 @@ def test_lexical_rank_for_question_applies_top_k_deterministically():
     assert len(full) == 3
 
 
+def test_lexical_rank_for_question_coverage_keeps_long_bodies():
+    """词面降级按查询覆盖率打分：长正文（Jaccard 恒低于阈值）不再被挤出，
+    同覆盖度时正文长者优先于短碎片（2026-10-12 词面召回碎片化修复）。"""
+    definition = (
+        "LangChain 是当前构建生产级 AI 智能体系统的首选开源框架，"
+        "在大模型与应用之间充当中间层，统一调用各类大模型并集成外部工具。"
+    )
+    chunks = [
+        StagingChunk(id="frag", material_version_id="v1", content="import langchain"),
+        StagingChunk(id="head", material_version_id="v1", content="第一步：LangChain 到底是什么"),
+        StagingChunk(id="body", material_version_id="v1", content=definition),
+        StagingChunk(id="noise", material_version_id="v1", content="实验环境使用 Python 3.10 与 conda。"),
+    ]
+
+    ranked = lexical_rank_for_question("langchain是什么", chunks, top_k=3, minimum_score=0.2)
+
+    # 全覆盖标题居首；定义正文段（覆盖率 0.25）进召回且同覆盖时压过短碎片
+    assert [item.chunk.id for item in ranked[:2]] == ["head", "body"]
+    assert ranked[0].score == 1.0
+    # 无关块（0 覆盖）依旧被阈值过滤
+    assert all(item.chunk.id != "noise" for item in ranked)
+
+
 def test_embedding_gateway_sorts_response_by_index_and_returns_vectors():
     requests: list[httpx.Request] = []
 
