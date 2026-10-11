@@ -296,16 +296,22 @@ export function renderBlueprint({
       </div>
     );
   }
+  // 空态（无蓝图）：进入阶段即自动按知识目录生成，这里只在自动进行中给进度
+  // 反馈；自动失败（如目录未发布）时按钮留作手动重试。
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       <StageHeading title="创建蓝图规划" />
       <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-        输入蓝图规划参数，系统将根据框架和知识目录生成命题计划。
+        {bpCreating
+          ? '正在按考核规则与知识目录自动生成蓝图…'
+          : '系统未能自动生成蓝图（通常是知识目录尚未发布）。补齐前置条件后可手动重试。'}
       </p>
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
         {/* 不提供「跳过」：合同分配必须读取蓝图题位，没有蓝图时进入合同阶段
             只会撞一个 allocate 404，是条走不通的死路。 */}
-        <Button onClick={handleCreateBlueprint} loading={bpCreating} icon={<PlayCircle size={16} />}>创建蓝图</Button>
+        <Button onClick={handleCreateBlueprint} loading={bpCreating} icon={<PlayCircle size={16} />}>
+          {bpCreating ? '正在生成…' : '重试创建蓝图'}
+        </Button>
       </div>
     </div>
   );

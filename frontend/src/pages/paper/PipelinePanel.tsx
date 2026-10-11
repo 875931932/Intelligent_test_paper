@@ -133,6 +133,15 @@ export default function PipelinePanel({
   const [bpCreating, setBpCreating] = useState(false);
   const [contractConfirming, setContractConfirming] = useState(false);
   const [contractAllocating, setContractAllocating] = useState(false);
+  // hydrate 完成标记：合同阶段的自动分配必须等历史快照回填完毕——已有确认过
+  // 合同的项目在 hydrate 完成前快照必为 null，不等就会把旧合同误判成
+  // 「待分配」而白白覆盖一份教师确认过的分配结果。
+  const [hydrated, setHydrated] = useState(false);
+  // 自动触发的防重入账本：蓝图按项目记一次；合同按「项目:蓝图版本」记一次
+  // ——蓝图重建后 key 变化即再自动分配一轮；自动失败（目录未发布/考点不足
+  // 等）也记账，避免失败后无限重试循环，教师用界面上的手动按钮重试。
+  const autoBpTriedRef = useRef(false);
+  const autoAllocKeyRef = useRef('');
   // 「分配方案」默认随机一版：每次新建/刷新项目时不再固定回到第 1 版，
   // 否则每套卷子都从同一套搭配起步。历史种子由 hydrate 覆盖回填。
   const [contractVariant, setContractVariant] = useState(
@@ -231,6 +240,8 @@ export default function PipelinePanel({
     // 上一项目的方案号不能带到新项目：hydrate 没有历史种子时会保留随机值，
     // 落在别的项目上就是"看着第 4 版、实际按第 1 版分配"。
     setContractVariant(1 + Math.floor(Math.random() * 6));
+    setHydrated(false);
+    autoBpTriedRef.current = false;
     void reloadNameMaps();
     if (sp.active_blueprint_version_id) {
       void loadPlanItems(sp);
@@ -239,7 +250,7 @@ export default function PipelinePanel({
     // 晚于 stageRequest 落位；不钉住就会被服务端推断的阶段覆盖
     // （「去合同页编辑」落回生成阶段）。URL 派生的值在 StrictMode 双跑 effect 下
     // 也保持稳定——两次 hydrate 得到同一落点，不存在竞态。
-    void hydrateProjectState(sp, initialStage);
+    void hydrateProjectState(sp, initialStage).finally(() => setHydrated(true));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sp.id]);
 
@@ -365,6 +376,50 @@ export default function PipelinePanel({
     }
   };
 
+  // 分配合同（自动触发与教师手动共用同一实现；variantOverride 供方案切换直接
+  // 用新版本号发请求，不等 state 重渲染后再读闭包值）。
+  const handleAllocate = async (variantOverride?: number) => {
+    if (!sp.active_blueprint_version_id) return;
+    const variant = variantOverride ?? contractVariant;
+    setContractAllocating(true);
+    try {
+      const res = await api.examProjects.allocateContract(courseId, sp.id, {
+        blueprint_version_id: sp.active_blueprint_version_id,
+        allocation_seed: variant - 1,
+      });
+      setContractSnapshot(res.contract_snapshot);
+      addToast(`合同已分配（方案第 ${variant} 版）`, 'success');
+    } catch (e) {
+      addToast('分配失败: ' + (e as Error).message, 'error');
+    } finally {
+      setContractAllocating(false);
+    }
+  };
+
+  // 蓝图自动创建：进入蓝图阶段且无蓝图即按知识目录自动生成，省掉「创建蓝图」
+  // 这一次机械点击。失败（如知识目录未发布）只试一次并 toast，空态界面保留
+  // 手动按钮供教师补齐前置条件后重试；成功后 sp 刷新出蓝图版本号，不会重入。
+  useEffect(() => {
+    if (currentStage !== 'blueprint' || sp.active_blueprint_version_id) return;
+    if (autoBpTriedRef.current) return;
+    autoBpTriedRef.current = true;
+    void handleCreateBlueprint();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentStage, sp.id, sp.active_blueprint_version_id]);
+
+  // 合同自动分配：hydrate 回填完成后，进入合同阶段且无快照即自动分配，省掉
+  // 「分配合同」这一次机械点击。以「项目:蓝图版本」记账——蓝图重建后 key
+  // 变化会再自动分配一轮；教师确认合同时快照已存在，不会被覆盖。
+  useEffect(() => {
+    if (!hydrated || currentStage !== 'contract') return;
+    if (!sp.active_blueprint_version_id || contractSnapshot || contractAllocating) return;
+    const key = `${sp.id}:${sp.active_blueprint_version_id}`;
+    if (autoAllocKeyRef.current === key) return;
+    autoAllocKeyRef.current = key;
+    void handleAllocate();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated, currentStage, sp.id, sp.active_blueprint_version_id, contractSnapshot, contractAllocating]);
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       <StageStepper current={currentStage} onSelect={setCurrentStage} />
@@ -373,8 +428,8 @@ export default function PipelinePanel({
       })}
       {currentStage === 'contract' && renderContract({
         sp, courseId, setStep: setCurrentStage, contractVariant, setContractVariant,
-        contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming,
-        contractAllocating, setContractAllocating, setTaskRun, addToast, maps, planItems, onProjectChanged,
+        contractSnapshot, contractConfirming, setContractConfirming,
+        contractAllocating, handleAllocate, setTaskRun, addToast, maps, planItems, onProjectChanged,
       })}
       {currentStage === 'generate' && renderGenerate({
         sp, setStep: setCurrentStage, taskRun, generating, startGeneration,

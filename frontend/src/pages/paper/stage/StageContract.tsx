@@ -11,14 +11,16 @@ import { examPointLabel, cardLabel, type StageKey, type ToastFn } from './stageS
 
 export function renderContract({
   sp, courseId, setStep, contractVariant, setContractVariant,
-  contractSnapshot, setContractSnapshot, contractConfirming, setContractConfirming,
-  contractAllocating, setContractAllocating, setTaskRun, addToast, maps, planItems, onProjectChanged,
+  contractSnapshot, contractConfirming, setContractConfirming,
+  contractAllocating, handleAllocate, setTaskRun, addToast, maps, planItems, onProjectChanged,
 }: {
   sp: ExamProject; courseId: string; setStep: (s: StageKey) => void;
   contractVariant: number; setContractVariant: (n: number) => void;
-  contractSnapshot: ContractSnapshot | null; setContractSnapshot: (s: ContractSnapshot | null) => void;
+  contractSnapshot: ContractSnapshot | null;
   contractConfirming: boolean; setContractConfirming: (b: boolean) => void;
-  contractAllocating: boolean; setContractAllocating: (b: boolean) => void;
+  contractAllocating: boolean;
+  /** 分配合同（PipelinePanel 持有；variantOverride 供方案切换传新版本号） */
+  handleAllocate: (variantOverride?: number) => Promise<void>;
   /** 确认合同换 run，旧任务进度随之作废 */
   setTaskRun: (tr: TaskRun | null) => void;
   addToast: ToastFn;
@@ -41,24 +43,6 @@ export function renderContract({
       </div>
     );
   }
-  // variantOverride：切换方案时 onChange 已把新版本号拿到手，直接用它发请求，
-  // 不等 state 重渲染后再读闭包值，避免切换到第 N 版却按第 N-1 版分配。
-  const allocate = async (variantOverride?: number) => {
-    const variant = variantOverride ?? contractVariant;
-    setContractAllocating(true);
-    try {
-      const res = await api.examProjects.allocateContract(courseId, sp.id, {
-        blueprint_version_id: sp.active_blueprint_version_id,
-        allocation_seed: variant - 1,
-      });
-      setContractSnapshot(res.contract_snapshot);
-      addToast(`合同已分配（方案第 ${variant} 版）`, 'success');
-    } catch (e) {
-      addToast('分配失败: ' + (e as Error).message, 'error');
-    } finally {
-      setContractAllocating(false);
-    }
-  };
   // 确认合同：后端会写回 status='generating'，父级项目摘要是打开项目时取的快照，
   // 不刷新的话页头徽章会一直停在「合同阶段」。
   const confirmContract = async (onDone: () => void) => {
@@ -87,8 +71,8 @@ export function renderContract({
     setContractVariant(next);
     // 已有合同快照时换版即重新分配：教师不必再点一次「重新分配」，
     // 少一步手势，也避免"以为换了其实没换"的误解。尚无快照时不发请求，
-    // 由教师主动点「分配合同」。
-    if (reload) await allocate(next);
+    // 自动分配或教师手动触发会按新选的版本执行。
+    if (reload) await handleAllocate(next);
   };
   const VariantSelect = ({ compact }: { compact?: boolean }) => (
     <div style={{ minWidth: compact ? '150px' : '200px' }}>
@@ -187,7 +171,7 @@ export function renderContract({
         <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
           {/* 不再先 setContractSnapshot(null)：那会让整张表闪回"分配合同"空态，
               再瞬间加载回来。原地刷新快照即可，加载中禁用操作避免重复请求。 */}
-          <Button variant="secondary" loading={contractAllocating} onClick={() => { void allocate(); }} icon={<RefreshCw size={16} />}>重新分配</Button>
+          <Button variant="secondary" loading={contractAllocating} onClick={() => { void handleAllocate(); }} icon={<RefreshCw size={16} />}>重新分配</Button>
           <Button
             onClick={() => { void confirmContract(() => setStep('generate')); }}
             loading={contractConfirming}
@@ -200,11 +184,15 @@ export function renderContract({
       </div>
     );
   }
+  // 空态（无快照）：进入阶段即自动分配，这里只在自动进行中给进度反馈；
+  // 自动失败（考点不足等）时按钮留作手动重试。
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
       <StageHeading title="分配合同" />
       <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-        根据蓝图规划分配具体的题型和分值，形成可执行的合同。
+        {contractAllocating
+          ? `正在按蓝图题位自动分配合同（方案第 ${contractVariant} 版）…`
+          : '根据蓝图规划自动分配题位与考点，形成可执行的合同。若未能自动完成（如考点答案域容量不足），可手动重试。'}
       </p>
       <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-end', flexWrap: 'wrap' }}>
         <VariantSelect />
@@ -214,7 +202,7 @@ export function renderContract({
       </div>
       <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
         <Button variant="secondary" onClick={() => setStep('blueprint')}><ArrowLeft size={16} /> 返回蓝图</Button>
-        <Button onClick={() => { void allocate(); }} loading={contractAllocating} icon={<PlayCircle size={16} />}>分配合同</Button>
+        <Button onClick={() => { void handleAllocate(); }} loading={contractAllocating} icon={<PlayCircle size={16} />}>重试分配</Button>
       </div>
     </div>
   );
