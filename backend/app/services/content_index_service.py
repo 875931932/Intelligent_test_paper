@@ -313,6 +313,65 @@ def load_content_chunks(
     return chunks
 
 
+def get_material_content(
+    session: Session,
+    *,
+    course_id: str,
+    material_id: str,
+    block_id: str | None = None,
+    offset: int = 0,
+    limit: int = 30,
+) -> dict:
+    """资料解析内容预览：与助手 RAG 同语料同口径（load_content_chunks 直接复用）。
+
+    两种模式：
+    - ``block_id`` 定位模式：返回该块 ± 上下文窗口（助手来源卡「查看原文」），
+      focus.index=null 表示旧引用已不在当前解析结果中（资料重新解析过）；
+    - 分页模式：按解析顺序切片（资料库「查看」浏览整份资料）。
+
+    未解析（无 ready run）→ 空列表：前端据实提示先解析，不是错误。
+    """
+
+    chunks = load_content_chunks(
+        session, course_id=course_id, material_ids=[material_id], include_embedding=False
+    )
+    total = len(chunks)
+
+    def _block(chunk) -> dict:
+        return {
+            "id": chunk.id,
+            "page_index": chunk.locator.get("page_index"),
+            "heading_path": list(chunk.locator.get("heading_path") or []),
+            "content": chunk.content,
+        }
+
+    if block_id is not None:
+        idx = next((i for i, c in enumerate(chunks) if c.id == block_id), None)
+        if idx is None:
+            return {"total": total, "offset": 0, "returned": 0, "blocks": [],
+                    "focus": {"id": block_id, "index": None}}
+        start = max(0, idx - 2)
+        window = chunks[start: idx + 4]
+        return {
+            "total": total,
+            "offset": start,
+            "returned": len(window),
+            "blocks": [_block(c) for c in window],
+            "focus": {"id": block_id, "index": idx},
+        }
+
+    start = max(0, offset)
+    size = min(max(1, limit), 100)
+    window = chunks[start: start + size]
+    return {
+        "total": total,
+        "offset": start,
+        "returned": len(window),
+        "blocks": [_block(c) for c in window],
+        "focus": None,
+    }
+
+
 def supports_semantic_pushdown(session: Session) -> bool:
     """当前库方言是否支持语义打分下推（load_semantic_scores 的 PG 专用 SQL）。"""
 

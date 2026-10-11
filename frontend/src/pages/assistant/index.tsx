@@ -7,6 +7,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { useAssistantStore } from '@/stores/assistantStore';
 import { Badge, Button, MarkdownText, Modal } from '@/components/ui';
+import { MaterialContentPreview } from '@/components/MaterialContentPreview';
 import { formatScore } from '@/lib/format';
 import {
   ASSESSMENT_MODE_LABELS,
@@ -555,7 +556,8 @@ function GuideCard({
 /**
  * 来源引用卡：资料内容问答的命中片段（资料名 + 页/章节 + 摘要）。
  * 正文（模型基于片段的回答）由上方 MarkdownText 渲染，本卡只负责可追溯性：
- * 教师据此可到资料库核对原文；score 不展示（避免把相关度当可信度）。
+ * 每条片段可「查看原文」（与 RAG 同语料的上下文定位预览），教师据此核对
+ * AI 依据；score 不展示（避免把相关度当可信度）。
  */
 function SourcesCard({
   message,
@@ -569,6 +571,8 @@ function SourcesCard({
   const payload = message.action.payload ?? {};
   const sources = payload.sources ?? [];
   const scope = payload.material_name ? `「${payload.material_name}」` : '课程全部资料';
+  // 逐条片段的原文定位预览；material_id 缺失（历史消息）时该条不给入口，只留底部资料库 CTA
+  const [preview, setPreview] = useState<{ blockId: string; materialId: string; name: string } | null>(null);
   return (
     <div className="chat-card" style={cardBox}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -592,8 +596,30 @@ function SourcesCard({
               key={s.block_id}
               style={{ padding: '8px 12px', borderRadius: 'var(--radius-sm)', background: 'var(--fill)' }}
             >
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
-                {i + 1}. {loc || '资料片段'}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', flex: 1, minWidth: 0 }}>
+                  {i + 1}. {loc || '资料片段'}
+                </div>
+                {s.material_id && (
+                  <button
+                    onClick={() =>
+                      setPreview({
+                        blockId: s.block_id,
+                        materialId: s.material_id as string,
+                        name: s.material_name ?? '',
+                      })
+                    }
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 4,
+                      padding: '2px 8px', borderRadius: 999, fontSize: '0.72rem', fontWeight: 600,
+                      background: 'var(--purple-subtle)', color: 'var(--purple)',
+                      border: '1px solid var(--purple-soft)', cursor: 'pointer', fontFamily: 'inherit',
+                    }}
+                  >
+                    <Eye size={12} />
+                    查看原文
+                  </button>
+                )}
               </div>
               <p style={{ fontSize: '0.8rem', lineHeight: 1.6, margin: '2px 0 0' }}>
                 {s.snippet}
@@ -609,9 +635,19 @@ function SourcesCard({
           onClick={() => navigate(`/courses/${courseId}/materials`)}
           icon={<ExternalLink size={13} />}
         >
-          打开资料库查看原文
+          打开资料库
         </Button>
       </div>
+      {preview && (
+        <MaterialContentPreview
+          open
+          onClose={() => setPreview(null)}
+          courseId={courseId}
+          materialId={preview.materialId}
+          materialName={preview.name}
+          focusBlockId={preview.blockId}
+        />
+      )}
     </div>
   );
 }

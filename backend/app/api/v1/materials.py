@@ -5,10 +5,13 @@ from sqlalchemy.orm import Session
 
 from app.adapters.storage.local_storage import LocalStorage
 from app.adapters.storage.minio_storage import MinioStorage, StoragePort, StoragePreconditionError, StorageUnavailableError
+from app.api.v1.auth import get_current_user
 from app.config import settings
+from app.db.schema import User
 from app.db.session import get_session
 from app.domain.material.models import MaterialResponse, MaterialVersionResponse, UploadSessionCreate, UploadSessionResponse
 from app.services import course_service, material_service
+from app.services import content_index_service
 from app.services import parse_service
 
 router = APIRouter(prefix="/api/v1/courses/{course_id}", tags=["materials"])
@@ -71,7 +74,8 @@ def _maybe_enqueue_index(session: Session, *, course_id: str, run_id: str, parse
 
 @router.post("/upload-sessions", response_model=UploadSessionResponse, status_code=status.HTTP_201_CREATED)
 def create_upload_session(
-    course_id: str, payload: UploadSessionCreate, session: Session = Depends(get_session), storage: StoragePort = Depends(get_storage)
+    course_id: str, payload: UploadSessionCreate, session: Session = Depends(get_session), storage: StoragePort = Depends(get_storage),
+    current_user: User = Depends(get_current_user),
 ) -> UploadSessionResponse:
     try:
         result, _ = material_service.create_upload_session(
@@ -92,7 +96,8 @@ def create_upload_session(
 
 @router.post("/upload-sessions/{session_id}/complete", response_model=MaterialVersionResponse)
 def complete_upload_session(
-    course_id: str, session_id: str, session: Session = Depends(get_session), storage: StoragePort = Depends(get_storage)
+    course_id: str, session_id: str, session: Session = Depends(get_session), storage: StoragePort = Depends(get_storage),
+    current_user: User = Depends(get_current_user),
 ) -> MaterialVersionResponse:
     try:
         return material_service.complete_upload_session(session, storage, course_id=course_id, session_id=session_id)
@@ -113,7 +118,8 @@ def complete_upload_session(
 
 
 @router.get("/materials", response_model=list[MaterialResponse])
-def list_materials(course_id: str, include_deleted: bool = False, session: Session = Depends(get_session)) -> list[dict]:
+def list_materials(course_id: str, include_deleted: bool = False, session: Session = Depends(get_session),
+                    current_user: User = Depends(get_current_user)) -> list[dict]:
     try:
         items = material_service.list_materials(session, course_id=course_id, include_deleted=include_deleted)
     except course_service.CourseNotFoundError:
@@ -128,7 +134,8 @@ def list_materials(course_id: str, include_deleted: bool = False, session: Sessi
     return items
 
 @router.get("/materials/{material_id}", response_model=MaterialResponse)
-def get_material(course_id: str, material_id: str, session: Session = Depends(get_session)) -> dict:
+def get_material(course_id: str, material_id: str, session: Session = Depends(get_session),
+                  current_user: User = Depends(get_current_user)) -> dict:
     try:
         item = material_service.get_material(session, course_id=course_id, material_id=material_id)
     except (course_service.CourseNotFoundError, material_service.MaterialNotFoundError):
@@ -140,9 +147,41 @@ def get_material(course_id: str, material_id: str, session: Session = Depends(ge
         )
     return item
 
+@router.get("/materials/{material_id}/content", response_model=dict)
+def get_material_content(
+    course_id: str,
+    material_id: str,
+    block_id: str | None = None,
+    offset: int = 0,
+    limit: int = 30,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """解析内容预览（与助手 RAG 同语料）：分页浏览，或 block_id 定位该片段±上下文。
+
+    教师核对 AI 引用与解析质量的唯一读路径——资料卡「查看」与助手来源卡
+    「查看原文」都走这里；未解析返回空列表（前端提示先解析），不报错。
+    """
+    try:
+        item = material_service.get_material(session, course_id=course_id, material_id=material_id)
+    except (course_service.CourseNotFoundError, material_service.MaterialNotFoundError):
+        raise _not_found()
+    data = content_index_service.get_material_content(
+        session,
+        course_id=course_id,
+        material_id=material_id,
+        block_id=block_id,
+        offset=offset,
+        limit=limit,
+    )
+    data["material_name"] = str(item.get("logical_name") or "")
+    return data
+
+
 @router.post("/materials/{material_id}/parse", status_code=status.HTTP_202_ACCEPTED)
 def start_material_parse(
-    course_id: str, material_id: str, session: Session = Depends(get_session), storage: StoragePort = Depends(get_storage)
+    course_id: str, material_id: str, session: Session = Depends(get_session), storage: StoragePort = Depends(get_storage),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     """为资料最新版本启动 MinerU 解析（同哈希 ready 结果直接复用）。"""
     try:
@@ -161,7 +200,8 @@ def start_material_parse(
 
 @router.post("/materials/{material_id}/parse/poll")
 def poll_material_parse(
-    course_id: str, material_id: str, session: Session = Depends(get_session), storage: StoragePort = Depends(get_storage)
+    course_id: str, material_id: str, session: Session = Depends(get_session), storage: StoragePort = Depends(get_storage),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     """推进一次解析状态机（轮询 MinerU；完成则落块），前端周期调用直至 ready/failed。"""
     try:
@@ -179,7 +219,8 @@ def poll_material_parse(
     return result
 
 @router.patch("/materials/{material_id}/type", response_model=MaterialResponse)
-def update_material_type(course_id: str, material_id: str, material_type: str, session: Session = Depends(get_session)) -> dict:
+def update_material_type(course_id: str, material_id: str, material_type: str, session: Session = Depends(get_session),
+                          current_user: User = Depends(get_current_user)) -> dict:
     try:
         return material_service.update_material_type(session, course_id=course_id, material_id=material_id, material_type=material_type)
     except (course_service.CourseNotFoundError, material_service.MaterialNotFoundError):
@@ -189,7 +230,8 @@ def update_material_type(course_id: str, material_id: str, material_type: str, s
 
 
 @router.delete("/materials/{material_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_material(course_id: str, material_id: str, session: Session = Depends(get_session)) -> Response:
+def delete_material(course_id: str, material_id: str, session: Session = Depends(get_session),
+                     current_user: User = Depends(get_current_user)) -> Response:
     try:
         material_service.delete_material(session, course_id=course_id, material_id=material_id)
     except (course_service.CourseNotFoundError, material_service.MaterialNotFoundError):

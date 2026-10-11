@@ -554,7 +554,10 @@ def test_presign_failure_is_sanitized_and_does_not_persist_upload_session(client
     client.app.state.storage = storage
     course = _course(client)
 
-    with TestClient(app, raise_server_exceptions=False) as request_client:
+    with TestClient(
+        app, raise_server_exceptions=False,
+        headers={"Authorization": client.headers.get("Authorization", "")},
+    ) as request_client:
         response = request_client.post(f"/api/v1/courses/{course['id']}/upload-sessions", json=_upload_request())
 
     assert response.status_code == 503
@@ -572,7 +575,10 @@ def test_storage_initialization_failure_is_sanitized_as_service_unavailable(clie
         raise RuntimeError("secret-key=do-not-leak")
 
     monkeypatch.setattr(materials_api, "MinioStorage", fail_storage)
-    with TestClient(app, raise_server_exceptions=False) as request_client:
+    with TestClient(
+        app, raise_server_exceptions=False,
+        headers={"Authorization": client.headers.get("Authorization", "")},
+    ) as request_client:
         response = request_client.post(f"/api/v1/courses/{course['id']}/upload-sessions", json=_upload_request())
 
     assert response.status_code == 503

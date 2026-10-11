@@ -11,6 +11,7 @@ import { isApiError } from '@/api/errors';
 import { useCourseStore } from '@/stores/course';
 import { useToastStore } from '@/stores/toast';
 import { Button, Modal, Badge, SkeletonCardGrid } from '@/components/ui';
+import { MaterialContentPreview } from '@/components/MaterialContentPreview';
 import { computeSha256 } from '@/lib/sha256';
 import { downloadBlob } from '@/lib/download';
 import { PARSE_STATUS_LABELS } from '@/utils/format';
@@ -164,6 +165,8 @@ export default function MaterialsPage() {
 
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
+  // 资料解析内容预览（「查看」按钮）：教师核对解析质量与 AI 引用依据
+  const [preview, setPreview] = useState<{ id: string; name: string } | null>(null);
 
   // ── 「试卷」文件夹：归档快照（与材料文件夹无关，走 paper-archives 接口） ──
   const [archives, setArchives] = useState<PaperArchiveSummary[]>([]);
@@ -677,6 +680,15 @@ export default function MaterialsPage() {
               <Button
                 variant="secondary"
                 size="sm"
+                onClick={() => setPreview({ id: m.id, name: m.logical_name })}
+                icon={<Eye size={14} />}
+                style={{ flex: 1 }}
+              >
+                查看
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
                 onClick={() => handleParse(m)}
                 disabled={isParsing(m)}
                 loading={isParsing(m)}
@@ -712,6 +724,17 @@ export default function MaterialsPage() {
           </Button>
         )}
       </div>
+
+      {/* 解析内容预览（与助手 RAG 同语料）：全量分页浏览；助手来源的定位预览在助手页 */}
+      {preview && (
+        <MaterialContentPreview
+          open
+          onClose={() => setPreview(null)}
+          courseId={courseId}
+          materialId={preview.id}
+          materialName={preview.name}
+        />
+      )}
 
       {/* ── 根视图：三个一级文件夹（bento 大格） ── */}
       {activeFolder === null && (

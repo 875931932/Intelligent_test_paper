@@ -108,6 +108,18 @@
 ### 3.4 单资料详情
 `GET /api/v1/courses/{course_id}/materials/{material_id}` → `MaterialResponse`
 
+`GET /api/v1/courses/{course_id}/materials/{material_id}/content?block_id=&offset=0&limit=30` → 解析内容预览
+（与助手 RAG 同语料：`content_blocks` + 最新 ready run，`content_index_service.get_material_content`）：
+```json
+{ "material_id": "uuid", "material_name": "教学大纲", "total": 3, "offset": 0, "returned": 3,
+  "blocks": [ { "id": "cb-1", "page_index": 2, "heading_path": ["第三章"], "content": "…" } ],
+  "focus": { "id": "cb-1", "index": 1 } }
+```
+- 分页模式（资料卡「查看」浏览整份资料）：`offset`/`limit`（≤100）按解析顺序切片，`focus=null`；
+- 定位模式（助手来源卡「查看原文」）：带 `block_id` 返回该块 ±上下文窗口；该块不在当前解析结果
+  （资料重新解析过）→ `blocks=[]` 且 `focus.index=null`，前端提示旧引用失效；
+- 未解析（无 ready run）→ `total=0, blocks=[]`（先解析，不是错误）；资料不存在/跨课程 → 404。
+
 ### 3.5 启动解析（MinerU）
 `POST /api/v1/courses/{course_id}/materials/{material_id}/parse` → **202**
 同哈希已 ready 会直接复用。错误状态码随 `ParseError.status_code`（多为 409/422）。
@@ -956,7 +968,8 @@ schema 自 `1.2.0` 起新增该字段；逐题带 `rubric`（主观题评分细�
   - 命中：`action={kind:"sources", tool, args, status:"completed", payload:{question,
     material_id, material_name, mode:"hybrid"|"lexical", sources:[{block_id, material_id,
     material_name, page_index, heading_path, snippet}]}}`，SSE `card {kind:"sources"}`，
-    前端来源卡展示片段出处 +「打开资料库」CTA（score 不进 payload，避免把相关度当可信度）；
+    前端来源卡展示片段出处 + 每条「查看原文」经 materials content 端点定位
+    （该块±上下文窗口）与「打开资料库」CTA（score 不进 payload，避免把相关度当可信度）；
     无命中 → `action={}`（普通问答形态，正文说明没找到，不落卡）。
 - **语料向量列（v2）**：`content_blocks` 增 `embedding`(JSON，可空) + `embedding_model`
   (VARCHAR(64))——换嵌入模型时按 `embedding_model != settings.embedding_model` 重嵌；
