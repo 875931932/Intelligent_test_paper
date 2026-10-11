@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Check, RotateCcw, Sparkles } from 'lucide-react';
 import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
@@ -6,8 +6,8 @@ import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
-import { toText } from '@/lib/examDisplay';
-import type { AiReviseResult, PaperVersionItem, TaskRun } from '@/types/api';
+import { COGNITIVE_LABELS, PLAN_DIFFICULTY_OPTIONS, clabel, dlabel, toText } from '@/lib/examDisplay';
+import type { AiReviseResult, AiReviseTargets, PaperVersionItem, ReviseTargetsResponse, TaskRun } from '@/types/api';
 
 /** 任务终态（与后端 task_runs 状态机一致） */
 const TERMINAL = new Set(['succeeded', 'failed', 'cancelled']);
@@ -30,14 +30,38 @@ const FIELD_LABEL: Record<FieldKey, string> = {
 
 const FIELD_KEYS: FieldKey[] = ['stem', 'options', 'answer', 'explanation'];
 
+/** 属性键（与后端 _PROPOSAL_ATTR_KEYS 同名单）：全部进 PATCH；撤销时显式 null 回滚 */
+type AttrKey =
+  | 'difficulty' | 'cognitive_level'
+  | 'exam_point_id' | 'exam_point_title' | 'exam_point_code'
+  | 'knowledge_card_id' | 'coverage_atom' | 'answer_boundary' | 'unit_id' | 'backfilled_from';
+
+const ATTR_KEYS: AttrKey[] = [
+  'difficulty', 'cognitive_level',
+  'exam_point_id', 'exam_point_title', 'exam_point_code',
+  'knowledge_card_id', 'coverage_atom', 'answer_boundary', 'unit_id', 'backfilled_from',
+];
+
 /** 结构化比较：提案与原题一致的字段不进 diff（也就不进 PATCH） */
 function sameValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
 }
 
+const selectStyle: React.CSSProperties = {
+  padding: '4px 8px', borderRadius: 8, fontSize: '0.8rem',
+  border: '1px solid var(--line)', background: 'var(--surface-sunken)',
+  fontFamily: 'inherit', maxWidth: 200,
+};
+
+const targetLabelStyle: React.CSSProperties = {
+  display: 'flex', flexDirection: 'column', gap: 3,
+  fontSize: '0.72rem', fontWeight: 600, color: 'var(--text-tertiary)',
+};
+
 /**
- * 单题 AI 改题面板：指令 → 轮询提案任务 → diff 预览 + 校验徽标 →
- * 确认后走既有 PATCH teacher_override 落库；应用后可一键撤销。
+ * 单题 AI 改题面板：指令（可选目标属性）→ 轮询提案任务 → 内容/属性 diff 预览 +
+ * 校验徽标 → 确认后走既有 PATCH teacher_override 落库；应用后可一键撤销。
+ * 目标属性（换难度/认知/考点）由后端确定性解析与预检，模型只写题面内容。
  */
 export function AiRevisePanel({
   courseId, pvId, item, no, onApplied,
@@ -58,8 +82,17 @@ export function AiRevisePanel({
   const [taskRunId, setTaskRunId] = useState<string | null>(null);
   const [result, setResult] = useState<AiReviseResult | null>(null);
   const [applying, setApplying] = useState(false);
-  // 已应用字段的「应用前旧值」：撤销 = 把这些旧值 PATCH 回去（原题本就分层保留在 payload）
-  const [snapshot, setSnapshot] = useState<Partial<Record<FieldKey, unknown>> | null>(null);
+  // 已应用字段的「应用前旧值」+ 用过的属性键：撤销 = 内容旧值写回、属性键显式 null
+  //（属性读端走 or 链回落 payload/plan 原值，override 里不留教师没改过的痕迹）
+  const [snapshot, setSnapshot] = useState<{ content: Partial<Record<FieldKey, unknown>>; attrs: AttrKey[] } | null>(null);
+
+  // 目标属性选择（"不变"为默认；考点菜单是确定性数据，懒加载一次）
+  const [difficultyTarget, setDifficultyTarget] = useState('');
+  const [cognitiveTarget, setCognitiveTarget] = useState('');
+  const [epTarget, setEpTarget] = useState('');
+  const [cardTarget, setCardTarget] = useState('');
+  const [targetsData, setTargetsData] = useState<ReviseTargetsResponse | null>(null);
+  const [targetsLoading, setTargetsLoading] = useState(false);
 
   // 轮询提案任务（与 PipelinePanel 的生成轮询同款：依赖只取 id，终态自停）
   useEffect(() => {
@@ -83,6 +116,34 @@ export function AiRevisePanel({
     return () => clearInterval(timer);
   }, [taskRunId, courseId, token, addToast]);
 
+  // 换考点目标菜单：拉取失败不阻塞改题（教师仍可纯内容/难度认知调整）
+  useEffect(() => {
+    let alive = true;
+    setTargetsLoading(true);
+    api.paperVersions
+      .reviseTargets(courseId, pvId, item.item_index, token ?? undefined)
+      .then((data) => { if (alive) setTargetsData(data); })
+      .catch(() => { /* 菜单不可用时考点下拉只剩「不变」 */ })
+      .finally(() => { if (alive) setTargetsLoading(false); });
+    return () => { alive = false; };
+  }, [courseId, pvId, item.item_index, token]);
+
+  const epCards = useMemo(
+    () => targetsData?.exam_points.find((ep) => ep.id === epTarget)?.cards ?? [],
+    [targetsData, epTarget],
+  );
+
+  const buildTargets = (): AiReviseTargets | undefined => {
+    const t: AiReviseTargets = {};
+    if (difficultyTarget) t.difficulty = difficultyTarget;
+    if (cognitiveTarget) t.cognitive_level = cognitiveTarget;
+    if (epTarget) {
+      t.exam_point_id = epTarget;
+      if (cardTarget) t.card_id = cardTarget;
+    }
+    return Object.keys(t).length ? t : undefined;
+  };
+
   const submit = async (text?: string) => {
     const ins = (text ?? instruction).trim();
     if (!ins) {
@@ -94,7 +155,7 @@ export function AiRevisePanel({
     setResult(null);
     setSnapshot(null);
     try {
-      const res = await api.paperVersions.aiRevise(courseId, pvId, item.item_index, ins, token ?? undefined);
+      const res = await api.paperVersions.aiRevise(courseId, pvId, item.item_index, ins, buildTargets(), token ?? undefined);
       setTaskRunId(res.task_run_id);
     } catch (e) {
       setBusy(false);
@@ -105,7 +166,11 @@ export function AiRevisePanel({
   const changedKeys = result
     ? FIELD_KEYS.filter((k) => !sameValue(result.proposal[k], result.current[k]))
     : [];
-  const canApply = !!result?.validation.passed && changedKeys.length > 0 && !snapshot;
+  const changedAttrKeys = result
+    ? ATTR_KEYS.filter((k) => !sameValue(result.proposal[k], result.current[k]))
+    : [];
+  const hasChanges = changedKeys.length > 0 || changedAttrKeys.length > 0;
+  const canApply = !!result?.validation.passed && hasChanges && !snapshot;
 
   const apply = async () => {
     if (!result || !canApply) return;
@@ -116,9 +181,13 @@ export function AiRevisePanel({
       patch[k] = result.proposal[k];
       prev[k] = result.current[k];
     }
+    // 属性键一并落库（系统盖章值），撤销时按同一名单显式 null 回滚
+    for (const k of changedAttrKeys) {
+      patch[k] = result.proposal[k] ?? null;
+    }
     try {
       await api.paperVersions.patchItem(courseId, pvId, item.item_index, { teacher_override_patch: patch }, token ?? undefined);
-      setSnapshot(prev);
+      setSnapshot({ content: prev, attrs: changedAttrKeys });
       addToast(`第 ${no} 题已应用 AI 修改`, 'success');
       onApplied();
     } catch (e) {
@@ -131,8 +200,10 @@ export function AiRevisePanel({
   const undo = async () => {
     if (!snapshot) return;
     setApplying(true);
+    const patch: Record<string, unknown> = { ...snapshot.content };
+    for (const k of snapshot.attrs) patch[k] = null;
     try {
-      await api.paperVersions.patchItem(courseId, pvId, item.item_index, { teacher_override_patch: { ...snapshot } }, token ?? undefined);
+      await api.paperVersions.patchItem(courseId, pvId, item.item_index, { teacher_override_patch: patch }, token ?? undefined);
       setSnapshot(null);
       setResult(null);
       addToast('已撤销本次 AI 修改', 'success');
@@ -143,6 +214,46 @@ export function AiRevisePanel({
       setApplying(false);
     }
   };
+
+  // 属性 diff 的可读行（难度/认知/考点/原子/答案域）；其余键只进 PATCH 不单列
+  const attrRows: Array<{ label: string; from: string; to: string }> = [];
+  if (result) {
+    if (!sameValue(result.proposal.difficulty, result.current.difficulty)) {
+      attrRows.push({
+        label: '难度',
+        from: dlabel(String(result.current.difficulty ?? '')),
+        to: dlabel(String(result.proposal.difficulty ?? '')),
+      });
+    }
+    if (!sameValue(result.proposal.cognitive_level, result.current.cognitive_level)) {
+      attrRows.push({
+        label: '认知层级',
+        from: clabel(String(result.current.cognitive_level ?? '')),
+        to: clabel(String(result.proposal.cognitive_level ?? '')),
+      });
+    }
+    if (!sameValue(result.proposal.exam_point_id, result.current.exam_point_id)) {
+      attrRows.push({
+        label: '考点',
+        from: result.current.exam_point_title || result.current.exam_point_id || '—',
+        to: result.proposal.exam_point_title || result.proposal.exam_point_id || '—',
+      });
+    }
+    if (!sameValue(result.proposal.coverage_atom, result.current.coverage_atom)) {
+      attrRows.push({
+        label: '考查原子',
+        from: String(result.current.coverage_atom || '—'),
+        to: String(result.proposal.coverage_atom || '—'),
+      });
+    }
+    if (!sameValue(result.proposal.answer_boundary, result.current.answer_boundary)) {
+      attrRows.push({
+        label: '答案域',
+        from: String(result.current.answer_boundary || '—'),
+        to: String(result.proposal.answer_boundary || '—'),
+      });
+    }
+  }
 
   const running = busy || !!taskRunId;
 
@@ -156,8 +267,6 @@ export function AiRevisePanel({
       }}
     >
       {/* 头部（标题/最小化/关闭）由 FloatingPanel 外壳统一提供 */}
-
-      {/* 指令输入在面板底部（见下），结果区可任意加长而不挤压输入区 */}
 
       {result && (
         <>
@@ -173,13 +282,39 @@ export function AiRevisePanel({
             {!result.validation.passed && (
               <span style={{ fontSize: '0.78rem', color: 'var(--error)' }}>{result.validation.message}</span>
             )}
-            {changedKeys.length === 0 && <Badge variant="default">提案与原题无差异</Badge>}
+            {!hasChanges && <Badge variant="default">提案与原题无差异</Badge>}
           </div>
           {result.change_summary && (
             <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.7, margin: 0 }}>
               <span style={{ fontWeight: 600, color: 'var(--purple)' }}>AI 说明：</span>
               {result.change_summary}
             </p>
+          )}
+
+          {/* 属性调整 diff（目标属性由系统盖章，模型只写题面） */}
+          {attrRows.length > 0 && (
+            <div style={{
+              padding: '8px 12px', borderRadius: 'var(--radius-sm)',
+              background: 'var(--purple-subtle)', border: '1px solid var(--purple-soft)',
+              display: 'flex', flexDirection: 'column', gap: 6,
+            }}>
+              <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--purple)' }}>
+                目标属性调整（应用后落库，可撤销）
+              </div>
+              {attrRows.map((row) => (
+                <div key={row.label} style={{ display: 'flex', gap: 8, alignItems: 'baseline', fontSize: '0.8rem', flexWrap: 'wrap' }}>
+                  <span style={{ fontWeight: 600, color: 'var(--text-tertiary)', minWidth: 48 }}>{row.label}</span>
+                  <span style={{ color: 'var(--error-ink)', textDecoration: 'line-through' }}>{row.from}</span>
+                  <span style={{ color: 'var(--text-tertiary)' }}>→</span>
+                  <span style={{ color: 'var(--text)', wordBreak: 'break-word' }}>{row.to}</span>
+                </div>
+              ))}
+              {result.proposal.backfilled_from && (
+                <div style={{ fontSize: '0.75rem', color: 'var(--warning)' }}>
+                  跨考点改考：本题按原考点计回合同配比（回补明细可在评审报告中查看）
+                </div>
+              )}
+            </div>
           )}
 
           {/* 字段级 diff：只展示有变化的字段 */}
@@ -210,7 +345,9 @@ export function AiRevisePanel({
             ))}
             {changedKeys.length === 0 && (
               <p style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', margin: 0 }}>
-                提案没有改动任何字段，可换一种要求重新生成。
+                {hasChanges
+                  ? '题面内容未改动，仅调整目标属性。'
+                  : '提案没有改动任何字段，可换一种要求重新生成。'}
               </p>
             )}
           </div>
@@ -259,10 +396,66 @@ export function AiRevisePanel({
           boxShadow: 'var(--shadow-3)',
         }}
       >
+        {/* 目标属性（全部「不变」为默认；配对合法性与考点可用性由后端确定性预检） */}
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          <label style={targetLabelStyle}>
+            难度目标
+            <select value={difficultyTarget} disabled={running} onChange={(e) => setDifficultyTarget(e.target.value)} style={selectStyle}>
+              <option value="">不变（{dlabel(String(item.difficulty ?? 'medium'))}）</option>
+              {PLAN_DIFFICULTY_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </label>
+          <label style={targetLabelStyle}>
+            认知层级
+            <select value={cognitiveTarget} disabled={running} onChange={(e) => setCognitiveTarget(e.target.value)} style={selectStyle}>
+              <option value="">不变（{clabel(String(item.cognitive_level ?? ''))}）</option>
+              {Object.entries(COGNITIVE_LABELS).map(([v, l]) => (
+                <option key={v} value={v}>{l}</option>
+              ))}
+            </select>
+          </label>
+          <label style={targetLabelStyle}>
+            考点（换考点）
+            <select
+              value={epTarget}
+              disabled={running || targetsLoading}
+              onChange={(e) => { setEpTarget(e.target.value); setCardTarget(''); }}
+              style={selectStyle}
+            >
+              <option value="">{targetsLoading ? '加载考点…' : '不变'}</option>
+              {(targetsData?.exam_points ?? []).map((ep) => (
+                <option key={ep.id} value={ep.id}>
+                  {ep.code ? ep.code + ' ' : ''}{ep.title || ep.id}{ep.current ? '（当前）' : ''}
+                </option>
+              ))}
+              {(targetsData?.unavailable_exam_points ?? []).map((ep) => (
+                <option key={ep.id} value="" disabled>
+                  {ep.title || ep.id}（{ep.reason}）
+                </option>
+              ))}
+            </select>
+          </label>
+          {epTarget && (
+            <label style={targetLabelStyle}>
+              知识卡（原子）
+              <select value={cardTarget} disabled={running} onChange={(e) => setCardTarget(e.target.value)} style={selectStyle}>
+                <option value="">自动选择最优</option>
+                {epCards.map((c) => (
+                  <option key={c.card_id} value={c.card_id}>{c.card_name}：{c.atom}</option>
+                ))}
+              </select>
+            </label>
+          )}
+        </div>
+        {targetsData?.note && (
+          <div style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>{targetsData.note}</div>
+        )}
         <textarea
           value={instruction}
           onChange={(e) => setInstruction(e.target.value)}
-          placeholder="告诉 AI 怎么改这道题（只改表述与选项，题型/分值/难度由合同锁定）"
+          placeholder="告诉 AI 怎么改这道题（题型/分值锁定；难度/认知/考点可在上方目标中调整，目标由系统确定性落库）"
           rows={2}
           disabled={running}
           style={{

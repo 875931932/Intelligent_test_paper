@@ -22,7 +22,10 @@ from app.db.schema import (
     plan_items,
     quality_checks,
 )
-from app.domain.generation.difficulty_standard import difficulty_spec as build_difficulty_spec
+from app.domain.generation.difficulty_standard import (
+    canonical_difficulty,
+    difficulty_spec as build_difficulty_spec,
+)
 from app.services.generation_service import answer_option_keys
 
 
@@ -708,6 +711,34 @@ def create_paper_version_from_generation(
         raise PaperVersionError(f"数据库错误: {exc}") from exc
 
 
+def _attr_deviation(*, override: dict, payload: dict, plan: dict) -> list[dict]:
+    """教师改考属性与合同槽位（plan_items）的偏离清单，供「偏离合同」徽标。
+
+    动态计算不落状态：教师改回合同值后列表自然为空，徽标随之消失。难度经
+    canonical 归一比对（easy→low 这类别名差异不算偏离）；无槽位的题
+    （归档存回/手拟新增）没有合同可偏离，返回空。
+    """
+    diffs: list[dict] = []
+    eff_diff = override.get("difficulty") or payload.get("difficulty")
+    plan_diff = plan.get("difficulty")
+    if eff_diff and plan_diff and canonical_difficulty(eff_diff) != canonical_difficulty(plan_diff):
+        diffs.append({"field": "difficulty", "plan": plan_diff, "effective": eff_diff})
+    eff_cog = override.get("cognitive_level") or payload.get("cognitive_level")
+    plan_cog = plan.get("cognitive_level")
+    if eff_cog and plan_cog and eff_cog != plan_cog:
+        diffs.append({"field": "cognitive_level", "plan": plan_cog, "effective": eff_cog})
+    plan_ep = plan.get("exam_point_id")
+    eff_ep = override.get("exam_point_id") or payload.get("exam_point_id") or plan_ep
+    if eff_ep and plan_ep and eff_ep != plan_ep:
+        diffs.append({
+            "field": "exam_point",
+            "plan": plan_ep,
+            "effective": eff_ep,
+            "effective_title": override.get("exam_point_title") or payload.get("exam_point_title"),
+        })
+    return diffs
+
+
 def get_paper_version(
     session: Session,
     paper_version_id: str,
@@ -751,6 +782,8 @@ def get_paper_version(
             generated_questions.c.knowledge_card_id,
             plan_items.c.score.label("plan_score"),
             plan_items.c.exam_point_id.label("plan_exam_point_id"),
+            plan_items.c.difficulty.label("plan_difficulty"),
+            plan_items.c.cognitive_level.label("plan_cognitive_level"),
         )
         .select_from(paper_items)
         .join(generated_questions, generated_questions.c.id == paper_items.c.generated_question_id)
@@ -777,15 +810,35 @@ def get_paper_version(
         plan_score = d.get("plan_score")
         if plan_score is None:
             plan_score = payload.get("score", 0.0)
+        # 追踪字段（考点/卡片/原子）override 优先：AI 改题目标属性落 teacher_override。
+        # 用 or 链而非 get 默认值：撤销时前端显式回写 null，假值自然回落
+        # payload/plan 快照，语义等价"未覆盖"（payload 是生成时的原值）。
         questions_out.append({
             "item_index": d["display_order"],
             "plan_item_id": d.get("plan_item_id"),
-            "knowledge_card_id": d.get("knowledge_card_id"),
-            "exam_point_id": payload.get("exam_point_id") or d.get("plan_exam_point_id"),
-            # 考点名快照（生成时写进 payload，见 generation_runner）：
-            # 目录重建后映射失效的历史卷仍能显示真实考点名，前端优先读它
-            "exam_point_title": payload.get("exam_point_title"),
-            "exam_point_code": payload.get("exam_point_code"),
+            "knowledge_card_id": override.get("knowledge_card_id") or d.get("knowledge_card_id"),
+            "exam_point_id": (
+                override.get("exam_point_id") or payload.get("exam_point_id")
+                or d.get("plan_exam_point_id")
+            ),
+            # 考点名快照（生成时写进 payload，见 generation_runner）：目录重建后
+            # 映射失效的历史卷仍能显示真实考点名；AI 换考点时 override 带新名，
+            # 前端优先读 exam_point_title。
+            "exam_point_title": override.get("exam_point_title") or payload.get("exam_point_title"),
+            "exam_point_code": override.get("exam_point_code") or payload.get("exam_point_code"),
+            # 考查原子与回补标记：换考点后的面板 diff 与审计可见性需要
+            "coverage_atom": override.get("coverage_atom") or payload.get("coverage_atom"),
+            "backfilled_from": override.get("backfilled_from") or payload.get("backfilled_from"),
+            # 偏离合同徽标（动态计算不落状态）：教师改回合同值即自然消失
+            "attr_deviation": _attr_deviation(
+                override=override,
+                payload=payload,
+                plan={
+                    "difficulty": d.get("plan_difficulty"),
+                    "cognitive_level": d.get("plan_cognitive_level"),
+                    "exam_point_id": d.get("plan_exam_point_id"),
+                },
+            ),
             "stem": stem,
             "options": options,
             "answer": answer,
@@ -840,6 +893,7 @@ def list_needs_review(
             paper_items.c.needs_review,
             paper_items.c.needs_review_reason,
             paper_items.c.quality_audit,
+            paper_items.c.teacher_override,
             generated_questions.c.payload.label("gq_payload"),
             plan_items.c.exam_point_id,
             plan_items.c.knowledge_card_id.label("card_id"),
@@ -875,14 +929,16 @@ def list_needs_review(
     for r in rows:
         q = r.get("gq_payload") or {}
         qa = r.get("quality_audit") or {}
+        ov = r.get("teacher_override") or {}
         out.append({
             "item_index": r["item_index"],
             "question_type": r.get("question_type") or q.get("question_type"),
             "needs_review_reason": r.get("needs_review_reason") or "",
             "quality_message": (qa.get("quality") or {}).get("message", ""),
-            # 归档存回的题没有 plan 槽位：考点/知识卡回落 payload（快照里存了原值）
-            "exam_point_id": r.get("exam_point_id") or q.get("exam_point_id"),
-            "card_id": r.get("card_id") or q.get("knowledge_card_id") or q.get("card_id"),
+            # 回落链与 get_paper_version 同序：override（AI 换考点后指到新考点）
+            # → plan 槽位 → payload 快照（归档存回的题没有 plan 槽位）
+            "exam_point_id": ov.get("exam_point_id") or r.get("exam_point_id") or q.get("exam_point_id"),
+            "card_id": ov.get("knowledge_card_id") or r.get("card_id") or q.get("knowledge_card_id") or q.get("card_id"),
         })
     return out
 

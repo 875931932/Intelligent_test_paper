@@ -36,8 +36,10 @@ from app.services.ai_revise_service import (
     build_revise_prompt,
     enqueue_ai_revise,
     execute_ai_revise_task,
+    list_revise_targets,
     load_revise_context,
     normalize_proposal,
+    resolve_revise_targets,
     run_ai_revise,
     validate_proposal,
 )
@@ -420,3 +422,392 @@ def test_enqueue_rejects_finalized_paper(session):
             session, course_id="c1", paper_version_id="pv1", item_index=1,
             instruction="改",
         )
+
+
+# ─── 目标属性解析（换难度/认知/考点：确定性预检 + 系统盖章） ───
+
+
+def _seed_second_exam_point(session, *, atom="反向传播的链式法则", boundary="围绕链式法则"):
+    """目录 cv1 下补考点 ep2 + 单元 au2 + 卡 kc2；ep1 提升为 confirmed（菜单按
+    confirmed 口径取考点元信息，见 api/v1/knowledge 的 published-knowledge）。"""
+    with session.begin():
+        session.execute(
+            exam_points.update().where(exam_points.c.id == "ep1").values(status="confirmed")
+        )
+        session.execute(exam_points.insert().values(
+            id="ep2", course_id="c1", framework_version_id="fv1", anchor_key="A2",
+            code="EP2", title="考点2", assessment_requirement="掌握A2", weight_value=20.0,
+            weight_source="teacher_confirmed", weight_group_id="A2", priority="normal",
+            cognitive_targets=[], assessment_orientations=[], allowed_question_types=[],
+            operational_detail_policy="supporting_only", scope_boundary={},
+            required_evidence_roles=[], retrieval_intent="围绕A2检索",
+            teaching_anchor_keys=[], status="confirmed",
+        ))
+        session.execute(assessment_units.insert().values(
+            id="au2", course_id="c1", catalog_version_id="cv1", content_domain_id="cd1",
+            exam_point_id="ep2", code="U2", title="单元2", performance_statement="ps2",
+            weight=20, status="active",
+        ))
+        session.execute(knowledge_cards.insert().values(
+            id="kc2", course_id="c1", catalog_version_id="cv1", assessment_unit_id="au2",
+            name="卡A2", performance_statement="掌握A2",
+            assessable_content=[atom], content_hash="hca2", status="active",
+            concept_cluster="B", answer_proposition=boundary,
+        ))
+
+
+def _resolve(session, targets, *, ctx=None):
+    return resolve_revise_targets(
+        session, course_id="c1", paper_version_id="pv1",
+        context=ctx or _ctx(session), targets=targets,
+    )
+
+
+def test_resolve_returns_none_without_targets(session):
+    assert _resolve(session, None) is None
+    assert _resolve(session, {}) is None
+    assert _resolve(session, {"difficulty": "", "cognitive_level": None}) is None
+
+
+def test_resolve_normalizes_difficulty_alias_with_pairing(session):
+    # hard 是题目词表别名，落库归一为蓝图词表 high；high 不允许 understand，须同调认知
+    out = _resolve(session, {"difficulty": "hard", "cognitive_level": "analyze"})
+    assert out == {"difficulty": "high", "cognitive_level": "analyze"}
+
+
+def test_resolve_rejects_difficulty_cognitive_mismatch(session):
+    # 低档只允许 remember/understand：配对校验先于模型调用确定性拒绝（422）
+    with pytest.raises(AiReviseError, match="不允许认知层级"):
+        _resolve(session, {"difficulty": "low", "cognitive_level": "analyze"})
+
+
+def test_resolve_rejects_invalid_target_values(session):
+    with pytest.raises(AiReviseError, match="非法"):
+        _resolve(session, {"difficulty": "impossible"})
+    with pytest.raises(AiReviseError, match="布鲁姆六级"):
+        _resolve(session, {"cognitive_level": "hallucinate"})
+    with pytest.raises(AiReviseError, match="不支持的目标字段"):
+        _resolve(session, {"score": 5})
+    with pytest.raises(AiReviseError, match="同时给出目标考点"):
+        _resolve(session, {"card_id": "kc2"})
+
+
+def test_resolve_exam_point_change_picks_atom_and_backfills(session):
+    _seed_second_exam_point(session)
+    out = _resolve(session, {"exam_point_id": "ep2"})
+    assert out["exam_point_id"] == "ep2"
+    assert out["exam_point_title"] == "考点2"
+    assert out["knowledge_card_id"] == "kc2"
+    assert out["coverage_atom"] == "反向传播的链式法则"
+    # 跨考点：回补标记指向原考点（合同配比计回，评审可见）
+    assert out["backfilled_from"]["from_exam_point_id"] == "ep1"
+    assert out["backfilled_from"]["to_exam_point_id"] == "ep2"
+    # 换考点后禁用上下文按目标考点重算
+    assert out["forbidden_context"]["atoms"] == []
+
+
+def test_resolve_same_exam_point_keeps_no_backfill(session):
+    _seed_second_exam_point(session)
+    # 目标 = 当前考点（ep1）：同考点换卡不写回补标记
+    out = _resolve(session, {"exam_point_id": "ep1"})
+    assert out["exam_point_id"] == "ep1"
+    assert out["knowledge_card_id"] == "kc1"
+    assert out["backfilled_from"] is None
+
+
+def test_resolve_skips_atom_used_by_other_item(session):
+    _seed_second_exam_point(session)
+    # 其他题（归档存回式，无 plan 槽位）已用掉 ep2 的唯一原子：预检拒绝，不交模型
+    with session.begin():
+        session.execute(generated_questions.insert().values(
+            id="gq2", course_id="c1", generation_run_id="gr1", plan_item_id=None,
+            knowledge_card_id="kc2", revision_no=1, status="candidate",
+            payload={"stem": "x", "answer": "y", "coverage_atom": "反向传播的链式法则"},
+        ))
+        session.execute(paper_items.insert().values(
+            id="item2", course_id="c1", paper_version_id="pv1",
+            generated_question_id="gq2", display_order=2,
+        ))
+    with pytest.raises(AiReviseError, match="已被其他题占用"):
+        _resolve(session, {"exam_point_id": "ep2"})
+
+
+def test_resolve_rejects_boundary_conflict(session):
+    _seed_second_exam_point(session)
+    # 另一道题（归档存回式）已占用与目标卡相同的答案域：同一答案域不能落两道题
+    with session.begin():
+        session.execute(generated_questions.insert().values(
+            id="gq2", course_id="c1", generation_run_id="gr1", plan_item_id=None,
+            knowledge_card_id="kc2", revision_no=1, status="candidate",
+            payload={"stem": "x", "answer": "y", "answer_boundary": "围绕链式法则"},
+        ))
+        session.execute(paper_items.insert().values(
+            id="item2", course_id="c1", paper_version_id="pv1",
+            generated_question_id="gq2", display_order=2,
+        ))
+    with pytest.raises(AiReviseError, match="重叠或共享命题"):
+        _resolve(session, {"exam_point_id": "ep2"})
+
+
+def test_resolve_targeted_card_within_exam_point(session):
+    _seed_second_exam_point(session)
+    out = _resolve(session, {"exam_point_id": "ep2", "card_id": "kc2"})
+    assert out["knowledge_card_id"] == "kc2"
+    # 指定的卡不存在于该考点池：给出明确原因而不是静默换卡
+    with pytest.raises(AiReviseError, match="没有不冲突的可用原子"):
+        _resolve(session, {"exam_point_id": "ep1", "card_id": "kc999"})
+
+
+def test_resolve_missing_catalog_rejects(session):
+    # 手拟题/归档题没有 generation_run：换考点不可用，如实拒绝
+    session.execute(
+        update(paper_versions).where(paper_versions.c.id == "pv1").values(generation_run_id=None)
+    )
+    session.commit()
+    with pytest.raises(AiReviseError, match="蓝图目录"):
+        _resolve(session, {"exam_point_id": "ep2"})
+
+
+# ─── 盖章与 prompt 目标块 ───
+
+
+def test_normalize_stamps_target_attrs():
+    current = {
+        "question_type": "single_choice", "stem": "s", "options": None, "answer": "A",
+        "explanation": "e", "difficulty": "medium", "cognitive_level": "understand",
+        "coverage_atom": "老原子", "exam_point_id": "ep1", "unit_id": "au1",
+    }
+    proposal = normalize_proposal(
+        {"stem": "s", "options": None, "answer": "A", "explanation": "e"},
+        current=current,
+        target={"difficulty": "high", "coverage_atom": "新原子"},
+    )
+    # 目标覆盖、未指定沿用——属性是系统盖章，模型只写了题面内容
+    assert proposal["difficulty"] == "high"
+    assert proposal["coverage_atom"] == "新原子"
+    assert proposal["cognitive_level"] == "understand"
+    assert proposal["exam_point_id"] == "ep1"
+
+
+def test_normalize_without_target_keeps_attrs():
+    current = {
+        "question_type": "true_false", "stem": "s", "options": None,
+        "answer": True, "explanation": "e", "difficulty": "medium",
+    }
+    proposal = normalize_proposal({"stem": "s2"}, current=current)
+    assert proposal["stem"] == "s2"
+    assert proposal["difficulty"] == "medium"
+    assert proposal["exam_point_id"] is None
+
+
+def test_build_prompt_target_overrides_contract(session):
+    ctx = _ctx(session)
+    target = {
+        "difficulty": "high", "cognitive_level": "analyze",
+        "exam_point_id": "ep2", "exam_point_title": "考点2",
+        "coverage_atom": "新原子", "answer_boundary": "新边界",
+        "forbidden_context": {"atoms": ["兄弟原子"], "answer_cores": ["兄弟核心"]},
+    }
+    _, payload = build_revise_prompt(ctx, "改", target=target)
+    # 合同块按目标覆写：模型看到的原子/边界/难度即教师目标
+    assert payload["contract"]["difficulty"] == "high"
+    assert payload["contract"]["cognitive_level"] == "analyze"
+    assert payload["contract"]["coverage_atom"] == "新原子"
+    assert payload["contract"]["forbidden_context"]["atoms"] == ["兄弟原子"]
+    # teacher_target 块明示哪些锁定被解禁
+    assert payload["teacher_target"]["difficulty"] == "high"
+    assert payload["teacher_target"]["exam_point"]["title"] == "考点2"
+    assert "题型与分值仍锁定" in payload["teacher_target"]["note"]
+
+
+# ─── 终检按盖章属性把关 ───
+
+
+def test_validate_uses_stamped_attrs_for_difficulty_gate(session):
+    current = _ctx(session)["current"]
+    # 低档 + 创造：盖章后属性进难度门禁，允许集外即阻断（此前 cognitive 从未盖章）
+    low_create = {
+        "stem": "改后的题干", "options": dict(_GOOD_OPTIONS), "answer": "A",
+        "explanation": "e", "difficulty": "low", "cognitive_level": "create",
+    }
+    assert validate_proposal(low_create, current=current)["passed"] is False
+    high_analyze = {
+        "stem": "改后的题干", "options": dict(_GOOD_OPTIONS), "answer": "A",
+        "explanation": "e", "difficulty": "high", "cognitive_level": "analyze",
+    }
+    assert validate_proposal(high_analyze, current=current)["passed"] is True
+
+
+# ─── 入队与执行链路的 targets 透传 ───
+
+
+def test_enqueue_targets_in_idempotency_key(session):
+    t1 = {"difficulty": "hard", "cognitive_level": "analyze"}
+    id_a = enqueue_ai_revise(
+        session, course_id="c1", paper_version_id="pv1", item_index=1,
+        instruction="改", targets=dict(t1),
+    )
+    session.commit()
+    # 同题同要求同目标的在途任务复用
+    id_b = enqueue_ai_revise(
+        session, course_id="c1", paper_version_id="pv1", item_index=1,
+        instruction="改", targets=dict(t1),
+    )
+    assert id_a == id_b
+    # 目标不同 = 两件事，必须换新任务（否则教师拿到旧目标的完成态）
+    id_c = enqueue_ai_revise(
+        session, course_id="c1", paper_version_id="pv1", item_index=1,
+        instruction="改", targets={"difficulty": "low", "cognitive_level": "understand"},
+    )
+    assert id_c != id_a
+
+
+def test_enqueue_fast_fails_on_bad_targets(session):
+    with pytest.raises(AiReviseError):
+        enqueue_ai_revise(
+            session, course_id="c1", paper_version_id="pv1", item_index=1,
+            instruction="改", targets={"difficulty": "low", "cognitive_level": "create"},
+        )
+
+
+def test_run_ai_revise_stamps_target_and_passes_prompt(session):
+    client = StubClient([{
+        "stem": "关于分布式训练中的梯度同步，下列说法正确的是？",
+        "options": dict(_GOOD_OPTIONS), "answer": "B",
+        "explanation": "推理不交换梯度，因此不同步。", "change_summary": "提高了难度",
+    }])
+    result = run_ai_revise(
+        session, course_id="c1", paper_version_id="pv1", item_index=1,
+        instruction="提高难度", client=client,
+        targets={"difficulty": "hard", "cognitive_level": "analyze"},
+    )
+    assert result["proposal"]["difficulty"] == "high"
+    assert result["proposal"]["cognitive_level"] == "analyze"
+    assert result["target"]["difficulty"] == "high"
+    # 模型 prompt 里带着目标块（写题围绕目标，不靠模型自觉换属性）
+    assert client.calls[0]["payload"]["teacher_target"]["difficulty"] == "high"
+    assert result["validation"]["passed"] is True
+
+
+def test_run_ai_revise_without_targets_has_no_teacher_target(session):
+    client = StubClient([{
+        "stem": "关于分布式训练中的梯度同步，下列说法正确的是？",
+        "options": dict(_GOOD_OPTIONS), "answer": "A",
+        "explanation": "同步梯度需要通信，因此引入开销。", "change_summary": "微调表述",
+    }])
+    result = run_ai_revise(
+        session, course_id="c1", paper_version_id="pv1", item_index=1,
+        instruction="让题干更简洁", client=client,
+    )
+    assert "teacher_target" not in client.calls[0]["payload"]
+    assert result["proposal"]["difficulty"] == "medium"
+    assert result["target"] is None
+
+
+# ─── 换考点目标菜单 ───
+
+
+def test_list_revise_targets_menu(session):
+    _seed_second_exam_point(session)
+    # ep3：有单元无卡 → 不可用并给出原因，教师不空跑模型
+    with session.begin():
+        session.execute(exam_points.insert().values(
+            id="ep3", course_id="c1", framework_version_id="fv1", anchor_key="A3",
+            code="EP3", title="考点3", assessment_requirement="掌握A3", weight_value=10.0,
+            weight_source="teacher_confirmed", weight_group_id="A3", priority="normal",
+            cognitive_targets=[], assessment_orientations=[], allowed_question_types=[],
+            operational_detail_policy="supporting_only", scope_boundary={},
+            required_evidence_roles=[], retrieval_intent="围绕A3检索",
+            teaching_anchor_keys=[], status="confirmed",
+        ))
+        session.execute(assessment_units.insert().values(
+            id="au3", course_id="c1", catalog_version_id="cv1", content_domain_id="cd1",
+            exam_point_id="ep3", code="U3", title="单元3", performance_statement="ps3",
+            weight=10, status="active",
+        ))
+    menu = list_revise_targets(session, course_id="c1", paper_version_id="pv1", item_index=1)
+    eps = {e["id"]: e for e in menu["exam_points"]}
+    assert eps["ep2"]["cards"][0]["card_id"] == "kc2"
+    assert eps["ep2"]["cards"][0]["atom"] == "反向传播的链式法则"
+    assert eps["ep1"]["current"] is True
+    un = {u["id"]: u for u in menu["unavailable_exam_points"]}
+    assert "没有知识卡" in un["ep3"]["reason"]
+
+
+def test_list_revise_targets_menu_without_catalog(session):
+    session.execute(
+        update(paper_versions).where(paper_versions.c.id == "pv1").values(generation_run_id=None)
+    )
+    session.commit()
+    menu = list_revise_targets(session, course_id="c1", paper_version_id="pv1", item_index=1)
+    assert menu["exam_points"] == []
+    assert "蓝图目录" in menu["note"]
+
+
+# ─── 读端：override 回落与偏离合同徽标 ───
+
+
+def test_paper_version_item_reads_override_attrs_and_deviation(session):
+    from app.services.paper_version_service import get_paper_version
+
+    with session.begin():
+        session.execute(update(paper_items).where(paper_items.c.id == "item1").values(
+            teacher_override={
+                "difficulty": "high", "cognitive_level": "analyze",
+                "exam_point_id": "ep2", "exam_point_title": "考点2", "exam_point_code": "EP2",
+                "knowledge_card_id": "kc2", "coverage_atom": "新原子",
+                "answer_boundary": "新边界", "unit_id": "au2",
+                "backfilled_from": {"from_exam_point_id": "ep1", "to_exam_point_id": "ep2",
+                                     "anchor_key": "A1"},
+            }
+        ))
+    pv = get_paper_version(session, "pv1", course_id="c1")
+    q = pv["questions"][0]
+    assert q["difficulty"] == "high"
+    assert q["cognitive_level"] == "analyze"
+    assert q["exam_point_id"] == "ep2"
+    assert q["exam_point_title"] == "考点2"
+    assert q["knowledge_card_id"] == "kc2"
+    assert q["coverage_atom"] == "新原子"
+    assert q["backfilled_from"]["to_exam_point_id"] == "ep2"
+    fields = {d["field"] for d in q["attr_deviation"]}
+    assert fields == {"difficulty", "cognitive_level", "exam_point"}
+    ep_diff = next(d for d in q["attr_deviation"] if d["field"] == "exam_point")
+    assert ep_diff["plan"] == "ep1" and ep_diff["effective"] == "ep2"
+    assert ep_diff["effective_title"] == "考点2"
+
+
+def test_paper_version_attr_deviation_empty_without_override(session):
+    from app.services.paper_version_service import get_paper_version
+
+    pv = get_paper_version(session, "pv1", course_id="c1")
+    assert pv["questions"][0]["attr_deviation"] == []
+    assert pv["questions"][0]["difficulty"] == "medium"
+
+
+def test_paper_version_explicit_null_override_falls_back(session):
+    """撤销回滚：属性键显式 null（前端 undo 的 PATCH）视同未覆盖，回落原值。"""
+    from app.services.paper_version_service import get_paper_version
+
+    with session.begin():
+        session.execute(update(paper_items).where(paper_items.c.id == "item1").values(
+            teacher_override={"difficulty": None, "exam_point_id": None, "coverage_atom": None},
+        ))
+    q = get_paper_version(session, "pv1", course_id="c1")["questions"][0]
+    assert q["difficulty"] == "medium"          # payload 原值
+    assert q["exam_point_id"] == "ep1"          # payload 原值
+    assert q["coverage_atom"] is None           # payload 本就没有，如实为空
+    assert q["attr_deviation"] == []            # 显式 null 不算偏离
+
+
+def test_needs_review_prefers_override_traces(session):
+    from app.services.paper_version_service import list_needs_review
+
+    with session.begin():
+        session.execute(update(paper_items).where(paper_items.c.id == "item1").values(
+            needs_review=True,
+            teacher_override={"exam_point_id": "ep2", "knowledge_card_id": "kc2"},
+        ))
+    out = list_needs_review(session, "pv1", course_id="c1")
+    assert out[0]["exam_point_id"] == "ep2"
+    assert out[0]["card_id"] == "kc2"

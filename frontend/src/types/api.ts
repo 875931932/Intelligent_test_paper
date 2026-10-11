@@ -542,6 +542,21 @@ export interface PaperVersionItem {
   /** 生成时写进载荷的考点名快照：目录重建后映射失效，展示优先读它（P1 后端增量） */
   exam_point_title?: string | null;
   exam_point_code?: string | null;
+  /** 考查原子（teacher_override 或生成时快照）：换考点 diff 与审计展示用 */
+  coverage_atom?: string | null;
+  /** 跨考点改考的回补标记（合同配比计回原考点）；未跨考点为 null */
+  backfilled_from?: {
+    from_exam_point_id: string;
+    to_exam_point_id: string;
+    anchor_key?: string;
+  } | null;
+  /** 与合同槽位（plan_items）的动态偏离清单（难度 canonical 比对）；空数组 = 与合同一致 */
+  attr_deviation?: Array<{
+    field: 'difficulty' | 'cognitive_level' | 'exam_point';
+    plan: string;
+    effective: string;
+    effective_title?: string | null;
+  }>;
   question_type: string;
   stem: string;
   options?: Record<string, string> | string[];
@@ -651,8 +666,34 @@ export interface NeedsReviewItem {
   card_id?: string | null;
 }
 
+/** 改题目标属性（教师显式调整；"不变"的字段不发，后端默认沿用原题） */
+export interface AiReviseTargets {
+  difficulty?: string;
+  cognitive_level?: string;
+  exam_point_id?: string;
+  card_id?: string;
+}
+
+/** 生效属性（系统确定性盖章落库，模型永远不产生属性） */
+export interface AiReviseAttrFields {
+  difficulty?: string | null;
+  cognitive_level?: string | null;
+  exam_point_id?: string | null;
+  exam_point_title?: string | null;
+  exam_point_code?: string | null;
+  knowledge_card_id?: string | null;
+  coverage_atom?: string | null;
+  answer_boundary?: string | null;
+  unit_id?: string | null;
+  backfilled_from?: {
+    from_exam_point_id: string;
+    to_exam_point_id: string;
+    anchor_key?: string;
+  } | null;
+}
+
 /** 单题 AI 改题提案中的一侧题面（current 为提案生成时的原题） */
-export interface AiReviseQuestionView {
+export interface AiReviseQuestionView extends AiReviseAttrFields {
   stem: string;
   options?: Record<string, string> | string[] | null;
   answer: string | boolean;
@@ -665,7 +706,6 @@ export interface AiReviseResult {
   instruction: string;
   current: AiReviseQuestionView & {
     question_type?: string | null;
-    difficulty?: string | null;
     score?: number | null;
   };
   proposal: AiReviseQuestionView;
@@ -673,6 +713,36 @@ export interface AiReviseResult {
   /** validate_generated_question 收口结果；passed=false 时禁止应用 */
   validation: { passed: boolean; code: string; message: string };
   attempts: number;
+  /** 教师目标的确定性解析结果（选中的考点/卡/原子/回补标记）；无目标为 null */
+  target?: Record<string, unknown> | null;
+}
+
+/** 换考点目标菜单中的一张可用知识卡（atom 为将被选中的考查原子） */
+export interface ReviseTargetCard {
+  card_id: string;
+  card_name: string;
+  atom: string;
+}
+
+export interface ReviseTargetExamPoint {
+  id: string;
+  code?: string | null;
+  title?: string | null;
+  /** 本题当前所在考点（菜单中标记，不禁止再选） */
+  current: boolean;
+  cards: ReviseTargetCard[];
+}
+
+/**
+ * 换考点目标菜单（GET …/items/{i}/revise-targets）：确定性数据（无模型调用）。
+ * 可用判据与提交时的预检同源——exam_points 里能选的提交必过；
+ * unavailable 的给出原因，教师不空跑模型。
+ */
+export interface ReviseTargetsResponse {
+  exam_points: ReviseTargetExamPoint[];
+  unavailable_exam_points: Array<Omit<ReviseTargetExamPoint, 'cards'> & { reason: string }>;
+  /** 降级说明（如无蓝图目录），有值时菜单为空 */
+  note?: string;
 }
 
 /** AI 整题提案中的题面字段（回填「新增题目」表单；分值不进提案，由教师自定） */

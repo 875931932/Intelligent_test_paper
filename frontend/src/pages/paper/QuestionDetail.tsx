@@ -106,6 +106,15 @@ export function QuestionDetail({
       {item.difficulty && <Badge variant="default">{dlabel(item.difficulty)}</Badge>}
       {item.cognitive_level && <Badge variant="default">{clabel(item.cognitive_level)}</Badge>}
       {item.has_override && <Badge variant="purple">已修改</Badge>}
+      {item.attr_deviation && item.attr_deviation.length > 0 && (
+        <span
+          title={item.attr_deviation
+            .map((d) => `${d.field === 'difficulty' ? '难度' : d.field === 'cognitive_level' ? '认知层级' : '考点'}：合同 ${d.plan} → 当前 ${d.effective_title || d.effective}`)
+            .join('；')}
+        >
+          <Badge variant="warning">偏离合同</Badge>
+        </span>
+      )}
       {flagged && <Badge variant="warning">需审核</Badge>}
       {!answerText && <Badge variant="error">缺答案</Badge>}
     </>

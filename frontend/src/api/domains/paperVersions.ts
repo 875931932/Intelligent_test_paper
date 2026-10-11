@@ -1,5 +1,5 @@
 import { request, requestBlob } from '../http';
-import type { PaperVersion, PaperVersionSummary, NeedsReviewItem } from '../../types/api';
+import type { PaperVersion, PaperVersionSummary, NeedsReviewItem, AiReviseTargets, ReviseTargetsResponse } from '../../types/api';
 
 /** 可导出的三份卷面 + 答案细则 JSON；前三种同时也是整体预览的页签 */
 export type PaperExportKind = 'student' | 'card' | 'answer' | 'json';
@@ -46,9 +46,13 @@ export const paperVersionsApi = {
     request('/courses/' + courseId + '/paper-versions/' + pvId + '/items', { method: 'POST', body: JSON.stringify(body) }, token),
   deleteItem: (courseId: string, pvId: string, itemIndex: number, token?: string): Promise<PaperVersion> =>
     request('/courses/' + courseId + '/paper-versions/' + pvId + '/items/' + itemIndex, { method: 'DELETE' }, token),
-  /** 发起单题 AI 改题任务（202）；提案经校验后用 examProjects.getTaskRun 轮询取回 */
-  aiRevise: (courseId: string, pvId: string, itemIndex: number, instruction: string, token?: string): Promise<{ task_run_id: string }> =>
-    request('/courses/' + courseId + '/paper-versions/' + pvId + '/items/' + itemIndex + '/ai-revise', { method: 'POST', body: JSON.stringify({ instruction }) }, token),
+  /** 发起单题 AI 改题任务（202）；提案经校验后用 examProjects.getTaskRun 轮询取回。
+   *  targets 为目标属性（换难度/认知/考点）；不发即纯内容改题。 */
+  aiRevise: (courseId: string, pvId: string, itemIndex: number, instruction: string, targets?: AiReviseTargets, token?: string): Promise<{ task_run_id: string }> =>
+    request('/courses/' + courseId + '/paper-versions/' + pvId + '/items/' + itemIndex + '/ai-revise', { method: 'POST', body: JSON.stringify(targets && Object.keys(targets).length ? { instruction, targets } : { instruction }) }, token),
+  /** 换考点目标菜单（确定性数据，无模型调用）：可用考点/卡/原子 + 不可用原因 */
+  reviseTargets: (courseId: string, pvId: string, itemIndex: number, token?: string): Promise<ReviseTargetsResponse> =>
+    request('/courses/' + courseId + '/paper-versions/' + pvId + '/items/' + itemIndex + '/revise-targets', undefined, token),
   /** 发起整题 AI 生成任务（202）；提案回填新增表单，教师确认后走既有 createItem 落库 */
   aiGenerate: (courseId: string, pvId: string, instruction: string, token?: string): Promise<{ task_run_id: string }> =>
     request('/courses/' + courseId + '/paper-versions/' + pvId + '/items/ai-generate', { method: 'POST', body: JSON.stringify({ instruction }) }, token),

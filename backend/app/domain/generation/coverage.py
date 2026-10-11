@@ -70,6 +70,11 @@ def _normalized(value: str) -> str:
 _CLAUSE_SPLIT = re.compile(r"[。；;，,、！!？?\n]")
 
 
+# 公开别名：原子唯一性判定的服务层（如 AI 改题换考点的确定性预检）复用
+# 合同同一归一口径，避免各自复制正则导致"预检放过、终检拦下"的漂移。
+normalized_atom_key = _normalized
+
+
 def split_boundary_clauses(text: str) -> list[str]:
     """按句读标点切分答案域为分句（保留原文，调用方自行归一化）。"""
     return [part.strip() for part in _CLAUSE_SPLIT.split(str(text or "")) if part.strip()]

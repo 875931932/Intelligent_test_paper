@@ -665,3 +665,33 @@ def test_enqueue_allows_finalized_paper(session):
         session, course_id="c1", paper_version_id="pv1", instruction=""
     )
     assert task_id
+
+
+def test_final_check_reads_teacher_override_traces(session):
+    """终检按教师改后的生效题审计：override 溯源字段优先于 payload 快照。
+
+    区分点：payload 没有 backfilled_from，只有教师 override 携带——报告的
+    backfilled_slots 非空即证明终检读的是生效题，而非生成时快照自说自话。
+    """
+    from app.services.paper_review_service import _load_final_check
+
+    with session.begin():
+        session.execute(update(paper_items).where(paper_items.c.id == "item1").values(
+            teacher_override={
+                "coverage_atom": "K2-原子新定义", "answer_boundary": "K2-新边界",
+                "exam_point_id": "ep2", "unit_id": "au2", "knowledge_card_id": "kc2",
+                "backfilled_from": {"from_exam_point_id": "ep1", "to_exam_point_id": "ep2",
+                                     "anchor_key": "A1"},
+            }
+        ))
+    report = _load_final_check(
+        session, course_id="c1", generation_run_id="gr1", paper_version_id="pv1"
+    )
+    assert report is not None and report["passed"] is True
+    quota = next(c for c in report["checks"] if c["code"] == "quota_match")
+    # 跨考点改考计回原考点：合同配比视为兑现，回补明细单列供教师与评审查看
+    assert quota["passed"] is True
+    assert report["backfilled_slots"][0]["from_exam_point_id"] == "ep1"
+    assert report["backfilled_slots"][0]["to_exam_point_id"] == "ep2"
+    trace = next(c for c in report["checks"] if c["code"] == "traceability")
+    assert trace["passed"] is True

@@ -202,6 +202,9 @@ def create_ai_revise(
     instruction = str(body.get("instruction") or "").strip()
     if not instruction:
         raise HTTPException(status_code=422, detail="instruction 不能为空")
+    targets = body.get("targets")
+    if targets is not None and not isinstance(targets, dict):
+        raise HTTPException(status_code=422, detail="targets 必须是对象")
     if not ai_revise_service.llm_configured():
         raise HTTPException(status_code=503, detail="LLM model is not configured")
 
@@ -212,6 +215,7 @@ def create_ai_revise(
             paper_version_id=pv_id,
             item_index=item_index,
             instruction=instruction,
+            targets=targets,
         )
         # 显式 commit：outbox 派发会用另一个事务/连接读取事件，任务行必须先落地
         session.commit()
@@ -242,6 +246,35 @@ def create_ai_revise(
         session.rollback()
 
     return {"task_run_id": task_id}
+
+
+@router.get(
+    "/paper-versions/{pv_id}/items/{item_index}/revise-targets",
+    response_model=dict,
+)
+def get_revise_targets(
+    course_id: str,
+    pv_id: str,
+    item_index: int,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """AI 改题目标菜单：按本卷蓝图目录列出各考点下可用的知识卡与原子。
+
+    确定性数据（不含模型调用）：可用判据与提交时的预检同源——菜单里能选的，
+    提交必过；不可用的考点给出原因，教师不空跑模型。
+    """
+    try:
+        return ai_revise_service.list_revise_targets(
+            session, course_id=course_id, paper_version_id=pv_id, item_index=item_index
+        )
+    except AiReviseConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except AiReviseError as exc:
+        msg = str(exc)
+        if "不存在" in msg or "不在该试卷版本中" in msg:
+            raise HTTPException(status_code=404, detail=msg)
+        raise HTTPException(status_code=422, detail=msg)
 
 
 @router.post(

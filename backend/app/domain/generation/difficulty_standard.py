@@ -195,6 +195,11 @@ def _resolve_difficulty(raw) -> str | None:
     return text if text in TIER_LABELS else "__invalid__"
 
 
+# 公开别名：AI 改题目标校验等服务层需要与本模块同口径的严格解析
+# （合法 → tier、缺失 → None、非法 → "__invalid__"），不再各自复制词表。
+resolve_difficulty_tier = _resolve_difficulty
+
+
 def difficulty_spec(difficulty: str, question_type: str = "") -> dict:
     """三档难度的特征规格（D1~D6 + 档级任务操作），确定性给出。
 

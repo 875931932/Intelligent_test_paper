@@ -239,3 +239,55 @@ def test_ai_revise_409_when_finalized(env, monkeypatch):
     resp = auth.post(AI_PATH.format(cid=cid), json={"instruction": "改"})
     assert resp.status_code == 409
     assert dispatched == []  # 状态门禁在建任务之前，不应产生任何派发
+
+
+def test_ai_revise_targets_fast_fail_422(env, monkeypatch):
+    """目标属性预检在建任务之前：非法配对立即 422，无任务行、无派发。"""
+    auth, cid, dispatched = _prepare(env, monkeypatch)
+    resp = auth.post(AI_PATH.format(cid=cid), json={
+        "instruction": "改难度", "targets": {"difficulty": "low", "cognitive_level": "create"},
+    })
+    assert resp.status_code == 422
+    assert "不允许认知层级" in resp.json()["detail"]
+    assert dispatched == []
+    _, factory, _ = env
+    with factory() as session:
+        rows = session.execute(select(task_runs).where(task_runs.c.course_id == cid)).all()
+    assert rows == []
+
+
+def test_ai_revise_targets_body_persisted(env, monkeypatch):
+    """targets 进任务载荷：worker 执行时按同一目标确定性盖章。"""
+    auth, cid, _ = _prepare(env, monkeypatch)
+    resp = auth.post(AI_PATH.format(cid=cid), json={
+        "instruction": "提高难度",
+        "targets": {"difficulty": "hard", "cognitive_level": "analyze"},
+    })
+    assert resp.status_code == 202, resp.text
+    _, factory, _ = env
+    with factory() as session:
+        payload = session.execute(
+            select(task_runs.c.payload).where(task_runs.c.id == resp.json()["task_run_id"])
+        ).scalar_one()
+    assert payload["targets"] == {"difficulty": "hard", "cognitive_level": "analyze"}
+
+
+def test_ai_revise_rejects_non_dict_targets(env, monkeypatch):
+    auth, cid, _ = _prepare(env, monkeypatch)
+    resp = auth.post(AI_PATH.format(cid=cid), json={"instruction": "改", "targets": ["difficulty"]})
+    assert resp.status_code == 422
+
+
+def test_revise_targets_menu_endpoint(env, monkeypatch):
+    """换考点目标菜单：确定性数据（无模型调用），可用判据与提交预检同源。"""
+    auth, cid, _ = _prepare(env, monkeypatch)
+    resp = auth.get(
+        "/api/v1/courses/{cid}/paper-versions/pv1/items/1/revise-targets".format(cid=cid)
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    ep1 = next((e for e in data["exam_points"] if e["id"] == "ep1"), None)
+    assert ep1 is not None
+    assert ep1["cards"][0]["card_id"] == "kc1"
+    assert ep1["cards"][0]["atom"] == "A1-原子1定义"
+    assert isinstance(data["unavailable_exam_points"], list)

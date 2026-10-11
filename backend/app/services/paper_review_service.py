@@ -187,10 +187,14 @@ def _load_final_check(
     # 终检的 questions 入参要的是盖章后的溯源字段（generation_runner 持久化在
     # generated_questions.payload 里）；item_index 用当前 display_order（报告与
     # 教师看到的题号同源，重排/删除后 payload 里的旧号已失真）。
+    # 溯源字段 override 优先（AI 改题目标属性落 teacher_override，含跨考点的
+    # backfilled_from 回补标记）：终检必须看教师改后的生效题，否则审计对着
+    # 生成时快照自说自话。or 链使撤销的显式 null 自然回落 payload 原值。
     rows = session.execute(
         select(
             paper_items.c.display_order,
             paper_items.c.needs_review,
+            paper_items.c.teacher_override,
             generated_questions.c.payload,
             generated_questions.c.knowledge_card_id,
         )
@@ -205,16 +209,20 @@ def _load_final_check(
     questions = []
     for r in rows:
         payload = r._mapping["payload"] or {}
+        override = r._mapping["teacher_override"] or {}
         questions.append(
             {
                 "item_index": r._mapping["display_order"],
-                "coverage_atom": payload.get("coverage_atom"),
-                "answer_boundary": payload.get("answer_boundary"),
-                "exam_point_id": payload.get("exam_point_id"),
-                "unit_id": payload.get("unit_id"),
-                "card_id": payload.get("card_id") or r._mapping["knowledge_card_id"],
+                "coverage_atom": override.get("coverage_atom") or payload.get("coverage_atom"),
+                "answer_boundary": override.get("answer_boundary") or payload.get("answer_boundary"),
+                "exam_point_id": override.get("exam_point_id") or payload.get("exam_point_id"),
+                "unit_id": override.get("unit_id") or payload.get("unit_id"),
+                "card_id": (
+                    override.get("knowledge_card_id") or payload.get("card_id")
+                    or r._mapping["knowledge_card_id"]
+                ),
                 "needs_review": bool(r._mapping["needs_review"]),
-                "backfilled_from": payload.get("backfilled_from"),
+                "backfilled_from": override.get("backfilled_from") or payload.get("backfilled_from"),
             }
         )
 

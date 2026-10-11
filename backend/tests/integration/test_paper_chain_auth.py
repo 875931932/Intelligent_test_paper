@@ -62,6 +62,7 @@ PAPER_ENDPOINTS = [
     ("GET", f"{C}/paper-versions/pv1/needs-review", None),
     ("PATCH", f"{C}/paper-versions/pv1/items/1", {"clear_needs_review": True}),
     ("POST", f"{C}/paper-versions/pv1/items/1/ai-revise", {"instruction": "改"}),
+    ("GET", f"{C}/paper-versions/pv1/items/1/revise-targets", None),
     ("POST", f"{C}/paper-versions/pv1/items/ai-generate", {"instruction": "出题"}),
     ("POST", f"{C}/paper-versions/pv1/ai-review", {"instruction": "评审"}),
     ("PUT", f"{C}/paper-versions/pv1/items/reorder", {"ordered_indices": [1]}),
