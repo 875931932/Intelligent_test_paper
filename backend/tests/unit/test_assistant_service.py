@@ -1174,6 +1174,20 @@ def test_intent_prompt_documents_capability_map_and_usage_guide():
     assert "payload.snapshot" in system_prompt
 
 
+def test_intent_prompt_splits_capability_intent_from_guide_intent():
+    """身份职责类（你会干什么）纯文字三组作答、不发卡；用法流程类才走 usage_guide 引导卡。"""
+    system_prompt, _payload = build_intent_prompt(_ctx(), "你会干什么")
+
+    # 身份职责速答块在场：可直接引用的三组职责 + 明确禁卡 + 例外于 1~2 句规则
+    assert "身份与职责" in system_prompt
+    assert "不发任何卡片" in system_prompt
+    assert "不受「查询回复 1~2 句」约束" in system_prompt
+    # 路由规则拆成两类：身份职责类 action 置 null；用法流程类发引导卡
+    assert "身份职责类" in system_prompt
+    assert "用法流程类" in system_prompt
+    assert "usage_guide" in system_prompt
+
+
 def test_usage_guide_route_returns_steps_and_navigation():
     """usage_guide 走只读路由 → 引导卡：六步主线 + 页面导航 + 当前步骤定位。"""
     routed = route_intent(

@@ -443,9 +443,6 @@ function ResultCard({
     <div className="chat-card" style={cardBox}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <Badge variant="info">{meta?.label ?? '查询结果'}</Badge>
-        <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
-          {message.content}
-        </span>
       </div>
       <ResultBody section={section} payload={payload} />
       {meta && (
@@ -487,8 +484,7 @@ function GuideCard({
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <Badge variant="info">使用引导</Badge>
         <span style={{ fontSize: '0.82rem', color: 'var(--text-secondary)' }}>
-          {message.content ||
-            (payload.current_step ? '出卷全流程与你的当前位置' : '出卷全流程已全部完成')}
+          {payload.current_step ? '出卷全流程与你的当前位置' : '出卷全流程已全部完成'}
         </span>
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 2 }}>
@@ -1881,11 +1877,19 @@ const AssistantPage: FC = () => {
                 >
                   {m.thinking && <ThinkingBlock text={m.thinking} />}
                   {m.action.kind === 'result' ? (
-                    m.action.tool === 'usage_guide' ? (
-                      <GuideCard message={m} courseId={courseId} navigate={navigate} />
-                    ) : (
-                      <ResultCard message={m} courseId={courseId} navigate={navigate} />
-                    )
+                    <>
+                      {/* 回复正文独立成泡在上、卡片在下：职责与结论一眼可见，不让卡面吞掉文字 */}
+                      {m.content && (
+                        <div className="chat-text">
+                          <MarkdownText text={m.content} />
+                        </div>
+                      )}
+                      {m.action.tool === 'usage_guide' ? (
+                        <GuideCard message={m} courseId={courseId} navigate={navigate} />
+                      ) : (
+                        <ResultCard message={m} courseId={courseId} navigate={navigate} />
+                      )}
+                    </>
                   ) : m.action.kind === 'proposal' ? (
                     <ProposalCard
                       message={m}
