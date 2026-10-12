@@ -91,42 +91,62 @@ export function PaperProfile({
           )}
         </div>
 
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-          <Button variant="secondary" size="sm" onClick={onRegenerate} icon={<RefreshCw size={14} />} title="按当前合同重新生成，会创建新版本的试卷">
-            重新生成
-          </Button>
-          <Button variant="secondary" size="sm" onClick={() => onExport('student')} icon={<FileText size={14} />}>学生卷</Button>
-          <Button variant="secondary" size="sm" onClick={() => onExport('card')} icon={<ClipboardList size={14} />}>答题卡</Button>
-          <Button variant="secondary" size="sm" onClick={() => onExport('answer')} icon={<KeySquare size={14} />}>答卷</Button>
-          <Button variant="secondary" size="sm" onClick={() => onExport('json')} icon={<FileJson size={14} />}>答案细则</Button>
-          {/* 一键打包：上面四个导出入口的 zip 合集；两份 docx 同步渲染较重，故带 loading */}
-          <Button
-            variant="primary" size="sm" onClick={onBundle} loading={bundleBusy}
-            icon={<Package size={14} />}
-            title="一键打包全部导出产物（考试卷/学生卷/答题卡 docx+html、答卷、答案细则）为一个 zip"
-          >
-            一键打包
-          </Button>
-          <Button variant="secondary" size="sm" onClick={onPreview} icon={<Eye size={14} />}>整体预览</Button>
-          {/* 归档 = 存独立快照副本：源卷被「只留 3 份」清掉后副本仍在资料库里 */}
-          <Button
-            variant="secondary" size="sm" onClick={onArchive} loading={archiving}
-            icon={<FolderPlus size={14} />}
-            title="在资料库「试卷」文件夹存一份可编辑、可下载的副本（不受只留 3 份限制）"
-          >
-            保存到资料库
-          </Button>
-          {/* 只读评审对定稿卷同样可用：不按 readonly/finalized 收起 */}
-          <Button variant="secondary" size="sm" onClick={onReview} icon={<FileSearch size={14} />} title="AI 对整份试卷稿出一份只读质量评审报告（不含学生答卷评分）">
-            AI 质量评审
-          </Button>
-          {pv.status === 'finalized' ? (
-            <Button variant="secondary" size="sm" onClick={onRevert} icon={<RotateCcw size={14} />}>撤销定稿</Button>
-          ) : (
-            <Button size="sm" onClick={onFinalize} icon={<Check size={14} />}>确认定稿</Button>
-          )}
+        {/* 动作按用途分三组：导出（看/取产物）→ 工具（生成/评审/留档）→ 定稿（里程碑）。
+            10 个按钮平铺时主次不分：打包与定稿两个主按钮被次要动作淹没 */}
+        <div style={{ display: 'flex', gap: '16px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+            <GroupLabel>导出</GroupLabel>
+            <Button variant="secondary" size="sm" onClick={onPreview} icon={<Eye size={14} />}>整体预览</Button>
+            <Button variant="secondary" size="sm" onClick={() => onExport('student')} icon={<FileText size={14} />}>学生卷</Button>
+            <Button variant="secondary" size="sm" onClick={() => onExport('card')} icon={<ClipboardList size={14} />}>答题卡</Button>
+            <Button variant="secondary" size="sm" onClick={() => onExport('answer')} icon={<KeySquare size={14} />}>答卷</Button>
+            <Button variant="secondary" size="sm" onClick={() => onExport('json')} icon={<FileJson size={14} />}>答案细则</Button>
+            {/* 一键打包：组内四个导出入口的 zip 合集；两份 docx 同步渲染较重，故带 loading */}
+            <Button
+              variant="primary" size="sm" onClick={onBundle} loading={bundleBusy}
+              icon={<Package size={14} />}
+              title="一键打包全部导出产物（考试卷/学生卷/答题卡 docx+html、答卷、答案细则）为一个 zip"
+            >
+              一键打包
+            </Button>
+          </div>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', borderLeft: '1px solid var(--border)', paddingLeft: '16px' }}>
+            <GroupLabel>工具</GroupLabel>
+            <Button variant="secondary" size="sm" onClick={onRegenerate} icon={<RefreshCw size={14} />} title="按当前合同重新生成，会创建新版本的试卷">
+              重新生成
+            </Button>
+            {/* 只读评审对定稿卷同样可用：不按 readonly/finalized 收起 */}
+            <Button variant="secondary" size="sm" onClick={onReview} icon={<FileSearch size={14} />} title="AI 对整份试卷稿出一份只读质量评审报告（不含学生答卷评分）">
+              AI 质量评审
+            </Button>
+            {/* 归档 = 存独立快照副本：源卷被「只留 3 份」清掉后副本仍在资料库里 */}
+            <Button
+              variant="secondary" size="sm" onClick={onArchive} loading={archiving}
+              icon={<FolderPlus size={14} />}
+              title="在资料库「试卷」文件夹存一份可编辑、可下载的副本（不受只留 3 份限制）"
+            >
+              保存到资料库
+            </Button>
+          </div>
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', borderLeft: '1px solid var(--border)', paddingLeft: '16px' }}>
+            <GroupLabel>定稿</GroupLabel>
+            {pv.status === 'finalized' ? (
+              <Button variant="secondary" size="sm" onClick={onRevert} icon={<RotateCcw size={14} />}>撤销定稿</Button>
+            ) : (
+              <Button size="sm" onClick={onFinalize} icon={<Check size={14} />}>确认定稿</Button>
+            )}
+          </div>
         </div>
       </div>
     </div>
+  );
+}
+
+/** 动作栏分组标签（导出/工具/定稿）：只做区块分区，不承载交互 */
+function GroupLabel({ children }: { children: string }) {
+  return (
+    <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)', letterSpacing: '0.02em' }}>
+      {children}
+    </span>
   );
 }
