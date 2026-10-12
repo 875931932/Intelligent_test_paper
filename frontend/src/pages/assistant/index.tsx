@@ -557,7 +557,8 @@ function GuideCard({
  * 来源引用卡：资料内容问答的命中片段（资料名 + 页/章节 + 摘要）。
  * 正文（模型基于片段的回答）由上方 MarkdownText 渲染，本卡只负责可追溯性：
  * 每条片段可「查看原文」（与 RAG 同语料的上下文定位预览），教师据此核对
- * AI 依据；score 不展示（避免把相关度当可信度）。
+ * AI 依据；score 不展示（避免把相关度当可信度）。片段多时默认只露前 2 条，
+ * 头部按钮展开其余（邻域扩展后单卡可达 20+ 片段，全铺会淹没回答）。
  */
 function SourcesCard({
   message,
@@ -573,6 +574,11 @@ function SourcesCard({
   const scope = payload.material_name ? `「${payload.material_name}」` : '课程全部资料';
   // 逐条片段的原文定位预览；material_id 缺失（历史消息）时该条不给入口，只留底部资料库 CTA
   const [preview, setPreview] = useState<{ blockId: string; materialId: string; name: string } | null>(null);
+  // 折叠态：邻域扩展后单卡可达 20+ 片段，默认只露前 2 条，其余点开看
+  const [expanded, setExpanded] = useState(false);
+  const PREVIEW_SOURCES = 2;
+  const hidden = sources.length - PREVIEW_SOURCES;
+  const visible = expanded ? sources : sources.slice(0, PREVIEW_SOURCES);
   return (
     <div className="chat-card" style={cardBox}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -581,9 +587,28 @@ function SourcesCard({
           回答依据 {scope} 的 {sources.length} 处片段
           {payload.mode === 'lexical' ? '（词面匹配）' : ''}
         </span>
+        {hidden > 0 && (
+          <button
+            onClick={() => setExpanded((v) => !v)}
+            style={{
+              marginLeft: 'auto',
+              display: 'flex', alignItems: 'center', gap: 3,
+              padding: '3px 8px', borderRadius: 999,
+              fontSize: '0.75rem', fontWeight: 600,
+              background: 'transparent', color: 'var(--text-tertiary)',
+              border: '1px solid var(--border)', cursor: 'pointer', fontFamily: 'inherit',
+            }}
+          >
+            {expanded ? '收起' : `展开其余 ${hidden} 处`}
+            <ChevronDown
+              size={12}
+              style={{ transform: expanded ? 'rotate(180deg)' : 'none', transition: 'transform 0.15s' }}
+            />
+          </button>
+        )}
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 2 }}>
-        {sources.map((s, i) => {
+        {visible.map((s, i) => {
           const loc = [
             s.material_name,
             s.page_index != null ? `第 ${s.page_index} 页` : '',
