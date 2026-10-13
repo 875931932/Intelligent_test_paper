@@ -350,11 +350,18 @@ def _rank_hybrid(
     minimum_score: float,
     semantic_scores: dict[str, float] | None = None,
 ) -> list[RankedChunk]:
-    """0.35 词面 + 0.65 语义混合打分。
+    """0.35 词面覆盖率 + 0.65 语义混合打分。
 
     semantic_scores 给定（SQL 下推预计算的 {block_id: cosine}，向量不出库）→
     直接取分，不再校验库内向量；缺省 → 校验全部块向量后 Python cosine
     （维度不齐/零范数直接抛配置错误）。两条路径的打分/量化/决胜完全同款。
+
+    词面项 2026-10-13 由 Jaccard 改查询覆盖率（query_token_coverage）：
+    Jaccard 分母是并集，对「考点名查询 vs 陈述正文」恒≈0——生产实测考点检索
+    词面项 0.00~0.07，0.35 权重只贡献 ~0.01 分，词面通道整体失灵；覆盖率分母
+    是查询集，与查询共享术语的陈述获得真实加成（实测最佳命中 0.044→0.286，
+    与噪声带分差 0.096→0.181）。数学上覆盖率 ≥ Jaccard 恒成立 → 分数单调
+    不降，已过阈值的块绝不掉出，召回只增不减。助手 hybrid 路径同源受益。
     """
 
     if semantic_scores is None:
@@ -370,7 +377,7 @@ def _rank_hybrid(
 
     ranked: list[RankedChunk] = []
     for index, chunk in enumerate(chunks):
-        lexical_score = lexical_overlap(intent, chunk.content)
+        lexical_score = query_token_coverage(intent, chunk.content)
         if semantic_scores is not None:
             semantic_score = semantic_scores[chunk.id]
         else:

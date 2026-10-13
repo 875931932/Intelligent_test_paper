@@ -23,6 +23,7 @@ from app.services.staging_retrieval_service import (
     RetrievalConfigurationError,
     lexical_overlap,
     lexical_rank_for_question,
+    query_token_coverage,
     retrieve_for_exam_point,
     retrieve_for_question,
     retrieve_multi_for_question,
@@ -178,13 +179,43 @@ def test_retrieve_multi_scores_lexical_term_with_each_query_text():
 
     assert [ranked.chunk.id for ranked in result] == ["topic"]
     assert result[0].lexical_score == pytest.approx(
-        lexical_overlap(title_query, topic.content)
+        query_token_coverage(title_query, topic.content)
     )
     assert result[0].lexical_score > 0
 
     # 缺省 query_texts 退回检索意图（占位符 intent 与正文零词元交集 → 词法项 0）。
     fallback = retriever.retrieve_multi(point, [topic], query_vectors=[[1.0, 0.0]])
     assert fallback[0].lexical_score == pytest.approx(0.0)
+
+
+def test_hybrid_lexical_term_uses_query_coverage_not_jaccard():
+    """混合打分词面项 = 查询覆盖率（2026-10-13 出卷侧检索修复）。
+
+    Jaccard 分母是并集：对「考点名查询 vs 陈述正文」恒≈0，生产实测考点检索
+    词面项 0.00~0.07、0.35 权重只贡献 ~0.01 分（词面通道失灵）；覆盖率分母
+    是查询集，与查询共享术语的陈述获得真实加成（最佳命中词面 0.044→0.286）。
+    覆盖率 ≥ Jaccard 恒成立 → 分数单调不降，已过阈值的块绝不掉出。
+    """
+    point = _exam_point(retrieval_intent="LangChain中间层定位与作用")
+    matched = StagingChunk(
+        id="matched",
+        material_version_id="material-1",
+        content="LangChain 是大模型与应用之间的中间层，负责统一调用与编排。",
+        embedding=[1.0, 0.0],
+    )
+
+    result = retrieve_for_exam_point(
+        point, [matched], StaticEmbedder([[1.0, 0.0]]), top_k=8, minimum_score=0.1
+    )
+
+    assert result[0].lexical_score == pytest.approx(
+        query_token_coverage(point.retrieval_intent, matched.content)
+    )
+    # 单调性：同输入下覆盖率词面分 ≥ Jaccard（召回只增不减的数学保证）
+    assert result[0].lexical_score >= lexical_overlap(
+        point.retrieval_intent, matched.content
+    )
+    assert result[0].lexical_score > 0
 
 
 def test_retrieval_only_ranks_the_supplied_course_snapshot_chunks():
