@@ -364,17 +364,18 @@ def delete_material(session: Session, *, course_id: str, material_id: str) -> No
                 )
                 .values(lifecycle_status="source_deleted")
             )
-        affected_cards = []
-        for card_id in affected_candidates:
-            active_direct = session.execute(
-                select(knowledge_evidence_links.c.id).where(
+        # 批量判活（原逐卡探测是 N+1：卡数上百即上百次往返）。口径不变：
+        # 仍持任意 active 链接的卡不受影响，仅失链卡标记 affected_by_source_deletion
+        still_active = set(
+            session.scalars(
+                select(knowledge_evidence_links.c.knowledge_card_id).where(
                     knowledge_evidence_links.c.course_id == course_id,
-                    knowledge_evidence_links.c.knowledge_card_id == card_id,
+                    knowledge_evidence_links.c.knowledge_card_id.in_(affected_candidates),
                     knowledge_evidence_links.c.lifecycle_status == "active",
-                ).limit(1)
-            ).scalar_one_or_none()
-            if active_direct is None:
-                affected_cards.append(card_id)
+                ).distinct()
+            )
+        ) if affected_candidates else set()
+        affected_cards = [cid for cid in affected_candidates if cid not in still_active]
         if affected_cards:
             session.execute(
                 update(knowledge_cards)

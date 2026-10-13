@@ -84,16 +84,22 @@ def create_parse_run(
                 document_artifacts.c.document_parse_run_id == reusable["id"],
             )
         ).mappings().all()
+        # 批量插入（原逐行 INSERT 是上千次往返）：整份文档的块/产物一次性带走，
+        # 大文档按 200 行一批限流，避免单条参数集过大
+        artifact_rows = []
         for artifact in source_artifacts:
             values = dict(artifact)
             values.update(id=uuid4().hex, document_parse_run_id=run_id)
-            session.execute(document_artifacts.insert().values(**values))
+            artifact_rows.append(values)
+        if artifact_rows:
+            session.execute(document_artifacts.insert(), artifact_rows)
         source_blocks = session.execute(
             select(content_blocks).where(
                 content_blocks.c.course_id == course_id,
                 content_blocks.c.document_parse_run_id == reusable["id"],
             )
         ).mappings().all()
+        block_rows = []
         for block in source_blocks:
             values = dict(block)
             values.update(
@@ -101,7 +107,9 @@ def create_parse_run(
                 document_parse_run_id=run_id,
                 material_version_id=material_version_id,
             )
-            session.execute(content_blocks.insert().values(**values))
+            block_rows.append(values)
+        for start in range(0, len(block_rows), 200):
+            session.execute(content_blocks.insert(), block_rows[start:start + 200])
         return run_id, True
     run_id = uuid4().hex
     session.execute(
