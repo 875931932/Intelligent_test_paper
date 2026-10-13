@@ -739,6 +739,12 @@ def _normalize_intent(raw) -> dict:
         # （线上 21:26/21:27 连续实测），形状无歧义——确定性归一后
         # 走下面同一套 tool/args 校验，避免白白烧一次带反馈重试。
         action = {"tool": raw.get("tool"), "args": raw.get("args")}
+    if isinstance(action, dict) and not str(action.get("tool") or "").strip():
+        # 语义「无动作」被表达成带空工具的对象：工具 schema 的 action 只收对象、
+        # 表达不了 JSON null，模型置 null 的意图落成 {"tool": null}（线上
+        # 2026-10-13 18:31 同轮两次实测，两次均被误判 tool 缺失打回兜底）。
+        # 有正文即纯问答放行；无正文仍按破损拦截重试。
+        action = None
     if action in (None, "", {}):
         # 既无正文也无动作 ≠合法纯问答：模型 reasoning 正确但 content 通道
         # 输出退化 JSON（`{}`/破损串）时会落成这里——放行会静默降级成

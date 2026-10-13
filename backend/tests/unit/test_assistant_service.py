@@ -491,11 +491,32 @@ def test_normalize_intent_accepts_unwrapped_action():
     assert assistant_service._normalize_intent(
         {"tool": "create_exam_project", "args": {"name": "新卷"}}
     ) == {"reply": "", "action": {"tool": "create_exam_project", "args": {"name": "新卷"}}}
-    # 归一后仍走同一套校验：tool 空 / args 非法照旧报错
-    with pytest.raises(AssistantError, match="action.tool"):
+    # 归一后仍走同一套校验：tool 空 → 归一为无动作，无正文仍按破损拦截重试；
+    # args 非法照旧报错
+    with pytest.raises(AssistantError, match="reply"):
         assistant_service._normalize_intent({"tool": "", "args": {}})
     with pytest.raises(AssistantError, match="action.args"):
         assistant_service._normalize_intent({"tool": "start_parse", "args": "bad"})
+
+
+def test_normalize_intent_treats_null_tool_action_as_no_action():
+    """语义无动作被 schema 逼成 {"tool": null}（action 只收对象、表达不了 JSON null）。
+
+    线上 2026-10-13 18:31 实测：身份职责问答模型两次返回完整 reply +
+    action={"tool": null}，两次均被误判「action.tool 缺失」打回，落兜底话术。
+    收口必须把它归一为纯问答；无正文的同形仍是破损、走带反馈重试。
+    """
+    full_reply = "我可以帮你查询课程状态…"
+    assert assistant_service._normalize_intent(
+        {"reply": full_reply, "action": {"tool": None}}
+    ) == {"reply": full_reply, "action": None}
+    # 带空 args 的同族形状一并归一
+    assert assistant_service._normalize_intent(
+        {"reply": "你好", "action": {"tool": None, "args": {}}}
+    ) == {"reply": "你好", "action": None}
+    # 无正文的同形 ≠合法纯问答：破损照旧拦截（触发 run_turn 的带反馈重试）
+    with pytest.raises(AssistantError, match="reply"):
+        assistant_service._normalize_intent({"reply": "", "action": {"tool": None}})
 
 
 def test_contract_confirm_refused_when_already_confirmed():
