@@ -10,7 +10,7 @@
   上传大纲与教学资料 → 知识目录 → 教师确认蓝图/合同 → AI 按合同出题 → 教师审核编辑 → 导出学生卷/答卷/答题卡 HTML + 答案细则 JSON（阅卷端的直接输入）。
 - **技术栈**：
   - 后端 `backend/`：FastAPI + SQLAlchemy 2.0 + PostgreSQL + Redis + Celery + LangGraph 工作流；适配器层接 LLM 、MinerU（解析）、MinIO/S3（存储）。
-  - 前端 `frontend/`：React 19 + TypeScript + Vite + Zustand，9 个路由页面（`src/pages/`）。
+  - 前端 `frontend/`：React 19 + TypeScript + Vite + Zustand，教师工作台 9 个路由页面 + `/admin` 后台 5 页（`src/pages/`）。
 - **范围声明**：在线考试/阅卷本身**明确不做**，本系统止于"导出纸质生产线产物"，权威说明见 `docs/` 设计文档。
 
 ## 2. 核心纪律（先读这一节）
@@ -22,7 +22,7 @@
    ⚠️ `app/workflows/framework_graph.py`、`app/workflows/organization_graph.py`、`app/workflows/generation_graph.py` 为已验证封存代码（在 `workflows/` 下，**不在** `domain/` 下）。
    修改前必须获得项目负责人确认，且改动后必须重新跑全量验证套件，否则禁止合入。
 3. **在线考试/阅卷是范围外需求。** ⚠️ 收到此类需求时拒绝实现，引导至设计文档的范围声明。
-4. **课程隔离是多租户底线。** 所有数据库查询、缓存键、对象存储路径必须携带 `course_id` 过滤，40 张表无一例外。
+4. **课程隔离是多租户底线。** 所有数据库查询、缓存键、对象存储路径必须携带 `course_id` 过滤，38 张课程级表无一例外（`users`/`courses` 与平台级 `organizations`/`llm_*` 三表是显式例外，见 `docs/ADMIN_CONSOLE_DESIGN.md`）。
 5. **冻结即不可变。** 命题框架版本一旦冻结（已确认合同、PaperVersion 同理），只允许追加新版本，禁止原地修改。
 6. **同一方法重复失败即止损换路。** ⚠️ 同一修复思路连续失败 2~3 次，禁止继续在同一路径上微调重试；必须停下来重新定位根因，换一条不同的实现路径（换层次、换工具、换数据流），并清理掉此前无效改动的残留。
 7. **补丁只许权宜，根治才算修复。** 允许打补丁解燃眉之急（临时兜底、防御性校验、热修），⚠️ 但禁止把"叠加补丁"当作常规解决手段；每个 bug 必须追溯到根因并在源头修复。确需保留的补丁须注明 TODO、失效触发条件与后续根治计划，并在下一轮迭代中还账。
@@ -37,7 +37,7 @@ uv sync                                        # 安装/同步依赖
 docker compose -f docker-compose.dev.yml up -d postgres redis minio  # 本地基础设施
 uv run python -m app.db.init_db                 # 建表/结构升级（create_all + 幂等迁移，本项目无 Alembic）
 uv run uvicorn app.main:app --reload            # API 服务，默认 http://127.0.0.1:8000
-uv run celery -A app.infrastructure.tasks.celery_app worker --loglevel=INFO  # Celery worker（或运行 backend/start_worker.ps1）
+uv run celery -A app.infrastructure.tasks.celery_app.celery_app worker --loglevel=INFO  # Celery worker（或运行 backend/start_worker.ps1）
 uv run pytest -q                               # 测试门禁
 ```
 
@@ -66,7 +66,7 @@ uv run pytest --cov=app --cov-report=term-missing --cov-fail-under=80
 ```text
 backend/
 ├── app/
-│   ├── api/v1/               # 9 个 FastAPI router，一个业务概念一个 router
+│   ├── api/v1/               # 9 个业务 router + admin/（后台管理路由组），一个业务概念一个 router
 │   ├── workflows/            # 领域引擎 ★已验证封存★（见核心纪律）
 │   │   ├── framework_graph.py      # 双大纲 → 考点 / 考试规则
 │   │   ├── organization_graph.py   # 分类 → 事实 → 画像 → 知识卡
@@ -87,7 +87,7 @@ backend/
 
 frontend/
 ├── src/
-│   ├── pages/                # 9 个路由页面
+│   ├── pages/                # 教师工作台 9 页 + /admin 后台 5 页
 │   ├── components/           # PipelinePanel / PaperPanel / ExamRulesCard 等
 │   ├── stores/               # Zustand 状态仓库，一域一 store
 │   ├── api/                  # 后端 API 客户端（统一 baseURL 与错误处理）
@@ -103,15 +103,15 @@ docs/                         # 设计文档，范围声明的唯一权威来源
 四层架构（自上而下）：
 
 1. **教师工作台（React）**：`/login`、`/courses`、课程概览、资料库、命题框架、知识目录、试卷。
-2. **应用服务层**：FastAPI 9 个 router（`app/api/v1/`）+ Celery worker + outbox 派发。
+2. **应用服务层**：FastAPI 9 个业务 router + 后台管理路由组（`app/api/v1/`、`app/api/v1/admin/`）+ Celery worker + outbox 派发。
 3. **领域引擎 ★已验证封存★**：`app/workflows/` 下三个 graph（见第 4 节）。
-4. **基础设施**：PostgreSQL（40 表、课程隔离多租户）、Redis 队列、模型网关。
+4. **基础设施**：PostgreSQL（44 表：38 张课程级 + 平台级例外，课程隔离多租户）、Redis 队列、模型网关。
 
 数据主线（一次组卷的完整链路）：
 
 ```text
 课程空间 → 资料库(四区) → 命题框架版本(冻结) → 知识目录(知识卡↔证据)
-→ 试卷项目 → 蓝图 → 合同 → 生成运行 → PaperVersion → 四份导出（学生卷/答卷/答题卡 HTML + 答案细则 JSON）
+→ 试卷项目 → 蓝图 → 合同 → 生成运行 → PaperVersion → 四类导出（学生卷/答卷/答题卡 HTML + DOCX 变体 + 答案细则 JSON，档案卡一键打包六文件）
 ```
 
 ## 6. 核心概念速查
@@ -126,7 +126,7 @@ docs/                         # 设计文档，范围声明的唯一权威来源
 | 出卷流水线 | PipelinePanel：蓝图 → 合同 → 生成 |
 | 试卷页签 | PaperPanel：双栏阅读器，查看/编辑/定稿/导出（与流水线同属项目详情页的两个页签） |
 | 后台管理 | `/admin`：账号（组织两级学校→学院、职务/工号/状态、停用取代删除）、模型管理（用途绑定切换/连通测试，平台管理员专属）、模型调用监控（`model_calls` 只读聚合，org_admin 只看本单位课程）。设计权威 `docs/ADMIN_CONSOLE_DESIGN.md` |
-| 四份导出 | 学生卷 / 答卷 / 答题卡 HTML + 答案细则 JSON（阅卷端直接输入） |
+| 四类导出 | 学生卷 / 答卷 / 答题卡（HTML + DOCX 变体）+ 答案细则 JSON（阅卷端直接输入），档案卡一键打包六文件 |
 | 型号调优档案 | `adapters/model/model_profiles.py`：按型号登记供应商参数（effort 档位/json_schema/思考控制）；配置权威顺序：后台模型管理（DB 三表）→ `.env` 兜底，经 `llm_registry` 解析、`build_llm_client(purpose)` 收敛构造点，手册 `docs/LLM_TUNING.md` |
 
 ## 7. 代码规范

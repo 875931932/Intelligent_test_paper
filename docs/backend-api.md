@@ -973,7 +973,10 @@ schema 自 `1.2.0` 起新增该字段；逐题带 `rubric`（主观题评分细�
   全完成 = `current_step:null`）；段1 prompt 同时注入产品能力地图（页面模块 / 出卷主线 / 助手边界），
   教师问「这个网站能干什么/怎么出卷/下一步做什么」时模型选此工具，reply 结合 `current_step`
   给 1~3 句引导（不复述步骤）；卡上每步带「前往」跳转按钮 + 卡底五模块页面导航；
-- 提案工具（`PROPOSAL_TOOLS` 共 13 个，确认后调用）：`create_course` → §2、`update_course` → §2、
+- 提案工具（`PROPOSAL_TOOLS` 共 13 个）：其中 `create_course` / `update_course` / `start_parse` /
+  `confirm_blueprint` / `confirm_contract` 5 个为里程碑或课程级操作，卡上带「确认执行」按钮、
+  教师确认后调用；其余提案由助手自动执行并回报执（`auto` 元数据见
+  `assistant_tools.proposal_card_meta`）。清单：`create_course` → §2、`update_course` → §2、
   `start_parse` → §3.5、`create_exam_project` → §8.2、`update_exam_rules` → §4.8、
   `create_blueprint` → §8.5、`confirm_blueprint` → §8.8、`enqueue_blueprint_suggest` → §8.7b、
   `confirm_contract` → §8.11、`start_generation` → §8.13、`enqueue_paper_review` → §9.3g、
@@ -1098,3 +1101,59 @@ schema 自 `1.2.0` 起新增该字段；逐题带 `rubric`（主观题评分细�
 | 422 | 参数/校验错误 |
 | 502 | 下游（LLM/嵌入）生成失败 |
 | 503 | 依赖未配置/存储不可用 |
+
+## 13. 后台管理 Admin（`/api/v1/admin/*`，2026-10-10 交付）
+
+> 鉴权：路由组统一挂 `require_admin`（教师完全不可见）；组织增改与模型管理再收紧为
+> `require_platform_admin`；单位管理员（org_admin）的账号列表与监控聚合按本单位
+> `organization_id` 过滤。设计权威 `docs/ADMIN_CONSOLE_DESIGN.md`。
+
+### 13.1 概览（`/admin/overview`）
+
+| 方法 | 路径 | 功能 |
+|------|------|------|
+| GET | `/api/v1/admin/overview` | 后台首页聚合（课程 / 账号 / 组织概数） |
+
+### 13.2 组织（`/admin/organizations`）
+
+| 方法 | 路径 | 功能 |
+|------|------|------|
+| GET | `/api/v1/admin/organizations` | 组织列表（platform_admin 全量 / org_admin 本单位） |
+| POST | `/api/v1/admin/organizations` | 创建组织（platform_admin） |
+| PATCH | `/api/v1/admin/organizations/{org_id}` | 修改组织（platform_admin） |
+| GET | `/api/v1/admin/organizations/scope` | 当前用户可管理的组织范围 |
+
+### 13.3 账号（`/admin/users`）
+
+| 方法 | 路径 | 功能 |
+|------|------|------|
+| GET | `/api/v1/admin/users` | 账号列表（org_admin 只看本单位） |
+| POST | `/api/v1/admin/users` | 建号（用户名 ≥3、密码 ≥6、显示名必填、重名 409） |
+| PATCH | `/api/v1/admin/users/{user_id}` | 修改资料（单位 / 职务 / 工号 / 角色） |
+| PUT | `/api/v1/admin/users/{user_id}/status` | 启用 / 停用（取代删除） |
+| PUT | `/api/v1/admin/users/{user_id}/password` | 重置密码 |
+
+### 13.4 模型管理（`/admin/llm`，平台管理员专属；密钥写后掩码不回传）
+
+| 方法 | 路径 | 功能 |
+|------|------|------|
+| GET | `/api/v1/admin/llm/providers` | 供应商列表 |
+| POST | `/api/v1/admin/llm/providers` | 新增供应商 |
+| PATCH | `/api/v1/admin/llm/providers/{provider_id}` | 修改供应商 |
+| GET | `/api/v1/admin/llm/models` | 型号列表 |
+| POST | `/api/v1/admin/llm/models` | 新增型号（含调优参数） |
+| PATCH | `/api/v1/admin/llm/models/{model_id}` | 修改型号 |
+| DELETE | `/api/v1/admin/llm/models/{model_id}` | 停用型号 |
+| GET | `/api/v1/admin/llm/bindings` | 按用途绑定现状（默认/抽取/分类/归并/生成） |
+| PUT | `/api/v1/admin/llm/bindings/{purpose}` | 切换某用途绑定（TTL 30s 生效，免重启） |
+| POST | `/api/v1/admin/llm/test` | 连通性测试 |
+
+### 13.5 调用监控（`/admin/monitoring`，只读聚合 `model_calls`）
+
+| 方法 | 路径 | 功能 |
+|------|------|------|
+| GET | `/api/v1/admin/monitoring/overview` | 概览指标（调用量 / 成功率 / Token / 成本估算 / 延迟） |
+| GET | `/api/v1/admin/monitoring/timeseries` | 趋势序列 |
+| GET | `/api/v1/admin/monitoring/breakdown` | 分组统计（模型 / 阶段 / 状态 / 错误码） |
+| GET | `/api/v1/admin/monitoring/calls` | 明细查询（分页筛选） |
+| GET | `/api/v1/admin/monitoring/calls/{call_id}` | 单条明细（哈希与白名单字段，无 prompt 全文） |

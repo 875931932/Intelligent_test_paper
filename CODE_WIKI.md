@@ -438,17 +438,20 @@ class GenerationState(TypedDict, total=False):
 
 ### 6.1 路由结构
 
-FastAPI 应用在 [backend/app/main.py](backend/app/main.py) 中注册了 7 个路由器：
+FastAPI 应用在 [backend/app/main.py](backend/app/main.py) 中注册了 9 个业务路由器 + 后台管理路由组：
 
 ```python
 app = FastAPI(title="AI Exam System")
 app.include_router(auth_router)              # /api/v1/auth
+app.include_router(admin_router)             # /api/v1/admin/*（后台管理：概览/组织/账号/模型/监控）
 app.include_router(courses_router)           # /api/v1/courses/{course_id}
 app.include_router(materials_router)         # /api/v1/courses/{course_id}/materials
 app.include_router(framework_router)         # /api/v1/courses/{course_id}/framework-runs
 app.include_router(knowledge_router)         # /api/v1/courses/{course_id}/knowledge
 app.include_router(exam_projects_router)     # /api/v1/courses/{course_id}/exam-projects
 app.include_router(paper_versions_router)    # /api/v1/courses/{course_id}/paper-versions
+app.include_router(paper_archives_router)    # /api/v1/courses/{course_id}/paper-archives
+app.include_router(assistant_router)         # /api/v1/courses/{course_id}/assistant
 ```
 
 ### 6.2 核心端点
@@ -551,6 +554,12 @@ app.include_router(paper_versions_router)    # /api/v1/courses/{course_id}/paper
 |----------|------|
 | [auth_service.py](backend/app/services/auth_service.py) | 登录认证与 token 签发 |
 | [course_service.py](backend/app/services/course_service.py) | 课程 CRUD |
+| [assistant_service.py](backend/app/services/assistant_service.py) | 对话助手：意图收口 / 提案工具注册表（16 个：5 个需确认、其余自动执行）/ RAG 问答编排 |
+| [admin_account_service.py](backend/app/services/admin_account_service.py) | 后台管理：组织与账号（两级组织 / 建号 / 停用） |
+| [llm_admin_service.py](backend/app/services/llm_admin_service.py) | 后台管理：供应商 / 型号 / 用途绑定（DB 权威，密钥掩码） |
+| [monitoring_service.py](backend/app/services/monitoring_service.py) | 后台管理：模型调用监控聚合（概览 / 趋势 / 分组 / 明细） |
+| [llm_registry.py](backend/app/services/llm_registry.py) | LLM 配置解析（DB → .env 逐级回落 + 快照缓存） |
+| [content_index_service.py](backend/app/services/content_index_service.py) | 资料内容块嵌入索引（重嵌与模型切换感知） |
 | [framework_service.py](backend/app/services/framework_service.py) | 框架构建的持久化、发布与规则修改 |
 | [contract_service.py](backend/app/services/contract_service.py) | 试卷合同的分配与审计 |
 | [contract_execution_service.py](backend/app/services/contract_execution_service.py) | 合同执行与原子分配 |
@@ -740,7 +749,7 @@ class LocalStorage:
 
 系统采用**课程隔离（Course-Isolated）**的多租户架构。所有业务表都包含 `course_id` 外键，确保不同课程的数据完全隔离。
 
-**核心表结构**（35 张课程级表 + `users` / `courses`）：
+**核心表结构**（38 张课程级表 + `users` / `courses` + 平台级 `organizations` / `llm_providers` / `llm_models` / `llm_bindings`，共 44 张）：
 
 #### 文件与上传
 | 表名 | 说明 |
@@ -799,6 +808,14 @@ class LocalStorage:
 | `model_calls` | 模型调用记录 |
 | `task_runs` | 异步任务记录 |
 | `outbox_events` | 出站事件（事件溯源） |
+
+#### 平台管理（全局，不带 `course_id`，课程隔离纪律的显式例外）
+| 表名 | 说明 |
+|------|------|
+| `organizations` | 组织（学校 → 学院两级自关联） |
+| `llm_providers` | 模型供应商 |
+| `llm_models` | 模型型号档案 |
+| `llm_bindings` | 按用途绑定（默认/抽取/分类/归并/生成） |
 
 **架构文件**：[backend/app/db/schema.py](backend/app/db/schema.py)
 
@@ -861,6 +878,9 @@ frontend/src/
 │   ├── materials/                # 资料库（按四区归档上传）
 │   ├── framework/                # 命题框架 + ExamRulesCard（规则）+ FrameworkReviewPanel（AI 评审）
 │   ├── knowledge/                # 知识目录（树形/图谱双视图）
+│   ├── assistant/                # 对话助手页（多会话 / 提案卡 / RAG 来源卡）
+│   ├── paper-archive/            # 归档快照编辑页（只改副本）
+│   ├── admin/                    # 后台管理：概览 / 组织 / 账号 / 模型 / 监控（AdminRoute 守卫）
 │   └── paper/                    # 「试卷」模块
 │       ├── index.tsx             # 项目列表 + 项目详情（双页签外壳）
 │       ├── PipelinePanel.tsx     # 出卷流水线：蓝图 → 合同 → 生成
@@ -869,7 +889,7 @@ frontend/src/
 │       ├── AiCreatePanel.tsx     # AI 生成整道新题（提案回填表单）
 │       ├── stage/BlueprintSuggestPanel.tsx  # 蓝图题位 AI 调整建议（逐条应用，应用完自动折叠）
 │       └── PaperReviewPanel.tsx  # 整卷 AI 质量评审（只读报告）
-├── stores/                       # zustand：auth / course / toast
+├── stores/                       # zustand：auth / course / toast / assistant
 ├── styles/                       # design-tokens.css global.css App.css
 ├── types/api.ts                  # 与后端对应的 TypeScript 类型
 └── utils/                        # cn / format
@@ -886,6 +906,9 @@ frontend/src/
 | `/courses/:courseId/framework` | 命题框架 |
 | `/courses/:courseId/knowledge` | 知识目录 |
 | `/courses/:courseId/paper` | 试卷（出卷流水线 + 试卷查看/审核/导出） |
+| `/courses/:courseId/assistant` | 对话助手（问答 / 提案卡 / RAG 资料问答） |
+| `/courses/:courseId/paper-archive/:archiveId` | 归档快照编辑（只改副本） |
+| `/admin`（+ `organizations`/`users`/`llm`/`monitoring`） | 后台管理（仅 admin / org_admin，AdminRoute 守卫） |
 | `/courses/:courseId/exam-projects`、`/paper-center` | 重定向到 `/paper` |
 
 详情页通过 `?project=<id>` 直达指定项目（从其它位置带项目过来时自动展开）。
@@ -1130,7 +1153,7 @@ app/
 ```
 src/
 ├── App.tsx
-│   └── 依赖: pages/*（7 个页面路由 + 2 个旧路径重定向）
+│   └── 依赖: pages/*（教师 9 页 + /admin 后台 5 页 + 2 个旧路径重定向）
 │
 ├── api/client.ts
 │   └── 依赖: api/http, api/domains/*
@@ -1323,7 +1346,7 @@ backend/tests/
 
 ```bash
 cd backend
-uv run pytest -q                    # 全量门禁（基线：1457 passed / 1 xfailed，2026-10-05）
+uv run pytest -q                    # 全量门禁（基线：1635 passed / 1 xfailed，覆盖率 87.28%，2026-10-13 @ e4d8431）
 uv run pytest --cov=app --cov-fail-under=80   # 覆盖率门禁
 ```
 

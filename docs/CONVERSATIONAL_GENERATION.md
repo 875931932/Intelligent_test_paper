@@ -12,8 +12,9 @@
 
 **对话产出的是结构化参数 diff，不是 prompt 指令。**
 
-- 题型比例、章节权重、难度分布、去重 —— 这些全局约束由**确定性算法**
-  在蓝图 / 合同两个阶段构造性保证（`allocate_plan_items` + `allocate_paper_contract`）。
+- 题型比例、章节权重与卷内原子唯一 / 答案域互斥 —— 这些全局约束由**确定性算法**
+  在蓝图 / 合同两个阶段硬性保证（`allocate_plan_items` + `allocate_paper_contract`）；
+  难度是逐题位标签分配、跨卷避重是软目标。
 - ⚠️ 禁止把"比例对、难度对、不重复"塞进 prompt 让模型自觉遵守。
 - ⚠️ 禁止为对话式改动 `app/workflows/generation_graph.py`（已验证封存）。
 - LLM 的职责始终只有一件事：**按合同把题干、选项、答案写出来**。

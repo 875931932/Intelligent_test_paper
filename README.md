@@ -1,7 +1,7 @@
 # PaperPact·AI 命题系统
 
 AI 驱动的试卷命题平台，支持课程资料解析、考纲框架构建、知识图谱组织、合同式组卷生成，
-导出学生卷 / 答卷 / 答题卡 HTML 与答案细则 JSON（阅卷端直接输入）。
+导出学生卷 / 答卷 / 答题卡（HTML 与 DOCX）与答案细则 JSON（阅卷端直接输入），档案卡一键打包六文件。
 
 ## 技术栈
 
@@ -275,7 +275,7 @@ npm run dev
 .
 ├── backend/                 # 后端代码
 │   └── app/
-│       ├── api/v1/          # REST API 路由（9 个 router）
+│       ├── api/v1/          # REST API 路由（9 个业务 router + admin/ 后台管理组）
 │       ├── domain/          # 领域模型与确定性算法（含考核规则归一化）
 │       ├── workflows/       # LangGraph 工作流（框架/整理/生成/知识目录）
 │       ├── services/        # 业务服务
@@ -285,7 +285,7 @@ npm run dev
 │       └── main.py          # FastAPI 入口
 ├── frontend/                # 前端代码（React 19 + TS）
 │   └── src/
-│       ├── pages/           # 页面：登录/课程空间/概览/资料库/命题框架/知识目录/试卷/归档编辑/对话助手
+│       ├── pages/           # 教师 9 页：登录/课程空间/概览/资料库/命题框架/知识目录/试卷/归档编辑/对话助手 + admin/ 后台 5 页
 │       ├── components/      # 布局与 UI 基础组件
 │       ├── api/             # HTTP 层，按业务域拆分的客户端
 │       └── stores/ hooks/ lib/
