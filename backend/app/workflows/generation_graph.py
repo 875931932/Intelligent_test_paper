@@ -303,6 +303,14 @@ def build_generation_graph(gateway: BatchGateway, *, max_retries: int = 2):
                     unit.get("card_ids") or []
                 )
                 point_anchor.setdefault(unit["exam_point_id"], str(unit.get("anchor_key") or ""))
+        # 卡→单元归属表（生产链路卡 dict 不携带 unit 归属）：换原子/回补一旦改用
+        # 了别张卡，题目溯源 unit_id 必须跟着那张卡走——同一考点可聚合多个单元的
+        # 卡、同章回补更是跨考点，沿用旧 unit_id 会让来源静默指向错误单元。
+        card_unit: dict[str, str] = {}
+        for unit in payload.get("units") or []:
+            if isinstance(unit, dict) and unit.get("unit_id"):
+                for owned_card_id in unit.get("card_ids") or []:
+                    card_unit.setdefault(str(owned_card_id), str(unit["unit_id"]))
         for contract_slot in contract_slots:
             if contract_slot.anchor_key:
                 point_anchor[contract_slot.exam_point_id] = contract_slot.anchor_key
@@ -387,6 +395,8 @@ def build_generation_graph(gateway: BatchGateway, *, max_retries: int = 2):
                         "card_id": rep_card_id,
                         "coverage_atom": rep_atom,
                         "answer_boundary": rep_boundary,
+                        # 同考点池跨单元聚合：替换卡属于哪个单元，溯源就指向哪个
+                        "unit_id": card_unit.get(rep_card_id, slot.unit_id),
                     })
                     calls += 1
                     swap_batch = QuestionBatch(
@@ -440,6 +450,8 @@ def build_generation_graph(gateway: BatchGateway, *, max_retries: int = 2):
                         "answer_boundary": bf_boundary,
                         # 题位实际改考到同章富余考点，溯源必须指向真实来源
                         "exam_point_id": to_point,
+                        # 同章 ≠ 同单元：回补卡属于哪个单元，unit_id 就指向哪个
+                        "unit_id": card_unit.get(bf_card_id, slot.unit_id),
                     })
                     calls += 1
                     backfill_batch = QuestionBatch(

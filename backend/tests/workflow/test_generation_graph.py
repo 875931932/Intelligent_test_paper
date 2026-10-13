@@ -246,6 +246,32 @@ def test_exhausted_retries_swap_in_replacement_atom():
     assert len(gateway.retry_payloads) == 3
 
 
+def test_swap_atom_follows_card_unit_when_point_spans_units():
+    """同一考点聚合多个单元的卡：换原子改用兄弟单元的卡时 unit_id 必须跟着卡走，
+    否则题目来源静默指向旧单元（评审整改第01项：换卡不换单元）。"""
+    bad = _question(1, stem="根据课件第3页的内容，关于原子1的问题", options=["甲"], answer="")
+    cards = {
+        "C1": {"assessable_content": ["原子1"], "answer_boundary": "边界1"},
+        "C1B": {"assessable_content": ["跨单元替换原子"], "answer_boundary": "跨单元边界"},
+    }
+    units = [
+        {"exam_point_id": "EP1", "unit_id": "U-EP1", "card_ids": ["C1"]},
+        {"exam_point_id": "EP1", "unit_id": "U-EP1B", "card_ids": ["C1B"]},
+    ]
+    gateway = FakeBatchGateway(scenarios={1: [bad, bad, bad]})
+    result = build_generation_graph(gateway).invoke({
+        "contract": [_slot(1), _slot(2)],
+        "knowledge_cards": cards,
+        "units": units,
+    })
+    question = next(q for q in result["questions"] if q["item_index"] == 1)
+    assert question["quality"]["status"] == "pass"
+    assert question["coverage_atom"] == "跨单元替换原子"
+    assert question["card_id"] == "C1B"
+    # 换卡必换单元：C1B 属于 U-EP1B，溯源不得残留合同原单元 U-EP1
+    assert question["unit_id"] == "U-EP1B"
+
+
 def test_no_replacement_atom_keeps_needs_review():
     """无可用替换原子（卡片耗尽）时维持 needs_review，不静默成功。"""
     bad = _question(1, stem="根据课件第3页的内容，关于原子1的问题", options=["甲"], answer="")
@@ -421,6 +447,8 @@ def test_backfill_rescues_present_but_failing_question():
     assert question["coverage_atom"] == "EP2富余原子"
     assert question["backfilled_from"]["from_exam_point_id"] == "EP1"
     assert question["backfilled_from"]["to_exam_point_id"] == "EP2"
+    # 换卡必换单元：回补卡 C4 属于 U-EP2，溯源不得残留旧单元 U-EP1
+    assert question["unit_id"] == "U-EP2"
     assert result["final_check"]["passed"] is True, result["final_check"]
 
 

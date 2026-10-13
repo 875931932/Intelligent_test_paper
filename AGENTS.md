@@ -16,7 +16,7 @@
 ## 2. 核心纪律（先读这一节）
 
 1. **确定性算法保证全局约束，模型只负责写题。**
-   "不重复、比例对、难度对"由确定性算法在**合同（Contract）阶段构造性保证**。
+   题型/分值/章节配额与卷内原子唯一、答案域互斥由确定性算法在**合同（Contract）阶段**硬性保证；目标难度是逐题位标签分配（非实测难度），跨卷避重是软目标——两者都不是实测结论，不得对外表述为"难度准确"或"零重复"。
    ⚠️ 禁止把比例/难度/去重等约束检查挪进 LLM prompt，让模型"自觉遵守"。
 2. **领域引擎已验证封存。**
    ⚠️ `app/workflows/framework_graph.py`、`app/workflows/organization_graph.py`、`app/workflows/generation_graph.py` 为已验证封存代码（在 `workflows/` 下，**不在** `domain/` 下）。
