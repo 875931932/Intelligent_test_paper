@@ -13,6 +13,7 @@ from app.api.v1.knowledge import (
 from app.config import settings
 from app.db.schema import Base, Course, User, organization_runs
 from app.main import app
+from app.services.llm_registry import clear_cache as clear_llm_registry_cache
 
 
 def _mark_failed_env(tmp_path):
@@ -95,11 +96,20 @@ def test_knowledge_requires_complete_llm_configuration(monkeypatch, missing_sett
     monkeypatch.setattr(settings, "llm_base_url", "https://llm.invalid/v1")
     monkeypatch.setattr(settings, "llm_model", "generic-model")
     monkeypatch.setattr(settings, missing_setting, "")
+    # llm_registry 的绑定快照带 TTL 缓存：先跑的测试可能以有效配置灌入快照，
+    # 空配置守卫会被缓存短路（表现为测试顺序依赖）——与 app.state 缓存一并清掉。
+    clear_llm_registry_cache()
     for state_name in (
+        # 名单必须与 app.api.v1.knowledge 各依赖工厂的缓存属性名逐一对应：
+        # knowledge_point_extractor 曾漏删（先跑的测试在共享 app 单例上缓存了
+        # 有效实例，extractor 守卫被短路、错误地漏到 classifier 守卫才 503）；
+        # semantic_json_clients 为复数 dict（曾误写单数成为 no-op）。
         "organization_embedder",
-        "semantic_json_client",
+        "semantic_json_clients",
+        "knowledge_point_extractor",
         "exam_point_evidence_classifier",
         "exam_point_knowledge_consolidator",
+        "supplement_recommender",
     ):
         if hasattr(app.state, state_name):
             delattr(app.state, state_name)
@@ -116,11 +126,14 @@ def test_knowledge_requires_complete_llm_configuration(monkeypatch, missing_sett
         # consolidator。LLM 配置不全时，第一个 LLM 守卫（extractor）先失败。
         assert response.json()["detail"] == "knowledge point extractor is not configured"
     finally:
+        clear_llm_registry_cache()
         for state_name in (
             "organization_embedder",
-            "semantic_json_client",
+            "semantic_json_clients",
+            "knowledge_point_extractor",
             "exam_point_evidence_classifier",
             "exam_point_knowledge_consolidator",
+            "supplement_recommender",
         ):
             if hasattr(app.state, state_name):
                 delattr(app.state, state_name)

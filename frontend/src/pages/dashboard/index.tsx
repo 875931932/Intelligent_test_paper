@@ -11,7 +11,7 @@ import { Card } from '@/components/ui/Card';
 import { BadgeSuccess, BadgeWarning, BadgePurple, Badge } from '@/components/ui/Badge';
 import { SkeletonCardGrid } from '@/components/ui/Skeleton';
 import { projectStatusMeta } from '@/lib/examDisplay';
-import type { MaterialResponse, CurrentFrameworkResponse, PublishedKnowledgeResponse, ExamProject } from '@/types/api';
+import type { MaterialResponse, CurrentFrameworkResponse, PublishedKnowledgeSummary, ExamProject } from '@/types/api';
 
 /** 资料类型中文名（与资料库页一致；hero 分布条展示用） */
 const MATERIAL_TYPE_LABELS: Record<string, string> = {
@@ -31,7 +31,7 @@ const DashboardPage: FC = () => {
   const [loading, setLoading] = useState(true);
   const [materials, setMaterials] = useState<MaterialResponse[]>([]);
   const [framework, setFramework] = useState<CurrentFrameworkResponse | null>(null);
-  const [knowledgeCatalog, setKnowledgeCatalog] = useState<PublishedKnowledgeResponse | null>(null);
+  const [knowledgeCatalog, setKnowledgeCatalog] = useState<PublishedKnowledgeSummary | null>(null);
   const [examProjects, setExamProjects] = useState<ExamProject[]>([]);
 
   useEffect(() => {
@@ -45,7 +45,7 @@ const DashboardPage: FC = () => {
         const [materialsData, frameworkData, knowledgeData, projectsData] = await Promise.allSettled([
           api.materials.list(activeCourseId, token),
           api.framework.getCurrent(activeCourseId, token),
-          api.knowledge.getPublished(activeCourseId, token),
+          api.knowledge.getPublishedSummary(activeCourseId, token),
           api.examProjects.list(activeCourseId, token),
         ]);
 
@@ -121,14 +121,9 @@ const DashboardPage: FC = () => {
       : 0
     : 0;
 
-  const knowledgeCards = knowledgeCatalog?.knowledge_cards ?? {};
-  const knowledgeCardCount = Object.keys(knowledgeCards).length;
-  const evidenceCount = knowledgeCatalog
-    ? Object.values(knowledgeCards).reduce<number>((sum, card) => {
-        const edges = card.relation_edges;
-        return sum + (Array.isArray(edges) ? edges.length : 0);
-      }, 0)
-    : 0;
+  // 概览页只显示计数：走 summary 接口（整树 cards 字典不下发），计数由后端同口径计算
+  const knowledgeCardCount = knowledgeCatalog?.knowledge_card_count ?? 0;
+  const evidenceCount = knowledgeCatalog?.evidence_count ?? 0;
 
   const recentProjects = examProjects.slice(-3);
 

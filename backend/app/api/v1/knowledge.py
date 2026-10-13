@@ -268,7 +268,7 @@ def _heal_interrupted_run(session: Session, row: dict) -> dict:
         "organization run %s healed as interrupted (stale %s row)", row["id"], row["status"]
     )
     return knowledge_publish_service.get_organization_run(
-        session, course_id=row["course_id"], run_id=row["id"]
+        session, course_id=row["course_id"], run_id=row["id"], include_snapshot=False
     )
 
 
@@ -380,8 +380,15 @@ def create_organization_run(
 def get_latest_run(course_id: str, session: Session = Depends(get_session)) -> dict:
     from sqlalchemy import select
 
+    # 不取 input_snapshot（全量冻结输入，MB 级）：本端点只回答"当前处于什么
+    # 状态"，知识目录首屏与构建轮询曾每次把全量快照拖回前端。
+    run_columns = [
+        column
+        for column in knowledge_publish_service.organization_runs.c
+        if column.name != "input_snapshot"
+    ]
     row = session.execute(
-        select(knowledge_publish_service.organization_runs)
+        select(*run_columns)
         .where(knowledge_publish_service.organization_runs.c.course_id == course_id)
         .order_by(knowledge_publish_service.organization_runs.c.created_at.desc())
         .limit(1)
@@ -396,7 +403,9 @@ def get_latest_run(course_id: str, session: Session = Depends(get_session)) -> d
 @router.get("/organization-runs/{run_id}")
 def get_run(course_id: str, run_id: str, session: Session = Depends(get_session)) -> dict:
     try:
-        row = knowledge_publish_service.get_organization_run(session, course_id=course_id, run_id=run_id)
+        row = knowledge_publish_service.get_organization_run(
+            session, course_id=course_id, run_id=run_id, include_snapshot=False
+        )
     except knowledge_publish_service.KnowledgePublishError:
         raise _not_found()
     return _heal_interrupted_run(session, row)
@@ -784,12 +793,18 @@ def reject_tree(course_id: str, run_id: str, session: Session = Depends(get_sess
 
 
 @router.get("/published-knowledge")
-def get_published_knowledge(course_id: str, session: Session = Depends(get_session)) -> dict:
+def get_published_knowledge(
+    course_id: str, summary: bool = False, session: Session = Depends(get_session)
+) -> dict:
     """当前已发布知识目录的命题输入视图：考点 / 单元 / 知识卡。
 
     供教师控制台在蓝图与合同阶段直接读取——cards 键为卡片 DB id，
     units.card_ids 与之对齐；chapter_weights 可由 exam_points 的
     anchor_key → weight_value 聚合得到。
+
+    ``summary=true``（课程概览页专用）：整树不下发，只回已发布标记与两个
+    计数（卡片数 / 证据边数，口径与整树模式一致）——整树的主体体积在
+    cards 字典，而概览页只显示计数。
     """
     from sqlalchemy import select
 
@@ -805,8 +820,39 @@ def get_published_knowledge(course_id: str, session: Session = Depends(get_sessi
         .limit(1)
     ).mappings().one_or_none()
     if catalog is None:
+        if summary:
+            return {"published": False, "knowledge_card_count": 0, "evidence_count": 0}
         return {"published": False, "knowledge_cards": {}, "assessment_units": [], "content_domains": [], "exam_points": [], "units": []}
     catalog_id = catalog["id"]
+
+    if summary:
+        # 与整树模式同口径：只数 active 单元下 active 卡的 relation_edges 总和
+        unit_ids = [
+            row[0]
+            for row in session.execute(
+                select(assessment_units.c.id).where(
+                    assessment_units.c.course_id == course_id,
+                    assessment_units.c.catalog_version_id == catalog_id,
+                    assessment_units.c.status == "active",
+                )
+            ).all()
+        ]
+        if not unit_ids:
+            return {"published": True, "knowledge_card_count": 0, "evidence_count": 0}
+        edge_lists = session.execute(
+            select(knowledge_cards.c.relation_edges).where(
+                knowledge_cards.c.course_id == course_id,
+                knowledge_cards.c.catalog_version_id == catalog_id,
+                knowledge_cards.c.status == "active",
+                knowledge_cards.c.assessment_unit_id.in_(unit_ids),
+            )
+        ).scalars().all()
+        return {
+            "published": True,
+            "knowledge_card_count": len(edge_lists),
+            "evidence_count": sum(len(edges or []) for edges in edge_lists),
+        }
+
     framework_version_id = catalog["framework_version_id"]
 
     point_rows = session.execute(

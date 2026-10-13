@@ -330,6 +330,10 @@ body 可选 `{ "instruction":"重点看权重与覆盖" }`（可空 = 常规评�
 ### 5.2 运行详情
 `GET /api/v1/courses/{course_id}/organization-runs/{run_id}` → 运行记录对象
 
+> §5.1b/§5.2 的运行对象**不含 `input_snapshot`**（全量冻结输入，MB 级）：读端点只回答
+> "当前处于什么状态"，快照仅供发布校验链自取——2026-10-13 性能优化，知识目录首屏与
+> 构建轮询（3 秒一次）不再每次拖回全量快照。
+
 > 进程重启/崩溃中断的 run（线程已消亡但行停在 `queued`/`running`）在读取时就地判为 `failed`（`error_code=interrupted_by_restart`），前端轮询下一拍即解卡；`latest` 同理。
 > run 状态机：`running → awaiting_teacher_confirmation → published | rejected`；任一阶段失败 → `failed`（带 `error_code`/`error_message`）。发布新版本后旧版本 `superseded`。
 
@@ -365,6 +369,14 @@ body：`{ "exam_point_code": "string" }`
   "knowledge_cards": { "<card_id>": { "name":"","performance_statement":"","assessable_content":"...","scope_boundary":{},"cognitive_targets":[],"allowed_question_types":[],"importance":0.0,"concept_cluster":"","answer_proposition":"","answer_boundary":"","prompt_material":[],"relation_edges":[],"grounded":true } } }
 ```
 未发布：`{ "published": false, "knowledge_cards": {}, "assessment_units": [], "content_domains": [], "exam_points": [], "units": [] }`
+
+**`?summary=true`（课程概览页专用，2026-10-13）**：整树不下发，只回已发布标记与两个计数——
+```json
+{ "published": true, "knowledge_card_count": 123, "evidence_count": 456 }
+```
+计数口径与整树一致（active 单元下 active 卡；`evidence_count` = 各卡 `relation_edges` 数组长度之和）；
+未发布：`{ "published": false, "knowledge_card_count": 0, "evidence_count": 0 }`。
+整树的主体体积在 `knowledge_cards` 字典（每卡含 prompt_material 等），概览页只显示计数，勿拉整树。
 
 ### 5.6 知识卡证据链
 `GET /api/v1/courses/{course_id}/published-knowledge/cards/{card_id}/evidence` → 200

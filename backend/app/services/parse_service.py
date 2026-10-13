@@ -115,6 +115,49 @@ def latest_parse_status(session: Session, *, course_id: str, material_version_id
     return dict(row) if row is not None else None
 
 
+def latest_parse_status_bulk(
+    session: Session, *, course_id: str, material_version_ids: list[str]
+) -> dict[str, dict]:
+    """批量版 latest_parse_status：资料列表整页一次取回，消灭逐版本 N+1。
+
+    语义与单版版一致（各状态含 terminal，取 created_at 最新一条）；返回
+    ``{material_version_id: {id, status, error_code, error_summary}}``，
+    无解析运行的版本不出键（调用方补 None）。
+    """
+    if not material_version_ids:
+        return {}
+    rows = session.execute(
+        select(
+            document_parse_runs.c.material_version_id,
+            document_parse_runs.c.id,
+            document_parse_runs.c.status,
+            document_parse_runs.c.error_code,
+            document_parse_runs.c.error_summary,
+        )
+        .where(
+            document_parse_runs.c.course_id == course_id,
+            document_parse_runs.c.material_version_id.in_(material_version_ids),
+        )
+        .order_by(
+            document_parse_runs.c.material_version_id,
+            document_parse_runs.c.created_at.desc(),
+        )
+    ).mappings().all()
+    latest: dict[str, dict] = {}
+    for row in rows:
+        # 同版本按 created_at 降序排布，首见即最新
+        version_id = row["material_version_id"]
+        if version_id in latest:
+            continue
+        latest[version_id] = {
+            "id": row["id"],
+            "status": row["status"],
+            "error_code": row["error_code"],
+            "error_summary": row["error_summary"],
+        }
+    return latest
+
+
 def _mark_run_failed(session: Session, *, course_id: str, run_id: str, error_code: str, error_summary: str) -> None:
     """提交/启动阶段失败的收尾：把仍停在 queued 的 run 落成 failed。
 

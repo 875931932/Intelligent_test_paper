@@ -308,6 +308,14 @@ export interface PublishedKnowledgeResponse {
   knowledge_cards: Record<string, KnowledgeCard>;
 }
 
+// 课程概览页专用摘要（GET published-knowledge?summary=true）：整树不下发，
+// 只回已发布标记与两个计数（卡片数 / 证据边数，口径与整树一致）
+export interface PublishedKnowledgeSummary {
+  published: boolean;
+  knowledge_card_count: number;
+  evidence_count: number;
+}
+
 export interface EvidenceChunk {
   evidence_role: string;
   confidence: number;

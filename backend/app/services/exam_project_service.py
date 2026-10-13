@@ -235,7 +235,18 @@ def with_generation_task_status(session: Session, course_id: str, projects: list
     if not projects:
         return projects
     rows = session.execute(
-        select(task_runs).where(
+        # 只取归并所需标量列：result（整卷生成产物 JSON）与 input_version/
+        # idempotency_key 等均不进列表查询——本查询按课程全量扫描历史生成任务，
+        # 曾把每条任务的 MB 级 result 一并拖回应用层，纯属浪费。
+        select(
+            task_runs.c.id,
+            task_runs.c.status,
+            task_runs.c.stage,
+            task_runs.c.progress,
+            task_runs.c.error_message,
+            task_runs.c.payload,
+            task_runs.c.updated_at,
+        ).where(
             task_runs.c.course_id == course_id,
             task_runs.c.task_type == "generation_run",
         ).order_by(task_runs.c.updated_at.desc())

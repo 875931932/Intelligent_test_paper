@@ -1963,9 +1963,27 @@ def persist_statement_evidence_chunks(
     return persisted_ids
 
 
-def get_organization_run(session: Session, *, course_id: str, run_id: str) -> dict:
+def get_organization_run(
+    session: Session,
+    *,
+    course_id: str,
+    run_id: str,
+    include_snapshot: bool = True,
+) -> dict:
+    """单条组织构建运行行。
+
+    API 读路径（状态轮询/首屏）传 ``include_snapshot=False`` 跳过
+    ``input_snapshot``——那是全量冻结输入（MB 级），run 行在这些路径上只回答
+    "当前处于什么状态"；快照仅供发布校验链自取（publish/reject 内部各自
+    select 整行比对，不经过本函数）。
+    """
+    columns = (
+        [organization_runs]
+        if include_snapshot
+        else [column for column in organization_runs.c if column.name != "input_snapshot"]
+    )
     row = session.execute(
-        select(organization_runs).where(
+        select(*columns).where(
             organization_runs.c.id == run_id,
             organization_runs.c.course_id == course_id,
         )

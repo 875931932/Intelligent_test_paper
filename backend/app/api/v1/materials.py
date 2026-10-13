@@ -124,13 +124,20 @@ def list_materials(course_id: str, include_deleted: bool = False, session: Sessi
         items = material_service.list_materials(session, course_id=course_id, include_deleted=include_deleted)
     except course_service.CourseNotFoundError:
         raise _not_found()
-    # 附带最新版本的解析状态（无版本/未解析为 null），前端资料区直显
+    # 附带最新版本的解析状态（无版本/未解析为 null），前端资料区直显。
+    # 整页批量取回：逐版本查询曾是本端点的第二个 N+1。
+    version_ids = [
+        item["latest_version"]["id"]
+        for item in items
+        if item.get("latest_version") is not None
+    ]
+    statuses = parse_service.latest_parse_status_bulk(
+        session, course_id=course_id, material_version_ids=version_ids
+    )
     for item in items:
         version = item.get("latest_version")
         if version is not None:
-            item["parse_status"] = parse_service.latest_parse_status(
-                session, course_id=course_id, material_version_id=version["id"]
-            )
+            item["parse_status"] = statuses.get(version["id"])
     return items
 
 @router.get("/materials/{material_id}", response_model=MaterialResponse)

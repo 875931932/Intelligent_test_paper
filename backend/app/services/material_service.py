@@ -270,7 +270,26 @@ def list_materials(session: Session, *, course_id: str, include_deleted: bool) -
     statement = select(materials).where(materials.c.course_id == course_id)
     if not include_deleted:
         statement = statement.where(materials.c.status != "deleted")
-    return [_material_response(session, row) for row in session.execute(statement.order_by(materials.c.logical_name)).mappings()]
+    rows = list(session.execute(statement.order_by(materials.c.logical_name)).mappings())
+    # 最新版本次查回、Python 侧按版本号取首个：逐料查询曾使课程首页资料卡
+    # 变成 2+2N 次网络往返（5 份资料即 20+ 次），是概览页加载慢的主源头之一。
+    latest_by_material: dict[str, dict] = {}
+    if rows:
+        version_rows = session.execute(
+            select(material_versions)
+            .where(
+                material_versions.c.course_id == course_id,
+                material_versions.c.material_id.in_([row["id"] for row in rows]),
+            )
+            .order_by(material_versions.c.material_id, material_versions.c.version_no.desc())
+        ).mappings()
+        for version_row in version_rows:
+            # 同料按版本号降序排布，首见即最新（与 _version_response 语义一致）
+            latest_by_material.setdefault(version_row["material_id"], dict(version_row))
+    return [
+        {**dict(row), "latest_version": latest_by_material.get(row["id"])}
+        for row in rows
+    ]
 
 
 def get_material(session: Session, *, course_id: str, material_id: str) -> dict:

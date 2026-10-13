@@ -483,8 +483,21 @@ frontend\src\
   漏挂鉴权（裸请求 list/get 200、DELETE 曾 204），全族补 `Depends(get_current_user)`
   （前端 `resolveToken` 自动附 token，登录态零破坏），匿名 401 断言锁死。
   API 文档：`docs/backend-api.md` §3 鉴权注记 / §3.4
-- ✅ 后端门禁（2026-10-13 实测，含同树并行线改动）：全量 **1627 passed /
-  1 xfailed** + 覆盖率 **87.20%**（≥80 门禁）；前端 `npm run build` + `npm run lint`
+- ✅ **概览/知识目录两页查询性能优化**（2026-10-13，教师反馈"就这两个页面加载慢"）：
+  四处根治——①`list_materials` 逐料 N+1（2+2N 次往返 → 固定 3 条：最新版本整页
+  取回 + `latest_parse_status_bulk`，assistant 资料选择器/content_index 同热路径
+  受益；引擎级 SQL 计数器测试锁死上限）；②知识 run 读端点（latest/详情/轮询/自愈
+  重取）不再返回 `input_snapshot`（MB 级冻结输入，前端只消费状态；快照消费方仅
+  发布校验两处、自建整行查询不受影响）；③`with_generation_task_status` 只选归并
+  所需标量列（不再拖回历史生成任务的 MB 级 `result`）；④`published-knowledge`
+  增 `?summary=true` 概览页专用计数模式（整树 cards 字典不下发，计数与整树同
+  口径），dashboard 切 `getPublishedSummary`。附带根治**既有测试顺序依赖**：
+  `test_knowledge_requires_complete_llm_configuration` 的 app.state 清理名单缺
+  `knowledge_point_extractor`（实际缓存属性名）、误写 `semantic_json_client`
+ （应为复数），先跑测试在共享 app 单例缓存有效实例致守卫短路；名单对齐 +
+  `llm_registry.clear_cache()`。（+4 回归测试）
+- ✅ 后端门禁（2026-10-13 实测，含同树并行线改动）：全量 **1631 passed /
+  1 xfailed** + 覆盖率 **87.27%**（≥80 门禁）；前端 `npm run build` + `npm run lint`
   0 error；双远端（gitee/origin）同步至最新
 
 ### 已知问题（不阻塞，接手时留意）
