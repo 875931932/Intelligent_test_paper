@@ -1503,6 +1503,27 @@ def test_rag_prompt_documents_tool_and_grounding_rules():
     assert "比例/难度/去重" in rag_prompt
 
 
+def test_answer_prompt_carries_boundary_guardrails():
+    """段2（纯聊天正文）必须携带边界与状态感知——线上 2026-10-13 测评实证：
+
+    拒绝清单只写在段1（意图）提示词里时，action=null 的正文由段2 重新生成，
+    模型会纯文字虚构被拒流程（「我将生成删除提案，请您确认后执行」）、把范围外
+    的在线考试翻译成出卷承诺；资料未解析时被问内容则误落「无法回答」兜底。
+    段2 提示词是这些越界承诺的唯一生成点，边界知识必须在场。
+    """
+    prompt = assistant_service._ANSWER_SYSTEM_PROMPT
+    # 虚构提案防线：删除/定稿导出无提案，明确禁止承诺流程
+    assert "不得承诺任何提案或流程" in prompt
+    assert "删除资料请到『资料库』页操作" in prompt
+    assert "试卷定稿与导出是需要你亲自完成的里程碑操作" in prompt
+    # 范围外防线：在线考试不得被翻译成出卷流程
+    assert "在线考试与阅卷不在本系统范围内" in prompt
+    assert "不得把在线考试翻译成出卷请求" in prompt
+    # 状态感知：资料未解析先引导解析，不落「无法回答」
+    assert "parse_status" in prompt
+    assert "请先到『资料库』页完成解析" in prompt
+
+
 def test_rag_query_variants_strip_frames_and_leading_verbs():
     """确定性查询改写：原问题恒为首变体；削问句框架与句首泛化动词得主题核心。"""
     assert assistant_service._rag_query_variants("总结教学大纲讲了什么？") == [
