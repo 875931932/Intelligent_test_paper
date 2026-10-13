@@ -518,7 +518,8 @@ app.include_router(paper_versions_router)    # /api/v1/courses/{course_id}/paper
 | PUT | `.../paper-versions/{pv_id}/items/reorder` | 调整题目顺序 |
 | POST | `.../paper-versions/{pv_id}/items` | 新增教师自拟题目（答案必填） |
 | DELETE | `.../paper-versions/{pv_id}/items/{item_index}` | 删除题目 |
-| POST | `.../paper-versions/{pv_id}/items/{item_index}/ai-revise` | 单题 AI 改题提案（202，需教师确认） |
+| POST | `.../paper-versions/{pv_id}/items/{item_index}/ai-revise` | 单题 AI 改题提案（202，需教师确认；可带 `targets` 目标属性——换难度/认知/考点/知识卡，系统确定性盖章） |
+| GET | `.../paper-versions/{pv_id}/items/{item_index}/revise-targets` | 改题目标菜单：各考点可用知识卡/原子 + 不可用原因（与提交预检同源，无模型调用） |
 | POST | `.../paper-versions/{pv_id}/items/ai-generate` | AI 生成整道新题提案（202，需教师确认） |
 | POST | `.../paper-versions/{pv_id}/ai-review` | 整卷 AI 质量评审报告（202，只读） |
 | POST | `.../paper-versions/{pv_id}/confirm` | 定稿 |
@@ -565,7 +566,7 @@ app.include_router(paper_versions_router)    # /api/v1/courses/{course_id}/paper
 | [exam_project_service.py](backend/app/services/exam_project_service.py) | 考试项目管理（含级联删除） |
 | [paper_version_service.py](backend/app/services/paper_version_service.py) | 试卷版本管理 + 四份导出渲染 |
 | [paper_export_bundle.py](backend/app/services/paper_export_bundle.py) | 一键打包：六份导出产物同源渲染 → 内存 ZIP |
-| [ai_revise_service.py](backend/app/services/ai_revise_service.py) | 单题 AI 改题提案（diff → 教师确认落库） |
+| [ai_revise_service.py](backend/app/services/ai_revise_service.py) | 单题 AI 改题提案（diff → 教师确认落库；`targets` 目标属性确定性解析/预检/盖章 + `revise-targets` 菜单） |
 | [ai_create_service.py](backend/app/services/ai_create_service.py) | AI 整题生成提案（回填 → 教师确认落库） |
 | [exam_rules_ai_service.py](backend/app/services/exam_rules_ai_service.py) | 考核规则 AI 提案（回填编辑草稿 → 教师保存落库） |
 | [blueprint_suggest_service.py](backend/app/services/blueprint_suggest_service.py) | 蓝图题位 AI 调整建议（确定性统计对照 → 教师逐条应用） |
@@ -935,13 +936,14 @@ frontend/src/
 | ExamRulesCard AI 助手（规则提案） | [pages/framework/ExamRulesCard.tsx](frontend/src/pages/framework/ExamRulesCard.tsx) | `POST .../framework-versions/current/rules/ai-propose` |
 | FrameworkReviewPanel 框架评审（只读） | [pages/framework/FrameworkReviewPanel.tsx](frontend/src/pages/framework/FrameworkReviewPanel.tsx) | `POST .../framework-versions/current/ai-review` |
 | BlueprintSuggestPanel 蓝图调整建议 | [pages/paper/stage/BlueprintSuggestPanel.tsx](frontend/src/pages/paper/stage/BlueprintSuggestPanel.tsx) | `POST .../blueprints/current/ai-suggest` |
-| AiRevisePanel 单题改题 | [pages/paper/AiRevisePanel.tsx](frontend/src/pages/paper/AiRevisePanel.tsx) | `POST .../items/{i}/ai-revise` |
+| AiRevisePanel 单题改题 | [pages/paper/AiRevisePanel.tsx](frontend/src/pages/paper/AiRevisePanel.tsx) | `POST .../items/{i}/ai-revise` + `GET .../items/{i}/revise-targets`（目标菜单） |
 | AiCreatePanel 整题生成 | [pages/paper/AiCreatePanel.tsx](frontend/src/pages/paper/AiCreatePanel.tsx) | `POST .../items/ai-generate` |
 | PaperReviewPanel 整卷评审 | [pages/paper/PaperReviewPanel.tsx](frontend/src/pages/paper/PaperReviewPanel.tsx) | `POST .../ai-review` |
 
 提案/报告均为异步任务（202 + `task-runs` 轮询，终态自停）；AI 只产出提案、diff 或
-只读报告，**落库一律经教师确认走既有 PATCH/POST 端点**（改题可逐字段撤销，撤销=
-把应用前旧值 PATCH 回去）。接口契约见 `docs/backend-api.md` §4.9、§4.10、§8.7b、§9.3e–g。
+只读报告，**落库一律经教师确认走既有 PATCH/POST 端点**（改题可逐字段撤销：内容字段=
+把应用前旧值 PATCH 回去，属性字段=写显式 `null` 经读端回落链自然还原）。接口契约见
+`docs/backend-api.md` §4.9、§4.10、§8.7b、§9.3e–g。
 
 #### API 客户端
 
@@ -1088,7 +1090,7 @@ app/
 │   ├── courses.py         → services.course_service
 │   ├── framework.py       → workflows.framework_graph, services.framework_service, exam_rules_ai_service, framework_review_ai_service, adapters.model.*
 │   ├── knowledge.py       → workflows.organization_graph, services.knowledge_publish_service, adapters.model.*（抽取器装配）
-│   ├── materials.py       → services.material_service, parse_service, adapters.storage.*
+│   ├── materials.py       → services.material_service, parse_service, content_index_service（解析内容预览）, adapters.storage.*
 │   ├── exam_projects.py   → services.exam_project_service, contract_execution_service, blueprint_suggest_service, generation_runner_service
 │   └── paper_versions.py  → services.paper_version_service, ai_revise_service, ai_create_service, paper_review_service, paper_export_bundle
 │

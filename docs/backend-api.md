@@ -76,6 +76,10 @@
 ## 3. 资料材料 Materials / 上传
 
 > 来源 `app/api/v1/materials.py`。前缀 `/api/v1/courses/{course_id}`
+>
+> ⚠️ **鉴权**：本节全部端点需请求头 `Authorization: Bearer <token>`，缺失或失效 401。
+> （2026-10-12 根治：该族原先整体漏挂 `get_current_user`，裸请求可读甚至 DELETE——
+> 现已全族补上，`5fbf864`；前端 `http.ts resolveToken` 自动附 store token，登录态无感。）
 
 ### 3.1 创建上传会话
 `POST /api/v1/courses/{course_id}/upload-sessions` → **201** `UploadSessionResponse`
@@ -579,6 +583,7 @@ body 可选 `{ "mock_graph": false }`；生产必须配置 LLM，否则 503。�
       "score":2.0,"difficulty":"","cognitive_level":"",
       "needs_review":false,"needs_review_reason":"string|null",
       "teacher_override":{},"has_override":false,
+      "attr_deviation":[],
       "finalized_text":{},"quality_audit":{} }
   ],
   "created_at":"ISO8601","confirmed_at":"ISO8601?","finalized_at":"ISO8601?" }
@@ -593,6 +598,15 @@ body 可选 `{ "mock_graph": false }`；生产必须配置 LLM，否则 503。�
 - `explanation` 由模型产出，部分题型（如单选）可能为 `null`，前端需对空值降级。
 - `needs_review_reason` 为单数字符串（理由以 `；` 连接，截断至 200 字），不是数组。
 - `teacher_override` 覆盖字段优先于生成载荷：`stem`/`options`/`answer`/`explanation`/`score` 可为教师手改值。
+  **追踪属性同理按 `teacher_override → 生成载荷 → plan_items` 回落**（`difficulty`/`cognitive_level`/
+  `exam_point_id`/`card_id`/`coverage_atom` 等；撤销覆写会写显式 `null`，经 `or` 链自然回落原值）——
+  AI 改题目标属性（§9.3e）与手动改属性共用这条读路径。
+- `attr_deviation` 为**动态计算**的偏离清单（不落状态、改回即空）：
+  `[{ "field":"difficulty"|"cognitive_level"|"exam_point", "plan":<合同槽位值>, "effective":<生效值>,
+  "effective_title"?:<考点标题> }]`——与 `plan_items` 槽位逐项对比，难度经 canonical 归一
+  （`easy→low` 别名差异不算偏离）；无槽位题（归档存回/手拟新增）恒为 `[]`。
+  前端 QuestionDetail 据此显示「偏离合同」徽标；终检报告（§9.2 同源）与
+  `list_needs_review` 也走同一 override 感知回落，审计的是教师改后的**生效题面**。
 - `subquestions` 为综合题分问数组（`{prompt, score, answer, ...}`，各问分值之和等于本题总分），非综合题为 `[]`；
   学生卷/答卷的分问排版依赖它（答题卡按范本只给整页空白大框、不分问），历史遗留题若缺失则按空数组降级。
 
@@ -655,20 +669,49 @@ body：`{ "stem":"","question_type":"short_answer","options":[],"answer":"","exp
 
 ### 9.3e 单题 AI 改题（提案，需教师确认）
 `POST /api/v1/courses/{course_id}/paper-versions/{pv_id}/items/{item_index}/ai-revise`
-body：`{ "instruction":"让四个选项表述更平行" }`（`instruction` 必填非空）
-→ **202** `{ "task_run_id":"uuid" }`。LLM 未配置 503；试卷不存在/题号越界 404；已定稿 409；空要求 422。
+body：`{ "instruction":"让四个选项表述更平行", "targets":{ "difficulty":"high", "cognitive_level":"analyze" } }`
+（`instruction` 必填非空；`targets` 可选——**不传即目标属性全部保持不变**，纯内容改题）
+→ **202** `{ "task_run_id":"uuid" }`。LLM 未配置 503；试卷不存在/题号越界 404；已定稿 409；
+空要求 / `targets` 预检不过 / 未知目标键 422。
 
+- **`targets` 四个可选键**（值为空串/缺省视为"不变"；未知键 422）：
+  - `difficulty`：`low/medium/high`（`easy/hard` 等别名经 `resolve_difficulty_tier` 归一）
+  - `cognitive_level`：布鲁姆六级之一；与难度按 `DIFFICULTY_COGNITIVE_ALLOWED` 配对预检
+    （low={remember,understand}、medium={understand,apply,analyze}、high={apply,analyze,evaluate,create}）
+  - `exam_point_id`：换考点（catalog 链 `pv.generation_run_id → generation_runs.catalog_version_id`，
+    `build_exam_point_pools(threshold=0.0)` 建池选卡/原子，跳过本题当前原子）
+  - `card_id`：换知识卡，**必须同时给 `exam_point_id`**（同考点换卡）
+- **预检先于模型调用，违反即 422**（`resolve_revise_targets` → `AiReviseError`，不空跑模型）：
+  难度↔认知配对、目标原子全卷唯一、目标答案域与全卷其他题不重叠不共享命题、考点池内有可用卡——
+  与生成终检**同源**（原子归一唯一 + `boundaries_overlap` + `share_proposition`，槽位∪生效题面并集口径）。
+- **属性由系统确定性盖章，绝不进 prompt 让模型自觉**：模型只写 `stem/options/answer/explanation`
+  四字段；难度/认知/考查原子/知识卡由 `resolve_revise_targets` 确定性给出，经 `normalize_proposal`
+  盖章进提案、`validate_proposal` 按盖章后属性把关，教师确认后随内容一并落进 `teacher_override`。
+  跨考点改写带 `backfilled_from`（配比计回原考点，评审可见；同考点换卡不写）。
+- **目标菜单** `GET .../items/{item_index}/revise-targets` → 200（确定性数据，无模型调用）：
+  ```json
+  { "exam_points":[ { "id":"uuid","code":"EP1","title":"","current":true,
+      "cards":[ { "card_id":"uuid","card_name":"","atom":"原子文本" } ] } ],
+    "unavailable_exam_points":[ { "id":"uuid","code":"","title":"","current":false,
+      "reason":"原子均已被其他题占用" } ],
+    "note":"该试卷没有蓝图目录" }
+  ```
+  可用判据与提交预检**同源**——菜单里能选的提交必过，不可用的给原因（占用 / 与××重叠或共享命题 /
+  该考点下没有知识卡）；无蓝图目录时 `exam_points=[]` + `note`。错误：试卷/题号不存在 404、已定稿 409。
 - **只产提案，不写试卷数据**：worker（`task_type=ai_revise_item`，租约 300s）以合同槽位
   （`coverage_atom`/`answer_boundary`/`forbidden_context`）+ 知识卡为约束调模型；提案必须过
   `validate_generated_question` 收口——未过则带反馈纠错 1 次，仍不过如实上报（比例/难度/去重
   等约束由确定性校验兜底，不进 prompt）。
 - 提案存 `task_runs.result`：`{ item_index, instruction, current, proposal, change_summary,
-  validation:{passed,code,message}, attempts }`；用 §8 的 `GET /exam-projects/task-runs/{id}` 轮询，
-  `succeeded` 后取 `result`。
-- AI 只许改 `stem/options/answer/explanation`；题型/分值/难度/认知层级/考查原子由合同锁定不给改。
+  validation:{passed,code,message}, attempts, target }`——`target` 即解析后的目标属性
+  （纯内容改题为 `null`）；用 §8 的 `GET /exam-projects/task-runs/{id}` 轮询，`succeeded` 后取 `result`。
+- **改动范围**：题面只许改 `stem/options/answer/explanation`；题型/分值始终由合同锁定不给改；
+  难度/认知层级/考查原子/知识卡**仅经 `targets` 按上述预检后变更**（系统盖章，见上）。
 - `validation.passed=false` 时前端禁用确认；教师确认后由前端调 §9.3 PATCH（`teacher_override_patch`
-  只传变更字段）落库——与手动改题同一条写路径，教师可继续手动改回（原题分层保留在 `payload`）。
-- 幂等：同题同要求的**在途**任务复用同一 `task_run_id`；已到终态则换新键真正重新生成。
+  只传变更字段）落库——与手动改题同一条写路径，教师可继续手动改回（原题分层保留在 `payload`，
+  属性撤销写显式 `null` 即经 §9.1 回落链自然还原）。
+- 幂等：同题同要求同目标的**在途**任务复用同一 `task_run_id`（`_INPUT_VERSION=ai_revise_v2`
+  与 `targets` 均并入幂等键，改目标即换键）；已到终态则换新键真正重新生成。
 
 ### 9.3f AI 生成整道新题（提案，需教师确认）
 `POST /api/v1/courses/{course_id}/paper-versions/{pv_id}/items/ai-generate`

@@ -1,6 +1,6 @@
 # PaperPact·AI 命题系统 · 交接文档
 
-> 更新日期：2026-10-10
+> 更新日期：2026-10-13
 > 状态：引擎层 + 教师工作台 + 试卷模块（含考试侧重点与 AI 落点：考核规则助手 / 蓝图题位建议 / 框架候选评审 / 助手自然语言出卷提案链 / 使用引导卡）均已交付；出卷全链路可在浏览器端走通
 > 产品基线：`docs/superpowers/specs/2026-08-12-ai-final-exam-paper-design.md`（v2.3，务必先读）
 > 链路设计：`docs/superpowers/specs/2026-08-17-contract-first-generation-design.md`（合同优先生成）
@@ -457,6 +457,35 @@ frontend\src\
   `test_database_bootstrap` 2 项暂红（新增 `organizations` 表尚未同步测试期望，
   属该工作线非本任务引入）；前端 `npm run build` 0 error、
   oxlint 0 error（warning 均为既有文件基线，最近一次实测 2026-10-10）
+- ✅ **综合题分问与逐问答案站内渲染**（2026-10-11，`15e94cd`）：`subquestions`
+  首次在试卷页上屏 + 分问内联（1）（2）拆行；学生卷/答卷排版沿用既有导出口径
+- ✅ **AI 改题目标属性：换难度 / 认知层级 / 换考点**（2026-10-11，`91e68b8`）：
+  请求体新键 `targets`（difficulty / cognitive_level / exam_point_id / card_id，
+  **"不变"为默认**），预检全部**先于模型调用**（`resolve_revise_targets`：难度词表
+  归一 + `DIFFICULTY_COGNITIVE_ALLOWED` 配对、换考点按本卷 catalog 链
+  `pv.generation_run_id → catalog_version_id` 建池 `threshold=0.0`、跳过本题当前
+  原子、全卷互斥复检与终检同源——违反即 `AiReviseError` 422，不空跑模型）；
+  **属性由系统确定性盖章**（`normalize_proposal` 落 `teacher_override`、
+  `validate_proposal` 按盖章后属性把关，补上 cognitive_level 从未盖章的缺口），
+  模型只写题面四字段、属性绝不进 prompt；跨考点写 `backfilled_from`（同考点换卡不写）；
+  新端点 `GET /items/{i}/revise-targets` 考点菜单（可用判据与预检同源，选得到必过）；
+  读端 override 回落 + `attr_deviation` 偏离徽标 + `_load_final_check` 终检 override
+  感知；幂等键并入 `_INPUT_VERSION=ai_revise_v2` 与 targets。前端 AiRevisePanel
+  目标选择器级联 + 属性 diff 行 + apply 属性键 / undo 显式 null 回滚。
+  API 文档：`docs/backend-api.md` §9.1 / §9.3e
+- ✅ **教学资料解析内容预览 + materials 族补鉴权**（2026-10-12，`5fbf864`）：
+  全站原先**没有任何能看到资料内容的路径**，但助手来源卡按钮、系统提示词、文档三处
+  在承诺"到资料库查看原文"——按"根治不删标签"补能力：新端点
+  `GET /materials/{id}/content`（与助手 RAG **同语料**：`content_blocks` + 最新 ready
+  run，分页浏览 / `block_id` 定位±上下文双模式，重解析后旧引用 `focus.index=null`
+  如实提示）；资料卡「查看」与助手来源卡逐条「查看原文」共用 `MaterialContentPreview`
+  弹窗；系统提示词第 6 条改口。⚠️ 顺带根治**既有漏洞**：materials 族 9 个端点整体
+  漏挂鉴权（裸请求 list/get 200、DELETE 曾 204），全族补 `Depends(get_current_user)`
+  （前端 `resolveToken` 自动附 token，登录态零破坏），匿名 401 断言锁死。
+  API 文档：`docs/backend-api.md` §3 鉴权注记 / §3.4
+- ✅ 后端门禁（2026-10-13 实测，含同树并行线改动）：全量 **1627 passed /
+  1 xfailed** + 覆盖率 **87.20%**（≥80 门禁）；前端 `npm run build` + `npm run lint`
+  0 error；双远端（gitee/origin）同步至最新
 
 ### 已知问题（不阻塞，接手时留意）
 
@@ -468,8 +497,9 @@ frontend\src\
 5. **旧框架没有考试规则**：构建改动前的框架 payload 里 `final_exam_rules` 是空 dict，
    框架页会显示"没有解析出考试规则"并提供「补充规则」；重新构建一次框架即可自动带上考纲比例
 6. 前端无单元测试文件，门禁是 `npm run build` + `npm run lint`；端到端行为由后端 pytest 锁定
-7. **github（origin）push 曾连续 443 超时**（2026-09 历史问题，现已恢复双远端同步）：再遇
-   超时时 gitee 是上游，网络恢复后 `git push origin main` 补推，避免服务器从 github 拉到旧代码
+7. **github（origin）push 曾连续 443 超时**（2026-09 首发、2026-10-11~12 复发，
+   2026-10-13 已恢复且双远程同步至最新）：再遇超时时 gitee 是上游，网络恢复后
+   `git push origin main` 补推，避免服务器从 github 拉到旧代码
 8. 孤儿 run 自愈依赖**单进程部署**（`_ACTIVE_ORG_RUN_IDS` 进程内存态）：改多 worker 须换
    租约心跳，否则跨进程误杀活跃 run（`knowledge.py` 注释有说明）
 9. **解析侧结构信号缺口（待根治）**：全库 `content_blocks` 的 `heading_path` 非空 = 0、
