@@ -218,6 +218,9 @@ class LLMJsonClient:
         response_schema: dict[str, Any] | None = None,
         on_think: Callable[[str], None] | None = None,
         stream: bool = False,
+        # 单次调用级超时覆盖（None=沿用构造期 self.timeout）：命题生成按批内
+        # 题型区分——常规批短超时快速失败进重试，综合题批沿用长超时兜底。
+        timeout: float | None = None,
     ) -> dict:
         # 构造期钉死的思考档兜底：调用方未显式指定时用构造期值（None 维持原
         # 语义——由 disable_thinking 推导档案缺省档）；显式档位永远优先。
@@ -326,6 +329,7 @@ class LLMJsonClient:
                             max_tokens,
                             reasoning_effort,
                             response_schema,
+                            timeout=timeout,
                         )
                     headers = getattr(response, "headers", {})
                     request_id = headers.get("x-request-id") if hasattr(headers, "get") else None
@@ -609,6 +613,7 @@ class LLMJsonClient:
         max_tokens: int | None = None,
         reasoning_effort: str | None = None,
         response_schema: dict[str, Any] | None = None,
+        timeout: float | None = None,
     ) -> httpx.Response:
         json_body = self._build_body(
             system_prompt,
@@ -626,10 +631,10 @@ class LLMJsonClient:
                 "Content-Type": "application/json",
             },
             "json": json_body,
-            # 连接与读取超时分离：读取超时即 self.timeout（默认 240s，覆盖
-            # 慢速生成），连接超时固定 15s——历史上出现单请求挂 3600s 的
+            # 连接与读取超时分离：读取超时即调用级覆盖或 self.timeout（None=
+            # 构造期值），连接超时固定 15s——历史上出现单请求挂 3600s 的
             # transport_error，多为连接阶段阻塞，及时失败重试优于无限等待。
-            "timeout": httpx.Timeout(self.timeout, connect=15.0),
+            "timeout": httpx.Timeout(self.timeout if timeout is None else timeout, connect=15.0),
         }
         if self.client is not None:
             return self.client.post(f"{self.base_url}/chat/completions", **request)
@@ -1020,6 +1025,9 @@ class LLMGateway:
         # 显式思考档：优先于 disable_thinking 推导出的档案缺省档（None=维持
         # 原行为）。生成阶段用它把档位钉死为 low，不受服务器 .env 开关影响。
         reasoning_effort: str | None = None,
+        # 常规题型批（无综合题）的更短超时：挂死/慢响应快速失败进入重试，
+        # 不顶格白等 timeout（见 config.generation_batch_model_timeout 注释）。
+        batch_timeout: float | None = None,
         client: httpx.Client | None = None,
         json_client: LLMJsonClient | None = None,
         recorder: ModelCallRecorder | None = None,
@@ -1027,6 +1035,7 @@ class LLMGateway:
     ) -> None:
         self.call_context = call_context
         self.reasoning_effort = reasoning_effort
+        self.batch_timeout = batch_timeout
         self.json_client = json_client or LLMJsonClient(
             api_key=api_key,
             base_url=base_url,
@@ -1053,7 +1062,11 @@ class LLMGateway:
         temperature: float,
         call_context: ModelCallContext | None = None,
         response_validator: Callable[[Any], None] | None = None,
+        timeout: float | None = None,
     ) -> dict:
+        # 仅在显式覆盖时透传 timeout：既有测试桩/自定义 client 的 request_json
+        # 签名不含该参数，恒传会破坏鸭子类型兼容。
+        extra: dict[str, Any] = {"timeout": timeout} if timeout is not None else {}
         return self.json_client.request_json(
             system_prompt=system_prompt,
             payload=payload,
@@ -1062,9 +1075,17 @@ class LLMGateway:
             response_validator=response_validator,
             # 构造期钉死的思考档（None=不指定，走 json_client 原逻辑）
             reasoning_effort=self.reasoning_effort,
+            **extra,
         )
 
     def generate_batch(self, payload) -> list[dict]:
+        # 批内含综合题 → 沿用构造期长超时（长思考兜底）；纯常规题型批 →
+        # 用 batch_timeout 短超时，传输挂死时快速失败进入重试而非顶格白等。
+        has_comprehensive = any(
+            getattr(spec, "question_type", "") == "comprehensive"
+            for spec in payload.questions
+        )
+        timeout = None if has_comprehensive else self.batch_timeout
         expected = [spec.item_index for spec in payload.questions]
         spec_schemas = {spec.item_index: spec.output_schema for spec in payload.questions}
 
@@ -1101,6 +1122,7 @@ class LLMGateway:
             payload,
             temperature=0.2,
             call_context=self.call_context,
+            timeout=timeout,
             system_prompt=(
                 "你是高校期末考试命题教师，一次为本批所有题位命题，必须返回 JSON 对象，"
                 "顶层字段 questions 为数组，数组每个元素包含 item_index 及该题 output_schema 要求的全部字段。"

@@ -174,6 +174,13 @@ class Settings(BaseSettings):
     # 连带失守、卷面缺两道综合题。生成已异步化（Celery），放长超时不占请求线程；
     # 与 organization 同口径 480s。
     generation_model_timeout: float = Field(default=480.0, gt=0)
+    # 命题生成**非综合题批次**的独立超时（秒）。普通批次（单选/判断/填空/简答）
+    # 实测单次 13~63s，480s 只为综合题长思考兜底；线上曾出现传输挂死
+    # （llm_transport_error，无 http_status）：第一次尝试按 480s 顶格白等约 8 分钟
+    # 才报错重试，整卷 13 分钟里 63% 耗在这上面（2026-10-19，call 14283550）。
+    # 180s = 实测最长 63s 的近 3 倍余量，挂死场景 3 分钟内进入重试；
+    # 批内含综合题时仍走 generation_model_timeout（generate_batch 按题型选择）。
+    generation_batch_model_timeout: float = Field(default=180.0, gt=0)
     # 蓝图调整建议（suggest_blueprint_adjustments）的读超时。曾经写死 45s：
     # 而该调用实测单次就要 40~50s（大 prompt + 思考模型），于是 45s 刀口上
     # 掷硬币——两次尝试都超时就 llm_transport_error，任务失败、助手卡片停在

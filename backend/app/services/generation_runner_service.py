@@ -304,6 +304,9 @@ def _default_graph_invoke(
         reasoning_effort=settings.generation_reasoning_effort,
         # 综合题思考+输出长，默认 90s 会 transport 连环（见 generation_model_timeout 注释）
         timeout=settings.generation_model_timeout,
+        # 常规题型批独立短超时：传输挂死快速失败进重试，不顶格白等
+        # （2026-10-19 一次挂死耗掉整卷 63% 时长，见 config 注释）
+        batch_timeout=settings.generation_batch_model_timeout,
         json_client=json_client,
         call_context=ModelCallContext(course_id=course_id, stage="paper_generation"),
     )
