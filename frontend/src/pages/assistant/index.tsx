@@ -637,8 +637,8 @@ function SourcesCard({
                     style={{
                       display: 'flex', alignItems: 'center', gap: 4,
                       padding: '2px 8px', borderRadius: 999, fontSize: '0.72rem', fontWeight: 600,
-                      background: 'var(--purple-subtle)', color: 'var(--purple)',
-                      border: '1px solid var(--purple-soft)', cursor: 'pointer', fontFamily: 'inherit',
+                      background: 'var(--accent-subtle)', color: 'var(--accent)',
+                      border: '1px solid var(--accent-soft)', cursor: 'pointer', fontFamily: 'inherit',
                     }}
                   >
                     <Eye size={12} />
@@ -1227,7 +1227,7 @@ function ProposalCard({
   return (
     <div className="chat-card chat-card--proposal" style={cardBox}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <Badge variant={auto ? 'purple' : 'info'}>{auto ? '自动执行' : '待确认提案'}</Badge>
+        <Badge variant={auto ? 'accent' : 'info'}>{auto ? '自动执行' : '待确认提案'}</Badge>
         <strong style={{ fontSize: '0.85rem' }}>{meta?.label ?? tool}</strong>
       </div>
       <KVTable rows={rows} />

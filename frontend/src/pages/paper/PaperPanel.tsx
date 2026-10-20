@@ -564,7 +564,7 @@ export default function PaperPanel({
           悬浮于右下角，不占页面流（旧版插在页首会把双栏整体下压） */}
       {reviewOpen && (
         <FloatingPanel
-          title={<>AI 质量评审 <Badge variant="purple">只读报告</Badge></>}
+          title={<>AI 质量评审 <Badge variant="accent">只读报告</Badge></>}
           pillLabel="AI 质量评审"
           onClose={() => setReviewOpen(false)}
         >
@@ -673,7 +673,7 @@ export default function PaperPanel({
               悬浮于右下角，不占双栏布局 */}
           {current && !editing && aiOpen && (
             <FloatingPanel
-              title={<>AI 改题 · 第 {displayNo(current.item_index)} 题 <Badge variant="purple">提案需确认</Badge></>}
+              title={<>AI 改题 · 第 {displayNo(current.item_index)} 题 <Badge variant="accent">提案需确认</Badge></>}
               pillLabel={`AI 改题 · 第 ${displayNo(current.item_index)} 题`}
               onClose={() => setAiOpen(false)}
             >

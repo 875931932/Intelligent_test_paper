@@ -117,9 +117,9 @@ export function AiCreatePanel({
         textAlign: 'left', color: 'var(--text)',
       }}
     >
-      <Sparkles size={16} style={{ color: 'var(--purple)', flexShrink: 0 }} />
+      <Sparkles size={16} style={{ color: 'var(--accent)', flexShrink: 0 }} />
       <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>AI 生成题目</span>
-      <Badge variant="purple">提案需确认</Badge>
+      <Badge variant="accent">提案需确认</Badge>
       {running && <Spinner size="sm" />}
       {collapsed && result && <Badge variant="success">已生成提案</Badge>}
       <span style={{ marginLeft: 'auto', fontSize: '0.78rem', color: 'var(--text-tertiary)' }}>
@@ -167,7 +167,7 @@ export function AiCreatePanel({
           </div>
           {result.change_summary && (
             <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.7, margin: 0 }}>
-              <span style={{ fontWeight: 600, color: 'var(--purple)' }}>AI 说明：</span>
+              <span style={{ fontWeight: 600, color: 'var(--accent)' }}>AI 说明：</span>
               {result.change_summary}
             </p>
           )}
@@ -249,9 +249,9 @@ export function AiCreatePanel({
               onClick={() => setInstruction(preset)}
               style={{
                 padding: '3px 10px', borderRadius: 999, fontSize: '0.75rem', fontWeight: 600,
-                background: 'var(--purple-subtle)', color: 'var(--purple)',
-                border: '1px solid var(--purple-soft)', cursor: running ? 'default' : 'pointer',
-                opacity: running ? 0.5 : 1,
+                background: 'var(--accent-subtle)', color: 'var(--accent-text)',
+                border: '1px solid var(--accent-soft)', cursor: running ? 'default' : 'pointer',
+                opacity: running ? 0.5 : 1, fontFamily: 'inherit',
               }}
             >
               {preset}

@@ -91,26 +91,32 @@ export function FrameworkReviewPanel({ courseId }: { courseId: string }) {
       className="glass-card"
       style={{ padding: '16px', display: 'flex', flexDirection: 'column', gap: '12px' }}
     >
-      <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+      {/* 头部行：标题 + 定位说明（输入与操作拆到下方独立行，不再挤在一行） */}
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
         <span
           style={{
             display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap',
-            fontSize: '0.875rem', fontWeight: 600, color: 'var(--purple)',
+            fontSize: '0.875rem', fontWeight: 600, color: 'var(--accent)',
           }}
         >
           <Sparkles size={16} /> AI 评审
-          <span style={{ fontSize: '0.75rem', fontWeight: 400, color: 'var(--text-tertiary)' }}>只读参考</span>
         </span>
-        <input
-          className="input-field"
-          style={{ flex: 1, minWidth: 220 }}
-          value={instruction}
-          onChange={(e) => setInstruction(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') void handleReview(); }}
-          placeholder="可留空做常规评审；也可写：重点看权重与覆盖"
-          aria-label="评审要求（一句话，可空）"
-          disabled={running}
-        />
+        <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
+          只读参考——不修改框架、不代替你裁决冲突
+        </span>
+      </div>
+      <textarea
+        className="input-field"
+        style={{ width: '100%', resize: 'vertical', minHeight: 56 }}
+        value={instruction}
+        onChange={(e) => setInstruction(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void handleReview(); } }}
+        placeholder="可留空做常规评审；也可写：重点看权重与覆盖（Enter 发送，Shift+Enter 换行）"
+        aria-label="评审要求（一句话，可空）"
+        disabled={running}
+        rows={2}
+      />
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
         <Button size="sm" variant="secondary" loading={running} onClick={() => void handleReview()} icon={<Eye size={14} />}>
           {running ? '评审中…' : '生成评审'}
         </Button>

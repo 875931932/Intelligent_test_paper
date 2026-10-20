@@ -289,22 +289,29 @@ export function BlueprintSuggestPanel({
       background: 'var(--accent-subtle)', border: '1px dashed var(--accent-soft)',
       display: 'flex', flexDirection: 'column', gap: '10px',
     }}>
-      <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+      {/* 头部行：标题 + 定位说明（输入与操作拆到下方独立行，不再挤在一行） */}
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
         <span style={{
           display: 'flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap',
           fontSize: '0.8rem', fontWeight: 600, color: 'var(--accent)',
         }}>
           <Sparkles size={15} /> AI 调整建议
         </span>
-        <input
-          className="input-field" style={{ flex: 1, minWidth: 220 }}
-          value={instruction}
-          onChange={(e) => setInstruction(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') void handleGenerate(); }}
-          placeholder="可留空做常规检查；也可写：难度按5简单3中等2难分、第3章分值调高"
-          aria-label="调整要求（一句话，可空）"
-          disabled={running}
-        />
+        <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
+          AI 只产提案，逐条确认后才落到题位
+        </span>
+      </div>
+      <textarea
+        className="input-field" style={{ width: '100%', resize: 'vertical', minHeight: 52 }}
+        value={instruction}
+        onChange={(e) => setInstruction(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); void handleGenerate(); } }}
+        placeholder="可留空做常规检查；也可写：难度按5简单3中等2难分、第3章分值调高（Enter 发送，Shift+Enter 换行）"
+        aria-label="调整要求（一句话，可空）"
+        disabled={running}
+        rows={2}
+      />
+      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
         <Button size="sm" variant="secondary" loading={running} onClick={() => void handleGenerate()} icon={<Sparkles size={14} />}>
           {running ? '生成中…' : '生成建议'}
         </Button>
@@ -365,30 +372,33 @@ export function BlueprintSuggestPanel({
               <div
                 key={suggestKey(s)}
                 style={{
-                  display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap',
+                  display: 'flex', flexDirection: 'column', gap: 4,
                   padding: '8px 10px', borderRadius: 'var(--radius-sm)',
                   background: isApplied ? 'var(--fill)' : 'var(--surface-solid)',
                   border: '1px solid var(--line)',
                   opacity: isApplied ? 0.65 : 1,
                 }}
               >
-                <span style={{ fontSize: '0.78rem', fontWeight: 600 }}>#{s.item_index}</span>
-                <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
-                  {FIELD_LABELS[s.field]}：{fromLabel(s, item, maps)}
-                  <span style={{ margin: '0 6px', color: 'var(--accent)' }}>→</span>
-                  <strong>{targetLabel(s, maps)}</strong>
-                </span>
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', flex: 1, minWidth: '160px' }}>
+                {/* 第一行：题号 + 字段变化 + 应用按钮；原因独占第二行不与按钮挤 */}
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: '0.78rem', fontWeight: 600 }}>#{s.item_index}</span>
+                  <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
+                    {FIELD_LABELS[s.field]}：{fromLabel(s, item, maps)}
+                    <span style={{ margin: '0 6px', color: 'var(--accent)' }}>→</span>
+                    <strong>{targetLabel(s, maps)}</strong>
+                  </span>
+                  <Button
+                    size="sm" variant="secondary" style={{ marginLeft: 'auto' }}
+                    disabled={isApplied || applyingAll}
+                    loading={applyingKey === suggestKey(s)}
+                    onClick={() => void handleApplyOne(s)}
+                  >
+                    {isApplied ? '已应用' : '应用'}
+                  </Button>
+                </div>
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', lineHeight: 1.6 }}>
                   {s.reason}
                 </span>
-                <Button
-                  size="sm" variant="secondary"
-                  disabled={isApplied || applyingAll}
-                  loading={applyingKey === suggestKey(s)}
-                  onClick={() => void handleApplyOne(s)}
-                >
-                  {isApplied ? '已应用' : '应用'}
-                </Button>
               </div>
             );
           })}

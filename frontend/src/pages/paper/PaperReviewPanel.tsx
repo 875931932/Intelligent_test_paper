@@ -101,7 +101,7 @@ export function PaperReviewPanel({
 
           {/* 总评 */}
           <p style={{ fontSize: '0.84rem', color: 'var(--text-secondary)', lineHeight: 1.7, margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
-            <span style={{ fontWeight: 600, color: 'var(--purple)' }}>总评：</span>
+            <span style={{ fontWeight: 600, color: 'var(--accent)' }}>总评：</span>
             {toText(result.summary)}
           </p>
 

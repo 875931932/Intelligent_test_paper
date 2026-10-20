@@ -457,6 +457,8 @@ body {
 .badge-error { background: var(--error-subtle); color: var(--error-ink); }
 .badge-info { background: var(--info-subtle); color: var(--info-ink); }
 .badge-purple { background: var(--purple-subtle); color: var(--purple-ink); }
+/* AI 徽标（主题色）：近黑浅底深字，与 zinc 主色系同源 */
+.badge-accent { background: var(--accent-subtle); color: var(--accent-text); border: 1px solid var(--accent-soft); }
 
 /* ═══════════════════════════════════════════════
    Spinner / Progress（中性 zinc；主进度近黑）
@@ -546,7 +548,7 @@ body {
   right: 24px;
   bottom: 24px;
   z-index: var(--z-floating);
-  width: min(560px, calc(100vw - 32px));
+  width: min(640px, calc(100vw - 32px));
   max-height: min(72vh, 760px);
   display: flex;
   flex-direction: column;

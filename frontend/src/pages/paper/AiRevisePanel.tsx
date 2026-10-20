@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Check, RotateCcw, Sparkles } from 'lucide-react';
+import { Check, ChevronDown, RotateCcw, SlidersHorizontal, Sparkles } from 'lucide-react';
 import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
 import { useAuthStore } from '@/stores/auth';
@@ -93,6 +93,8 @@ export function AiRevisePanel({
   const [cardTarget, setCardTarget] = useState('');
   const [targetsData, setTargetsData] = useState<ReviseTargetsResponse | null>(null);
   const [targetsLoading, setTargetsLoading] = useState(false);
+  // 高级目标区默认折叠：首屏只留指令输入，目标属性是少数场景才用的进阶能力
+  const [targetsOpen, setTargetsOpen] = useState(false);
 
   // 轮询提案任务（与 PipelinePanel 的生成轮询同款：依赖只取 id，终态自停）
   useEffect(() => {
@@ -257,6 +259,14 @@ export function AiRevisePanel({
 
   const running = busy || !!taskRunId;
 
+  // 已选目标的摘要（折叠条上让教师不开也能确认选了什么）
+  const targetSummary = [
+    difficultyTarget && `难度→${dlabel(difficultyTarget)}`,
+    cognitiveTarget && `认知→${clabel(cognitiveTarget)}`,
+    epTarget && '考点已选',
+    cardTarget && '知识卡已选',
+  ].filter(Boolean).join(' · ');
+
   return (
     <div
       style={{
@@ -286,7 +296,7 @@ export function AiRevisePanel({
           </div>
           {result.change_summary && (
             <p style={{ fontSize: '0.82rem', color: 'var(--text-secondary)', lineHeight: 1.7, margin: 0 }}>
-              <span style={{ fontWeight: 600, color: 'var(--purple)' }}>AI 说明：</span>
+              <span style={{ fontWeight: 600, color: 'var(--accent)' }}>AI 说明：</span>
               {result.change_summary}
             </p>
           )}
@@ -295,10 +305,10 @@ export function AiRevisePanel({
           {attrRows.length > 0 && (
             <div style={{
               padding: '8px 12px', borderRadius: 'var(--radius-sm)',
-              background: 'var(--purple-subtle)', border: '1px solid var(--purple-soft)',
+              background: 'var(--accent-subtle)', border: '1px solid var(--accent-soft)',
               display: 'flex', flexDirection: 'column', gap: 6,
             }}>
-              <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--purple)' }}>
+              <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--accent)' }}>
                 目标属性调整（应用后落库，可撤销）
               </div>
               {attrRows.map((row) => (
@@ -385,10 +395,11 @@ export function AiRevisePanel({
 
       {/* 指令输入（悬浮）：置于面板末尾并 sticky 钉住滚动容器底边，
           diff/提案再长也不会把输入条推出视野；不透明背景 + 阴影保证
-          浮在结果内容之上时文字不透出，z-index 低于弹窗与 toast */}
+          浮在结果内容之上时文字不透出，z-index 低于弹窗与 toast。
+          目标属性收进折叠区（默认收起），首屏只留指令输入，减拥挤 */}
       <div
         style={{
-          display: 'flex', flexDirection: 'column', gap: '8px',
+          display: 'flex', flexDirection: 'column', gap: '10px',
           position: 'sticky', bottom: 12, zIndex: 5,
           padding: '12px 14px', borderRadius: 12,
           background: 'var(--surface-elevated)',
@@ -396,48 +407,78 @@ export function AiRevisePanel({
           boxShadow: 'var(--shadow-3)',
         }}
       >
-        {/* 目标属性（全部「不变」为默认；配对合法性与考点可用性由后端确定性预检） */}
-        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
-          <label style={targetLabelStyle}>
-            难度目标
-            <select value={difficultyTarget} disabled={running} onChange={(e) => setDifficultyTarget(e.target.value)} style={selectStyle}>
-              <option value="">不变（{dlabel(String(item.difficulty ?? 'medium'))}）</option>
-              {PLAN_DIFFICULTY_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
-          </label>
-          <label style={targetLabelStyle}>
-            认知层级
-            <select value={cognitiveTarget} disabled={running} onChange={(e) => setCognitiveTarget(e.target.value)} style={selectStyle}>
-              <option value="">不变（{clabel(String(item.cognitive_level ?? ''))}）</option>
-              {Object.entries(COGNITIVE_LABELS).map(([v, l]) => (
-                <option key={v} value={v}>{l}</option>
-              ))}
-            </select>
-          </label>
-          <label style={targetLabelStyle}>
-            考点（换考点）
-            <select
-              value={epTarget}
-              disabled={running || targetsLoading}
-              onChange={(e) => { setEpTarget(e.target.value); setCardTarget(''); }}
-              style={selectStyle}
-            >
-              <option value="">{targetsLoading ? '加载考点…' : '不变'}</option>
-              {(targetsData?.exam_points ?? []).map((ep) => (
-                <option key={ep.id} value={ep.id}>
-                  {ep.code ? ep.code + ' ' : ''}{ep.title || ep.id}{ep.current ? '（当前）' : ''}
-                </option>
-              ))}
-              {(targetsData?.unavailable_exam_points ?? []).map((ep) => (
-                <option key={ep.id} value="" disabled>
-                  {ep.title || ep.id}（{ep.reason}）
-                </option>
-              ))}
-            </select>
-          </label>
-          {epTarget && (
+        {/* 高级目标折叠条：难度/认知/考点是进阶调整，默认收起不占首屏；
+            已选目标时在条上显示摘要，教师不开也能确认 */}
+        <button
+          type="button"
+          onClick={() => setTargetsOpen((v) => !v)}
+          aria-expanded={targetsOpen}
+          style={{
+            display: 'flex', alignItems: 'center', gap: '6px', width: '100%',
+            background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+            textAlign: 'left', fontFamily: 'inherit',
+          }}
+        >
+          <SlidersHorizontal size={13} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
+          <span style={{ fontSize: '0.78rem', fontWeight: 600, color: 'var(--text-secondary)' }}>
+            目标属性（可选）
+          </span>
+          <span style={{ fontSize: '0.72rem', color: targetSummary ? 'var(--accent)' : 'var(--text-tertiary)', fontWeight: targetSummary ? 600 : 400 }}>
+            {targetSummary || '难度 / 认知 / 考点默认不变'}
+          </span>
+          <ChevronDown
+            size={14}
+            style={{
+              marginLeft: 'auto', color: 'var(--text-tertiary)', flexShrink: 0,
+              transform: targetsOpen ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s',
+            }}
+          />
+        </button>
+        {targetsOpen && (
+          <div style={{
+            display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px 12px',
+            padding: '10px 12px', background: 'var(--surface-sunken)',
+            border: '1px solid var(--line-soft)', borderRadius: 'var(--radius-sm)',
+          }}>
+            <label style={targetLabelStyle}>
+              难度目标
+              <select value={difficultyTarget} disabled={running} onChange={(e) => setDifficultyTarget(e.target.value)} style={selectStyle}>
+                <option value="">不变（{dlabel(String(item.difficulty ?? 'medium'))}）</option>
+                {PLAN_DIFFICULTY_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </label>
+            <label style={targetLabelStyle}>
+              认知层级
+              <select value={cognitiveTarget} disabled={running} onChange={(e) => setCognitiveTarget(e.target.value)} style={selectStyle}>
+                <option value="">不变（{clabel(String(item.cognitive_level ?? ''))}）</option>
+                {Object.entries(COGNITIVE_LABELS).map(([v, l]) => (
+                  <option key={v} value={v}>{l}</option>
+                ))}
+              </select>
+            </label>
+            <label style={targetLabelStyle}>
+              考点（换考点）
+              <select
+                value={epTarget}
+                disabled={running || targetsLoading}
+                onChange={(e) => { setEpTarget(e.target.value); setCardTarget(''); }}
+                style={selectStyle}
+              >
+                <option value="">{targetsLoading ? '加载考点…' : '不变'}</option>
+                {(targetsData?.exam_points ?? []).map((ep) => (
+                  <option key={ep.id} value={ep.id}>
+                    {ep.code ? ep.code + ' ' : ''}{ep.title || ep.id}{ep.current ? '（当前）' : ''}
+                  </option>
+                ))}
+                {(targetsData?.unavailable_exam_points ?? []).map((ep) => (
+                  <option key={ep.id} value="" disabled>
+                    {ep.title || ep.id}（{ep.reason}）
+                  </option>
+                ))}
+              </select>
+            </label>
             <label style={targetLabelStyle}>
               知识卡（原子）
               <select value={cardTarget} disabled={running} onChange={(e) => setCardTarget(e.target.value)} style={selectStyle}>
@@ -447,10 +488,10 @@ export function AiRevisePanel({
                 ))}
               </select>
             </label>
-          )}
-        </div>
-        {targetsData?.note && (
-          <div style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>{targetsData.note}</div>
+            {targetsData?.note && (
+              <div style={{ gridColumn: '1 / -1', fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>{targetsData.note}</div>
+            )}
+          </div>
         )}
         <textarea
           value={instruction}
@@ -472,9 +513,9 @@ export function AiRevisePanel({
               onClick={() => void submit(p)}
               style={{
                 padding: '3px 10px', borderRadius: 999, fontSize: '0.75rem', fontWeight: 600,
-                background: 'var(--purple-subtle)', color: 'var(--purple)',
-                border: '1px solid var(--purple-soft)', cursor: running ? 'default' : 'pointer',
-                opacity: running ? 0.5 : 1,
+                background: 'var(--accent-subtle)', color: 'var(--accent-text)',
+                border: '1px solid var(--accent-soft)', cursor: running ? 'default' : 'pointer',
+                opacity: running ? 0.5 : 1, fontFamily: 'inherit',
               }}
             >
               {p}
