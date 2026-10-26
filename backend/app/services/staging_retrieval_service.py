@@ -411,6 +411,27 @@ def _rank_hybrid(
     return ranked[:top_k]
 
 
+def _retrieval_backend() -> str:
+    """检索后端选择（RAG_RETRIEVER_BACKEND）：默认 custom，可切 langchain。"""
+
+    from app.config import settings
+
+    return settings.rag_retriever_backend
+
+
+def _langchain_retriever(
+    *, embedder: EmbeddingClient, top_k: int, minimum_score: float
+):
+    from app.services.langchain_retrieval import PaperPactHybridRetriever
+
+    return PaperPactHybridRetriever(
+        chunks=[],
+        embedder=embedder,
+        top_k=top_k,
+        minimum_score=minimum_score,
+    )
+
+
 class HybridStagingRetriever:
     def __init__(
         self,
@@ -452,6 +473,17 @@ class HybridStagingRetriever:
         query_vector: list[float] | None = None,
         query_text: str | None = None,
     ) -> list[RankedChunk]:
+        if _retrieval_backend() == "langchain":
+            return _langchain_retriever(
+                embedder=self.embedder,
+                top_k=self.top_k,
+                minimum_score=self.minimum_score,
+            ).retrieve_exam_point(
+                exam_point,
+                chunks,
+                query_vector=query_vector,
+                query_text=query_text,
+            )
         return retrieve_for_exam_point(
             exam_point,
             chunks,
@@ -480,18 +512,38 @@ class HybridStagingRetriever:
             return []
         if query_texts is None:
             query_texts = [exam_point.retrieval_intent] * len(query_vectors)
-        ranked_groups = [
-            retrieve_for_exam_point(
-                exam_point,
-                chunks,
-                self.embedder,
+        if _retrieval_backend() == "langchain":
+            retriever = _langchain_retriever(
+                embedder=self.embedder,
                 top_k=len(chunks),
                 minimum_score=self.minimum_score,
-                query_vector=query_vector,
-                query_text=query_text,
             )
-            for query_vector, query_text in zip(query_vectors, query_texts, strict=True)
-        ]
+            ranked_groups = [
+                retriever.retrieve_exam_point(
+                    exam_point,
+                    chunks,
+                    query_vector=query_vector,
+                    query_text=query_text,
+                )
+                for query_vector, query_text in zip(
+                    query_vectors, query_texts, strict=True
+                )
+            ]
+        else:
+            ranked_groups = [
+                retrieve_for_exam_point(
+                    exam_point,
+                    chunks,
+                    self.embedder,
+                    top_k=len(chunks),
+                    minimum_score=self.minimum_score,
+                    query_vector=query_vector,
+                    query_text=query_text,
+                )
+                for query_vector, query_text in zip(
+                    query_vectors, query_texts, strict=True
+                )
+            ]
         return _merge_ranked_groups(
             ranked_groups, top_k=self.top_k, key=lambda item: item.chunk.id
         )

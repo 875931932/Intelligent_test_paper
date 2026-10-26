@@ -899,3 +899,99 @@ def test_organization_retrieval_settings_reject_invalid_environment_values(
 
     with pytest.raises(ValidationError):
         Settings()
+
+
+# ---------------------------------------------------------------------------
+# 检索后端开关：langchain（默认）与 custom（回滚）等价
+# ---------------------------------------------------------------------------
+
+
+def test_rag_retriever_backend_defaults_to_langchain(monkeypatch):
+    monkeypatch.delenv("RAG_RETRIEVER_BACKEND", raising=False)
+
+    assert Settings(_env_file=None).rag_retriever_backend == "langchain"
+
+
+def test_rag_retriever_backend_rejects_unknown_value(monkeypatch):
+    monkeypatch.setenv("RAG_RETRIEVER_BACKEND", "faiss")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_hybrid_retriever_langchain_backend_matches_custom(monkeypatch):
+    from app.config import settings
+
+    point = _exam_point(retrieval_intent="LangChain 中间层定位与作用")
+    chunks = [
+        StagingChunk(
+            id="matched",
+            material_version_id="material-1",
+            content="LangChain 是大模型与应用之间的中间层，负责统一调用与编排。",
+            embedding=[1.0, 0.0],
+        ),
+        StagingChunk(
+            id="noise",
+            material_version_id="material-1",
+            content="实验环境使用 Python 3.10 与 conda。",
+            embedding=[0.0, 1.0],
+        ),
+    ]
+    embedder = StaticEmbedder([[1.0, 0.0]])
+    retriever = HybridStagingRetriever(
+        embedder=embedder, top_k=8, minimum_score=0.1
+    )
+
+    monkeypatch.setattr(settings, "rag_retriever_backend", "custom")
+    custom = retriever.retrieve(point, chunks)
+    monkeypatch.setattr(settings, "rag_retriever_backend", "langchain")
+    modern = retriever.retrieve(point, chunks)
+
+    assert [item.chunk.id for item in modern] == [item.chunk.id for item in custom]
+    assert [
+        (item.score, item.lexical_score, item.semantic_score) for item in modern
+    ] == [
+        (item.score, item.lexical_score, item.semantic_score) for item in custom
+    ]
+
+
+def test_hybrid_retriever_multi_langchain_backend_matches_custom(monkeypatch):
+    from app.config import settings
+
+    point = _exam_point(retrieval_intent="提取该考点的考核内容、考核要求及对应知识点")
+    chunks = [
+        StagingChunk(
+            id="topic",
+            material_version_id="material-1",
+            content="LangChain四大支柱包括基础能力层与运行时编排层。",
+            embedding=[1.0, 0.0],
+        ),
+        StagingChunk(
+            id="other",
+            material_version_id="material-1",
+            content="实验环境使用 Python 3.10 与 conda。",
+            embedding=[0.0, 1.0],
+        ),
+    ]
+    retriever = HybridStagingRetriever(
+        embedder=StaticEmbedder([]), top_k=8, minimum_score=0.0
+    )
+    vectors = [[1.0, 0.0], [0.0, 1.0]]
+    texts = ["LangChain四大支柱与大模型硬伤解法", point.retrieval_intent]
+
+    monkeypatch.setattr(settings, "rag_retriever_backend", "custom")
+    custom = retriever.retrieve_multi(
+        point, chunks, query_vectors=vectors, query_texts=texts
+    )
+    monkeypatch.setattr(settings, "rag_retriever_backend", "langchain")
+    modern = retriever.retrieve_multi(
+        point, chunks, query_vectors=vectors, query_texts=texts
+    )
+
+    assert [item.chunk.id for item in modern] == [item.chunk.id for item in custom]
+    assert [
+        (item.score, item.lexical_score, item.semantic_score) for item in modern
+    ] == [
+        (item.score, item.lexical_score, item.semantic_score) for item in custom
+    ]
+

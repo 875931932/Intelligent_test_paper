@@ -1029,6 +1029,15 @@ schema 自 `1.2.0` 起新增该字段；逐题带 `rubric`（主观题评分细�
     前端来源卡展示片段出处 + 每条「查看原文」经 materials content 端点定位
     （该块±上下文窗口）与「打开资料库」CTA（score 不进 payload，避免把相关度当可信度）；
     无命中 → `action={}`（普通问答形态，正文说明没找到，不落卡）。
+  - **检索抽象层（LangChain 适配）**：`RAG_RETRIEVER_BACKEND=langchain|custom`
+    （默认 `langchain`，`custom` 为无损回滚路径；非法值配置解析期直接报错）。`langchain`
+    分支只替换「检索结果获取」：`PaperPactEmbeddings`（转发既有嵌入网关）、
+    `StagingChunk/RankedChunk → Document`（正文 + chunk/资料/页码/标题定位 + 三项分数，
+    不含向量）、自定义 `PaperPactHybridRetriever` 委托同一确定性核心。排序、阈值、去重、
+    同文折叠、资料范围过滤、SQL 语义下推、邻域扩展与词面降级**仍全部由 PaperPact
+    自定义服务负责**，LangChain 不接管打分、不引入向量数据库；来源卡与 SSE 协议不变。
+    等价性与回滚由 `tests/unit/test_langchain_*.py`、`test_staging_retrieval.py` 中的
+    custom/langchain 对照用例覆盖。无结果时不生成未经资料支持的答案。
 - **语料向量列（v2）**：`content_blocks` 增 `embedding`(JSON，可空) + `embedding_model`
   (VARCHAR(64))——换嵌入模型时按 `embedding_model != settings.embedding_model` 重嵌；
   `embedding_text_version`(INTEGER，非空默认 0) 记录**嵌入输入清洗版本**：嵌入走

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -128,6 +129,10 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""
     embedding_model: str = ""
     embedding_api_format: str = "openai"
+    # RAG 检索后端：langchain=经 LangChain Embeddings/Document/自定义 Retriever
+    # 适配层（默认）；custom=既有函数直调，作为回滚路径。两条分支共用同一确定性
+    # 检索核心，非法值在配置解析期直接报错，不静默切换。
+    rag_retriever_backend: Literal["custom", "langchain"] = "langchain"
     # 召回规模直接决定分类阶段的 (考点, chunk) 对数量与模型 token 消耗。
     # top_k 维持 12：瓶颈在 min_score 而非 top_k。min_score 标定随语料口径变化：
     # 0.30→0.40 是在原始块语料上砍低分尾部垃圾对（分类侧对级浪费 80.7%）；

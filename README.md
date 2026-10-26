@@ -11,6 +11,7 @@ AI 驱动的试卷命题平台，支持课程资料解析、考纲框架构建�
 - Redis
 - Celery
 - LangGraph
+- LangChain Core（Document / Embeddings / 自定义 Retriever 适配层，`RAG_RETRIEVER_BACKEND=langchain` 默认、`custom` 可回滚）
 - pydantic-settings
 
 ### 前端

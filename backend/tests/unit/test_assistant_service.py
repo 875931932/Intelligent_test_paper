@@ -2841,3 +2841,91 @@ def test_load_context_carries_generation_task_status(session):
     assert by_id["proj-g1"]["active_task_run_id"] == "gen-task-1"
     assert by_id["proj-g2"]["generation_task_status"] is None
     assert by_id["proj-g2"]["active_task_run_id"] is None
+
+
+def test_rag_route_langchain_backend_matches_custom_sources(monkeypatch):
+    """RAG_RETRIEVER_BACKEND=langchain：来源卡、模式与回复与既有核心完全一致。"""
+    from app.config import settings
+
+    class QueryEmbedder:
+        def embed(self, texts):
+            return [[1.0, 0.0] for _ in texts]
+
+    _patch_rag(monkeypatch, _rag_chunks(with_embeddings=True), configured=True)
+    monkeypatch.setattr(assistant_service, "build_embedder", lambda: QueryEmbedder())
+    intent = _intent("", {"tool": assistant_service.RAG_TOOL, "args": {}})
+
+    monkeypatch.setattr(settings, "rag_retriever_backend", "custom")
+    custom = route_intent(
+        intent,
+        session=None,
+        context=_rag_ctx(),
+        message="监督学习的分类与回归是什么",
+    )
+    monkeypatch.setattr(settings, "rag_retriever_backend", "langchain")
+    modern = route_intent(
+        intent,
+        session=None,
+        context=_rag_ctx(),
+        message="监督学习的分类与回归是什么",
+    )
+
+    assert custom["retrieval"]["mode"] == "hybrid"
+    assert modern["retrieval"]["mode"] == "hybrid"
+    assert modern["payload"]["sources"] == custom["payload"]["sources"]
+    assert modern["payload"]["sources"]
+    assert modern["reply"] == custom["reply"]
+
+
+def test_rag_route_langchain_backend_uses_pushdown_scores(monkeypatch):
+    """开关切到 langchain 后仍走下推分，不装载向量、不额外调用嵌入服务。"""
+    from app.config import settings
+
+    class QueryEmbedder:
+        def embed(self, texts):
+            return [[1.0, 0.0] for _ in texts]
+
+    calls = _patch_rag(monkeypatch, _rag_chunks(), configured=True)
+    monkeypatch.setattr(assistant_service, "supports_semantic_pushdown", lambda session: True)
+    monkeypatch.setattr(assistant_service, "build_embedder", lambda: QueryEmbedder())
+    monkeypatch.setattr(
+        assistant_service,
+        "load_semantic_scores",
+        lambda *a, **kw: [{"blk-1": 1.0, "blk-2": 0.0}, {"blk-1": 1.0, "blk-2": 0.0}],
+    )
+    monkeypatch.setattr(settings, "rag_retriever_backend", "langchain")
+
+    routed = route_intent(
+        _intent("", {"tool": assistant_service.RAG_TOOL, "args": {}}),
+        session=None,
+        context=_rag_ctx(),
+        message="监督学习的分类与回归是什么",
+    )
+
+    assert routed["retrieval"]["mode"] == "hybrid"
+    assert [s["block_id"] for s in routed["payload"]["sources"]] == ["blk-1"]
+    assert calls["load"] and calls["load"][0][2] is False
+
+
+def test_rag_route_langchain_backend_degrades_to_lexical(monkeypatch):
+    """开关切到 langchain 后嵌入失败仍降级词面，不向上抛错中断对话。"""
+    from app.config import settings
+
+    class BrokenEmbedder:
+        def embed(self, texts):
+            raise RuntimeError("embedding down")
+
+    _patch_rag(monkeypatch, _rag_chunks(with_embeddings=True), configured=True)
+    monkeypatch.setattr(assistant_service, "build_embedder", lambda: BrokenEmbedder())
+    monkeypatch.setattr(settings, "rag_retriever_backend", "langchain")
+
+    routed = route_intent(
+        _intent("", {"tool": assistant_service.RAG_TOOL, "args": {}}),
+        session=None,
+        context=_rag_ctx(),
+        message="监督学习的分类与回归是什么",
+    )
+
+    assert routed["retrieval"]["mode"] == "lexical"
+    assert routed["payload"]["sources"]
+

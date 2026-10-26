@@ -1345,6 +1345,45 @@ def _rag_query_variants(question: str) -> list[str]:
     return variants
 
 
+def _retrieve_question_variants(
+    variants: list[str],
+    chunks: list[StagingChunk],
+    embedder,
+    *,
+    semantic_scores: list[dict[str, float]] | None = None,
+) -> list[RankedChunk]:
+    """按 RAG_RETRIEVER_BACKEND 装配多查询检索：两条分支共用同一确定性核心。
+
+    custom=既有函数直调（默认/回滚）；langchain=经自定义 Retriever 的
+    Document 边界返回，再还原成 RankedChunk 供来源卡与邻域扩展使用。
+    """
+
+    from app.config import settings
+
+    if settings.rag_retriever_backend == "langchain":
+        from app.adapters.retrieval.langchain_documents import documents_to_ranked
+        from app.services.langchain_retrieval import PaperPactHybridRetriever
+
+        retriever = PaperPactHybridRetriever(
+            chunks=chunks,
+            embedder=embedder,
+            top_k=_RAG_TOP_K,
+            minimum_score=_RAG_HYBRID_MIN_SCORE,
+        )
+        documents = retriever.retrieve_variants(
+            variants, semantic_scores=semantic_scores
+        )
+        return documents_to_ranked(documents, chunks)
+    return retrieve_multi_for_question(
+        variants,
+        chunks,
+        embedder,
+        top_k=_RAG_TOP_K,
+        minimum_score=_RAG_HYBRID_MIN_SCORE,
+        semantic_scores=semantic_scores,
+    )
+
+
 def _rank_rag_chunks(
     question: str,
     chunks: list[StagingChunk],
@@ -1370,23 +1409,19 @@ def _rank_rag_chunks(
                 )
             )
             if scores_cover:
-                ranked = retrieve_multi_for_question(
+                ranked = _retrieve_question_variants(
                     variants,
                     chunks,
                     None,
-                    top_k=_RAG_TOP_K,
-                    minimum_score=_RAG_HYBRID_MIN_SCORE,
                     semantic_scores=semantic_scores,
                 )
                 if ranked:
                     return "hybrid", ranked
             elif all(chunk.embedding is not None for chunk in chunks):
-                ranked = retrieve_multi_for_question(
+                ranked = _retrieve_question_variants(
                     variants,
                     chunks,
                     build_embedder(),
-                    top_k=_RAG_TOP_K,
-                    minimum_score=_RAG_HYBRID_MIN_SCORE,
                 )
                 if ranked:
                     return "hybrid", ranked
