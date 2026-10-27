@@ -1,307 +1,226 @@
-# PaperPact·AI 命题系统
+<div align="center">
 
-AI 驱动的试卷命题平台，支持课程资料解析、考纲框架构建、知识图谱组织、合同式组卷生成，
-导出学生卷 / 答卷 / 答题卡（HTML 与 DOCX）与答案细则 JSON（阅卷端直接输入），档案卡一键打包六文件。
+# PaperPact · AI 命题系统
+
+**把一份课程大纲，变成一套可以直接印刷的期末试卷**
+
+从大纲解析、命题框架、知识目录，到蓝图、合同、AI 生成、教师审核与四类导出，
+把「出卷」拆成一条可追踪、可复核、可复现的生产线。
+
+[![Gitee Stars](https://gitee.com/yan-ace/zhinengchujuanxitong/badge/star.svg?theme=dark)](https://gitee.com/yan-ace/zhinengchujuanxitong)
+[![Gitee Forks](https://gitee.com/yan-ace/zhinengchujuanxitong/badge/fork.svg?theme=dark)](https://gitee.com/yan-ace/zhinengchujuanxitong)
+
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
+![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
+![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white)
+![LangGraph](https://img.shields.io/badge/LangGraph-Workflow-1C3C3C)
+
+</div>
+
+## 这是什么
+
+PaperPact 面向高校教师，解决一门课从「有大纲」到「有卷子」之间最耗时的一段工作：
+
+- 读取教学大纲与考核大纲，生成可编辑的命题框架与考核规则
+- 把课程资料整理成带证据关系的知识目录，而不是一堆检索片段
+- 先生成蓝图与合同，再让 AI 按合同逐题写作
+- 教师逐题审核、改题、定稿
+- 一键导出学生卷、答卷、答题卡（HTML + DOCX）与答案细则 JSON，并打包档案卡六件套
+
+> 范围边界：系统止于「纸质试卷生产线」的最后一公里，**不包含在线考试与在线阅卷**。导出的答案细则 JSON 是阅卷端的直接输入。
+
+## 页面预览
+
+| 课程概览：资料 / 框架 / 知识目录 / 项目 | 命题框架：大纲 → 考点 → 考核规则 |
+| :---: | :---: |
+| <img src="docs/assets/readme/overview.png" width="100%" /> | <img src="docs/assets/readme/framework.png" width="100%" /> |
+| **知识目录：图谱视图** | **出卷流水线：蓝图 → 合同 → 生成** |
+| <img src="docs/assets/readme/knowledge-graph.png" width="100%" /> | <img src="docs/assets/readme/pipeline.png" width="100%" /> |
+| **试卷审核与一键导出** | **AI 助手：按当前状态给出下一步** |
+| <img src="docs/assets/readme/review.png" width="100%" /> | <img src="docs/assets/readme/assistant.png" width="100%" /> |
+
+## 为什么不是「让大模型直接生成一张卷」
+
+直接让模型出卷，通常会在四个地方失控：
+
+- 题量、分值、章节比例和考纲对不上
+- 同一考点被反复出题，答案域互相重叠
+- 单题失败就整卷重来，成本和稳定性都不可控
+- 结果无法解释：为什么是这道题、为什么是这个分值
+
+PaperPact 的做法是把「计划」和「约束」从模型手里拿走：
+
+1. **蓝图决定题位**：题型、分值、章节、目标难度标签
+2. **合同决定边界**：每个题位锁定考查原子、答案域与禁用上下文
+3. **模型只在合同内写题**：生成的是题目内容，不是组卷规则
+4. **三级回退与终检兜底**：单题失败不阻塞整卷
+
+难度是按题位分配的**目标标签**，跨卷避重是**软目标**，二者都不包装成「难度实测准确」或「零重复」。
+
+## 一条试卷的诞生
+
+```text
+课程空间
+  → 资料库（教学资料 / 习题 / 大纲四区）
+  → 命题框架版本（冻结）
+  → 知识目录（考点 → 知识卡 → 证据）
+  → 试卷项目
+  → 蓝图（题位计划）
+  → 合同（逐题位锁定原子与答案域）
+  → 生成运行
+  → PaperVersion
+  → 审核 / 定稿
+  → 学生卷 + 答卷 + 答题卡 + 答案细则 JSON
+```
+
+教师工作台只暴露两个关键闸门：**确认蓝图**、**确认试卷版本**。其余步骤都可以回看、重跑和替换版本。
+
+## 核心能力
+
+| 模块 | 能力 |
+| --- | --- |
+| 大纲与框架 | 双大纲驱动，抽取考点、认知要求、章节权重与题型比例，生成本地可编辑的命题框架 |
+| 知识目录 | 知识点抽取、证据关系判定、知识卡归并；图谱与树双视图，卡片必须落到直接证据 |
+| 蓝图 | 按考核规则推导题位：题型、分值、章节、难度标签；题量超出卡池容量时保持总分与题型占比不变做等比缩容 |
+| 合同 | 确定性算法完成原子分配、答案域互斥与卷内唯一性约束 |
+| 生成 | 按合同分批生成，单题 schema 校验、三级回退、终检 |
+| 审核 | 双栏阅读器，逐题改题、查看答案与难度依据、定稿 |
+| 导出 | 学生卷 / 答卷 / 答题卡 HTML 与 DOCX，答案细则 JSON，档案卡六文件打包 |
+| AI 助手 | 整卷评审、框架评审、蓝图建议、考核规则提案与问答；状态快照区分「计划口径」与「成卷实况」 |
+| 后台管理 | 组织（学校 → 学院）与账号、模型用途绑定、模型调用监控 |
+
+## 系统架构
+
+```mermaid
+flowchart TB
+  subgraph UI [教师工作台 React 19]
+    A[资料库] --> B[命题框架] --> C[知识目录] --> D[试卷项目] --> E[审核与导出]
+  end
+
+  UI --> API[FastAPI 应用层 9 个业务路由 + 管理后台]
+
+  API --> PG[(PostgreSQL 44 表 course_id 隔离)]
+  API --> RD[(Redis)]
+  API --> OS[(MinIO S3)]
+  API --> OB[Outbox 事件]
+
+  OB --> W[Celery Worker]
+  W --> G[领域引擎 LangGraph 框架 知识目录 生成]
+  G --> LLM[LLM Embedding 网关]
+  W --> MU[MinerU 文档解析]
+```
+
+## 技术亮点
+
+**1. 合同优先：把组卷约束变成确定性算法**
+题型比例、分值配额、章节权重、卷内原子唯一、答案域互斥都在合同阶段算清楚。模型拿到的是「这一题必须考什么、不能碰什么」，而不是一句「请按 20% 单选出卷」。
+
+**2. 生成可靠性：分批 + 三级回退 + 终检**
+生成按合同分批推进，单题 schema 校验失败会先修复再重试；批次失败降级处理，不影响其他题位；终检统一检查答案口径、难度依据与合同覆盖。长任务通过 Celery + outbox 异步执行，前端轮询或 SSE 获取进度。
+
+**3. 知识目录的三道入库防线**
+证据关系判定 → 归并校验 → 发布校验。每条可评分事实都必须由所属考点的直接证据支撑；模型幻觉引用未下发的证据 id 会被逐条剔除，而不是整卡判死。
+
+**4. 长任务与可观测性**
+解析、框架构建、知识目录构建、试卷生成全部异步化。每次模型调用落 `model_calls`，后台可按课程、用途、模型聚合查看耗时与失败原因。
+
+**5. 模型接入收敛到一个网关**
+业务代码不直接实例化厂商 SDK；换模型、调参数只改后台模型绑定或 `.env`。型号差异（思考档位、json_schema 支持、超时）集中在型号调优档案里，确定性调用带响应缓存。
+
+**6. 多租户是硬约束**
+38 张课程级表全部按 `course_id` 过滤，缓存键与对象存储路径同样带课程维度。后台管理对平台管理员与组织管理员做数据范围隔离。
 
 ## 技术栈
 
-### 后端
-- FastAPI + Uvicorn
-- SQLAlchemy 2.0 + PostgreSQL
-- Redis
-- Celery
-- LangGraph
-- LangChain Core（Document / Embeddings / 自定义 Retriever 适配层，`RAG_RETRIEVER_BACKEND=langchain` 默认、`custom` 可回滚）
-- pydantic-settings
+| 层 | 选型 |
+| --- | --- |
+| 后端 | FastAPI · SQLAlchemy 2.0 · Pydantic v2 · PostgreSQL · Redis · Celery · LangGraph |
+| 前端 | React 19 · TypeScript · Vite · Zustand · Oxlint |
+| 文档与存储 | MinerU（解析）· MinIO / S3 |
+| 模型 | OpenAI 兼容网关 · LLM / Embedding · 型号调优档案 |
 
-### 前端
-- React 19 + TypeScript
-- Vite
-- Zustand（状态管理）
-- Oxlint（代码检查；质量门禁 = `npm run build` + `npm run lint`，无单测框架）
-
-### 外部服务
-- MinerU（文档解析）
-- LLM（大模型生成）
-- Embedding（向量检索）
-- MinIO / S3（对象存储）
-
-## 外部服务费用与版本口径
-
-- **LLM / Embedding**：均为按量计费的云服务（按 token 或调用次数），费用以所选服务商定价与控制台用量为准；开发联调建议选用低价档模型，换模型与档位调优见 [`docs/LLM_TUNING.md`](docs/LLM_TUNING.md)。
-- **MinerU（文档解析）**：使用云端 API 按解析量计费，需在 [mineru.net](https://mineru.net) 注册申请 token；不上传解析资料时不产生费用。
-- **MinIO / S3（对象存储）**：默认自托管 MinIO，无外部费用。
-- **版本口径**：本 README 与 `main` 分支同步演进，文中功能描述与数字均以标注日期的内部记录为准（如"2026-10-05 内部记录"）；部署时的实际代码版本可用 `git log -1` 核对。
-
-## 环境要求
-
-- Ubuntu 22.04 / 24.04 LTS
-- Python 3.12
-- Node.js >= 20
-- PostgreSQL
-- Redis
-- Nginx
-
-## 快速启动
-
-### 1. 克隆代码
+## 快速开始
 
 ```bash
-APP_DIR="/opt/intelligent-test-paper"
-REPO_URL="https://gitee.com/yan-ace/zhinengchujuanxitong.git"
-BRANCH="main"
+git clone https://gitee.com/yan-ace/zhinengchujuanxitong.git
+cd zhinengchujuanxitong
 
-sudo mkdir -p "$APP_DIR"
-sudo git clone --branch "$BRANCH" "$REPO_URL" "$APP_DIR"
-cd "$APP_DIR"
-```
+cp .env.example .env                 # Windows: Copy-Item .env.example .env
+docker compose -f docker-compose.dev.yml up -d postgres redis minio
 
-> 双远程：`gitee`（当前上游，`main`）+ `origin`（GitHub）。两边都以 `main` 为主干。
-
-### 2. 配置环境变量
-
-```bash
-cp .env.example .env
-nano .env
-```
-
-至少确保包含以下配置：
-
-```env
-DATABASE_URL=postgresql+psycopg://exam:exam@localhost:5432/exam
-REDIS_URL=redis://localhost:6379/0
-
-LLM_API_KEY=你的LLM API Key
-LLM_BASE_URL=https://api.stepfun.com/step_plan/v1
-LLM_MODEL=step-3.7-flash
-
-EMBEDDING_API_KEY=你的Embedding API Key
-EMBEDDING_BASE_URL=https://ws-jn5396bzqr92vf9r.cn-beijing.maas.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding
-EMBEDDING_MODEL=qwen3.7-text-embedding
-EMBEDDING_API_FORMAT=dashscope
-
-MINERU_API_TOKEN=你的MinerU Token
-MINERU_BASE_URL=https://mineru.net
-
-S3_ENDPOINT=http://localhost:9000
-S3_ACCESS_KEY=minio-dev
-S3_SECRET_KEY=minio-dev-password
-S3_BUCKET=exam-materials
-S3_REGION=us-east-1
-```
-
-> 完整清单（含分阶段选模、抽取预算、json_schema 开关等调优项）见 `.env.example`；
-> 换模型 / 模型故障速查见 [`docs/LLM_TUNING.md`](docs/LLM_TUNING.md)。
-
-### 3. 初始化数据库
-
-```bash
-cd /opt/intelligent-test-paper
-source .venv/bin/activate
-cd backend
-PYTHONPATH=. python -m app.db.init_db
-```
-
-如需插入开发测试数据：
-
-```bash
-PYTHONPATH=. python -m app.db.init_db --seed
-```
-
-### 4. 启动服务
-
-项目提供了启动/停止脚本，位于 `deploy/` 目录：
-
-```bash
-cd /opt/intelligent-test-paper
-sudo bash deploy/start.sh
-```
-
-该脚本会自动完成：
-- 检查 `.env` 是否存在
-- 初始化数据库
-- 启动 API 服务（监听 `127.0.0.1:8000`）
-- 启动 Celery Worker
-- 可选构建前端（默认会构建）
-
-停止服务：
-
-```bash
-sudo bash deploy/stop.sh
-```
-
-### 5. 构建前端
-
-如果启动时跳过了前端构建，或需要单独构建：
-
-```bash
-cd /opt/intelligent-test-paper/frontend
-npm ci --registry=https://registry.npmmirror.com
-npm run build
-```
-
-构建产物位于：`frontend/dist/`
-
-### 6. 配置 Nginx
-
-参考配置模板：
-
-```bash
-sudo nano /etc/nginx/sites-available/exam-system
-```
-
-```nginx
-server {
-    listen 80;
-    server_name YOUR_SERVER_DOMAIN_OR_IP;
-    client_max_body_size 200m;
-
-    root /opt/intelligent-test-paper/frontend/dist;
-    index index.html;
-
-    location /api/ {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_read_timeout 1800s;
-    }
-
-    location / {
-        try_files $uri $uri/ /index.html;
-    }
-}
-```
-
-启用站点：
-
-```bash
-sudo ln -sf /etc/nginx/sites-available/exam-system /etc/nginx/sites-enabled/
-sudo rm -f /etc/nginx/sites-enabled/default
-sudo nginx -t
-sudo systemctl reload nginx
-```
-
-## 验证服务
-
-### 检查后端 API
-
-```bash
-curl http://127.0.0.1:8000/api/v1/health
-```
-
-期望返回：
-
-```json
-{
-  "api": "ok",
-  "postgresql": "ok",
-  "redis": "ok",
-  "mineru": "configured",
-  "llm": "configured"
-}
-```
-
-### 检查前端
-
-浏览器访问：
-
-```
-http://YOUR_SERVER_DOMAIN_OR_IP/
-```
-
-### 检查进程
-
-```bash
-ps aux | grep uvicorn
-ps aux | grep celery
-```
-
-### 检查服务状态
-
-```bash
-sudo systemctl status nginx
-sudo systemctl status postgresql
-sudo systemctl status redis-server
-```
-
-## 常用运维命令
-
-| 操作 | 命令 |
-|------|------|
-| 启动服务 | `sudo bash /opt/intelligent-test-paper/deploy/start.sh` |
-| 停止服务 | `sudo bash /opt/intelligent-test-paper/deploy/stop.sh` |
-| 重启服务 | `sudo bash /opt/intelligent-test-paper/deploy/stop.sh && sudo bash /opt/intelligent-test-paper/deploy/start.sh` |
-| 查看 API 日志 | `tail -f /opt/intelligent-test-paper/var/log/api.log` |
-| 查看 Worker 日志 | `tail -f /opt/intelligent-test-paper/var/log/worker.log` |
-| 重启 Nginx | `sudo systemctl reload nginx` |
-
-## 开发环境（Docker Compose）
-
-本地开发可使用 Docker Compose 启动中间件：
-
-```bash
-docker compose -f docker-compose.dev.yml up -d
-```
-
-后端 API（包管理器 `uv`，见 `AGENTS.md` §3.1）：
-
-```bash
 cd backend
 uv sync
-uv run python -m app.db.init_db --seed   # 首次：建表 + 测试账号
-uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+uv run python -m app.db.init_db --seed
+uv run uvicorn app.main:app --reload
 ```
 
-Celery Worker（真实生成必须）：
+另开两个终端：
 
 ```bash
+# 终端 2：真实生成必须启动 Worker
 cd backend
 uv run celery -A app.infrastructure.tasks.celery_app.celery_app worker --loglevel=INFO
-```
 
-前端：
-
-```bash
+# 终端 3：前端
 cd frontend
 npm install
 npm run dev
 ```
 
-## 目录说明
+访问 `http://127.0.0.1:5173`。环境变量、模型配置与服务器部署分别见
+[.env.example](.env.example)、[LLM 调优手册](docs/LLM_TUNING.md) 与 [Ubuntu 部署](docs/DEPLOY_UBUNTU.md)。
 
-```
-.
-├── backend/                 # 后端代码
-│   └── app/
-│       ├── api/v1/          # REST API 路由（9 个业务 router + admin/ 后台管理组）
-│       ├── domain/          # 领域模型与确定性算法（含考核规则归一化）
-│       ├── workflows/       # LangGraph 工作流（框架/整理/生成/知识目录）
-│       ├── services/        # 业务服务
-│       ├── adapters/        # 外部适配器（LLM/解析/存储，含型号调优档案 model_profiles）
-│       ├── db/              # 数据库 schema 与初始化
-│       ├── infrastructure/  # 基础设施（Celery 等）
-│       └── main.py          # FastAPI 入口
-├── frontend/                # 前端代码（React 19 + TS）
-│   └── src/
-│       ├── pages/           # 教师 9 页：登录/课程空间/概览/资料库/命题框架/知识目录/试卷/归档编辑/对话助手 + admin/ 后台 5 页
-│       ├── components/      # 布局与 UI 基础组件
-│       ├── api/             # HTTP 层，按业务域拆分的客户端
-│       └── stores/ hooks/ lib/
-├── deploy/                  # 部署脚本（install/start/restart/stop）
-├── docs/                    # 项目文档与素材
-│   ├── backend-api.md       # 接口权威清单
-│   ├── DEPLOY_UBUNTU.md     # Ubuntu 部署
-│   ├── HANDOVER.md          # 交接文档
-│   ├── LLM_TUNING.md        # 模型调优 / 换模型手册
-│   ├── CONVERSATIONAL_GENERATION.md  # 对话式出卷接线提案（出卷提案链已部分落地）
-│   └── 素材/                # 演示课程素材与卷面范本
-├── CODE_WIKI.md             # 代码全景（架构/领域/工作流/API/数据库/前端）
-├── docker-compose.dev.yml   # 开发环境 Docker 配置
-└── .env.example             # 环境变量模板
+## 项目结构
+
+```text
+backend/
+├── app/
+│   ├── api/v1/            # 9 个业务路由 + admin/ 后台路由组
+│   ├── workflows/         # LangGraph 领域引擎：框架 / 知识目录 / 生成
+│   ├── domain/            # 蓝图、合同、知识、生成等领域模块
+│   ├── services/          # 用例编排与导出
+│   ├── adapters/          # LLM / MinerU / MinIO-S3 适配器
+│   ├── db/                # schema.py 与 init_db
+│   └── infrastructure/    # Celery、outbox、worker
+├── tests/                 # unit / integration / contract / workflow / domain
+└── pyproject.toml
+
+frontend/
+├── src/pages/             # 教师工作台 9 页 + 后台 5 页
+├── src/components/        # 流水线、试卷阅读器、考核规则卡等
+├── src/stores/            # Zustand，一域一 store
+└── src/api/               # 统一 API 客户端
+
+docs/                      # 设计、接口、部署、交接、调优文档
+deploy/                    # 服务器启停脚本
 ```
 
-产品形态：一个「试卷」模块承载后半程——项目详情页有两个页签，「出卷流水线」
-（蓝图 → 合同 → 生成）与「试卷」（查看 / 编辑 / 定稿 / 导出的双栏阅读器）。
+## 质量门禁
+
+```bash
+cd backend
+uv run pytest -q
+uv run pytest --cov=app --cov-fail-under=80
+
+cd frontend
+npm run build
+npm run lint
+```
+
+后端按单元、集成、合同、工作流、领域分层组织测试；前端不引入单测框架，以 `tsc` 类型检查与 `oxlint` 作为质量门禁。
+
+## 文档
+
+- [后端接口清单](docs/backend-api.md)
+- [部署指南（Ubuntu）](docs/DEPLOY_UBUNTU.md)
+- [模型调优与换模型手册](docs/LLM_TUNING.md)
+- [后台管理设计](docs/ADMIN_CONSOLE_DESIGN.md)
+- [项目交接文档](docs/HANDOVER.md)
+- [代码全景](CODE_WIKI.md)
+
+## 说明
+
+本项目用于竞赛展示与学习交流。系统中的难度为逐题位标签分配，跨卷避重为软约束；实际教学使用前请由任课教师完成审核与定稿。
