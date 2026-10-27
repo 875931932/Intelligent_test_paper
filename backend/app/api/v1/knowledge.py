@@ -8,6 +8,7 @@ import time
 from threading import RLock
 from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from langchain_core.embeddings import Embeddings
 from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func
@@ -22,6 +23,7 @@ from app.adapters.model.llm_semantic_extractors import (
     LLMSupplementRecommender,
 )
 from app.adapters.model.embedding_gateway import OpenAICompatibleEmbeddingGateway
+from app.adapters.model.langchain_embeddings import PaperPactEmbeddings
 from app.config import settings
 from app.db.session import get_session, get_session_factory
 from app.domain.knowledge.models import (
@@ -34,7 +36,7 @@ from app.domain.knowledge.relevance import ExamPointEvidenceClassifier
 from app.services import course_service, knowledge_publish_service
 from app.services.llm_registry import RegistryNotConfigured, llm_ready, resolve_llm_config
 from app.services.model_call_service import DatabaseModelCallRecorder
-from app.services.staging_retrieval_service import EmbeddingClient, HybridStagingRetriever
+from app.services.staging_retrieval_service import HybridStagingRetriever
 from app.workflows.organization_graph import build_organization_graph
 
 router = APIRouter(prefix="/api/v1/courses/{course_id}", tags=["knowledge"])
@@ -47,7 +49,7 @@ class OrganizationRunCreate(BaseModel):
     material_version_ids: list[str] = Field(min_length=1)
 
 
-def get_organization_embedder(request: Request) -> EmbeddingClient:
+def get_organization_embedder(request: Request) -> Embeddings:
     embedder = getattr(request.app.state, "organization_embedder", None)
     if embedder is not None:
         return embedder
@@ -61,11 +63,13 @@ def get_organization_embedder(request: Request) -> EmbeddingClient:
             and settings.embedding_model.strip()
         ):
             raise HTTPException(status_code=503, detail="embedding client is not configured")
-        embedder = OpenAICompatibleEmbeddingGateway(
-            api_key=settings.embedding_api_key,
-            base_url=settings.embedding_base_url,
-            model=settings.embedding_model,
-            api_format=settings.embedding_api_format,
+        embedder = PaperPactEmbeddings(
+            gateway=OpenAICompatibleEmbeddingGateway(
+                api_key=settings.embedding_api_key,
+                base_url=settings.embedding_base_url,
+                model=settings.embedding_model,
+                api_format=settings.embedding_api_format,
+            )
         )
         request.app.state.organization_embedder = embedder
         return embedder
@@ -277,7 +281,7 @@ def _run_organization_pipeline(
     course_id: str,
     run_id: str,
     material_version_ids: list[str],
-    embedder: EmbeddingClient,
+    embedder: Embeddings,
     extractor: LLMKnowledgePointExtractor,
     classifier: ExamPointEvidenceClassifier,
     consolidator: ExamPointKnowledgeConsolidator,
@@ -337,7 +341,7 @@ def create_organization_run(
     course_id: str,
     payload: OrganizationRunCreate,
     session: Session = Depends(get_session),
-    embedder: EmbeddingClient = Depends(get_organization_embedder),
+    embedder: Embeddings = Depends(get_organization_embedder),
     extractor: LLMKnowledgePointExtractor = Depends(get_knowledge_point_extractor),
     classifier: ExamPointEvidenceClassifier = Depends(get_exam_point_classifier),
     consolidator: ExamPointKnowledgeConsolidator = Depends(get_exam_point_consolidator),

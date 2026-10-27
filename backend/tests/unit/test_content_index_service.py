@@ -158,10 +158,13 @@ def session(tmp_path):
 
 
 class StubGateway:
+    """入库嵌入入口：ensure_embedded 只经 ``embed_documents``（论文生产由
+    PaperPactEmbeddings 转发到网关的批量 embed）。"""
+
     def __init__(self):
         self.calls: list[list[str]] = []
 
-    def embed(self, texts: list[str]) -> list[list[float]]:
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
         self.calls.append(list(texts))
         return [[0.1, 0.2] for _ in texts]
 
@@ -222,6 +225,28 @@ def test_ensure_embedded_fills_missing_vectors_and_is_idempotent(session, monkey
     # 幂等：第二次零缺块，不再调嵌入
     assert content_index_service.ensure_embedded(session, course_id="c1") == 0
     assert len(gateway.calls) == 1
+
+
+def test_ensure_embedded_aligns_vectors_with_block_ids(session, monkeypatch):
+    """入库只走 embed_documents：一次批量请求，向量按入参顺序与块 ID 对齐。"""
+    _configured(monkeypatch)
+
+    class RecordingGateway:
+        def __init__(self):
+            self.calls: list[list[str]] = []
+
+        def embed_documents(self, texts):
+            self.calls.append(list(texts))
+            return [[float(index), 0.0] for index, _ in enumerate(texts)]
+
+    gateway = RecordingGateway()
+    monkeypatch.setattr(content_index_service, "build_embedder", lambda: gateway)
+
+    assert content_index_service.ensure_embedded(session, course_id="c1") == 2
+    assert gateway.calls == [["监督学习分为分类与回归两大任务。", "E=mc^2"]]
+    rows = _vector_rows(session)
+    assert rows["b1"][0] == [0.0, 0.0]
+    assert rows["b2"][0] == [1.0, 0.0]
 
 
 def test_ensure_embedded_unconfigured_returns_zero_without_gateway(session, monkeypatch):
@@ -292,7 +317,7 @@ def test_ensure_embedded_gateway_failure_returns_zero_without_partial_writes(
     _configured(monkeypatch)
 
     class BoomGateway:
-        def embed(self, texts):
+        def embed_documents(self, texts):
             raise RuntimeError("embedding down")
 
     monkeypatch.setattr(content_index_service, "build_embedder", lambda: BoomGateway())

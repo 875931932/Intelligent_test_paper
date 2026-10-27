@@ -28,6 +28,16 @@ class StaticEmbedder:
         self.calls.append(texts)
         return self.vectors
 
+    # LangChain Embeddings 接口：由 embed 委托，每次调用仍只记一次
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self.embed(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.embed([text])[0]
+
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        return self.embed(texts)
+
 
 def _chunks() -> list[StagingChunk]:
     return [
@@ -137,7 +147,13 @@ def test_blank_query_variants_are_filtered():
 
 def test_precomputed_semantic_scores_skip_embedding():
     class ExplodingEmbedder:
-        def embed(self, texts: list[str]) -> list[list[float]]:
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            raise AssertionError("预计算语义分路径不得调用嵌入服务")
+
+        def embed_query(self, text: str) -> list[float]:
+            raise AssertionError("预计算语义分路径不得调用嵌入服务")
+
+        def embed_queries(self, texts: list[str]) -> list[list[float]]:
             raise AssertionError("预计算语义分路径不得调用嵌入服务")
 
     chunks = _chunks()
@@ -156,7 +172,13 @@ def test_precomputed_semantic_scores_skip_embedding():
 
 def test_embedding_failure_propagates_for_upper_layer_degradation():
     class FailingEmbedder:
-        def embed(self, texts: list[str]) -> list[list[float]]:
+        def embed_documents(self, texts: list[str]) -> list[list[float]]:
+            raise RuntimeError("network down")
+
+        def embed_query(self, text: str) -> list[float]:
+            raise RuntimeError("network down")
+
+        def embed_queries(self, texts: list[str]) -> list[list[float]]:
             raise RuntimeError("network down")
 
     retriever = PaperPactHybridRetriever(

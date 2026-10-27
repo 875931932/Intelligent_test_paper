@@ -27,8 +27,9 @@ from app.services.staging_retrieval_service import (
 
 class PaperPactHybridRetriever(BaseRetriever):
     chunks: list[StagingChunk]
-    # EmbeddingClient 是未 runtime_checkable 的 Protocol，pydantic 无法做实例校验；
-    # 用 Any 保留原网关（批量限制/响应校验仍由网关负责）。
+    # 嵌入客户端（PaperPactEmbeddings，LangChain Embeddings）。用 Any 是因为
+    # Embeddings 是 ABC、其子类实例无需 pydantic 校验；批量限制与响应校验仍由
+    # 网关负责，检索器只调 embed_query / embed_queries。
     embedder: Any = None
     top_k: int
     minimum_score: float

@@ -1660,7 +1660,7 @@ def create_organization_state(
         if missing:
             try:
                 fresh = _validated_embeddings(
-                    embedder.embed([text for _, text in missing]),
+                    embedder.embed_documents([text for _, text in missing]),
                     expected=len(missing),
                     expected_dimension=embedding_dimension,
                 )
@@ -1677,7 +1677,7 @@ def create_organization_state(
             # 嵌入模型更换导致缓存向量维度不一致：放弃缓存整批重嵌。
             try:
                 vectors = _validated_embeddings(
-                    embedder.embed(texts),
+                    embedder.embed_documents(texts),
                     expected=len(texts),
                     expected_dimension=None,
                 )
@@ -1885,7 +1885,7 @@ def persist_statement_evidence_chunks(
     if missing_index:
         try:
             fresh = _validated_embeddings(
-                embedder.embed([texts[index] for index in missing_index]),
+                embedder.embed_documents([texts[index] for index in missing_index]),
                 expected=len(missing_index),
             )
         except KnowledgePublishError:

@@ -18,6 +18,7 @@ import html
 import logging
 import math
 import re
+from typing import TYPE_CHECKING
 
 from sqlalchemy import bindparam, or_, select, text, update
 from sqlalchemy.orm import Session
@@ -27,6 +28,9 @@ from app.db.schema import content_blocks, document_parse_runs, task_runs
 from app.domain.knowledge.relevance import StagingChunk
 from app.infrastructure.tasks.models import create_task_run
 from app.services import material_service
+
+if TYPE_CHECKING:
+    from app.adapters.model.langchain_embeddings import PaperPactEmbeddings
 
 logger = logging.getLogger("services.content_index")
 
@@ -75,16 +79,23 @@ def embedding_configured() -> bool:
     )
 
 
-def build_embedder():
-    """构造嵌入网关（唯一出口：外部系统只走 adapters/）。"""
+def build_embedder() -> PaperPactEmbeddings:
+    """构造嵌入客户端（唯一出口：外部系统只走 adapters/）。
+
+    对外统一是 LangChain ``Embeddings``（PaperPactEmbeddings），内部仍是既有
+    ``OpenAICompatibleEmbeddingGateway``：批量限制、响应校验与错误语义不变。
+    """
 
     from app.adapters.model.embedding_gateway import OpenAICompatibleEmbeddingGateway
+    from app.adapters.model.langchain_embeddings import PaperPactEmbeddings
 
-    return OpenAICompatibleEmbeddingGateway(
-        api_key=settings.embedding_api_key,
-        base_url=settings.embedding_base_url,
-        model=settings.embedding_model,
-        api_format=settings.embedding_api_format,
+    return PaperPactEmbeddings(
+        gateway=OpenAICompatibleEmbeddingGateway(
+            api_key=settings.embedding_api_key,
+            base_url=settings.embedding_base_url,
+            model=settings.embedding_model,
+            api_format=settings.embedding_api_format,
+        )
     )
 
 
@@ -203,8 +214,8 @@ def ensure_embedded(
         return 0
 
     try:
-        gateway = build_embedder()
-        vectors = gateway.embed([content for _, content in pairs])
+        embedder = build_embedder()
+        vectors = embedder.embed_documents([content for _, content in pairs])
     except Exception as exc:  # noqa: BLE001 — 索引故障降级词面，不上抛打断调用方
         logger.warning(
             "content_blocks 嵌入失败（course=%s，%d 块）: %s", course_id, len(pairs), exc

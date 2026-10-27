@@ -605,6 +605,12 @@ class RecordingEmbedder:
         self.calls.append(list(texts))
         return [[float(index + 1), 1.0] for index, _ in enumerate(texts)]
 
+    # LangChain Embeddings 接口：入库嵌入与单条查询
+    embed_documents = embed
+
+    def embed_query(self, text):
+        return self.embed([text])[0]
+
 
 def test_create_organization_state_snapshots_ready_blocks_without_putting_text_in_state(tmp_path):
     engine, session = _session(tmp_path)
@@ -879,6 +885,8 @@ def test_create_organization_state_rejects_invalid_snapshot_embeddings(
                 assert len(texts) == 2
                 return vectors
 
+            embed_documents = embed
+
         with pytest.raises(KnowledgePublishError, match=message):
             create_organization_state(
                 session,
@@ -952,6 +960,8 @@ def test_create_organization_state_rejects_embedding_dimension_changes_across_fi
                 self.calls += 1
                 return [[1.0, 0.0]] if self.calls == 1 else [[1.0, 0.0, 0.0]]
 
+            embed_documents = embed
+
         with pytest.raises(KnowledgePublishError, match="dimension"):
             create_organization_state(
                 session,
@@ -971,6 +981,8 @@ def test_create_organization_state_persists_run_row_before_embedding_failure(tmp
         class ExplodingEmbedder:
             def embed(self, texts):
                 raise RuntimeError("embedding endpoint down")
+
+            embed_documents = embed
 
         with pytest.raises(KnowledgePublishError, match="embedding service is unavailable"):
             create_organization_state(

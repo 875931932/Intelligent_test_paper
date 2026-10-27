@@ -6,14 +6,17 @@ import math
 import re
 from hashlib import sha256
 from numbers import Real
-from typing import Callable, Protocol
+from typing import Callable
 
+from langchain_core.embeddings import Embeddings
 from pydantic import BaseModel
 
 from app.domain.framework.exam_points import ExamPoint
 from app.domain.knowledge.relevance import StagingChunk
 
 
+# 查询嵌入统一走 LangChain ``Embeddings``：单查询 embed_query、多查询
+# embed_queries（PaperPactEmbeddings 保留一次批量请求）。
 class RankedChunk(BaseModel):
     chunk: StagingChunk
     score: float
@@ -21,12 +24,36 @@ class RankedChunk(BaseModel):
     semantic_score: float
 
 
-class EmbeddingClient(Protocol):
-    def embed(self, texts: list[str]) -> list[list[float]]: ...
-
-
 class RetrievalConfigurationError(RuntimeError):
     """Raised when retrieval cannot safely rank the supplied staging snapshot."""
+
+
+def _query_vector(embedder: Embeddings, text: str) -> list[float]:
+    """单条查询嵌入 → 校验后的向量。
+
+    只有嵌入调用本身的失败（网络/网关错误）才转成 RetrievalConfigurationError，
+    调用方据此降级词面；向量校验错误原样上抛，不被下面那个宽 except 吞掉。
+    """
+
+    try:
+        raw_vector = embedder.embed_query(text)
+    except RetrievalConfigurationError:
+        raise
+    except Exception as exc:
+        raise RetrievalConfigurationError("嵌入服务调用失败，检索已中止") from exc
+    return _validated_vectors([raw_vector], expected_count=1)[0]
+
+
+def _query_vectors(embedder: Embeddings, texts: list[str]) -> list[list[float]]:
+    """多查询嵌入 → 校验后的向量（一次批量请求，顺序与入参一致）。"""
+
+    try:
+        raw_vectors = embedder.embed_queries(texts)
+    except RetrievalConfigurationError:
+        raise
+    except Exception as exc:
+        raise RetrievalConfigurationError("嵌入服务调用失败，检索已中止") from exc
+    return _validated_vectors(raw_vectors, expected_count=len(texts))
 
 
 MINIMUM_SEMANTIC_SCORE = 0.0
@@ -159,7 +186,7 @@ def _merge_ranked_groups(
 def retrieve_for_exam_point(
     point: ExamPoint,
     chunks: list[StagingChunk],
-    embedder: EmbeddingClient,
+    embedder: Embeddings,
     *,
     top_k: int,
     minimum_score: float,
@@ -178,13 +205,7 @@ def retrieve_for_exam_point(
         return []
 
     if query_vector is None:
-        try:
-            raw_query_vectors = embedder.embed([point.retrieval_intent])
-        except RetrievalConfigurationError:
-            raise
-        except Exception as exc:
-            raise RetrievalConfigurationError("嵌入服务调用失败，暂存检索已中止") from exc
-        query_vector = _validated_vectors(raw_query_vectors, expected_count=1)[0]
+        query_vector = _query_vector(embedder, point.retrieval_intent)
     return _rank_hybrid(
         intent=query_text or point.retrieval_intent,
         chunks=chunks,
@@ -197,7 +218,7 @@ def retrieve_for_exam_point(
 def retrieve_for_question(
     question: str,
     chunks: list[StagingChunk],
-    embedder: EmbeddingClient | None,
+    embedder: Embeddings | None,
     *,
     top_k: int,
     minimum_score: float,
@@ -215,13 +236,7 @@ def retrieve_for_question(
         return []
 
     if query_vector is None and semantic_scores is None:
-        try:
-            raw_query_vectors = embedder.embed([question])
-        except RetrievalConfigurationError:
-            raise
-        except Exception as exc:
-            raise RetrievalConfigurationError("嵌入服务调用失败，检索已中止") from exc
-        query_vector = _validated_vectors(raw_query_vectors, expected_count=1)[0]
+        query_vector = _query_vector(embedder, question)
     return _rank_hybrid(
         intent=question,
         chunks=chunks,
@@ -235,7 +250,7 @@ def retrieve_for_question(
 def retrieve_multi_for_question(
     question_variants: list[str],
     chunks: list[StagingChunk],
-    embedder: EmbeddingClient | None,
+    embedder: Embeddings | None,
     *,
     top_k: int,
     minimum_score: float,
@@ -270,13 +285,7 @@ def retrieve_multi_for_question(
             semantic_scores=semantic_scores[0] if semantic_scores else None,
         )
     if semantic_scores is None:
-        try:
-            raw_vectors = embedder.embed(variants)
-        except RetrievalConfigurationError:
-            raise
-        except Exception as exc:
-            raise RetrievalConfigurationError("嵌入服务调用失败，检索已中止") from exc
-        query_vectors = _validated_vectors(raw_vectors, expected_count=len(variants))
+        query_vectors = _query_vectors(embedder, variants)
         score_maps: list[dict[str, float] | None] = [None] * len(variants)
     else:
         query_vectors = [None] * len(variants)
@@ -412,7 +421,7 @@ def _rank_hybrid(
 
 
 def _retrieval_backend() -> str:
-    """检索后端选择（RAG_RETRIEVER_BACKEND）：默认 custom，可切 langchain。"""
+    """检索后端选择（RAG_RETRIEVER_BACKEND）：默认 langchain，custom 为回滚路径。"""
 
     from app.config import settings
 
@@ -420,7 +429,7 @@ def _retrieval_backend() -> str:
 
 
 def _langchain_retriever(
-    *, embedder: EmbeddingClient, top_k: int, minimum_score: float
+    *, embedder: Embeddings, top_k: int, minimum_score: float
 ):
     from app.services.langchain_retrieval import PaperPactHybridRetriever
 
@@ -436,7 +445,7 @@ class HybridStagingRetriever:
     def __init__(
         self,
         *,
-        embedder: EmbeddingClient,
+        embedder: Embeddings,
         top_k: int,
         minimum_score: float,
     ) -> None:
@@ -446,24 +455,14 @@ class HybridStagingRetriever:
         self.minimum_score = float(minimum_score)
 
     def embed_query(self, exam_point: ExamPoint) -> list[float]:
-        try:
-            raw_vectors = self.embedder.embed([exam_point.retrieval_intent])
-        except RetrievalConfigurationError:
-            raise
-        except Exception as exc:
-            raise RetrievalConfigurationError("嵌入服务调用失败，暂存检索已中止") from exc
-        return _validated_vectors(raw_vectors, expected_count=1)[0]
+        """考点检索的单查询嵌入（入参是考点，取 retrieval_intent 作文本）。"""
+
+        return _query_vector(self.embedder, exam_point.retrieval_intent)
 
     def embed_queries(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        try:
-            raw_vectors = self.embedder.embed(texts)
-        except RetrievalConfigurationError:
-            raise
-        except Exception as exc:
-            raise RetrievalConfigurationError("嵌入服务调用失败，暂存检索已中止") from exc
-        return _validated_vectors(raw_vectors, expected_count=len(texts))
+        return _query_vectors(self.embedder, texts)
 
     def retrieve(
         self,

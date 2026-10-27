@@ -45,6 +45,12 @@ def _exam_point(*, retrieval_intent: str = "检索链路、召回偏差及诊断
 
 
 class StaticEmbedder:
+    """固定向量桩：``vectors`` 是嵌入服务返回的批量向量。
+
+    ``embed_query`` 取首条（单查询语义），``embed_documents`` / ``embed_queries``
+    原样返回批量结果，便于构造「服务返回数量或内容异常」的防御用例。
+    """
+
     def __init__(self, vectors: list[list[float]]):
         self.vectors = vectors
         self.calls: list[list[str]] = []
@@ -52,6 +58,17 @@ class StaticEmbedder:
     def embed(self, texts: list[str]) -> list[list[float]]:
         self.calls.append(texts)
         return self.vectors
+
+    # LangChain Embeddings 接口：由 embed 委托，每次调用仍只记一次
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self.embed(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        self.calls.append([text])
+        return self.vectors[0] if self.vectors else []
+
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        return self.embed(texts)
 
 
 def test_retrieval_combines_semantic_and_lexical_scores_without_returning_noise():
@@ -241,12 +258,12 @@ def test_retrieval_only_ranks_the_supplied_course_snapshot_chunks():
 @pytest.mark.parametrize(
     ("vectors", "message"),
     [
-        ([], "数量"),
-        ([[1.0, 0.0], [1.0, 0.0]], "数量"),
+        # 单查询嵌入只返回一条向量；内容非法同样必须被拦下
         ([[]], "空向量"),
         ([[math.nan, 0.0]], "有限"),
         ([[0.0, 0.0]], "零范数"),
         ([[1.7e308, 1.7e308]], "有限范数"),
+        ([[1.0]], "维度"),
     ],
 )
 def test_retrieval_rejects_invalid_embedding_results(vectors, message):
@@ -394,7 +411,13 @@ def test_retrieve_for_question_empty_chunks_skips_embedder():
 
 def test_retrieve_for_question_wraps_embedder_failure():
     class FailingEmbedder:
-        def embed(self, texts):
+        def embed_documents(self, texts):
+            raise RuntimeError("network down")
+
+        def embed_query(self, text):
+            raise RuntimeError("network down")
+
+        def embed_queries(self, texts):
             raise RuntimeError("network down")
 
     with pytest.raises(RetrievalConfigurationError, match="检索已中止"):
@@ -479,7 +502,13 @@ def test_retrieve_multi_for_question_skips_blank_variants_and_empty_chunks():
 
 def test_retrieve_multi_for_question_wraps_embedder_failure():
     class FailingEmbedder:
-        def embed(self, texts):
+        def embed_documents(self, texts):
+            raise RuntimeError("network down")
+
+        def embed_query(self, text):
+            raise RuntimeError("network down")
+
+        def embed_queries(self, texts):
             raise RuntimeError("network down")
 
     with pytest.raises(RetrievalConfigurationError, match="检索已中止"):
@@ -492,6 +521,19 @@ def test_retrieve_multi_for_question_rejects_unsafe_configuration():
     with pytest.raises(RetrievalConfigurationError):
         retrieve_multi_for_question(
             ["问题", "题"], _question_chunks(), StaticEmbedder([]), top_k=0, minimum_score=0.1
+        )
+
+
+@pytest.mark.parametrize("vectors", [[], [[1.0, 0.0]] * 3])
+def test_retrieve_multi_rejects_query_vector_count_mismatch(vectors):
+    """多查询批量返回数量与入参不符 → 配置类错误，不静默补齐或截断。"""
+    with pytest.raises(RetrievalConfigurationError, match="数量"):
+        retrieve_multi_for_question(
+            ["问题", "题"],
+            _question_chunks(),
+            StaticEmbedder(vectors),
+            top_k=2,
+            minimum_score=0.1,
         )
 
 

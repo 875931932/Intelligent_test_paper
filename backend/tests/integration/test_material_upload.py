@@ -13,6 +13,7 @@ from sqlalchemy.pool import StaticPool
 from app.db.schema import Base, User
 from app.db.session import get_session
 from app.adapters.model.embedding_gateway import OpenAICompatibleEmbeddingGateway
+from app.adapters.model.langchain_embeddings import PaperPactEmbeddings
 from app.config import settings
 from app.main import app
 from app.api.v1 import materials as materials_api
@@ -126,7 +127,10 @@ def test_organization_dependency_lazily_builds_embedding_client(client, monkeypa
             json={"material_version_ids": ["material-v1"]},
         )
         assert response.status_code == 404
-        assert isinstance(app.state.organization_embedder, OpenAICompatibleEmbeddingGateway)
+        # 依赖注入统一暴露 LangChain Embeddings（内层仍是既有网关）
+        installed = app.state.organization_embedder
+        assert isinstance(installed, PaperPactEmbeddings)
+        assert isinstance(installed.gateway, OpenAICompatibleEmbeddingGateway)
     finally:
         for name in ("organization_embedder", "exam_point_evidence_classifier", "exam_point_knowledge_consolidator"):
             if hasattr(app.state, name):

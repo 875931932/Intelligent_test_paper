@@ -1738,6 +1738,13 @@ def test_rag_route_hybrid_mode_when_embeddings_present(monkeypatch):
             assert texts == ["监督学习的分类与回归是什么", "监督学习的分类与回归"]
             return [[1.0, 0.0], [1.0, 0.0]]
 
+        # LangChain Embeddings 接口：多查询批量一次请求
+        embed_queries = embed
+        embed_documents = embed
+
+        def embed_query(self, text):
+            return self.embed([text])[0]
+
     calls = _patch_rag(monkeypatch, _rag_chunks(with_embeddings=True), configured=True)
     monkeypatch.setattr(assistant_service, "build_embedder", lambda: QueryEmbedder())
 
@@ -1762,6 +1769,13 @@ def test_rag_route_embedder_failure_degrades_to_lexical(monkeypatch):
         def embed(self, texts):
             raise RuntimeError("embedding down")
 
+        # LangChain Embeddings 接口：三条入口共用同一失败语义
+        embed_queries = embed
+        embed_documents = embed
+
+        def embed_query(self, text):
+            return self.embed([text])[0]
+
     _patch_rag(monkeypatch, _rag_chunks(with_embeddings=True), configured=True)
     monkeypatch.setattr(assistant_service, "build_embedder", lambda: BrokenEmbedder())
 
@@ -1783,6 +1797,12 @@ def test_rag_route_pushdown_scores_without_loading_embeddings(monkeypatch):
             # 双变体一次批量嵌入 → 只为 SQL 下推取查询向量（打分不再调嵌入）
             assert texts == ["监督学习的分类与回归是什么", "监督学习的分类与回归"]
             return [[1.0, 0.0], [1.0, 0.0]]
+
+        embed_queries = embed
+        embed_documents = embed
+
+        def embed_query(self, text):
+            return self.embed([text])[0]
 
     calls = _patch_rag(monkeypatch, _rag_chunks(), configured=True)  # 无向量语料
     monkeypatch.setattr(assistant_service, "supports_semantic_pushdown", lambda session: True)
@@ -1814,6 +1834,12 @@ def test_rag_route_pushdown_incomplete_coverage_degrades_to_lexical(monkeypatch)
         def embed(self, texts):
             return [[1.0, 0.0], [1.0, 0.0]]
 
+        embed_queries = embed
+        embed_documents = embed
+
+        def embed_query(self, text):
+            return self.embed([text])[0]
+
     _patch_rag(monkeypatch, _rag_chunks(), configured=True)
     monkeypatch.setattr(assistant_service, "supports_semantic_pushdown", lambda session: True)
     monkeypatch.setattr(assistant_service, "build_embedder", lambda: StubEmbedder())
@@ -1838,6 +1864,13 @@ def test_rag_route_pushdown_failure_degrades_to_lexical(monkeypatch):
     class BrokenEmbedder:
         def embed(self, texts):
             raise RuntimeError("embedding down")
+
+        # LangChain Embeddings 接口：三条入口共用同一失败语义
+        embed_queries = embed
+        embed_documents = embed
+
+        def embed_query(self, text):
+            return self.embed([text])[0]
 
     _patch_rag(monkeypatch, _rag_chunks(), configured=True)
     monkeypatch.setattr(assistant_service, "supports_semantic_pushdown", lambda session: True)
@@ -2851,6 +2884,12 @@ def test_rag_route_langchain_backend_matches_custom_sources(monkeypatch):
         def embed(self, texts):
             return [[1.0, 0.0] for _ in texts]
 
+        embed_queries = embed
+        embed_documents = embed
+
+        def embed_query(self, text):
+            return self.embed([text])[0]
+
     _patch_rag(monkeypatch, _rag_chunks(with_embeddings=True), configured=True)
     monkeypatch.setattr(assistant_service, "build_embedder", lambda: QueryEmbedder())
     intent = _intent("", {"tool": assistant_service.RAG_TOOL, "args": {}})
@@ -2885,6 +2924,12 @@ def test_rag_route_langchain_backend_uses_pushdown_scores(monkeypatch):
         def embed(self, texts):
             return [[1.0, 0.0] for _ in texts]
 
+        embed_queries = embed
+        embed_documents = embed
+
+        def embed_query(self, text):
+            return self.embed([text])[0]
+
     calls = _patch_rag(monkeypatch, _rag_chunks(), configured=True)
     monkeypatch.setattr(assistant_service, "supports_semantic_pushdown", lambda session: True)
     monkeypatch.setattr(assistant_service, "build_embedder", lambda: QueryEmbedder())
@@ -2914,6 +2959,13 @@ def test_rag_route_langchain_backend_degrades_to_lexical(monkeypatch):
     class BrokenEmbedder:
         def embed(self, texts):
             raise RuntimeError("embedding down")
+
+        # LangChain Embeddings 接口：三条入口共用同一失败语义
+        embed_queries = embed
+        embed_documents = embed
+
+        def embed_query(self, text):
+            return self.embed([text])[0]
 
     _patch_rag(monkeypatch, _rag_chunks(with_embeddings=True), configured=True)
     monkeypatch.setattr(assistant_service, "build_embedder", lambda: BrokenEmbedder())

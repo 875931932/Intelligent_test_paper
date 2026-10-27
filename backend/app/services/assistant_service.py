@@ -1638,7 +1638,7 @@ def execute_rag(
     semantic_scores = None
     if pushdown and embedding_configured():
         try:
-            query_vectors = build_embedder().embed(_rag_query_variants(question))
+            query_vectors = build_embedder().embed_queries(_rag_query_variants(question))
             semantic_scores = load_semantic_scores(
                 session,
                 course_id=context["course_id"],

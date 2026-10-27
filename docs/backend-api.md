@@ -1038,6 +1038,13 @@ schema 自 `1.2.0` 起新增该字段；逐题带 `rubric`（主观题评分细�
     自定义服务负责**，LangChain 不接管打分、不引入向量数据库；来源卡与 SSE 协议不变。
     等价性与回滚由 `tests/unit/test_langchain_*.py`、`test_staging_retrieval.py` 中的
     custom/langchain 对照用例覆盖。无结果时不生成未经资料支持的答案。
+  - **嵌入接口统一（LangChain `Embeddings`）**：入库与查询的嵌入入口统一是
+    `PaperPactEmbeddings`（`build_embedder()` / `get_organization_embedder()` 唯一出口），
+    内层仍是 `OpenAICompatibleEmbeddingGateway`——批量上限、响应校验与失败语义不变。
+    方法分工：`embed_documents`=入库批量（`content_blocks` 与知识卡证据块）、
+    `embed_query`=单条查询、`embed_queries`=多查询**一次批量请求**（不外溢成 N 次往返；
+    LangChain 标准接口只有单条 `embed_query`，故额外提供该批量入口）。调用方拿到的仍是
+    原向量与顺序。路由、服务与检索核心里不再出现裸网关类型。
 - **语料向量列（v2）**：`content_blocks` 增 `embedding`(JSON，可空) + `embedding_model`
   (VARCHAR(64))——换嵌入模型时按 `embedding_model != settings.embedding_model` 重嵌；
   `embedding_text_version`(INTEGER，非空默认 0) 记录**嵌入输入清洗版本**：嵌入走

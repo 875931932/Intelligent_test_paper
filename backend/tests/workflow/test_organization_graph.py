@@ -304,6 +304,12 @@ def _graph(*, classifier=None, retriever=None, consolidator=None, extractor=None
         def embed(self, texts):
             return [[1.0, 0.0] for _ in texts]
 
+        embed_queries = embed
+        embed_documents = embed
+
+        def embed_query(self, text):
+            return self.embed([text])[0]
+
     graph = build_organization_graph(
         retriever,
         classifier,
@@ -654,6 +660,12 @@ def test_graph_embeds_each_exam_point_query_once_and_reuses_frozen_chunk_vectors
             self.calls.append(list(texts))
             return [[1.0, 0.0] for _ in texts]
 
+        embed_queries = embed
+        embed_documents = embed
+
+        def embed_query(self, text):
+            return self.embed([text])[0]
+
     chunks = [
         StagingChunk(
             id="m1",
@@ -714,6 +726,12 @@ def test_graph_recalls_topic_chunks_when_retrieval_intent_is_a_generic_placehold
                 [1.0, 0.0] if "四大支柱" in text else [0.0, 1.0]
                 for text in texts
             ]
+
+        embed_queries = embed
+        embed_documents = embed
+
+        def embed_query(self, text):
+            return self.embed([text])[0]
 
     chunks = [
         StagingChunk(

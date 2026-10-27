@@ -8,6 +8,14 @@
 
 **Tech Stack:** Python 3.12、FastAPI、LangChain Core、LangGraph、SQLAlchemy 2.0、PostgreSQL、Redis、Celery、pytest、uv。
 
+**Implementation status (2026-10-27):** 代码已在 commit `6b140db` 完成。当前默认
+`RAG_RETRIEVER_BACKEND=langchain`，`custom` 保留为可回滚后端；定向测试 254 项通过，
+后端全量测试 1661 项通过、1 项 `xfail`。LangChain 只提供 `Embeddings`、`Document`
+和自定义 `Retriever` 抽象，向量持久化、混合排序、课程隔离、SQL 语义下推、邻域扩展
+和词面降级仍由 PaperPact 自定义服务负责。简历和 README 已按这一边界更新。
+真实课程资料上的人工检索效果抽测尚无记录；`custom` 回滚入口保留，不能将自动化等价测试
+表述为已完成真实资料效果验证。
+
 **Spec:** 本文即实现规格；仓库工程约束以 `AGENTS.md` 为最高优先级，RAG 现有行为以 `backend/app/services/staging_retrieval_service.py`、`backend/app/services/content_index_service.py` 和对应测试为基线。
 
 ## Global Constraints
@@ -18,7 +26,7 @@
 - 不把 LangChain 的默认切分器用于替换 MinerU 解析块；现有 `heading_path`、`page_index` 和 `block_index` 是来源定位的权威数据。
 - 所有数据库查询继续携带 `course_id`；`material_ids` 过滤和资料可见性规则不能由模型或检索器自行放宽。
 - 保留没有 Embedding 配置、向量缺失、Embedding 请求失败和 PostgreSQL 语义下推失败时的纯词面降级。
-- 默认保留 `custom` 后端作为回滚路径；只有通过等价性测试后，才把 `langchain` 后端设为默认。
+- 保留 `custom` 后端作为回滚路径；当前默认使用已通过回归测试的 `langchain` 后端。
 - 不因为接入 LangChain 而把检索结果改成“模型认为相关”的自由选择；排序、阈值、去重和来源元数据仍由程序决定。
 - 后端依赖只使用 `uv`，提交 `backend/pyproject.toml` 与同步后的 `backend/uv.lock`。
 
@@ -395,7 +403,7 @@ git commit -m "feat: add PaperPact hybrid LangChain retriever"
 **Interfaces:**
 
 ```python
-rag_retriever_backend: Literal["custom", "langchain"] = "custom"
+rag_retriever_backend: Literal["custom", "langchain"] = "langchain"
 ```
 
 `assistant_service` 的检索装配必须继续返回当前来源卡需要的结构：
@@ -424,10 +432,10 @@ rag_retriever_backend: Literal["custom", "langchain"] = "custom"
 
 - [ ] **Step 2: 增加配置字段**
 
-默认配置必须是：
+当前默认配置是：
 
 ```python
-rag_retriever_backend: str = "custom"
+rag_retriever_backend: str = "langchain"
 ```
 
 配置值只允许 `custom` 和 `langchain`；其他值在配置读取或检索装配时明确报错，不静默切换。
@@ -450,7 +458,7 @@ rag_retriever_backend: str = "custom"
 uv run pytest -q tests/unit/test_assistant_service.py tests/integration/test_assistant_api.py
 ```
 
-- [ ] **Step 5: 在默认配置仍为 custom 的情况下提交**
+- [ ] **Step 5: 在默认配置为 langchain、custom 可回滚的情况下提交**
 
 ```bash
 git add backend/app/config.py backend/app/services/assistant_service.py backend/tests/unit/test_assistant_service.py backend/tests/integration/test_assistant_api.py
@@ -627,7 +635,7 @@ uv run python build_resume.py
 3. SQL 语义下推失效：禁止用 Python 加载全部向量作为默认修复；恢复 `custom`，重新设计适配边界。
 4. 助手来源卡字段丢失：先恢复来源卡使用 `RankedChunk` 的旧路径，再补充 metadata 映射。
 5. 知识组织工作流测试失败：不得修改 `organization_graph.py` 的节点或边，撤回考点检索的 LangChain 分支。
-6. 真实资料表现退化：保留 LangChain 适配层作为实验后端，不把它设为默认，也不在简历中写成已上线主链路。
+6. 真实资料表现退化：将 `RAG_RETRIEVER_BACKEND` 切回 `custom`，保留 LangChain 适配层并定位差异，不把退化结果写成效果提升。
 
 ## 完成标准
 

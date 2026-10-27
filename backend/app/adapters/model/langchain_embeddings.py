@@ -22,9 +22,24 @@ class PaperPactEmbeddings(Embeddings):
         self.gateway = gateway
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """入库批量嵌入（资料块 / 证据块）。"""
+
         if not texts:
             return []
         return self.gateway.embed(texts)
 
     def embed_query(self, text: str) -> list[float]:
+        """单条查询嵌入。"""
+
         return self.gateway.embed([text])[0]
+
+    def embed_queries(self, texts: list[str]) -> list[list[float]]:
+        """多条查询嵌入：一次批量请求，返回顺序与入参一致。
+
+        LangChain 标准接口只有单条 embed_query，多查询逐条调用会让多路检索
+        从一次批量请求退化成 N 次往返；本方法保留既有网关的批量语义。
+        """
+
+        if not texts:
+            return []
+        return self.gateway.embed(texts)
