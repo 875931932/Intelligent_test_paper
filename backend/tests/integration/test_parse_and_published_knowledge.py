@@ -308,21 +308,18 @@ def test_parse_markdown_and_text_use_local_path_without_mineru(client, monkeypat
             text("SELECT COUNT(*), MIN(markdown) FROM content_blocks WHERE material_version_id = :v"),
             {"v": txt["id"]},
         ).one()
-    # 标题去 # 存 title 块，正文存 paragraph 块，顺序与源文件一致
-    assert [(r.block_index, r.block_type, r.text) for r in rows] == [
-        (0, "title", "第一章 绪论"),
-        (1, "paragraph", "检索增强生成把检索与生成结合。"),
-        (2, "title", "1.1 背景"),
-        (3, "paragraph", "正文"),
-    ]
-    heading_path = rows[3].heading_path
+    # 同一章节聚合成块：标题留在正文（参与嵌入），heading_path 记层级
+    assert [(r.block_index, r.block_type) for r in rows] == [(0, "paragraph"), (1, "paragraph")]
+    assert rows[0].text == "# 第一章 绪论  \n检索增强生成把检索与生成结合。"
+    assert rows[1].text == "## 1.1 背景\n正文"
+    heading_path = rows[1].heading_path
     if isinstance(heading_path, str):
         heading_path = json.loads(heading_path)
     assert heading_path == ["第一章 绪论", "1.1 背景"]
-    assert rows[3].markdown == "正文"
+    assert rows[1].markdown == "## 1.1 背景\n正文"
     # 本地链路没有 MinIO provider 句柄，轮询状态机不会再去碰 MinerU
     assert all(r.provider_run_id is None for r in provider_runs)
-    # txt 走同一分支，只是不带 markdown 源行
+    # txt 走同一分支：按行切块、不带 markdown 源行
     assert txt_blocks[0] == 1
     assert txt_blocks[1] is None
 
