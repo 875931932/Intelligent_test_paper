@@ -328,14 +328,12 @@ def test_worker_end_to_end_persists_assistant_reply(env, monkeypatch):
     assert row.result["message_id"] == assistant["id"]
 
 
-@pytest.mark.parametrize("backend", ["custom", "langchain"])
-def test_worker_end_to_end_rag_answer_with_sources(env, monkeypatch, backend):
+def test_worker_end_to_end_rag_answer_with_sources(env, monkeypatch):
     """端到端 RAG：点名已解析资料 → 真实语料装载 + 词面检索 → 流式作答 + 来源卡落库。
 
-    custom / langchain 两种检索后端都走同一 API 契约（本用例无嵌入 → 词面降级）。
+    本用例无嵌入 → 词面降级；混合链（VectorStore + BM25 + RRF）由单元测试覆盖。
     """
     auth, factory, _dispatched = env
-    monkeypatch.setattr(settings, "rag_retriever_backend", backend)
     from app.db.schema import (
         content_blocks,
         document_parse_runs,

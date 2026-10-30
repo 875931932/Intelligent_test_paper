@@ -66,6 +66,7 @@ from app.domain.knowledge.relevance import (
     SITUATIONAL_BINDING_LANGUAGE,
     semantic_text_key,
 )
+from app.adapters.retrieval.tokenization import lexical_overlap
 from app.services.blueprint_service import allocate_plan_items
 from app.services.contract_service import (
     ContractRequest,
@@ -73,7 +74,6 @@ from app.services.contract_service import (
     apply_slot_revisions,
 )
 from app.services.document_processing_service import read_mineru_zip
-from app.services.staging_retrieval_service import lexical_overlap
 from app.workflows.generation_graph import build_generation_graph
 from app.workflows.knowledge_catalog_subgraph import build_knowledge_catalog_candidate
 

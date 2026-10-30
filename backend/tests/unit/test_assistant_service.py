@@ -33,7 +33,6 @@ from app.db.schema import (
 )
 from app.domain.knowledge.relevance import StagingChunk
 from app.services import assistant_service
-from app.services.staging_retrieval_service import RankedChunk
 from app.services.assistant_service import (
     AssistantError,
     MemoryTurnEventSink,
@@ -1474,8 +1473,8 @@ def _patch_rag(monkeypatch, chunks=None, *, configured: bool = False):
     monkeypatch.setattr(assistant_service, "ensure_embedded", fake_ensure)
     monkeypatch.setattr(assistant_service, "load_content_chunks", fake_load)
     monkeypatch.setattr(assistant_service, "embedding_configured", lambda: configured)
-    # 夹具无真实库：默认不走 PG 下推（下推专项用例再覆盖为 True）
-    monkeypatch.setattr(assistant_service, "supports_semantic_pushdown", lambda session: False)
+    # 夹具无真实库：向量后端固定走内存（SQL 后端专项用例再覆盖）
+    monkeypatch.setattr(assistant_service, "detect_vector_backend", lambda session: "memory")
     return calls
 
 
@@ -1541,141 +1540,6 @@ def test_rag_query_variants_strip_frames_and_leading_verbs():
     assert assistant_service._rag_query_variants("总结一下") == ["总结一下"]
 
 
-def _rag_chunk(cid: str, page: int | None, content: str, *, material: str = "m1") -> StagingChunk:
-    return StagingChunk(
-        id=cid,
-        material_version_id="v1",
-        content=content,
-        locator={
-            "material_id": material,
-            "material_name": "资料",
-            "page_index": page,
-            "heading_path": [],
-        },
-    )
-
-
-def _rag_hit(chunk: StagingChunk) -> RankedChunk:
-    return RankedChunk(chunk=chunk, score=0.45, lexical_score=0.05, semantic_score=0.67)
-
-
-def test_expand_rag_neighborhood_attaches_body_and_respects_rules():
-    """邻域扩展：同/邻页正文进上下文；同页优先、跨资料与短块排除、分数继承锚点。"""
-    hit = _rag_hit(_rag_chunk("h1", 2, "（一）考核成绩构成"))
-    body_same = _rag_chunk("b1", 2, "同" * 300)       # 同页正文
-    short_same = _rag_chunk("b2", 2, "短" * 20)       # 同页但 <60 → 又一个标题，排除
-    body_adj = _rag_chunk("b3", 3, "邻" * 100)        # 邻页正文
-    other = _rag_chunk("x1", 2, "外" * 200, material="m2")  # 跨资料，排除
-
-    out = assistant_service._expand_rag_neighborhood(
-        [hit], [hit.chunk, body_same, short_same, body_adj, other]
-    )
-
-    assert [item.chunk.id for item in out] == ["h1", "b1", "b3"]
-    assert out[1].score == 0.45 and out[1].semantic_score == 0.67  # 继承锚点分数
-
-
-def test_expand_rag_neighborhood_dedup_cap_and_degenerate():
-    """已命中长块去重、总扩封顶、无页码锚点按解析顺序取邻块、空排名直通。"""
-    # 命中 h5 自身是长正文（与 h4 同页且是其最优邻域候选）→ 已命中必须去重
-    hits = [
-        _rag_hit(
-            _rag_chunk(f"h{i}", 4 if i == 5 else i, ("长" * 200) if i == 5 else f"标题{i}")
-        )
-        for i in range(6)
-    ]
-    no_page_hit = RankedChunk(
-        chunk=_rag_chunk("hN", None, "无页码标题"),
-        score=0.4,
-        lexical_score=0.0,
-        semantic_score=0.6,
-    )
-    bodies = [_rag_chunk(f"b{i}", i, "文" * 80) for i in range(7)]
-    ranked = [no_page_hit, *hits]
-
-    out = assistant_service._expand_rag_neighborhood(
-        ranked, [item.chunk for item in ranked] + bodies
-    )
-
-    # 无页码锚点走解析顺序邻块（取最近的 b0）；7 个锚点轮转，总数被
-    # _RAG_EXPAND_MAX_TOTAL 封顶 → 末位锚点 h5 落空
-    assert [item.chunk.id for item in out[:7]] == ["hN", "h0", "h1", "h2", "h3", "h4", "h5"]
-    assert out[7].chunk.id == "b0"
-    assert len(out) == len(ranked) + assistant_service._RAG_EXPAND_MAX_TOTAL
-    assert "h5" not in [item.chunk.id for item in out[len(ranked):]]  # 已命中不重复带
-    # 空排名直通
-    assert assistant_service._expand_rag_neighborhood([], bodies) == []
-
-
-def _md_chunk(
-    cid: str, content: str, heading_path: list[str], *, material: str = "m1"
-) -> StagingChunk:
-    """md/txt 解析块：无页码，靠 heading_path 定位章节。"""
-    return StagingChunk(
-        id=cid,
-        material_version_id="v1",
-        content=content,
-        locator={
-            "material_id": material,
-            "material_name": "讲义.md",
-            "page_index": None,
-            "heading_path": heading_path,
-        },
-    )
-
-
-def test_expand_rag_neighborhood_md_heading_pulls_section_bodies():
-    """无页码标题锚点按同节正文拉取：前缀匹配覆盖更深小节（「术语定义」段落
-    不再被更近的碎片挤出），跨节与短块排除（2026-10-12 md 兜底链路死亡修复）。"""
-    head = _rag_hit(
-        _md_chunk("h", "第一步：LangChain 到底是什么", ["讲义", "第一步：LangChain 到底是什么"])
-    )
-    near = _md_chunk("s1", "直观理解" * 15, ["讲义", "第一步：LangChain 到底是什么", "直观理解"])
-    definition = _md_chunk(
-        "d", "术语定义正文" * 15, ["讲义", "第一步：LangChain 到底是什么", "术语定义"]
-    )
-    other_section = _md_chunk("x", "别节正文" * 20, ["讲义", "别的章节"])
-    short = _md_chunk("t", "小标题", ["讲义", "第一步：LangChain 到底是什么"])
-
-    out = assistant_service._expand_rag_neighborhood(
-        [head], [head.chunk, near, definition, other_section, short]
-    )
-
-    # 同节正文按解析位置顺序进入（含更深小节的定义段），跨节/短块排除，
-    # 分数继承锚点
-    assert [item.chunk.id for item in out] == ["h", "s1", "d"]
-    assert out[1].score == head.score and out[1].semantic_score == head.semantic_score
-
-
-def test_expand_rag_neighborhood_md_section_respects_char_budget():
-    """同节正文装入到单锚点字数预算耗尽即止（装满制：保证首块必进，超量至多一块）。"""
-    head = _rag_hit(_md_chunk("h", "本节标题", ["讲义", "本节标题"]))
-    bodies = [_md_chunk(f"b{i}", f"正文{i}" * 40, ["讲义", "本节标题"]) for i in range(6)]
-
-    out = assistant_service._expand_rag_neighborhood([head], [head.chunk, *bodies])
-
-    # 每块 120 字：装到累计 ≥600（单锚点预算）即止 → b0..b4（恰 600）
-    assert [item.chunk.id for item in out[1:]] == ["b0", "b1", "b2", "b3", "b4"]
-
-
-def test_expand_rag_neighborhood_md_body_anchor_uses_position_neighbors():
-    """无页码正文锚点按解析顺序取前后邻块：距离近者先（同距离后邻优先于前邻），
-    跨资料与短块排除。"""
-    anchor_chunk = _md_chunk("a", "锚点正文" * 20, ["讲义", "某节"])
-    before = _md_chunk("p1", "前邻正文" * 15, ["讲义", "某节"])
-    after = _md_chunk("n1", "后邻正文" * 15, ["讲义", "某节"])
-    short_mid = _md_chunk("s", "短", ["讲义", "某节"])
-    other = _md_chunk("x", "别资料正文" * 15, ["别册", "某节"], material="m2")
-    anchor = _rag_hit(anchor_chunk)
-
-    out = assistant_service._expand_rag_neighborhood(
-        [anchor], [before, anchor_chunk, after, short_mid, other]
-    )
-
-    # 后邻（距离 1）先于前邻（距离 1 但方向在后）；短块/跨资料排除
-    assert [item.chunk.id for item in out] == ["a", "n1", "p1"]
-
-
 def test_rag_route_targets_named_material_lexical_mode(monkeypatch):
     """点名资料：白名单通过 + ready → kind=rag，词面模式组装来源卡 payload。"""
     calls = _patch_rag(monkeypatch)
@@ -1730,23 +1594,26 @@ def test_rag_route_course_wide_without_material_id(monkeypatch):
 
 
 def test_rag_route_hybrid_mode_when_embeddings_present(monkeypatch):
-    """语料向量齐备 + 嵌入已配置 → 多查询混合检索（原问题+主题核心双变体批量嵌入）。"""
+    """语料向量齐备 + 嵌入已配置 → 多查询变体各自混合检索（向量+BM25 加权 RRF）。"""
 
     class QueryEmbedder:
-        def embed(self, texts):
-            # 双变体契约：原问题恒为首变体，去问句框架的主题串为第二变体
-            assert texts == ["监督学习的分类与回归是什么", "监督学习的分类与回归"]
-            return [[1.0, 0.0], [1.0, 0.0]]
+        def __init__(self):
+            self.queries: list[str] = []
 
-        # LangChain Embeddings 接口：多查询批量一次请求
+        def embed(self, texts):
+            self.queries.extend(texts)
+            return [[1.0, 0.0] for _ in texts]
+
+        # LangChain Embeddings 接口：单查询逐条嵌入
         embed_queries = embed
         embed_documents = embed
 
         def embed_query(self, text):
             return self.embed([text])[0]
 
+    embedder = QueryEmbedder()
     calls = _patch_rag(monkeypatch, _rag_chunks(with_embeddings=True), configured=True)
-    monkeypatch.setattr(assistant_service, "build_embedder", lambda: QueryEmbedder())
+    monkeypatch.setattr(assistant_service, "build_embedder", lambda: embedder)
 
     routed = route_intent(
         _intent("", {"tool": assistant_service.RAG_TOOL, "args": {"material_id": "m1"}}),
@@ -1757,7 +1624,9 @@ def test_rag_route_hybrid_mode_when_embeddings_present(monkeypatch):
 
     assert routed["retrieval"]["mode"] == "hybrid"
     assert routed["payload"]["mode"] == "hybrid"
-    # 语义命中 blk-1（cos=1），blk-2 语义为 0 被过滤；两组同文合并后仍只有一条
+    # 两个确定性变体都参与召回（原问题 + 剥掉疑问框架的主题串）
+    assert set(embedder.queries) == {"监督学习的分类与回归是什么", "监督学习的分类与回归"}
+    # 语义命中 blk-1（cos=1），blk-2 语义为 0 被阈值过滤；同文合并后仍只有一条
     assert [s["block_id"] for s in routed["payload"]["sources"]] == ["blk-1"]
     assert calls["ensure"]  # 自愈仍先执行
 
@@ -1789,29 +1658,12 @@ def test_rag_route_embedder_failure_degrades_to_lexical(monkeypatch):
     assert routed["payload"]["sources"]
 
 
-def test_rag_route_pushdown_scores_without_loading_embeddings(monkeypatch):
-    """PG 方言语义下推：向量列不装载（59MB → ~4MB 文本），SQL 预计算分直进混合检索。"""
+def test_rag_route_sql_backend_does_not_load_embeddings(monkeypatch):
+    """SQL 向量后端（pgvector / JSON 下推）：在库内算 cosine，向量列不装载。"""
 
-    class QueryEmbedder:
-        def embed(self, texts):
-            # 双变体一次批量嵌入 → 只为 SQL 下推取查询向量（打分不再调嵌入）
-            assert texts == ["监督学习的分类与回归是什么", "监督学习的分类与回归"]
-            return [[1.0, 0.0], [1.0, 0.0]]
-
-        embed_queries = embed
-        embed_documents = embed
-
-        def embed_query(self, text):
-            return self.embed([text])[0]
-
-    calls = _patch_rag(monkeypatch, _rag_chunks(), configured=True)  # 无向量语料
-    monkeypatch.setattr(assistant_service, "supports_semantic_pushdown", lambda session: True)
-    monkeypatch.setattr(assistant_service, "build_embedder", lambda: QueryEmbedder())
-    monkeypatch.setattr(
-        assistant_service,
-        "load_semantic_scores",
-        lambda *a, **kw: [{"blk-1": 1.0, "blk-2": 0.0}, {"blk-1": 1.0, "blk-2": 0.0}],
-    )
+    calls = _patch_rag(monkeypatch, _rag_chunks(), configured=True)
+    monkeypatch.setattr(assistant_service, "detect_vector_backend", lambda session: "json")
+    monkeypatch.setattr(assistant_service, "ready_runs", lambda *a, **kw: [])
 
     routed = route_intent(
         _intent("", {"tool": assistant_service.RAG_TOOL, "args": {}}),
@@ -1820,34 +1672,20 @@ def test_rag_route_pushdown_scores_without_loading_embeddings(monkeypatch):
         message="监督学习的分类与回归是什么",
     )
 
-    assert routed["retrieval"]["mode"] == "hybrid"
-    # 语义分与 Python cosine 同款过滤：blk-1 命中、blk-2 语义 0 被滤
-    assert [s["block_id"] for s in routed["payload"]["sources"]] == ["blk-1"]
+    assert routed["retrieval"]["mode"] == "lexical"
     # 向量列不选出（include_embedding=False）
     assert calls["load"] and calls["load"][0][2] is False
 
 
-def test_rag_route_pushdown_incomplete_coverage_degrades_to_lexical(monkeypatch):
-    """下推分缺块（旧模型向量被过滤等）→ 覆盖不全，降级词面不断轮。"""
+def test_rag_route_vector_store_failure_degrades_to_lexical(monkeypatch):
+    """向量后端装配/检索失败（扩展缺失、维度不符、SQL 异常）→ 降级词面，不断轮。"""
 
-    class StubEmbedder:
-        def embed(self, texts):
-            return [[1.0, 0.0], [1.0, 0.0]]
+    _patch_rag(monkeypatch, _rag_chunks(with_embeddings=True), configured=True)
 
-        embed_queries = embed
-        embed_documents = embed
+    def broken_store(*args, **kwargs):
+        raise assistant_service.RetrievalConfigurationError("vector backend unavailable")
 
-        def embed_query(self, text):
-            return self.embed([text])[0]
-
-    _patch_rag(monkeypatch, _rag_chunks(), configured=True)
-    monkeypatch.setattr(assistant_service, "supports_semantic_pushdown", lambda session: True)
-    monkeypatch.setattr(assistant_service, "build_embedder", lambda: StubEmbedder())
-    monkeypatch.setattr(
-        assistant_service,
-        "load_semantic_scores",
-        lambda *a, **kw: [{"blk-1": 1.0}, {"blk-1": 1.0}],  # 变体齐但缺 blk-2
-    )
+    monkeypatch.setattr(assistant_service, "_rag_vector_store", broken_store)
 
     routed = route_intent(
         _intent("", {"tool": assistant_service.RAG_TOOL, "args": {}}),
@@ -1855,34 +1693,9 @@ def test_rag_route_pushdown_incomplete_coverage_degrades_to_lexical(monkeypatch)
         context=_rag_ctx(),
         message="监督学习的分类与回归是什么",
     )
+
     assert routed["retrieval"]["mode"] == "lexical"
-
-
-def test_rag_route_pushdown_failure_degrades_to_lexical(monkeypatch):
-    """SQL 下推任一环失败（嵌入/查询）→ 降级词面，不上抛断轮。"""
-
-    class BrokenEmbedder:
-        def embed(self, texts):
-            raise RuntimeError("embedding down")
-
-        # LangChain Embeddings 接口：三条入口共用同一失败语义
-        embed_queries = embed
-        embed_documents = embed
-
-        def embed_query(self, text):
-            return self.embed([text])[0]
-
-    _patch_rag(monkeypatch, _rag_chunks(), configured=True)
-    monkeypatch.setattr(assistant_service, "supports_semantic_pushdown", lambda session: True)
-    monkeypatch.setattr(assistant_service, "build_embedder", lambda: BrokenEmbedder())
-
-    routed = route_intent(
-        _intent("", {"tool": assistant_service.RAG_TOOL, "args": {}}),
-        session=None,
-        context=_rag_ctx(),
-        message="监督学习的分类与回归是什么",
-    )
-    assert routed["retrieval"]["mode"] == "lexical"
+    assert routed["payload"]["sources"]
 
 
 def test_rag_route_rejects_foreign_material_id(monkeypatch):
@@ -2876,9 +2689,8 @@ def test_load_context_carries_generation_task_status(session):
     assert by_id["proj-g2"]["active_task_run_id"] is None
 
 
-def test_rag_route_langchain_backend_matches_custom_sources(monkeypatch):
-    """RAG_RETRIEVER_BACKEND=langchain：来源卡、模式与回复与既有核心完全一致。"""
-    from app.config import settings
+def test_rag_route_is_deterministic_across_repeated_calls(monkeypatch):
+    """同输入两次路由的来源卡完全一致（RRF 排名分 + 块 id 决胜，无浮点随机）。"""
 
     class QueryEmbedder:
         def embed(self, texts):
@@ -2894,90 +2706,15 @@ def test_rag_route_langchain_backend_matches_custom_sources(monkeypatch):
     monkeypatch.setattr(assistant_service, "build_embedder", lambda: QueryEmbedder())
     intent = _intent("", {"tool": assistant_service.RAG_TOOL, "args": {}})
 
-    monkeypatch.setattr(settings, "rag_retriever_backend", "custom")
-    custom = route_intent(
-        intent,
-        session=None,
-        context=_rag_ctx(),
-        message="监督学习的分类与回归是什么",
+    first = route_intent(
+        intent, session=None, context=_rag_ctx(), message="监督学习的分类与回归是什么"
     )
-    monkeypatch.setattr(settings, "rag_retriever_backend", "langchain")
-    modern = route_intent(
-        intent,
-        session=None,
-        context=_rag_ctx(),
-        message="监督学习的分类与回归是什么",
+    second = route_intent(
+        intent, session=None, context=_rag_ctx(), message="监督学习的分类与回归是什么"
     )
 
-    assert custom["retrieval"]["mode"] == "hybrid"
-    assert modern["retrieval"]["mode"] == "hybrid"
-    assert modern["payload"]["sources"] == custom["payload"]["sources"]
-    assert modern["payload"]["sources"]
-    assert modern["reply"] == custom["reply"]
-
-
-def test_rag_route_langchain_backend_uses_pushdown_scores(monkeypatch):
-    """开关切到 langchain 后仍走下推分，不装载向量、不额外调用嵌入服务。"""
-    from app.config import settings
-
-    class QueryEmbedder:
-        def embed(self, texts):
-            return [[1.0, 0.0] for _ in texts]
-
-        embed_queries = embed
-        embed_documents = embed
-
-        def embed_query(self, text):
-            return self.embed([text])[0]
-
-    calls = _patch_rag(monkeypatch, _rag_chunks(), configured=True)
-    monkeypatch.setattr(assistant_service, "supports_semantic_pushdown", lambda session: True)
-    monkeypatch.setattr(assistant_service, "build_embedder", lambda: QueryEmbedder())
-    monkeypatch.setattr(
-        assistant_service,
-        "load_semantic_scores",
-        lambda *a, **kw: [{"blk-1": 1.0, "blk-2": 0.0}, {"blk-1": 1.0, "blk-2": 0.0}],
-    )
-    monkeypatch.setattr(settings, "rag_retriever_backend", "langchain")
-
-    routed = route_intent(
-        _intent("", {"tool": assistant_service.RAG_TOOL, "args": {}}),
-        session=None,
-        context=_rag_ctx(),
-        message="监督学习的分类与回归是什么",
-    )
-
-    assert routed["retrieval"]["mode"] == "hybrid"
-    assert [s["block_id"] for s in routed["payload"]["sources"]] == ["blk-1"]
-    assert calls["load"] and calls["load"][0][2] is False
-
-
-def test_rag_route_langchain_backend_degrades_to_lexical(monkeypatch):
-    """开关切到 langchain 后嵌入失败仍降级词面，不向上抛错中断对话。"""
-    from app.config import settings
-
-    class BrokenEmbedder:
-        def embed(self, texts):
-            raise RuntimeError("embedding down")
-
-        # LangChain Embeddings 接口：三条入口共用同一失败语义
-        embed_queries = embed
-        embed_documents = embed
-
-        def embed_query(self, text):
-            return self.embed([text])[0]
-
-    _patch_rag(monkeypatch, _rag_chunks(with_embeddings=True), configured=True)
-    monkeypatch.setattr(assistant_service, "build_embedder", lambda: BrokenEmbedder())
-    monkeypatch.setattr(settings, "rag_retriever_backend", "langchain")
-
-    routed = route_intent(
-        _intent("", {"tool": assistant_service.RAG_TOOL, "args": {}}),
-        session=None,
-        context=_rag_ctx(),
-        message="监督学习的分类与回归是什么",
-    )
-
-    assert routed["retrieval"]["mode"] == "lexical"
-    assert routed["payload"]["sources"]
+    assert first["retrieval"]["mode"] == "hybrid"
+    assert first["payload"]["sources"] == second["payload"]["sources"]
+    assert first["payload"]["sources"]
+    assert first["reply"] == second["reply"]
 

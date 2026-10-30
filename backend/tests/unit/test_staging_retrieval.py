@@ -1,33 +1,31 @@
 from __future__ import annotations
 
-import json
-import math
-
-import httpx
 import pytest
-from pydantic import ValidationError
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain_core.documents import Document
+from langchain_core.retrievers import BaseRetriever
 
-from app.adapters.model.embedding_gateway import (
-    EmbeddingGatewayError,
-    OpenAICompatibleEmbeddingGateway,
+from app.adapters.retrieval.bm25 import BM25Retriever
+from app.adapters.retrieval.errors import RetrievalConfigurationError
+from app.adapters.retrieval.fusion import WeightedRRFRetriever, weighted_reciprocal_rank
+from app.adapters.retrieval.multi_query import MultiVariantRetriever
+from app.adapters.retrieval.parent import NeighborhoodExpansionRetriever
+from app.adapters.retrieval.tokenization import (
+    dedup_key,
+    query_token_coverage,
+    tokenize,
 )
-from app.config import Settings
+from app.adapters.retrieval.vector_store import (
+    PaperPactVectorStore,
+    cosine_similarity,
+)
 from app.domain.framework.exam_points import (
     ExamPoint,
     OperationalDetailPolicy,
     WeightSource,
 )
 from app.domain.knowledge.relevance import StagingChunk
-from app.services.staging_retrieval_service import (
-    HybridStagingRetriever,
-    RetrievalConfigurationError,
-    lexical_overlap,
-    lexical_rank_for_question,
-    query_token_coverage,
-    retrieve_for_exam_point,
-    retrieve_for_question,
-    retrieve_multi_for_question,
-)
+from app.services.staging_retrieval_service import HybridStagingRetriever
 
 
 def _exam_point(*, retrieval_intent: str = "检索链路、召回偏差及诊断依据") -> ExamPoint:
@@ -45,11 +43,7 @@ def _exam_point(*, retrieval_intent: str = "检索链路、召回偏差及诊断
 
 
 class StaticEmbedder:
-    """固定向量桩：``vectors`` 是嵌入服务返回的批量向量。
-
-    ``embed_query`` 取首条（单查询语义），``embed_documents`` / ``embed_queries``
-    原样返回批量结果，便于构造「服务返回数量或内容异常」的防御用例。
-    """
+    """固定向量桩：``vectors`` 是嵌入服务返回的批量向量。"""
 
     def __init__(self, vectors: list[list[float]]):
         self.vectors = vectors
@@ -59,7 +53,6 @@ class StaticEmbedder:
         self.calls.append(texts)
         return self.vectors
 
-    # LangChain Embeddings 接口：由 embed 委托，每次调用仍只记一次
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return self.embed(texts)
 
@@ -71,969 +64,337 @@ class StaticEmbedder:
         return self.embed(texts)
 
 
-def test_retrieval_combines_semantic_and_lexical_scores_without_returning_noise():
-    point = _exam_point()
-    good = StagingChunk(
-        id="good",
-        material_version_id="material-1",
-        content="RAG检索结果遗漏关键内容的原因",
-        locator={"page": 2},
-        embedding=[0.9, 0.1],
-    )
-    noise = StagingChunk(
-        id="noise",
-        material_version_id="material-1",
-        content="安装CUDA并截图提交",
-        embedding=[0.0, 1.0],
-    )
-    embedder = StaticEmbedder([[1.0, 0.0]])
+class FailingEmbedder(StaticEmbedder):
+    def embed(self, texts: list[str]) -> list[list[float]]:
+        raise RuntimeError("embedding service unavailable")
 
-    result = retrieve_for_exam_point(
-        point,
-        [good, noise],
-        embedder,
-        top_k=8,
-        minimum_score=0.25,
+
+def _chunk(chunk_id: str, content: str, *, vector=None, page_index=0) -> StagingChunk:
+    return StagingChunk(
+        id=chunk_id,
+        material_version_id="MV-1",
+        content=content,
+        locator={
+            "material_id": "MAT-1",
+            "material_name": "课件",
+            "page_index": page_index,
+            "heading_path": ["第一章", "检索"],
+        },
+        embedding=vector,
     )
 
-    assert [ranked.chunk.id for ranked in result] == ["good"]
-    assert result[0].chunk is good
-    assert result[0].semantic_score == pytest.approx(0.9938837)
-    # score 量化到 3 位小数（跨 run 确定性截断），lexical 分不变。
-    assert result[0].score == pytest.approx(
-        round(0.35 * result[0].lexical_score + 0.65 * result[0].semantic_score, 3)
+
+# ---- 分词与重叠度量 ------------------------------------------------------
+def test_tokenize_splits_ascii_words_and_chinese_ngrams():
+    tokens = tokenize("LangChain 检索链路")
+
+    assert "langchain" in tokens
+    assert "检索" in tokens
+    assert "链路" in tokens
+    assert "检索链" in tokens
+
+
+def test_query_token_coverage_ignores_content_length():
+    short = query_token_coverage("检索链路", "检索链路")
+    long_body = query_token_coverage("检索链路", "检索链路" + "无关内容" * 200)
+
+    assert short == 1.0
+    assert long_body == 1.0
+
+
+def test_dedup_key_normalizes_blank_and_form_underscores():
+    assert dedup_key("教学班：____") == dedup_key("教学班：__  __")
+
+
+def test_cosine_similarity_clips_negative_values():
+    assert cosine_similarity([1.0, 0.0], [1.0, 0.0]) == 1.0
+    assert cosine_similarity([1.0, 0.0], [-1.0, 0.0]) == 0.0
+
+
+# ---- BM25 ---------------------------------------------------------------
+def test_bm25_retriever_ranks_by_query_term_frequency():
+    documents = [
+        Document(page_content="检索链路召回偏差诊断", metadata={"chunk_id": "a"}),
+        Document(page_content="数据库连接池配置", metadata={"chunk_id": "b"}),
+    ]
+    retriever = BM25Retriever(documents=documents, k=2)
+
+    hits = retriever.invoke("检索链路")
+
+    assert [hit.metadata["chunk_id"] for hit in hits] == ["a"]
+    assert hits[0].metadata["lexical_score"] == 1.0
+
+
+# ---- 加权 RRF -----------------------------------------------------------
+def test_weighted_rrf_fuses_channels_by_rank_and_is_deterministic():
+    vector_channel = [
+        Document(page_content="A", metadata={"chunk_id": "a"}),
+        Document(page_content="B", metadata={"chunk_id": "b"}),
+    ]
+    lexical_channel = [
+        Document(page_content="B", metadata={"chunk_id": "b"}),
+        Document(page_content="C", metadata={"chunk_id": "c"}),
+    ]
+
+    first = weighted_reciprocal_rank(
+        [vector_channel, lexical_channel], weights=[0.65, 0.35], top_k=3
     )
-    assert embedder.calls == [[point.retrieval_intent]]
-
-
-def test_retrieval_returns_empty_when_all_chunks_are_below_threshold():
-    embedder = StaticEmbedder([[1.0, 0.0]])
-    chunk = StagingChunk(
-        id="noise",
-        material_version_id="material-1",
-        content="安装环境",
-        embedding=[0.0, 1.0],
-    )
-
-    result = retrieve_for_exam_point(
-        _exam_point(),
-        [chunk],
-        embedder,
-        top_k=8,
-        minimum_score=0.25,
-    )
-
-    assert result == []
-
-
-def test_retrieval_does_not_accept_lexically_related_chunk_without_semantic_support():
-    point = _exam_point(retrieval_intent="检索链路召回偏差诊断")
-    unsupported = StagingChunk(
-        id="unsupported",
-        material_version_id="material-2",
-        content="检索链路软件安装说明",
-        embedding=[0.0, 1.0],
-    )
-    embedder = StaticEmbedder([[1.0, 0.0]])
-
-    result = retrieve_for_exam_point(
-        point,
-        [unsupported],
-        embedder,
-        top_k=8,
-        minimum_score=0.25,
-    )
-
-    assert result == []
-
-
-def test_retrieval_rejects_exact_lexical_match_with_orthogonal_semantics():
-    point = _exam_point(retrieval_intent="完全相同的检索表述")
-    exact_match = StagingChunk(
-        id="lexical-only",
-        material_version_id="material-2",
-        content=point.retrieval_intent,
-        embedding=[0.0, 1.0],
-    )
-
-    result = retrieve_for_exam_point(
-        point,
-        [exact_match],
-        StaticEmbedder([[1.0, 0.0]]),
-        top_k=8,
-        minimum_score=0.25,
+    second = weighted_reciprocal_rank(
+        [list(reversed(vector_channel)), list(reversed(lexical_channel))],
+        weights=[0.65, 0.35],
+        top_k=3,
     )
 
-    assert result == []
+    assert [document.metadata["chunk_id"] for document in first] == ["b", "a", "c"]
+    # 通道内部顺序反过来后 a/c 名次变化，b 仍在两通道都靠前
+    assert first[0].metadata["chunk_id"] == "b"
+    assert second[0].metadata["chunk_id"] == "b"
+    assert first[0].metadata["fusion"] == "rrf"
 
 
-def test_retrieve_multi_scores_lexical_term_with_each_query_text():
-    """2026-10-06 回归：多路查询的词法项必须用各自查询原文打分。
-
-    曾无论向量来自哪一路，词法项都锚在 retrieval_intent 上——考点名/考核要求
-    展开查询只剩语义召回，短标题最精准的词面信号被整段丢弃。
-    """
-    point = _exam_point(retrieval_intent="提取该考点的考核内容、考核要求及对应知识点")
-    topic = StagingChunk(
-        id="topic",
-        material_version_id="material-1",
-        content="LangChain四大支柱包括基础能力层与运行时编排层。",
-        embedding=[1.0, 0.0],
-    )
-    retriever = HybridStagingRetriever(
-        embedder=StaticEmbedder([[1.0, 0.0], [0.0, 1.0]]),
-        top_k=8,
-        minimum_score=0.25,
-    )
-    title_query = "LangChain四大支柱与大模型硬伤解法"
-
-    result = retriever.retrieve_multi(
-        point,
-        [topic],
-        query_vectors=[[1.0, 0.0], [0.0, 1.0]],
-        query_texts=[title_query, point.retrieval_intent],
+def test_weighted_rrf_retriever_wraps_channels():
+    retriever = WeightedRRFRetriever(
+        retrievers=[
+            _StaticDocs(
+                documents=[Document(page_content="A", metadata={"chunk_id": "a"})]
+            )
+        ],
+        weights=[0.35],
+        top_k=1,
     )
 
-    assert [ranked.chunk.id for ranked in result] == ["topic"]
-    assert result[0].lexical_score == pytest.approx(
-        query_token_coverage(title_query, topic.content)
-    )
-    assert result[0].lexical_score > 0
+    hits = retriever.invoke("任意查询")
 
-    # 缺省 query_texts 退回检索意图（占位符 intent 与正文零词元交集 → 词法项 0）。
-    fallback = retriever.retrieve_multi(point, [topic], query_vectors=[[1.0, 0.0]])
-    assert fallback[0].lexical_score == pytest.approx(0.0)
+    assert hits[0].metadata["chunk_id"] == "a"
+    assert hits[0].metadata["score"] == 1.0
 
 
-def test_hybrid_lexical_term_uses_query_coverage_not_jaccard():
-    """混合打分词面项 = 查询覆盖率（2026-10-13 出卷侧检索修复）。
+# ---- 多查询 -------------------------------------------------------------
+def test_multi_variant_retriever_collapses_template_duplicates_and_marks_variants():
+    class _Echo(BaseRetriever):
+        def _get_relevant_documents(
+            self, query: str, *, run_manager: CallbackManagerForRetrieverRun | None = None
+        ) -> list[Document]:
+            return [
+                Document(page_content="教学班：____", metadata={"chunk_id": "t1"}),
+                Document(page_content=f"正文 {query}", metadata={"chunk_id": f"c-{query}"}),
+            ]
 
-    Jaccard 分母是并集：对「考点名查询 vs 陈述正文」恒≈0，生产实测考点检索
-    词面项 0.00~0.07、0.35 权重只贡献 ~0.01 分（词面通道失灵）；覆盖率分母
-    是查询集，与查询共享术语的陈述获得真实加成（最佳命中词面 0.044→0.286）。
-    覆盖率 ≥ Jaccard 恒成立 → 分数单调不降，已过阈值的块绝不掉出。
-    """
-    point = _exam_point(retrieval_intent="LangChain中间层定位与作用")
-    matched = StagingChunk(
-        id="matched",
-        material_version_id="material-1",
-        content="LangChain 是大模型与应用之间的中间层，负责统一调用与编排。",
-        embedding=[1.0, 0.0],
+    retriever = MultiVariantRetriever(
+        retriever=_Echo(),
+        variant_fn=lambda question: [question, "核心"],
+        top_k=3,
     )
 
-    result = retrieve_for_exam_point(
-        point, [matched], StaticEmbedder([[1.0, 0.0]]), top_k=8, minimum_score=0.1
+    hits = retriever.invoke("问题")
+
+    assert hits[0].metadata["chunk_id"] == "t1"
+    assert {hit.metadata["chunk_id"] for hit in hits} == {"t1", "c-问题", "c-核心"}
+    assert hits[0].metadata["query_variants"] == 2
+
+
+# ---- 邻域扩展 -----------------------------------------------------------
+def _document(chunk_id: str, content: str, *, page_index=None, heading=None) -> Document:
+    metadata = {
+        "chunk_id": chunk_id,
+        "material_id": "MAT-1",
+        "page_index": page_index,
+        "heading_path": heading or [],
+    }
+    return Document(page_content=content, metadata=metadata)
+
+
+def test_neighborhood_expansion_attaches_same_page_body():
+    anchor = _document("a", "检索偏差诊断要点", page_index=3)
+    documents = [
+        anchor,
+        _document("b", "同页正文" * 30, page_index=3),
+        _document("c", "邻页正文" * 30, page_index=4),
+        _document("d", "远页正文" * 30, page_index=9),
+    ]
+
+    retriever = NeighborhoodExpansionRetriever(
+        retriever=_StaticDocs(documents=[anchor]), documents=documents, per_hit=1, max_total=1
+    )
+    expanded = retriever.expand([anchor])
+
+    assert [document.metadata["chunk_id"] for document in expanded] == ["a", "b"]
+    assert expanded[1].metadata["expanded_from"] == "a"
+    # 扩展块继承锚点分数，不改变排序权威
+    assert expanded[1].metadata["score"] == anchor.metadata.get("score", 0.0)
+
+
+def test_neighborhood_expansion_heading_anchor_pulls_section_bodies_under_budget():
+    heading = _document("h", "检索", heading=["第一章", "检索"])
+    documents = [
+        heading,
+        _document("b1", "正文一" * 100, heading=["第一章", "检索"]),
+        _document("b2", "正文二" * 100, heading=["第一章", "检索"]),
+    ]
+
+    retriever = NeighborhoodExpansionRetriever(
+        retriever=_StaticDocs(documents=[heading]),
+        documents=documents,
+        section_per_hit_chars=300,
+    )
+    expanded = retriever.expand([heading])
+
+    assert [document.metadata["chunk_id"] for document in expanded] == ["h", "b1"]
+
+
+def test_neighborhood_expansion_body_anchor_prefers_following_neighbor():
+    anchor = _document("b1", "正文命中" * 20, heading=["第一章"])
+    documents = [
+        _document("b0", "前邻正文" * 20, heading=["第一章"]),
+        anchor,
+        _document("b2", "后邻正文" * 20, heading=["第一章"]),
+    ]
+
+    retriever = NeighborhoodExpansionRetriever(
+        retriever=_StaticDocs(documents=[anchor]), documents=documents, per_hit=1, max_total=1
+    )
+    expanded = retriever.expand([anchor])
+
+    assert [document.metadata["chunk_id"] for document in expanded] == ["b1", "b2"]
+
+
+def test_neighborhood_expansion_dedups_and_handles_empty_input():
+    anchor = _document("a", "命中正文" * 20, page_index=1)
+    documents = [anchor, _document("shared", "共享正文" * 20, page_index=1)]
+
+    retriever = NeighborhoodExpansionRetriever(
+        retriever=_StaticDocs(documents=[anchor]), documents=documents, per_hit=2, max_total=2
     )
 
-    assert result[0].lexical_score == pytest.approx(
-        query_token_coverage(point.retrieval_intent, matched.content)
-    )
-    # 单调性：同输入下覆盖率词面分 ≥ Jaccard（召回只增不减的数学保证）
-    assert result[0].lexical_score >= lexical_overlap(
-        point.retrieval_intent, matched.content
-    )
-    assert result[0].lexical_score > 0
+    assert retriever.expand([]) == []
+    first = retriever.expand([anchor])
+    assert [document.metadata["chunk_id"] for document in first] == ["a", "shared"]
 
 
-def test_retrieval_only_ranks_the_supplied_course_snapshot_chunks():
-    supplied = StagingChunk(
-        id="course-a-v2",
-        material_version_id="course-a-material-v2",
-        content="召回遗漏可由切块边界不合理引起",
-        embedding=[1.0, 0.0],
-    )
-    embedder = StaticEmbedder([[1.0, 0.0]])
+class _StaticDocs(BaseRetriever):
+    documents: list[Document] = []
 
-    result = HybridStagingRetriever(
-        embedder=embedder,
-        top_k=24,
-        minimum_score=0.25,
-    ).retrieve(_exam_point(), [supplied])
-
-    assert len(result) == 1
-    assert result[0].chunk is supplied
-    assert embedder.calls == [[_exam_point().retrieval_intent]]
+    def _get_relevant_documents(
+        self, query: str, *, run_manager: CallbackManagerForRetrieverRun | None = None
+    ) -> list[Document]:
+        return list(self.documents)
 
 
-@pytest.mark.parametrize(
-    ("vectors", "message"),
-    [
-        # 单查询嵌入只返回一条向量；内容非法同样必须被拦下
-        ([[]], "空向量"),
-        ([[math.nan, 0.0]], "有限"),
-        ([[0.0, 0.0]], "零范数"),
-        ([[1.7e308, 1.7e308]], "有限范数"),
-        ([[1.0]], "维度"),
-    ],
-)
-def test_retrieval_rejects_invalid_embedding_results(vectors, message):
-    chunk = StagingChunk(
-        id="chunk",
-        material_version_id="material-1",
-        content="检索结果",
-        embedding=[1.0, 0.0],
+# ---- 向量存储（内存后端） -----------------------------------------------
+def test_memory_vector_store_returns_distance_and_semantic_signal():
+    documents = {
+        "a": Document(page_content="检索链路", metadata={"chunk_id": "a"}),
+        "b": Document(page_content="数据库", metadata={"chunk_id": "b"}),
+    }
+    store = PaperPactVectorStore(
+        embedding=StaticEmbedder([]),
+        backend="memory",
+        documents_by_id=documents,
+        vectors={"a": [1.0, 0.0], "b": [0.0, 1.0]},
     )
 
-    with pytest.raises(RetrievalConfigurationError, match=message):
-        retrieve_for_exam_point(
-            _exam_point(),
-            [chunk],
-            StaticEmbedder(vectors),
-            top_k=8,
-            minimum_score=0.25,
-        )
+    hits = store.similarity_search_with_score_by_vector([1.0, 0.0], k=2)
+
+    assert hits[0][0].metadata["chunk_id"] == "a"
+    assert hits[0][1] == 0.0
+    assert hits[0][0].metadata["semantic_score"] == 1.0
 
 
-@pytest.mark.parametrize(
-    ("embedding", "message"),
-    [
-        ([], "空向量"),
-        ([math.nan, 0.0], "有限"),
-        ([0.0, 0.0], "零范数"),
-        ([1.7e308, 1.7e308], "有限范数"),
-        ([1.0], "维度"),
-    ],
-)
-def test_retrieval_rejects_invalid_persisted_chunk_embedding(embedding, message):
-    chunk = StagingChunk(
-        id="chunk",
-        material_version_id="material-1",
-        content="检索结果",
-        embedding=embedding,
+def test_memory_vector_store_rejects_dimension_mismatch():
+    store = PaperPactVectorStore(
+        embedding=StaticEmbedder([]),
+        backend="memory",
+        documents_by_id={"a": Document(page_content="A", metadata={"chunk_id": "a"})},
+        vectors={"a": [1.0, 0.0]},
     )
 
-    with pytest.raises(RetrievalConfigurationError, match=message):
-        retrieve_for_exam_point(
-            _exam_point(),
-            [chunk],
-            StaticEmbedder([[1.0, 0.0]]),
-            top_k=8,
-            minimum_score=0.25,
-        )
-
-
-@pytest.mark.parametrize(
-    ("top_k", "minimum_score"),
-    [(0, 0.25), (8, -0.01), (8, 1.01), (8, math.nan)],
-)
-def test_hybrid_retriever_rejects_unsafe_configuration(top_k, minimum_score):
     with pytest.raises(RetrievalConfigurationError):
-        HybridStagingRetriever(
-            embedder=StaticEmbedder([]),
-            top_k=top_k,
-            minimum_score=minimum_score,
+        store.similarity_search_with_score_by_vector([1.0, 0.0, 0.0], k=1)
+
+
+def test_vector_store_requires_session_for_sql_backends():
+    with pytest.raises(RetrievalConfigurationError):
+        PaperPactVectorStore(
+            embedding=StaticEmbedder([]),
+            backend="pgvector",
+            documents_by_id={},
         )
 
 
-def test_equal_scores_use_material_version_and_chunk_id_as_stable_tiebreakers():
-    point = _exam_point()
-    preferred = StagingChunk(
-        id="z-chunk",
-        material_version_id="material-a",
-        content="相同证据内容",
-        embedding=[1.0, 0.0],
-    )
-    other = StagingChunk(
-        id="a-chunk",
-        material_version_id="material-b",
-        content="相同证据内容",
-        embedding=[1.0, 0.0],
-    )
-
-    first = retrieve_for_exam_point(
-        point,
-        [preferred, other],
-        StaticEmbedder([[1.0, 0.0]]),
-        top_k=1,
-        minimum_score=0.25,
-    )
-    reversed_input = retrieve_for_exam_point(
-        point,
-        [other, preferred],
-        StaticEmbedder([[1.0, 0.0]]),
-        top_k=1,
-        minimum_score=0.25,
-    )
-
-    # 同分并列时决胜键为 (content_hash, chunk.id)：跨 run 顺序确定（缓存
-    # prompt 稳定的前提），同内容下按 id 字典序，与输入顺序无关。
-    assert [item.chunk.id for item in first] == ["a-chunk"]
-    assert [item.chunk.id for item in reversed_input] == ["a-chunk"]
-
-
-# ---------------------------------------------------------------------------
-# 资料内容问答（助手 RAG）：裸问题串检索 + 词面降级
-# ---------------------------------------------------------------------------
-
-
-def _question_chunks() -> list[StagingChunk]:
+# ---- 考点检索门面 --------------------------------------------------------
+def _retrieval_chunks() -> list[StagingChunk]:
     return [
-        StagingChunk(
-            id="q1",
-            material_version_id="v1",
-            content="监督学习分为分类与回归两大任务。",
-            embedding=[1.0, 0.0],
-        ),
-        StagingChunk(
-            id="q2",
-            material_version_id="v1",
-            content="聚类与降维属于无监督学习方法。",
-            embedding=[0.6, 0.8],
-        ),
+        _chunk("c1", "检索链路召回偏差的定位方法", vector=[1.0, 0.0]),
+        _chunk("c2", "数据库连接池与事务隔离", vector=[0.0, 1.0]),
     ]
 
 
-def test_retrieve_for_question_ranks_by_similarity_and_is_deterministic():
+def test_retrieve_returns_only_supplied_snapshot_chunks_and_is_deterministic():
+    chunks = _retrieval_chunks()
+    retriever = HybridStagingRetriever(
+        embedder=StaticEmbedder([[1.0, 0.0]]), top_k=1, minimum_score=0.2
+    )
+
+    first = retriever.retrieve(_exam_point(), chunks)
+    second = retriever.retrieve(_exam_point(), chunks)
+
+    assert [item.chunk.id for item in first] == ["c1"]
+    assert first == second
+    assert all(item.chunk.id in {"c1", "c2"} for item in first)
+
+
+def test_retrieve_skips_embedder_for_empty_snapshot():
     embedder = StaticEmbedder([[1.0, 0.0]])
+    retriever = HybridStagingRetriever(embedder=embedder, top_k=3, minimum_score=0.0)
 
-    first = retrieve_for_question(
-        "监督学习有哪些任务", _question_chunks(), embedder, top_k=2, minimum_score=0.05
-    )
-    second = retrieve_for_question(
-        "监督学习有哪些任务", _question_chunks(), embedder, top_k=2, minimum_score=0.05
-    )
-
-    # 查询向量贴近 q1 → q1 首位；两次排序完全一致（量化 + 决胜键）
-    assert [item.chunk.id for item in first] == ["q1", "q2"]
-    assert [(item.chunk.id, item.score) for item in first] == [
-        (item.chunk.id, item.score) for item in second
-    ]
-    # 问题串原样进嵌入调用（不经模型转述）
-    assert embedder.calls[0] == ["监督学习有哪些任务"]
-    assert all(item.semantic_score > 0 for item in first)
-
-
-def test_retrieve_for_question_empty_chunks_skips_embedder():
-    embedder = StaticEmbedder([])
-    assert retrieve_for_question("任意问题", [], embedder, top_k=3, minimum_score=0.1) == []
+    assert retriever.retrieve(_exam_point(), []) == []
     assert embedder.calls == []
 
 
-def test_retrieve_for_question_wraps_embedder_failure():
-    class FailingEmbedder:
-        def embed_documents(self, texts):
-            raise RuntimeError("network down")
-
-        def embed_query(self, text):
-            raise RuntimeError("network down")
-
-        def embed_queries(self, texts):
-            raise RuntimeError("network down")
-
-    with pytest.raises(RetrievalConfigurationError, match="检索已中止"):
-        retrieve_for_question("问题", _question_chunks(), FailingEmbedder(), top_k=2, minimum_score=0.1)
-
-
-def test_retrieve_for_question_rejects_unsafe_configuration():
-    with pytest.raises(RetrievalConfigurationError):
-        retrieve_for_question("问题", _question_chunks(), StaticEmbedder([]), top_k=0, minimum_score=0.1)
-    with pytest.raises(RetrievalConfigurationError):
-        lexical_rank_for_question("问题", _question_chunks(), top_k=1, minimum_score=1.5)
-
-
-def test_retrieve_multi_for_question_merges_variants_and_collapses_template_duplicates():
-    """双变体各取所长；跨文档同文模板碎片（表头/填空线）只保留得分最高的一份。"""
-    chunks = [
-        StagingChunk(
-            id="a", material_version_id="v1",
-            content="教学大纲的课程性质与地位。", embedding=[1.0, 0.0],
-        ),
-        StagingChunk(
-            id="b", material_version_id="v1",
-            content="学时分配与考核方式说明。", embedding=[0.0, 1.0],
-        ),
-        StagingChunk(
-            id="dup1", material_version_id="v1",
-            content="教学班：____________", embedding=[0.9, 0.9],
-        ),
-        StagingChunk(
-            id="dup2", material_version_id="v2",
-            content="教学班：__________", embedding=[0.9, 0.9],
-        ),
-    ]
-    embedder = StaticEmbedder([[1.0, 0.0], [0.0, 1.0]])
-
-    first = retrieve_multi_for_question(
-        ["总结教学大纲讲了什么", "教学大纲"], chunks, embedder, top_k=6, minimum_score=0.05
-    )
-    second = retrieve_multi_for_question(
-        ["总结教学大纲讲了什么", "教学大纲"], chunks, embedder, top_k=6, minimum_score=0.05
-    )
-
-    ids = [item.chunk.id for item in first]
-    # 两个变体各自的主题块都进入合并结果
-    assert {"a", "b"} <= set(ids)
-    # 归一文本相同的模板碎片只留一份（下划线长度差异被折叠），且不含重复项
-    assert len({"dup1", "dup2"} & set(ids)) == 1
-    assert len(ids) == len(set(ids)) == 3
-    # 变体一次批量嵌入（每组打分复用查询向量），两次调用完全一致
-    assert embedder.calls[0] == ["总结教学大纲讲了什么", "教学大纲"]
-    assert len(embedder.calls) == 2
-    assert [item.chunk.id for item in first] == [item.chunk.id for item in second]
-    assert all(item.score >= 0.05 for item in first)
-
-
-def test_retrieve_multi_for_question_single_variant_delegates_to_single_path():
-    """无变体可分（去重/过滤后只剩一条）→ 与既有单查询路径行为一致。"""
-    embedder = StaticEmbedder([[1.0, 0.0]])
-    multi = retrieve_multi_for_question(
-        ["监督学习有哪些任务"], _question_chunks(), embedder, top_k=2, minimum_score=0.05
-    )
-    direct = retrieve_for_question(
-        "监督学习有哪些任务", _question_chunks(), StaticEmbedder([[1.0, 0.0]]),
-        top_k=2, minimum_score=0.05,
-    )
-
-    assert [item.chunk.id for item in multi] == [item.chunk.id for item in direct]
-    assert embedder.calls == [["监督学习有哪些任务"]]
-
-
-def test_retrieve_multi_for_question_skips_blank_variants_and_empty_chunks():
-    embedder = StaticEmbedder([[1.0, 0.0]])
-
-    assert retrieve_multi_for_question(
-        ["", "   "], _question_chunks(), embedder, top_k=2, minimum_score=0.05
-    ) == []
-    assert retrieve_multi_for_question(
-        ["问题", "题"], [], embedder, top_k=2, minimum_score=0.05
-    ) == []
-    assert embedder.calls == []
-
-
-def test_retrieve_multi_for_question_wraps_embedder_failure():
-    class FailingEmbedder:
-        def embed_documents(self, texts):
-            raise RuntimeError("network down")
-
-        def embed_query(self, text):
-            raise RuntimeError("network down")
-
-        def embed_queries(self, texts):
-            raise RuntimeError("network down")
-
-    with pytest.raises(RetrievalConfigurationError, match="检索已中止"):
-        retrieve_multi_for_question(
-            ["问题", "题"], _question_chunks(), FailingEmbedder(), top_k=2, minimum_score=0.1
-        )
-
-
-def test_retrieve_multi_for_question_rejects_unsafe_configuration():
-    with pytest.raises(RetrievalConfigurationError):
-        retrieve_multi_for_question(
-            ["问题", "题"], _question_chunks(), StaticEmbedder([]), top_k=0, minimum_score=0.1
-        )
-
-
-@pytest.mark.parametrize("vectors", [[], [[1.0, 0.0]] * 3])
-def test_retrieve_multi_rejects_query_vector_count_mismatch(vectors):
-    """多查询批量返回数量与入参不符 → 配置类错误，不静默补齐或截断。"""
-    with pytest.raises(RetrievalConfigurationError, match="数量"):
-        retrieve_multi_for_question(
-            ["问题", "题"],
-            _question_chunks(),
-            StaticEmbedder(vectors),
-            top_k=2,
-            minimum_score=0.1,
-        )
-
-
-def test_retrieve_multi_uses_precomputed_semantic_scores_without_embedder():
-    """SQL 下推分：给定即完全不调嵌入，打分/量化/决胜与 Python cosine 路径同款。"""
-    chunks = _question_chunks()
-
-    # 等值对照：预计算分取 cosine([1,0], chunk) 的精确值（q1=1.0、q2=0.6）
-    scores = [{"q1": 1.0, "q2": 0.6}, {"q1": 1.0, "q2": 0.6}]
-    via_scores = retrieve_multi_for_question(
-        ["监督学习有哪些任务", "监督学习"], chunks, None,
-        top_k=4, minimum_score=0.0, semantic_scores=scores,
-    )
-    via_vectors = retrieve_multi_for_question(
-        ["监督学习有哪些任务", "监督学习"], chunks, StaticEmbedder([[1.0, 0.0], [1.0, 0.0]]),
-        top_k=4, minimum_score=0.0,
-    )
-
-    assert via_scores  # 双路径都召回
-    assert [
-        (item.chunk.id, item.score, item.lexical_score, item.semantic_score)
-        for item in via_scores
-    ] == [
-        (item.chunk.id, item.score, item.lexical_score, item.semantic_score)
-        for item in via_vectors
-    ]
-    assert via_scores[0].chunk.id == "q1"
-
-
-def test_retrieve_multi_single_variant_uses_scores_without_embedder():
-    chunks = _question_chunks()
-    direct = retrieve_for_question(
-        "监督学习有哪些任务", chunks, None,
-        top_k=2, minimum_score=0.0, semantic_scores={"q1": 1.0, "q2": 0.6},
-    )
-    via_multi = retrieve_multi_for_question(
-        ["监督学习有哪些任务"], chunks, None,
-        top_k=2, minimum_score=0.0, semantic_scores=[{"q1": 1.0, "q2": 0.6}],
-    )
-    assert [item.chunk.id for item in via_multi] == [item.chunk.id for item in direct]
-    assert direct and direct[0].chunk.id == "q1"
-
-
-def test_retrieve_multi_rejects_scores_variant_count_mismatch():
-    """预计算分与去重后变体数量不一致是编程错误，立即抛配置错误（上层降级词面）。"""
-    with pytest.raises(RetrievalConfigurationError, match="语义分与查询变体数量不一致"):
-        retrieve_multi_for_question(
-            ["问题", "题"], _question_chunks(), None,
-            top_k=2, minimum_score=0.05, semantic_scores=[{"q1": 1.0}],
-        )
-
-
-def test_lexical_rank_for_question_orders_by_overlap_without_embedder():
-    chunks = [
-        StagingChunk(id="a", material_version_id="v1", content="监督学习分为分类与回归。"),
-        StagingChunk(id="b", material_version_id="v1", content="实验使用 QLoRA 微调模型。"),
-    ]
-
-    ranked = lexical_rank_for_question("监督学习的分类", chunks, top_k=2, minimum_score=0.1)
-
-    assert ranked[0].chunk.id == "a"  # 词面重合度高的块在前
-    assert all(item.semantic_score == 0.0 for item in ranked)  # 词面路径不碰语义
-    assert all(item.score >= 0.1 for item in ranked)  # 低于阈值的块被过滤
-    assert all(item.chunk.id != "b" for item in ranked) or ranked[-1].score >= 0.1
-
-
-def test_lexical_rank_for_question_applies_top_k_deterministically():
-    chunks = [
-        StagingChunk(id="c1", material_version_id="v1", content="监督学习"),
-        StagingChunk(id="c2", material_version_id="v1", content="监督学习"),
-        StagingChunk(id="c3", material_version_id="v1", content="完全无关内容"),
-    ]
-
-    top = lexical_rank_for_question("监督学习", chunks, top_k=1, minimum_score=0.0)
-    full = lexical_rank_for_question("监督学习", chunks, top_k=3, minimum_score=0.0)
-
-    # top_k 截断 + 同分并列按 (content_hash, id) 决胜：与输入顺序无关
-    assert len(top) == 1
-    reversed_order = lexical_rank_for_question(
-        "监督学习", list(reversed(chunks)), top_k=1, minimum_score=0.0
-    )
-    assert [item.chunk.id for item in reversed_order] == [item.chunk.id for item in top]
-    assert len(full) == 3
-
-
-def test_lexical_rank_for_question_coverage_keeps_long_bodies():
-    """词面降级按查询覆盖率打分：长正文（Jaccard 恒低于阈值）不再被挤出，
-    同覆盖度时正文长者优先于短碎片（2026-10-12 词面召回碎片化修复）。"""
-    definition = (
-        "LangChain 是当前构建生产级 AI 智能体系统的首选开源框架，"
-        "在大模型与应用之间充当中间层，统一调用各类大模型并集成外部工具。"
-    )
-    chunks = [
-        StagingChunk(id="frag", material_version_id="v1", content="import langchain"),
-        StagingChunk(id="head", material_version_id="v1", content="第一步：LangChain 到底是什么"),
-        StagingChunk(id="body", material_version_id="v1", content=definition),
-        StagingChunk(id="noise", material_version_id="v1", content="实验环境使用 Python 3.10 与 conda。"),
-    ]
-
-    ranked = lexical_rank_for_question("langchain是什么", chunks, top_k=3, minimum_score=0.2)
-
-    # 全覆盖标题居首；定义正文段（覆盖率 0.25）进召回且同覆盖时压过短碎片
-    assert [item.chunk.id for item in ranked[:2]] == ["head", "body"]
-    assert ranked[0].score == 1.0
-    # 无关块（0 覆盖）依旧被阈值过滤
-    assert all(item.chunk.id != "noise" for item in ranked)
-
-
-def test_embedding_gateway_sorts_response_by_index_and_returns_vectors():
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(
-            200,
-            json={
-                "data": [
-                    {"index": 1, "embedding": [0.3, 0.4]},
-                    {"index": 0, "embedding": [0.1, 0.2]},
-                ]
-            },
-        )
-
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        gateway = OpenAICompatibleEmbeddingGateway(
-            base_url="https://embedding.invalid/v1/",
-            api_key="secret-token",
-            model="embedding-model",
-            client=client,
-        )
-        result = gateway.embed(["查询", "证据"])
-
-    assert result == [[0.1, 0.2], [0.3, 0.4]]
-    assert requests[0].url == httpx.URL("https://embedding.invalid/v1/embeddings")
-    assert requests[0].headers["Authorization"] == "Bearer secret-token"
-    assert (
-        requests[0].read()
-        == b'{"model":"embedding-model","input":["\xe6\x9f\xa5\xe8\xaf\xa2","\xe8\xaf\x81\xe6\x8d\xae"]}'
-    )
-
-
-def test_embedding_gateway_supports_dashscope_text_embedding_contract():
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(
-            200,
-            json={
-                "output": {
-                    "embeddings": [
-                        {"text_index": 1, "embedding": [0.3, 0.4]},
-                        {"text_index": 0, "embedding": [0.1, 0.2]},
-                    ]
-                }
-            },
-        )
-
-    endpoint = "https://embedding.invalid/api/v1/services/embeddings/text-embedding/text-embedding"
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        gateway = OpenAICompatibleEmbeddingGateway(
-            base_url=endpoint,
-            api_key="secret-token",
-            model="qwen3.7-text-embedding",
-            api_format="dashscope",
-            client=client,
-        )
-        result = gateway.embed(["查询", "证据"])
-
-    assert result == [[0.1, 0.2], [0.3, 0.4]]
-    assert requests[0].url == httpx.URL(endpoint)
-    assert (
-        requests[0].read()
-        == b'{"model":"qwen3.7-text-embedding","input":{"texts":["\xe6\x9f\xa5\xe8\xaf\xa2","\xe8\xaf\x81\xe6\x8d\xae"]}}'
-    )
-
-
-def test_embedding_gateway_accepts_dashscope_index_field_contract():
-    """现网 MaaS 返回 `index`（OpenAI 同构）而非旧契约 `text_index`（404 事故根因回归）。"""
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return httpx.Response(
-            200,
-            json={
-                "output": {
-                    "embeddings": [
-                        {"embedding": [0.3, 0.4], "index": 1, "type": "text"},
-                        {"embedding": [0.1, 0.2], "index": 0, "type": "text"},
-                    ]
-                }
-            },
-        )
-
-    endpoint = "https://embedding.invalid/api/v1/services/embeddings/text-embedding/text-embedding"
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        gateway = OpenAICompatibleEmbeddingGateway(
-            base_url=endpoint,
-            api_key="secret-token",
-            model="qwen3.7-text-embedding",
-            api_format="dashscope",
-            client=client,
-        )
-        result = gateway.embed(["查询", "证据"])
-
-    # 乱序返回须按 index 重排，且两键并存时 text_index 优先（上一用例已锁定 text_index）。
-    assert result == [[0.1, 0.2], [0.3, 0.4]]
-    assert requests[0].url == httpx.URL(endpoint)
-
-
-def test_embedding_gateway_prefers_text_index_when_both_index_keys_present():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={
-                "output": {
-                    "embeddings": [
-                        {"text_index": 0, "index": 7, "embedding": [0.1, 0.2]},
-                    ]
-                }
-            },
-        )
-
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        gateway = OpenAICompatibleEmbeddingGateway(
-            base_url="https://embedding.invalid/dashscope",
-            api_key="secret-token",
-            model="qwen3.7-text-embedding",
-            api_format="dashscope",
-            client=client,
-        )
-        assert gateway.embed(["查询"]) == [[0.1, 0.2]]
-
-
-def test_embedding_gateway_rejects_dashscope_item_without_any_index_key():
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200,
-            json={"output": {"embeddings": [{"embedding": [0.1, 0.2]}]}},
-        )
-
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        gateway = OpenAICompatibleEmbeddingGateway(
-            base_url="https://embedding.invalid/dashscope",
-            api_key="secret-token",
-            model="qwen3.7-text-embedding",
-            api_format="dashscope",
-            client=client,
-        )
-        with pytest.raises(EmbeddingGatewayError, match="invalid index"):
-            gateway.embed(["查询"])
-
-
-def test_dashscope_embedding_gateway_splits_requests_at_provider_limit():
-    requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        texts = json.loads(request.content)["input"]["texts"]
-        return httpx.Response(
-            200,
-            json={
-                "output": {
-                    "embeddings": [
-                        {"text_index": index, "embedding": [float(index + 1)]}
-                        for index in range(len(texts))
-                    ]
-                }
-            },
-        )
-
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        gateway = OpenAICompatibleEmbeddingGateway(
-            base_url="https://embedding.invalid/dashscope",
-            api_key="secret-token",
-            model="qwen3.7-text-embedding",
-            api_format="dashscope",
-            client=client,
-        )
-        result = gateway.embed([f"text-{index}" for index in range(21)])
-
-    assert [len(json.loads(request.content)["input"]["texts"]) for request in requests] == [20, 1]
-    assert len(result) == 21
-
-
-def test_embedding_gateway_returns_empty_without_sending_a_request():
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise AssertionError("empty input must not trigger HTTP")
-
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        gateway = OpenAICompatibleEmbeddingGateway(
-            base_url="https://embedding.invalid/v1",
-            api_key="secret-token",
-            model="embedding-model",
-            client=client,
-        )
-        assert gateway.embed([]) == []
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"data": [{"index": 0, "embedding": [0.1, 0.2]}]},
-        {
-            "data": [
-                {"index": 0, "embedding": [0.1, 0.2]},
-                {"index": 0, "embedding": [0.3, 0.4]},
-            ]
-        },
-        {
-            "data": [
-                {"index": 0, "embedding": []},
-                {"index": 1, "embedding": []},
-            ]
-        },
-        {
-            "data": [
-                {"index": 0, "embedding": [0.1, 0.2]},
-                {"index": 1, "embedding": [0.3]},
-            ]
-        },
-    ],
-)
-def test_embedding_gateway_rejects_invalid_response_shapes(payload):
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json=payload)
-
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        gateway = OpenAICompatibleEmbeddingGateway(
-            base_url="https://embedding.invalid/v1",
-            api_key="secret-token",
-            model="embedding-model",
-            client=client,
-        )
-        with pytest.raises(EmbeddingGatewayError):
-            gateway.embed(["sensitive input one", "sensitive input two"])
-
-
-@pytest.mark.parametrize("failure", ["http", "json"])
-def test_embedding_gateway_redacts_credentials_and_input_from_errors(failure):
-    api_key = "api-key-must-not-leak"
-    full_input = "complete private teaching material must not leak"
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        if failure == "http":
-            return httpx.Response(503, text=f"{api_key}: {full_input}")
-        return httpx.Response(200, text=f"not-json {api_key} {full_input}")
-
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        gateway = OpenAICompatibleEmbeddingGateway(
-            base_url="https://embedding.invalid/v1",
-            api_key=api_key,
-            model="embedding-model",
-            client=client,
-        )
-        with pytest.raises(EmbeddingGatewayError) as error:
-            gateway.embed([full_input])
-
-    assert api_key not in str(error.value)
-    assert full_input not in str(error.value)
-    assert error.value.__cause__ is None
-    assert error.value.__context__ is None
-
-
-def test_organization_retrieval_settings_have_safe_defaults(monkeypatch):
-    for variable in (
-        "EMBEDDING_BASE_URL",
-        "EMBEDDING_API_KEY",
-        "EMBEDDING_MODEL",
-        "EMBEDDING_API_FORMAT",
-        "ORGANIZATION_RETRIEVAL_TOP_K",
-        "ORGANIZATION_RETRIEVAL_MIN_SCORE",
-        "ORGANIZATION_MAX_WORKERS",
-    ):
-        monkeypatch.delenv(variable, raising=False)
-
-    settings = Settings(_env_file=None)
-
-    # embedding 的端点/模型名不设代码默认值：缺配置必须在使用处响亮失败。
-    assert settings.embedding_base_url == ""
-    assert settings.embedding_api_key == ""
-    assert settings.embedding_model == ""
-    assert settings.embedding_api_format == "openai"
-    assert settings.organization_retrieval_top_k == 12
-    # 陈述语料标定：0.40 等效语义门槛 0.62 超过可达 top1 中位数 0.60，
-    # 半数考点结构性零召回；0.30 使零召回归零（详见 config 注释）。
-    assert settings.organization_retrieval_min_score == 0.30
-    assert settings.organization_max_workers == 16
-
-
-@pytest.mark.parametrize(
-    ("variable", "value"),
-    [
-        ("ORGANIZATION_RETRIEVAL_TOP_K", "0"),
-        ("ORGANIZATION_RETRIEVAL_MIN_SCORE", "-0.01"),
-        ("ORGANIZATION_RETRIEVAL_MIN_SCORE", "1.01"),
-        ("ORGANIZATION_MAX_WORKERS", "0"),
-    ],
-)
-def test_organization_retrieval_settings_reject_invalid_environment_values(
-    monkeypatch, variable, value
-):
-    monkeypatch.setenv(variable, value)
-
-    with pytest.raises(ValidationError):
-        Settings()
-
-
-# ---------------------------------------------------------------------------
-# 检索后端开关：langchain（默认）与 custom（回滚）等价
-# ---------------------------------------------------------------------------
-
-
-def test_rag_retriever_backend_defaults_to_langchain(monkeypatch):
-    monkeypatch.delenv("RAG_RETRIEVER_BACKEND", raising=False)
-
-    assert Settings(_env_file=None).rag_retriever_backend == "langchain"
-
-
-def test_rag_retriever_backend_rejects_unknown_value(monkeypatch):
-    monkeypatch.setenv("RAG_RETRIEVER_BACKEND", "faiss")
-
-    with pytest.raises(ValidationError):
-        Settings(_env_file=None)
-
-
-def test_hybrid_retriever_langchain_backend_matches_custom(monkeypatch):
-    from app.config import settings
-
-    point = _exam_point(retrieval_intent="LangChain 中间层定位与作用")
-    chunks = [
-        StagingChunk(
-            id="matched",
-            material_version_id="material-1",
-            content="LangChain 是大模型与应用之间的中间层，负责统一调用与编排。",
-            embedding=[1.0, 0.0],
-        ),
-        StagingChunk(
-            id="noise",
-            material_version_id="material-1",
-            content="实验环境使用 Python 3.10 与 conda。",
-            embedding=[0.0, 1.0],
-        ),
-    ]
-    embedder = StaticEmbedder([[1.0, 0.0]])
+def test_retrieve_wraps_embedder_failure():
     retriever = HybridStagingRetriever(
-        embedder=embedder, top_k=8, minimum_score=0.1
+        embedder=FailingEmbedder([]), top_k=2, minimum_score=0.1
     )
 
-    monkeypatch.setattr(settings, "rag_retriever_backend", "custom")
-    custom = retriever.retrieve(point, chunks)
-    monkeypatch.setattr(settings, "rag_retriever_backend", "langchain")
-    modern = retriever.retrieve(point, chunks)
-
-    assert [item.chunk.id for item in modern] == [item.chunk.id for item in custom]
-    assert [
-        (item.score, item.lexical_score, item.semantic_score) for item in modern
-    ] == [
-        (item.score, item.lexical_score, item.semantic_score) for item in custom
-    ]
+    with pytest.raises(RetrievalConfigurationError):
+        retriever.retrieve(_exam_point(), _retrieval_chunks())
 
 
-def test_hybrid_retriever_multi_langchain_backend_matches_custom(monkeypatch):
-    from app.config import settings
-
-    point = _exam_point(retrieval_intent="提取该考点的考核内容、考核要求及对应知识点")
-    chunks = [
-        StagingChunk(
-            id="topic",
-            material_version_id="material-1",
-            content="LangChain四大支柱包括基础能力层与运行时编排层。",
-            embedding=[1.0, 0.0],
-        ),
-        StagingChunk(
-            id="other",
-            material_version_id="material-1",
-            content="实验环境使用 Python 3.10 与 conda。",
-            embedding=[0.0, 1.0],
-        ),
-    ]
+def test_retrieve_multi_merges_queries_by_highest_score():
+    chunks = _retrieval_chunks()
     retriever = HybridStagingRetriever(
-        embedder=StaticEmbedder([]), top_k=8, minimum_score=0.0
-    )
-    vectors = [[1.0, 0.0], [0.0, 1.0]]
-    texts = ["LangChain四大支柱与大模型硬伤解法", point.retrieval_intent]
-
-    monkeypatch.setattr(settings, "rag_retriever_backend", "custom")
-    custom = retriever.retrieve_multi(
-        point, chunks, query_vectors=vectors, query_texts=texts
-    )
-    monkeypatch.setattr(settings, "rag_retriever_backend", "langchain")
-    modern = retriever.retrieve_multi(
-        point, chunks, query_vectors=vectors, query_texts=texts
+        embedder=StaticEmbedder([]), top_k=2, minimum_score=0.0
     )
 
-    assert [item.chunk.id for item in modern] == [item.chunk.id for item in custom]
-    assert [
-        (item.score, item.lexical_score, item.semantic_score) for item in modern
-    ] == [
-        (item.score, item.lexical_score, item.semantic_score) for item in custom
+    ranked = retriever.retrieve_multi(
+        _exam_point(),
+        chunks,
+        query_vectors=[[1.0, 0.0], [0.0, 1.0]],
+        query_texts=["检索链路", "数据库"],
+    )
+
+    assert {item.chunk.id for item in ranked} == {"c1", "c2"}
+    assert [item.chunk.id for item in ranked] == [
+        item.chunk.id
+        for item in retriever.retrieve_multi(
+            _exam_point(),
+            chunks,
+            query_vectors=[[1.0, 0.0], [0.0, 1.0]],
+            query_texts=["检索链路", "数据库"],
+        )
     ]
 
+
+def test_retriever_rejects_unsafe_configuration():
+    with pytest.raises(RetrievalConfigurationError):
+        HybridStagingRetriever(embedder=StaticEmbedder([]), top_k=0, minimum_score=0.1)
+    with pytest.raises(RetrievalConfigurationError):
+        HybridStagingRetriever(embedder=StaticEmbedder([]), top_k=1, minimum_score=1.5)
+
+
+def test_embed_queries_returns_vectors_aligned_with_input():
+    retriever = HybridStagingRetriever(
+        embedder=StaticEmbedder([[1.0, 0.0], [0.0, 1.0]]), top_k=1, minimum_score=0.0
+    )
+
+    assert retriever.embed_queries(["检索", "数据库"]) == [[1.0, 0.0], [0.0, 1.0]]

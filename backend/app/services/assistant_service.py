@@ -30,6 +30,7 @@ from uuid import uuid4
 from sqlalchemy import Float, and_, func, select
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db.schema import (
     Course,
     assistant_messages,
@@ -51,7 +52,7 @@ from app.domain.blueprint.models import ASSESSMENT_MODES
 from app.domain.framework.exam_rules import canonical_question_type
 from app.domain.generation.archetypes import ARCHETYPE_CONTRACTS
 from app.domain.generation.question_formats import QUESTION_TEMPLATES
-from app.domain.knowledge.relevance import StagingChunk
+from app.domain.knowledge.relevance import RankedChunk, StagingChunk
 from app.domain.model_calls import ModelCallContext
 from app.infrastructure.tasks.models import TERMINAL_TASK_STATUSES, create_task_run
 from app.services import (
@@ -77,13 +78,22 @@ from app.services.content_index_service import (
     embedding_configured,
     ensure_embedded,
     load_content_chunks,
-    load_semantic_scores,
-    supports_semantic_pushdown,
+    ready_runs,
 )
-from app.services.staging_retrieval_service import (
-    RankedChunk,
-    lexical_rank_for_question,
-    retrieve_multi_for_question,
+from app.adapters.retrieval.errors import RetrievalConfigurationError
+from app.adapters.retrieval.langchain_documents import (
+    documents_to_ranked,
+    staging_chunk_to_document,
+)
+from app.adapters.retrieval.tokenization import query_token_coverage
+from app.adapters.retrieval.vector_store import (
+    PaperPactVectorStore,
+    detect_vector_backend,
+)
+from app.services.langchain_retrieval import (
+    HybridRetrievalChain,
+    build_assistant_retriever,
+    build_memory_vector_store,
 )
 
 logger = logging.getLogger("services.assistant")
@@ -124,16 +134,13 @@ REFUSED_REPLY = (
     "是里程碑操作不代劳，删除资料去「资料库」页，在线考试与阅卷不在本系统范围内。"
 )
 
-# 资料内容问答（RAG，助手 v2）：第 4 类路由——语料检索 + 段2 流式作答 + 来源引用卡
+# 资料内容问答（RAG，助手 v2）：第 4 类路由——语料检索 + 段2 流式作答 + 来源引用卡。
+# 检索链在 adapters/retrieval（VectorStore + BM25 + 加权 RRF + 多查询 + 邻域扩展），
+# 这里只保留召回规模/阈值/来源卡摘要三个口径。
 _RAG_TOP_K = 6
-_RAG_HYBRID_MIN_SCORE = 0.15
-_RAG_LEXICAL_MIN_SCORE = 0.2
+_RAG_HYBRID_MIN_SCORE = 0.15   # 向量通道的 cosine 下限（低于此不进融合）
+_RAG_LEXICAL_MIN_SCORE = 0.2    # 纯词面模式的查询覆盖率下限
 _RAG_SNIPPET_CHARS = 160        # 来源卡摘要长度
-_RAG_EXPAND_MIN_CHARS = 60      # 邻域扩展的正文下限（低于此为又一个标题）
-_RAG_EXPAND_PER_HIT = 2         # 每个命中最多带几个邻域正文块
-_RAG_EXPAND_MAX_TOTAL = 6       # 单轮邻域扩展总块数封顶（生成上下文可控）
-_RAG_SECTION_PER_HIT_CHARS = 600   # 无页码标题锚点：单锚点同节正文字数预算
-_RAG_SECTION_MAX_CHARS = 1000      # 无页码标题锚点：同节正文拉取总字数封顶
 _RAG_BLOCK_PROMPT_CHARS = 1500  # 单块进段2 prompt 的上限
 _RAG_FALLBACK_REPLY = "已检索到相关资料，回答见下："
 
@@ -1345,252 +1352,100 @@ def _rag_query_variants(question: str) -> list[str]:
     return variants
 
 
-def _retrieve_question_variants(
-    variants: list[str],
+def _rag_vector_store(
+    session: Session,
+    *,
+    course_id: str,
+    material_ids: list[str] | None,
     chunks: list[StagingChunk],
     embedder,
-    *,
-    semantic_scores: list[dict[str, float]] | None = None,
-) -> list[RankedChunk]:
-    """按 RAG_RETRIEVER_BACKEND 装配多查询检索：两条分支共用同一确定性核心。
+) -> PaperPactVectorStore | None:
+    """按当前库的能力装配向量后端（pgvector → JSON 下推 → 内存）。
 
-    custom=既有函数直调（默认/回滚）；langchain=经自定义 Retriever 的
-    Document 边界返回，再还原成 RankedChunk 供来源卡与邻域扩展使用。
+    SQL 后端（pgvector / JSON）在库内算 cosine，向量不过网络；内存后端只用于
+    SQLite 测试库与已装载向量的场景，块向量来自 ``load_content_chunks``。
     """
 
-    from app.config import settings
-
-    if settings.rag_retriever_backend == "langchain":
-        from app.adapters.retrieval.langchain_documents import documents_to_ranked
-        from app.services.langchain_retrieval import PaperPactHybridRetriever
-
-        retriever = PaperPactHybridRetriever(
-            chunks=chunks,
-            embedder=embedder,
-            top_k=_RAG_TOP_K,
-            minimum_score=_RAG_HYBRID_MIN_SCORE,
+    backend = detect_vector_backend(session)
+    documents = {chunk.id: staging_chunk_to_document(chunk) for chunk in chunks}
+    if backend in {"pgvector", "json"}:
+        runs = ready_runs(session, course_id=course_id, material_ids=material_ids)
+        model = settings.embedding_model.strip()
+        if not runs or not model:
+            return None
+        return PaperPactVectorStore(
+            embedding=embedder,
+            backend=backend,
+            documents_by_id=documents,
+            session=session,
+            course_id=course_id,
+            run_ids=[row["run_id"] for row in runs],
+            embedding_model=model,
         )
-        documents = retriever.retrieve_variants(
-            variants, semantic_scores=semantic_scores
-        )
-        return documents_to_ranked(documents, chunks)
-    return retrieve_multi_for_question(
-        variants,
-        chunks,
-        embedder,
-        top_k=_RAG_TOP_K,
-        minimum_score=_RAG_HYBRID_MIN_SCORE,
-        semantic_scores=semantic_scores,
-    )
+    return build_memory_vector_store(chunks, embedder)
 
 
 def _rank_rag_chunks(
-    question: str,
-    chunks: list[StagingChunk],
+    session: Session,
     *,
-    semantic_scores: list[dict[str, float]] | None = None,
-) -> tuple[str, list[RankedChunk]]:
-    """多查询混合检索（原问题+主题核心双变体，合并期同文折叠）；嵌入不可用
-    或混合无命中 → 纯词面（确定性降级，嵌入故障不断轮）。
-
-    semantic_scores：SQL 下推预计算的逐变体语义分（与 _rag_query_variants 对齐，
-    向量不出库）。给定且覆盖全部块 → 直接用预计算分打分；覆盖不全或缺省 → 回落
-    「装载向量 + Python cosine」旧路径（未装载向量时即纯词面）。
-    """
-
-    if embedding_configured():
-        try:
-            variants = _rag_query_variants(question)
-            scores_cover = (
-                semantic_scores is not None
-                and len(semantic_scores) == len(variants)
-                and all(
-                    chunk.id in scores for scores in semantic_scores for chunk in chunks
-                )
-            )
-            if scores_cover:
-                ranked = _retrieve_question_variants(
-                    variants,
-                    chunks,
-                    None,
-                    semantic_scores=semantic_scores,
-                )
-                if ranked:
-                    return "hybrid", ranked
-            elif all(chunk.embedding is not None for chunk in chunks):
-                ranked = _retrieve_question_variants(
-                    variants,
-                    chunks,
-                    build_embedder(),
-                )
-                if ranked:
-                    return "hybrid", ranked
-        except Exception as exc:  # noqa: BLE001 — 嵌入故障降级词面，不上抛
-            logger.warning("RAG 混合检索失败，降级词面: %s", exc)
-    return "lexical", lexical_rank_for_question(
-        question, chunks, top_k=_RAG_TOP_K, minimum_score=_RAG_LEXICAL_MIN_SCORE
-    )
-
-
-def _pageless_section_bodies(
-    anchor: RankedChunk, chunks: list[StagingChunk], picked: set[str]
-) -> list[StagingChunk]:
-    """无页码标题锚点的同节正文：heading_path 前缀匹配的正文块，按解析位置顺序。
-
-    md/txt 解析不产 page_index，「命中标题 → 带回本节正文」只能以章节结构为
-    邻域：前缀匹配把更深小节（如「术语定义」段落）一并纳入，字符预算在调用
-    侧封顶。
-    """
-
-    path = [str(h) for h in (anchor.chunk.locator.get("heading_path") or [])]
-    if not path:
-        return []
-    material_id = anchor.chunk.locator.get("material_id")
-    level = len(path)
-    return [
-        chunk
-        for chunk in chunks
-        if chunk.id not in picked
-        and chunk.locator.get("material_id") == material_id
-        and [str(h) for h in (chunk.locator.get("heading_path") or [])][:level] == path
-        and chunk.id != anchor.chunk.id
-        and len(chunk.content) >= _RAG_EXPAND_MIN_CHARS
-    ]
-
-
-def _pageless_neighbors(
-    anchor: RankedChunk,
+    course_id: str,
+    material_ids: list[str] | None,
     chunks: list[StagingChunk],
-    positions: dict[str, int],
-    picked: set[str],
-) -> list[StagingChunk]:
-    """无页码正文锚点的邻块：同资料解析顺序（装载序 = block_index 序）取前后邻块。
+    question: str,
+) -> tuple[str, list[RankedChunk]]:
+    """混合检索链：多查询变体 → 向量+BM25 加权 RRF → 邻域扩展。
 
-    后邻优先（正文/定义通常跟在命中块之后），再按距离、长度确定性排序。
+    嵌入不可用、或向量通道整体失败 → 降级纯词面（确定性，嵌入故障不断轮）；
+    纯词面模式先用查询覆盖率过滤候选，与旧版 ``lexical_rank_for_question`` 同语义。
     """
 
-    anchor_pos = positions.get(anchor.chunk.id)
-    if anchor_pos is None:
-        return []
-    material_id = anchor.chunk.locator.get("material_id")
-    candidates = [
-        chunk
-        for chunk in chunks
-        if chunk.id not in picked
-        and positions.get(chunk.id) is not None
-        and chunk.locator.get("material_id") == material_id
-        and len(chunk.content) >= _RAG_EXPAND_MIN_CHARS
-    ]
-    candidates.sort(
-        key=lambda chunk: (
-            abs(positions[chunk.id] - anchor_pos),
-            positions[chunk.id] < anchor_pos,  # False（后邻）先于 True（前邻）
-            -len(chunk.content),
+    embedder = build_embedder() if embedding_configured() else None
+    documents = [staging_chunk_to_document(chunk) for chunk in chunks]
+    if embedder is not None:
+        try:
+            store = _rag_vector_store(
+                session,
+                course_id=course_id,
+                material_ids=material_ids,
+                chunks=chunks,
+                embedder=embedder,
+            )
+            if store is not None:
+                chain = HybridRetrievalChain(
+                    documents=documents,
+                    vector_store=store,
+                    top_k=_RAG_TOP_K,
+                    score_threshold=_RAG_HYBRID_MIN_SCORE,
+                    embedder=embedder,
+                )
+                retriever = build_assistant_retriever(
+                    chain, documents=documents, variant_fn=_rag_query_variants
+                )
+                documents_hit = retriever.invoke(question)
+                if documents_hit:
+                    return "hybrid", documents_to_ranked(documents_hit, chunks)
+        except RetrievalConfigurationError as exc:
+            logger.warning("RAG 混合检索失败，降级词面: %s", exc)
+
+    variants = _rag_query_variants(question)
+    covered = [
+        document
+        for document in documents
+        if max(
+            query_token_coverage(variant, document.page_content) for variant in variants
         )
+        >= _RAG_LEXICAL_MIN_SCORE
+    ]
+    lexical_chain = HybridRetrievalChain(
+        documents=covered,
+        vector_store=None,
+        top_k=_RAG_TOP_K,
+        score_threshold=0.0,
     )
-    return candidates
-
-
-def _expand_rag_neighborhood(
-    ranked: list[RankedChunk], chunks: list[StagingChunk]
-) -> list[RankedChunk]:
-    """命中块邻域扩展：排序不变，每个命中附带同资料的邻近正文块。
-
-    「总结/讲了什么」类查询与正文天然低相似（实测正文表 rank #291），而命中
-    标题的同节正文恰好是被短块洪泛淹没的正文表——确定性地把它们带回生成上下文
-    与来源卡：
-    - 有页码定位（PDF 解析）：同资料、页码差 ≤1 的正文，同页优先于邻页；
-    - 无页码定位（md/txt 解析不产 page_index——旧版在此整条兜底链路死亡，
-      「术语定义」段落被更近的碎片挤出召回，2026-10-12 修复）：
-      * 标题块（正文 == heading_path 末级）→ 同节正文按解析位置顺序装入，
-        单锚点与全局各设字数预算——命中标题必然带回本节正文；
-      * 非标题块 → 前后邻块，走与页码邻域同款的轮转分配；
-    - 正文（len ≥ _RAG_EXPAND_MIN_CHARS，排除又一个标题）；同块只带一次
-      （多命中共享邻域去重，命中本身永不重复带入）；
-    - 扩展块分数继承锚点（分数只用于召回排序，扩展按附着顺序进入段2与来源卡）。
-    """
-
-    if not ranked:
-        return ranked
-    picked = {item.chunk.id for item in ranked}
-    positions = {chunk.id: index for index, chunk in enumerate(chunks)}
-    candidate_lists: list[tuple[RankedChunk, list[StagingChunk]]] = []
-    section_pulls: list[tuple[RankedChunk, list[StagingChunk]]] = []
-    for anchor in ranked:
-        anchor_page = anchor.chunk.locator.get("page_index")
-        if anchor_page is not None:
-            material_id = anchor.chunk.locator.get("material_id")
-            candidates = [
-                chunk
-                for chunk in chunks
-                if chunk.id not in picked
-                and chunk.locator.get("material_id") == material_id
-                and chunk.locator.get("page_index") is not None
-                and abs(chunk.locator["page_index"] - anchor_page) <= 1
-                and len(chunk.content) >= _RAG_EXPAND_MIN_CHARS
-            ]
-            candidates.sort(
-                key=lambda chunk: (
-                    abs(chunk.locator["page_index"] - anchor_page),
-                    -len(chunk.content),
-                )
-            )
-            candidate_lists.append((anchor, candidates))
-            continue
-        heading = [str(h) for h in (anchor.chunk.locator.get("heading_path") or [])]
-        if heading and anchor.chunk.content.strip() == heading[-1]:
-            section_pulls.append(
-                (anchor, _pageless_section_bodies(anchor, chunks, picked))
-            )
-        else:
-            candidate_lists.append(
-                (anchor, _pageless_neighbors(anchor, chunks, positions, picked))
-            )
-
-    expanded: list[RankedChunk] = []
-    for _round in range(_RAG_EXPAND_PER_HIT):
-        if len(expanded) >= _RAG_EXPAND_MAX_TOTAL:
-            break
-        for anchor, candidates in candidate_lists:
-            if len(expanded) >= _RAG_EXPAND_MAX_TOTAL:
-                break
-            target = next((c for c in candidates if c.id not in picked), None)
-            if target is None:
-                continue
-            picked.add(target.id)
-            expanded.append(
-                RankedChunk(
-                    chunk=target,
-                    score=anchor.score,
-                    lexical_score=anchor.lexical_score,
-                    semantic_score=anchor.semantic_score,
-                )
-            )
-
-    # 同节正文拉取（无页码标题锚点）：按锚点名次依次装入，单锚点/全局双字数
-    # 预算；不占轮转的块数封顶——字数预算已是上下文可控的同款约束
-    section_budget = _RAG_SECTION_MAX_CHARS
-    for anchor, bodies in section_pulls:
-        if section_budget <= 0:
-            break
-        taken = 0
-        for target in bodies:
-            if taken >= _RAG_SECTION_PER_HIT_CHARS or section_budget <= 0:
-                break
-            if target.id in picked:
-                continue
-            picked.add(target.id)
-            expanded.append(
-                RankedChunk(
-                    chunk=target,
-                    score=anchor.score,
-                    lexical_score=anchor.lexical_score,
-                    semantic_score=anchor.semantic_score,
-                )
-            )
-            taken += len(target.content)
-            section_budget -= len(target.content)
-    return ranked + expanded
+    retriever = build_assistant_retriever(
+        lexical_chain, documents=documents, variant_fn=_rag_query_variants
+    )
+    return "lexical", documents_to_ranked(retriever.invoke(question), chunks)
 
 
 def execute_rag(
@@ -1623,34 +1478,25 @@ def execute_rag(
 
     # 查询时自愈：历史数据/索引任务失败留下的缺向量块在 worker 内补嵌
     ensure_embedded(session, course_id=context["course_id"], material_ids=material_ids)
-    # 语义打分下推 PG：向量 JSON 不出库（59MB 全量拉取 → ~4MB 仅文本），SQL 内算
-    # cosine；非 PG 方言装载向量走旧路径，下推任一环失败降级词面——嵌入故障不断轮
-    pushdown = supports_semantic_pushdown(session)
+    # 向量后端（pgvector / JSON 下推）在库内算 cosine，向量 JSON 不出库；内存后端
+    # 只用于 SQLite 测试库——因此只有内存后端模式才装载向量列
+    backend = detect_vector_backend(session)
     chunks = load_content_chunks(
         session,
         course_id=context["course_id"],
         material_ids=material_ids,
-        include_embedding=not pushdown,
+        include_embedding=backend == "memory",
     )
     if not chunks:
         raise AssistantError("该范围没有可检索的资料内容")
 
-    semantic_scores = None
-    if pushdown and embedding_configured():
-        try:
-            query_vectors = build_embedder().embed_queries(_rag_query_variants(question))
-            semantic_scores = load_semantic_scores(
-                session,
-                course_id=context["course_id"],
-                material_ids=material_ids,
-                query_vectors=query_vectors,
-            )
-        except Exception as exc:  # noqa: BLE001 — 下推失败降级词面，不上抛
-            logger.warning("RAG 语义下推失败，降级词面: %s", exc)
-            semantic_scores = None
-
-    mode, ranked = _rank_rag_chunks(question, chunks, semantic_scores=semantic_scores)
-    ranked = _expand_rag_neighborhood(ranked, chunks)
+    mode, ranked = _rank_rag_chunks(
+        session,
+        course_id=context["course_id"],
+        material_ids=material_ids,
+        chunks=chunks,
+        question=question,
+    )
     payload = {
         "question": question,
         "material_id": material_id,

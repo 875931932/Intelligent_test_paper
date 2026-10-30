@@ -1,62 +1,34 @@
-"""Strict hybrid retrieval over explicitly supplied staging chunks."""
+"""考点检索门面：知识目录（``organization_graph``）的唯一检索入口。
+
+实现已全部迁到 ``adapters/retrieval`` 的 LangChain 组件（VectorStore / BM25 /
+加权 RRF）。本模块只保留两件事：
+1. 入参校验（top_k / minimum_score）与嵌入契约（批量嵌入 + 向量校验）；
+2. 把「多查询 × 混合检索」的结果按 chunk id 取最高分合并（任一查询召回的块
+   都进入候选，避免长查询把词面分稀释后整体落选）。
+
+对外签名保持不变，封存工作流无需改动。
+"""
 
 from __future__ import annotations
 
 import math
-import re
 from hashlib import sha256
 from numbers import Real
-from typing import Callable
 
 from langchain_core.embeddings import Embeddings
-from pydantic import BaseModel
 
+from app.adapters.retrieval.embedding_contract import embed_queries, embed_query
+from app.adapters.retrieval.errors import RetrievalConfigurationError
+from app.adapters.retrieval.langchain_documents import (
+    documents_to_ranked,
+    staging_chunk_to_document,
+)
 from app.domain.framework.exam_points import ExamPoint
-from app.domain.knowledge.relevance import StagingChunk
-
-
-# 查询嵌入统一走 LangChain ``Embeddings``：单查询 embed_query、多查询
-# embed_queries（PaperPactEmbeddings 保留一次批量请求）。
-class RankedChunk(BaseModel):
-    chunk: StagingChunk
-    score: float
-    lexical_score: float
-    semantic_score: float
-
-
-class RetrievalConfigurationError(RuntimeError):
-    """Raised when retrieval cannot safely rank the supplied staging snapshot."""
-
-
-def _query_vector(embedder: Embeddings, text: str) -> list[float]:
-    """单条查询嵌入 → 校验后的向量。
-
-    只有嵌入调用本身的失败（网络/网关错误）才转成 RetrievalConfigurationError，
-    调用方据此降级词面；向量校验错误原样上抛，不被下面那个宽 except 吞掉。
-    """
-
-    try:
-        raw_vector = embedder.embed_query(text)
-    except RetrievalConfigurationError:
-        raise
-    except Exception as exc:
-        raise RetrievalConfigurationError("嵌入服务调用失败，检索已中止") from exc
-    return _validated_vectors([raw_vector], expected_count=1)[0]
-
-
-def _query_vectors(embedder: Embeddings, texts: list[str]) -> list[list[float]]:
-    """多查询嵌入 → 校验后的向量（一次批量请求，顺序与入参一致）。"""
-
-    try:
-        raw_vectors = embedder.embed_queries(texts)
-    except RetrievalConfigurationError:
-        raise
-    except Exception as exc:
-        raise RetrievalConfigurationError("嵌入服务调用失败，检索已中止") from exc
-    return _validated_vectors(raw_vectors, expected_count=len(texts))
-
-
-MINIMUM_SEMANTIC_SCORE = 0.0
+from app.domain.knowledge.relevance import RankedChunk, StagingChunk
+from app.services.langchain_retrieval import (
+    HybridRetrievalChain,
+    build_memory_vector_store,
+)
 
 
 def _validate_configuration(*, top_k: int, minimum_score: float) -> None:
@@ -71,377 +43,17 @@ def _validate_configuration(*, top_k: int, minimum_score: float) -> None:
         raise RetrievalConfigurationError("minimum_score 必须是 0 到 1 之间的有限数值")
 
 
-def _lexical_tokens(text: str) -> set[str]:
-    tokens = {match.group(0).lower() for match in re.finditer(r"[A-Za-z0-9_]+", text)}
-    for sequence in re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff]+", text):
-        for width in (2, 3):
-            tokens.update(
-                sequence[index : index + width]
-                for index in range(len(sequence) - width + 1)
-            )
-    return tokens
-
-
-def lexical_overlap(left: str, right: str) -> float:
-    """Return language-agnostic Jaccard overlap for Chinese n-grams and ASCII tokens."""
-
-    left_tokens = _lexical_tokens(left)
-    right_tokens = _lexical_tokens(right)
-    union = left_tokens | right_tokens
-    if not union:
-        return 0.0
-    return len(left_tokens & right_tokens) / len(union)
-
-
-def query_token_coverage(query: str, content: str) -> float:
-    """查询侧覆盖率：|查询 ∩ 内容| / |查询|，分母与内容长度无关。
-
-    Jaccard（lexical_overlap）的分母是并集，块越长分越低——长正文无论多相关
-    都过不了阈值、只有含查询词的短碎片轻松过线。纯词面降级若沿用它排序，
-    召回会系统性丢掉全部正文、只剩标题/代码碎片（2026-10-12 修复）。
-    """
-
-    query_tokens = _lexical_tokens(query)
-    if not query_tokens:
-        return 0.0
-    content_tokens = _lexical_tokens(content)
-    return len(query_tokens & content_tokens) / len(query_tokens)
-
-
-def cosine_similarity(left: list[float], right: list[float]) -> float:
-    left_norm = math.hypot(*left)
-    right_norm = math.hypot(*right)
-    similarity = math.fsum(
-        (a / left_norm) * (b / right_norm) for a, b in zip(left, right, strict=True)
-    )
-    return max(-1.0, min(1.0, similarity))
-
-
-def _validated_vectors(
-    raw_vectors: object, *, expected_count: int
-) -> list[list[float]]:
-    if not isinstance(raw_vectors, list) or len(raw_vectors) != expected_count:
-        raise RetrievalConfigurationError("嵌入向量数量与检索文本数量不一致")
-
-    vectors: list[list[float]] = []
-    expected_dimension: int | None = None
-    for raw_vector in raw_vectors:
-        if not isinstance(raw_vector, list) or not raw_vector:
-            raise RetrievalConfigurationError("嵌入服务返回了空向量")
-        try:
-            vector = [float(value) for value in raw_vector]
-        except (TypeError, ValueError) as exc:
-            raise RetrievalConfigurationError("嵌入向量必须只包含数值") from exc
-        if not all(math.isfinite(value) for value in vector):
-            raise RetrievalConfigurationError("嵌入向量必须只包含有限数值")
-        norm = math.hypot(*vector)
-        if norm == 0:
-            raise RetrievalConfigurationError("嵌入向量不能是零范数向量")
-        if not math.isfinite(norm):
-            raise RetrievalConfigurationError("嵌入向量必须具有有限范数")
-        if expected_dimension is None:
-            expected_dimension = len(vector)
-        elif len(vector) != expected_dimension:
-            raise RetrievalConfigurationError("嵌入向量维度不一致")
-        vectors.append(vector)
-    return vectors
-
-
-def _chunk_content_hash(chunk: StagingChunk) -> str:
-    """排序决胜键：优先 content_hash，退化为内容哈希。"""
+def _chunk_key(chunk: StagingChunk) -> str:
+    """确定性决胜键：优先 content_hash，退化为内容哈希。"""
 
     if getattr(chunk, "content_hash", None):
         return str(chunk.content_hash)
     return sha256(chunk.content.encode()).hexdigest()
 
 
-def _dedup_key(text: str) -> str:
-    """同文折叠键：忽略空白与表单下划线串，跨文档模板碎片（表头/填空线）归一。"""
-
-    return re.sub(r"[\s_＿—－\-]+", "", text)
-
-
-def _merge_ranked_groups(
-    ranked_groups: list[list[RankedChunk]],
-    *,
-    top_k: int,
-    key: Callable[[RankedChunk], str],
-) -> list[RankedChunk]:
-    """多查询结果合并：按 key 归并同项取最高分，确定性排序后截断 top_k。"""
-
-    by_key: dict[str, RankedChunk] = {}
-    for ranked in ranked_groups:
-        for item in ranked:
-            k = key(item)
-            existing = by_key.get(k)
-            if existing is None or item.score > existing.score:
-                by_key[k] = item
-    merged = sorted(
-        by_key.values(),
-        key=lambda item: (-item.score, _chunk_content_hash(item.chunk), item.chunk.id),
-    )
-    return merged[:top_k]
-
-
-def retrieve_for_exam_point(
-    point: ExamPoint,
-    chunks: list[StagingChunk],
-    embedder: Embeddings,
-    *,
-    top_k: int,
-    minimum_score: float,
-    query_vector: list[float] | None = None,
-    query_text: str | None = None,
-) -> list[RankedChunk]:
-    """Rank the supplied snapshot using its persisted chunk embeddings.
-
-    query_text 是本次查询原文（词法项据此打分），缺省退回考点 retrieval_intent。
-    多路查询时向量可能来自考点名 / 考核要求展开串，若词法项仍锚在 intent，
-    展开查询只剩语义召回——短标题最精准的词面信号被丢掉（2026-10-06 修复）。
-    """
-
-    _validate_configuration(top_k=top_k, minimum_score=minimum_score)
-    if not chunks:
-        return []
-
-    if query_vector is None:
-        query_vector = _query_vector(embedder, point.retrieval_intent)
-    return _rank_hybrid(
-        intent=query_text or point.retrieval_intent,
-        chunks=chunks,
-        query_vector=query_vector,
-        top_k=top_k,
-        minimum_score=minimum_score,
-    )
-
-
-def retrieve_for_question(
-    question: str,
-    chunks: list[StagingChunk],
-    embedder: Embeddings | None,
-    *,
-    top_k: int,
-    minimum_score: float,
-    query_vector: list[float] | None = None,
-    semantic_scores: dict[str, float] | None = None,
-) -> list[RankedChunk]:
-    """资料内容问答（助手 RAG）的混合检索：与 exam point 同款打分/量化/决胜，入参为裸问题串。
-
-    semantic_scores 给定（SQL 下推预计算）→ 不调嵌入、不带查询向量直接打分；
-    缺省维持原路径（嵌入查询向量 + 库内块向量）。
-    """
-
-    _validate_configuration(top_k=top_k, minimum_score=minimum_score)
-    if not chunks:
-        return []
-
-    if query_vector is None and semantic_scores is None:
-        query_vector = _query_vector(embedder, question)
-    return _rank_hybrid(
-        intent=question,
-        chunks=chunks,
-        query_vector=query_vector,
-        top_k=top_k,
-        minimum_score=minimum_score,
-        semantic_scores=semantic_scores,
-    )
-
-
-def retrieve_multi_for_question(
-    question_variants: list[str],
-    chunks: list[StagingChunk],
-    embedder: Embeddings | None,
-    *,
-    top_k: int,
-    minimum_score: float,
-    semantic_scores: list[dict[str, float]] | None = None,
-) -> list[RankedChunk]:
-    """多查询资料问答检索：变体一次批量嵌入，各查询独立打分后同文折叠合并。
-
-    变体为确定性改写（通常 [原问题, 去问句框架的主题串]），词面/语义各按自身
-    文本打分；合并期按归一文本折叠近重复——跨文档模板碎片（表头「教学班：____」
-    之类，同一课程里可有十几份同文副本）只保留得分最高的一份，正文块才可能
-    进 top_k。单变体直接走单查询路径（行为与既有完全一致）。
-
-    semantic_scores 给定（SQL 下推预计算，按去重后变体对齐）→ 跳过批量嵌入，
-    直接用预计算语义分打分；缺省维持原路径（批量嵌入 + 库内块向量）。
-    """
-
-    _validate_configuration(top_k=top_k, minimum_score=minimum_score)
-    if not chunks:
-        return []
-    variants = [v for v in dict.fromkeys(question_variants) if v.strip()]
-    if not variants:
-        return []
-    if semantic_scores is not None and len(semantic_scores) != len(variants):
-        raise RetrievalConfigurationError("预计算语义分与查询变体数量不一致")
-    if len(variants) == 1:
-        return retrieve_for_question(
-            variants[0],
-            chunks,
-            embedder,
-            top_k=top_k,
-            minimum_score=minimum_score,
-            semantic_scores=semantic_scores[0] if semantic_scores else None,
-        )
-    if semantic_scores is None:
-        query_vectors = _query_vectors(embedder, variants)
-        score_maps: list[dict[str, float] | None] = [None] * len(variants)
-    else:
-        query_vectors = [None] * len(variants)
-        score_maps = list(semantic_scores)
-    ranked_groups = [
-        retrieve_for_question(
-            variant,
-            chunks,
-            embedder,
-            top_k=len(chunks),
-            minimum_score=minimum_score,
-            query_vector=vector,
-            semantic_scores=scores,
-        )
-        for variant, vector, scores in zip(variants, query_vectors, score_maps)
-    ]
-    return _merge_ranked_groups(
-        ranked_groups, top_k=top_k, key=lambda item: _dedup_key(item.chunk.content)
-    )
-
-
-def lexical_rank_for_question(
-    question: str,
-    chunks: list[StagingChunk],
-    *,
-    top_k: int,
-    minimum_score: float,
-) -> list[RankedChunk]:
-    """纯词面降级：嵌入不可用（未配置/调用失败/向量缺失）时按查询覆盖率打分。
-
-    覆盖率分母是查询 token 集（见 query_token_coverage）：长正文块不再被并集
-    分母系统性挤出阈值——否则语义降级时召回只剩标题/代码碎片，正文彻底出局。
-    semantic=0、score=覆盖率，同款 3 位量化；同覆盖度时正文长者优先（更长 =
-    信息量越大，与邻域扩展同选块原则），content_hash 决胜，排序依旧确定。
-    """
-
-    _validate_configuration(top_k=top_k, minimum_score=minimum_score)
-    if not chunks:
-        return []
-    ranked: list[RankedChunk] = []
-    for chunk in chunks:
-        coverage = query_token_coverage(question, chunk.content)
-        if coverage >= float(minimum_score):
-            ranked.append(
-                RankedChunk(
-                    chunk=chunk,
-                    score=coverage,
-                    lexical_score=coverage,
-                    semantic_score=0.0,
-                )
-            )
-    for item in ranked:
-        item.score = round(item.score, 3)
-    ranked.sort(
-        key=lambda item: (
-            -item.score,
-            -len(item.chunk.content),
-            _chunk_content_hash(item.chunk),
-            item.chunk.id,
-        )
-    )
-    return ranked[:top_k]
-
-
-def _rank_hybrid(
-    *,
-    intent: str,
-    chunks: list[StagingChunk],
-    query_vector: list[float] | None = None,
-    top_k: int,
-    minimum_score: float,
-    semantic_scores: dict[str, float] | None = None,
-) -> list[RankedChunk]:
-    """0.35 词面覆盖率 + 0.65 语义混合打分。
-
-    semantic_scores 给定（SQL 下推预计算的 {block_id: cosine}，向量不出库）→
-    直接取分，不再校验库内向量；缺省 → 校验全部块向量后 Python cosine
-    （维度不齐/零范数直接抛配置错误）。两条路径的打分/量化/决胜完全同款。
-
-    词面项 2026-10-13 由 Jaccard 改查询覆盖率（query_token_coverage）：
-    Jaccard 分母是并集，对「考点名查询 vs 陈述正文」恒≈0——生产实测考点检索
-    词面项 0.00~0.07，0.35 权重只贡献 ~0.01 分，词面通道整体失灵；覆盖率分母
-    是查询集，与查询共享术语的陈述获得真实加成（实测最佳命中 0.044→0.286，
-    与噪声带分差 0.096→0.181）。数学上覆盖率 ≥ Jaccard 恒成立 → 分数单调
-    不降，已过阈值的块绝不掉出，召回只增不减。助手 hybrid 路径同源受益。
-    """
-
-    if semantic_scores is None:
-        if query_vector is None:
-            raise RetrievalConfigurationError("缺少查询向量或预计算语义分")
-        vectors = _validated_vectors(
-            [query_vector, *(chunk.embedding for chunk in chunks)],
-            expected_count=len(chunks) + 1,
-        )
-        query_vector, chunk_vectors = vectors[0], vectors[1:]
-    else:
-        chunk_vectors = None
-
-    ranked: list[RankedChunk] = []
-    for index, chunk in enumerate(chunks):
-        lexical_score = query_token_coverage(intent, chunk.content)
-        if semantic_scores is not None:
-            semantic_score = semantic_scores[chunk.id]
-        else:
-            semantic_score = cosine_similarity(query_vector, chunk_vectors[index])
-        if semantic_score <= MINIMUM_SEMANTIC_SCORE:
-            continue
-        score = 0.35 * lexical_score + 0.65 * semantic_score
-        if score >= float(minimum_score):
-            ranked.append(
-                RankedChunk(
-                    chunk=chunk,
-                    score=score,
-                    lexical_score=lexical_score,
-                    semantic_score=semantic_score,
-                )
-            )
-
-    # 分数量化到 3 位小数：嵌入 API 对同文本返回的向量存在尾级浮点微扰，
-    # 若直接按 float 排序，截断边界附近的 chunk 顺序会在 run 间抖动，导致
-    # 分类 prompt 变化、响应缓存永不命中。量化后配合 content_hash 决胜，
-    # 同一资料快照的召回集合与顺序完全确定。
-    for item in ranked:
-        item.score = round(item.score, 3)
-    ranked.sort(
-        key=lambda item: (
-            -item.score,
-            _chunk_content_hash(item.chunk),
-            item.chunk.id,
-        )
-    )
-    return ranked[:top_k]
-
-
-def _retrieval_backend() -> str:
-    """检索后端选择（RAG_RETRIEVER_BACKEND）：默认 langchain，custom 为回滚路径。"""
-
-    from app.config import settings
-
-    return settings.rag_retriever_backend
-
-
-def _langchain_retriever(
-    *, embedder: Embeddings, top_k: int, minimum_score: float
-):
-    from app.services.langchain_retrieval import PaperPactHybridRetriever
-
-    return PaperPactHybridRetriever(
-        chunks=[],
-        embedder=embedder,
-        top_k=top_k,
-        minimum_score=minimum_score,
-    )
-
-
 class HybridStagingRetriever:
+    """向量 + BM25 混合检索（加权 RRF），面向考点/问题两类查询。"""
+
     def __init__(
         self,
         *,
@@ -455,14 +67,22 @@ class HybridStagingRetriever:
         self.minimum_score = float(minimum_score)
 
     def embed_query(self, exam_point: ExamPoint) -> list[float]:
-        """考点检索的单查询嵌入（入参是考点，取 retrieval_intent 作文本）。"""
+        """考点检索的单查询嵌入（取 retrieval_intent 作文本）。"""
 
-        return _query_vector(self.embedder, exam_point.retrieval_intent)
+        return embed_query(self.embedder, exam_point.retrieval_intent)
 
     def embed_queries(self, texts: list[str]) -> list[list[float]]:
-        if not texts:
-            return []
-        return _query_vectors(self.embedder, texts)
+        return embed_queries(self.embedder, texts)
+
+    def _chain(self, chunks: list[StagingChunk]) -> HybridRetrievalChain:
+        documents = [staging_chunk_to_document(chunk) for chunk in chunks]
+        return HybridRetrievalChain(
+            documents=documents,
+            vector_store=build_memory_vector_store(chunks, self.embedder),
+            top_k=self.top_k,
+            score_threshold=self.minimum_score,
+            embedder=self.embedder,
+        )
 
     def retrieve(
         self,
@@ -472,26 +92,13 @@ class HybridStagingRetriever:
         query_vector: list[float] | None = None,
         query_text: str | None = None,
     ) -> list[RankedChunk]:
-        if _retrieval_backend() == "langchain":
-            return _langchain_retriever(
-                embedder=self.embedder,
-                top_k=self.top_k,
-                minimum_score=self.minimum_score,
-            ).retrieve_exam_point(
-                exam_point,
-                chunks,
-                query_vector=query_vector,
-                query_text=query_text,
-            )
-        return retrieve_for_exam_point(
-            exam_point,
-            chunks,
-            self.embedder,
-            top_k=self.top_k,
-            minimum_score=self.minimum_score,
+        if not chunks:
+            return []
+        documents = self._chain(chunks).search(
+            query_text or exam_point.retrieval_intent,
             query_vector=query_vector,
-            query_text=query_text,
         )
+        return _finalize(documents_to_ranked(documents, chunks), self.top_k)
 
     def retrieve_multi(
         self,
@@ -501,48 +108,35 @@ class HybridStagingRetriever:
         query_vectors: list[list[float]],
         query_texts: list[str] | None = None,
     ) -> list[RankedChunk]:
-        """多查询混合检索：各查询独立打分，按 chunk 取最高分合并去重后截断 top_k。
+        """多查询混合检索：各查询独立融合，按 chunk id 取最高分合并后截断 top_k。"""
 
-        每个查询先过 minimum_score 过滤，再并集合并，保证任一查询能召回的块
-        都进入候选，避免长查询词法分数被稀释而整体落选。query_texts 与
-        query_vectors 对齐（词法项用各自查询原文）；缺省退化为考点 retrieval_intent。
-        """
-        if not query_vectors:
+        if not query_vectors or not chunks:
             return []
         if query_texts is None:
             query_texts = [exam_point.retrieval_intent] * len(query_vectors)
-        if _retrieval_backend() == "langchain":
-            retriever = _langchain_retriever(
-                embedder=self.embedder,
-                top_k=len(chunks),
-                minimum_score=self.minimum_score,
-            )
-            ranked_groups = [
-                retriever.retrieve_exam_point(
-                    exam_point,
-                    chunks,
-                    query_vector=query_vector,
-                    query_text=query_text,
-                )
-                for query_vector, query_text in zip(
-                    query_vectors, query_texts, strict=True
-                )
-            ]
-        else:
-            ranked_groups = [
-                retrieve_for_exam_point(
-                    exam_point,
-                    chunks,
-                    self.embedder,
-                    top_k=len(chunks),
-                    minimum_score=self.minimum_score,
-                    query_vector=query_vector,
-                    query_text=query_text,
-                )
-                for query_vector, query_text in zip(
-                    query_vectors, query_texts, strict=True
-                )
-            ]
-        return _merge_ranked_groups(
-            ranked_groups, top_k=self.top_k, key=lambda item: item.chunk.id
-        )
+        chain = self._chain(chunks)
+        merged: dict[str, RankedChunk] = {}
+        for query_vector, query_text in zip(query_vectors, query_texts, strict=True):
+            for item in documents_to_ranked(
+                chain.search(query_text, query_vector=query_vector, limit=len(chunks)),
+                chunks,
+            ):
+                existing = merged.get(item.chunk.id)
+                if existing is None or item.score > existing.score:
+                    merged[item.chunk.id] = item
+        return _finalize(list(merged.values()), self.top_k)
+
+
+def _finalize(items: list[RankedChunk], top_k: int) -> list[RankedChunk]:
+    """分数量化 + 确定性排序 + 截断。
+
+    RRF 只看排名，分数本身已不受嵌入尾级浮点噪声影响；量化到 3 位是为了让
+    ``retrieval_score``（观测列）可读，且截断边界附近的顺序在 run 间稳定。
+    """
+
+    for item in items:
+        item.score = round(item.score, 3)
+    items.sort(
+        key=lambda item: (-item.score, _chunk_key(item.chunk), item.chunk.id)
+    )
+    return items[:top_k]

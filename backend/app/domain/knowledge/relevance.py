@@ -23,6 +23,20 @@ class StagingChunk(BaseModel):
     embedding: list[float] | None = None
 
 
+class RankedChunk(BaseModel):
+    """检索结果：块 + 融合分（排序权威）+ 词面分/语义分（观测与调参用）。
+
+    打分由 LangChain 检索链产出（``adapters/retrieval``）：``score`` 是融合后的
+    归一 RRF 分（0~1），``lexical_score``/``semantic_score`` 是各通道自身的原始
+    信号，仅用于日志与来源卡展示，不参与排序。
+    """
+
+    chunk: StagingChunk
+    score: float
+    lexical_score: float
+    semantic_score: float
+
+
 # 情境绑定语：把内容锚定到特定实验运行（案例讲解的叙述背景）而非可迁移
 # 知识。知识卡是 RAG 检索库的源头，案例叙述（"失衡问题出现在上一轮训练中"
 # "本次实验使用 Qwen3-0.6B"）必须在入库前剥离情境或丢弃——只保留其承载

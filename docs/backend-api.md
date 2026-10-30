@@ -1008,19 +1008,20 @@ schema 自 `1.2.0` 起新增该字段；逐题带 `rubric`（主观题评分细�
     未解析引导先解析）；不传则限定**全课程已解析资料**（无已解析资料时带反馈重试后落确定性文案）；
   - 问题 = 教师原话（`route_intent(message=...)` 原样下传，不经模型转述）；
   - worker 内：`ensure_embedded` 自愈缺向量块（历史数据/任务失败兜底）→ `load_content_chunks`
-    装载（仅 staged 最新版本最新 ready run 的块）→ 检索：**多查询混合**——确定性改写出双变体
-    （原问题 + 去问句框架的主题核心，如「总结教学大纲讲了什么？」→「教学大纲」），一次批量嵌入，
-    各变体独立打分（混合 `0.35 词面 + 0.65 语义`，`top_k=6`、hybrid min 0.15），合并期按归一文本
-    折叠近重复（跨文档同文模板碎片只留得分最高一份，正文块才进得了 top_k；单变体退化为既有单查询）；
-    语义打分可**下推 PG 库内算**（`load_semantic_scores` unnest 向量逐变体算 cosine，向量不过网络，
-    实测 59MB/轮 → ~4MB；非 PG 方言/查询向量非法 → 返回 None 回落装载向量旧路径，任一环失败再降
-    词面，嵌入故障不断轮）；装载时剔除清洗后无正文的结构残片（`<details>` 类——不可嵌入的块混入会让
-    「全部块带向量」门恒假，混合检索永不点亮，与 `ensure_embedded` 可嵌入判据同源根治）；
-    命中后**邻域扩展**（`_expand_rag_neighborhood`）：每个命中附带同资料同/邻页的正文块
+    装载（仅 staged 最新版本最新 ready run 的块）→ 检索：**LangChain 混合链**——确定性改写出
+    双变体（原问题 + 去问句框架的主题核心，如「总结教学大纲讲了什么？」→「教学大纲」），
+    每个变体走 `PaperPactVectorStore`（cosine 阈值 0.15）+ `BM25Retriever` 的**加权 RRF**
+    （0.65 / 0.35，`rank_constant=60`，归一化分母取配置权重之和），再经 `MultiVariantRetriever`
+    融合并按归一文本折叠近重复（跨文档同文模板碎片只留得分最高一份，正文块才进得了 top_k），
+    `top_k=6`；向量计算位置由 `detect_vector_backend` 决定（pgvector `<=>` / 无扩展时的
+    JSON `unnest` 库内余弦 / SQLite 内存余弦，向量均不出库），装配失败或嵌入失败 → 纯词面
+    降级（覆盖率预筛 + BM25，嵌入故障不断轮）；装载时剔除清洗后无正文的结构残片
+    （`<details>` 类——不可嵌入的块混入会让「全部块带向量」门恒假）；
+    命中后**邻域扩展**（`NeighborhoodExpansionRetriever`）：每个命中附带同资料同/邻页的正文块
     （len≥60 排除又一个标题；同页优先、长块优先，轮转分配保证后位命中不吃光预算，
-    同块只带一次、单轮封顶 6 块）进段2 与来源卡——「总结类」问题与正文天然低相似、
-    短标题必胜（实测正文表 rank #291），据此把被短块洪泛淹没的正文表/长段确定性捞回；
-    嵌入未配置/失败/向量缺失 → 纯词面降级（Jaccard 2/3-gram，min 0.2）；
+    同块只带一次、单轮封顶 6 块）；md/txt 无页码时按 heading_path 前缀拉同节正文
+    （单锚点 600 字 / 全局 1000 字预算），正文锚点取前后邻块且后邻优先——
+    「总结类」问题与正文天然低相似、短标题必胜，据此把被短块洪泛淹没的正文确定性捞回；
   - 段2 流式用 `answer_material_content` 专用 grounding prompt（temperature 0.3，只依据片段作答，
     找不到就说找不到；拒绝话术第 6 条：全文照抄/朗读仍拒，`read_material_content` 保持在 `REFUSED_TOOLS`）；
   - 命中：`action={kind:"sources", tool, args, status:"completed", payload:{question,
@@ -1029,15 +1030,13 @@ schema 自 `1.2.0` 起新增该字段；逐题带 `rubric`（主观题评分细�
     前端来源卡展示片段出处 + 每条「查看原文」经 materials content 端点定位
     （该块±上下文窗口）与「打开资料库」CTA（score 不进 payload，避免把相关度当可信度）；
     无命中 → `action={}`（普通问答形态，正文说明没找到，不落卡）。
-  - **检索抽象层（LangChain 适配）**：`RAG_RETRIEVER_BACKEND=langchain|custom`
-    （默认 `langchain`，`custom` 为无损回滚路径；非法值配置解析期直接报错）。`langchain`
-    分支只替换「检索结果获取」：`PaperPactEmbeddings`（转发既有嵌入网关）、
-    `StagingChunk/RankedChunk → Document`（正文 + chunk/资料/页码/标题定位 + 三项分数，
-    不含向量）、自定义 `PaperPactHybridRetriever` 委托同一确定性核心。排序、阈值、去重、
-    同文折叠、资料范围过滤、SQL 语义下推、邻域扩展与词面降级**仍全部由 PaperPact
-    自定义服务负责**，LangChain 不接管打分、不引入向量数据库；来源卡与 SSE 协议不变。
-    等价性与回滚由 `tests/unit/test_langchain_*.py`、`test_staging_retrieval.py` 中的
-    custom/langchain 对照用例覆盖。无结果时不生成未经资料支持的答案。
+  - **检索链装配（LangChain）**：`services/langchain_retrieval.py` 负责选向量后端、配权重与
+    阈值、`Document ↔ StagingChunk` 互转；组件本体在 `adapters/retrieval/`：
+    `PaperPactVectorStore`（pgvector / JSON 下推 / 内存三后端）、`BM25Retriever`（零依赖、
+    中英混排 n-gram）、`WeightedRRFRetriever`（加权倒数排名融合）、`MultiVariantRetriever`
+    （确定性多查询 + 同文折叠）、`NeighborhoodExpansionRetriever`（邻域扩展）。
+    排序权威是 RRF 融合分，`lexical_score`/`semantic_score` 只作观测；
+    `minimum_score` 仅过滤向量通道 cosine。无结果时不生成未经资料支持的答案。
   - **嵌入接口统一（LangChain `Embeddings`）**：入库与查询的嵌入入口统一是
     `PaperPactEmbeddings`（`build_embedder()` / `get_organization_embedder()` 唯一出口），
     内层仍是 `OpenAICompatibleEmbeddingGateway`——批量上限、响应校验与失败语义不变。
@@ -1052,7 +1051,11 @@ schema 自 `1.2.0` 起新增该字段；逐题带 `rubric`（主观题评分细�
   只作用于嵌入输入，生成上下文仍用原块 HTML），清洗逻辑 bump `EMBEDDING_TEXT_VERSION`
   后按 `embedding_text_version < 当前版本` 自动重嵌（全库重嵌跑
   `scripts/reembed_content_blocks.py`，已实测：清洗对排序无增益，捞回正文靠邻域扩展）；
-  由 `app/db/init_db.py` 幂等迁移（无 Alembic）。索引任务 `task_runs(material_index)`
+  由 `app/db/init_db.py` 幂等迁移（无 Alembic）；有 pgvector 扩展时另建
+  `embedding_vec vector(n)` + HNSW(`vector_cosine_ops`) 并由 `_backfill_content_block_vectors`
+  就地回填（JSON → vector 的库内转换，不调嵌入 API）；无扩展/维度不符时检索自动退到
+  JSON 下推或内存后端，不影响功能。
+  索引任务 `task_runs(material_index)`
   （幂等键 `material_index:{run_id}`，lease 300s）在 worker 内调嵌入，端点只入队（§3.5/§3.6）。
 
 ### 10.6 会话管理（v3 多会话）

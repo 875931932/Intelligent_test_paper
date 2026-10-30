@@ -1,17 +1,14 @@
-"""StagingChunk / RankedChunk 到 LangChain Document 的单向适配。"""
+"""StagingChunk / RankedChunk 与 LangChain Document 的边界转换。"""
 
 from __future__ import annotations
 
 import pytest
 
 from app.adapters.retrieval.langchain_documents import (
-    document_metadata,
     documents_to_ranked,
-    ranked_chunk_to_document,
     staging_chunk_to_document,
 )
-from app.domain.knowledge.relevance import StagingChunk
-from app.services.staging_retrieval_service import RankedChunk
+from app.domain.knowledge.relevance import RankedChunk, StagingChunk
 
 
 def _chunk() -> StagingChunk:
@@ -46,26 +43,6 @@ def test_staging_chunk_maps_content_and_locator_metadata():
     assert "embedding" not in document.metadata
 
 
-def test_ranked_chunk_maps_scores_and_keeps_page_none():
-    chunk = StagingChunk(
-        id="blk-2",
-        material_version_id="v2",
-        content="无页码正文",
-        locator={"material_id": "m2", "heading_path": None},
-        embedding=[1.0, 0.0],
-    )
-
-    document = ranked_chunk_to_document(
-        RankedChunk(chunk=chunk, score=0.42, lexical_score=0.1, semantic_score=0.5)
-    )
-
-    assert document.metadata["score"] == 0.42
-    assert document.metadata["lexical_score"] == 0.1
-    assert document.metadata["semantic_score"] == 0.5
-    assert document.metadata["page_index"] is None
-    assert document.metadata["heading_path"] == []
-
-
 def test_heading_path_is_copied_not_shared():
     chunk = _chunk()
 
@@ -75,29 +52,52 @@ def test_heading_path_is_copied_not_shared():
     assert chunk.locator["heading_path"] == ["第3章", "3.1 监督学习"]
 
 
+def test_page_index_none_is_preserved_not_stringified():
+    chunk = StagingChunk(
+        id="blk-2",
+        material_version_id="v2",
+        content="无页码正文",
+        locator={"material_id": "m2", "heading_path": None},
+    )
+
+    document = staging_chunk_to_document(chunk)
+
+    assert document.metadata["page_index"] is None
+    assert document.metadata["heading_path"] == []
+
+
 def test_documents_round_trip_to_ranked_chunks():
     chunk = _chunk()
     ranked = RankedChunk(chunk=chunk, score=0.88, lexical_score=0.25, semantic_score=0.9)
+    document = staging_chunk_to_document(chunk)
+    document.metadata.update(
+        {"score": ranked.score, "lexical_score": ranked.lexical_score,
+         "semantic_score": ranked.semantic_score}
+    )
 
-    restored = documents_to_ranked([ranked_chunk_to_document(ranked)], [chunk])
-
-    assert restored == [ranked]
-    assert document_metadata(ranked_chunk_to_document(ranked))["chunk_id"] == "blk-1"
+    assert documents_to_ranked([document], [chunk]) == [ranked]
 
 
 def test_non_numeric_scores_are_normalized_to_float():
     """metadata 经过 JSON/回调层后可能是字符串，还原时统一成 float。"""
 
     chunk = _chunk()
-    document = ranked_chunk_to_document(
-        RankedChunk(chunk=chunk, score=0.5, lexical_score=0.2, semantic_score=0.6)
+    document = staging_chunk_to_document(chunk)
+    document.metadata.update(
+        {"score": "0.5", "lexical_score": "0.2", "semantic_score": "0.6"}
     )
-    document.metadata["score"] = "0.5"
-    document.metadata["lexical_score"] = "0.2"
-    document.metadata["semantic_score"] = "0.6"
 
     restored = documents_to_ranked([document], [chunk])
 
     assert restored[0].score == pytest.approx(0.5)
     assert restored[0].lexical_score == pytest.approx(0.2)
     assert restored[0].semantic_score == pytest.approx(0.6)
+
+
+def test_unknown_chunk_id_is_skipped():
+    """SQL 检索可能返回已被装载层过滤掉的块 id——回捞不到就丢弃，不造空块。"""
+
+    document = staging_chunk_to_document(_chunk())
+    document.metadata["chunk_id"] = "ghost"
+
+    assert documents_to_ranked([document], [_chunk()]) == []

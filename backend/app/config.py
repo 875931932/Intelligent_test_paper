@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -129,19 +128,15 @@ class Settings(BaseSettings):
     embedding_api_key: str = ""
     embedding_model: str = ""
     embedding_api_format: str = "openai"
-    # RAG 检索后端：langchain=经 LangChain Embeddings/Document/自定义 Retriever
-    # 适配层（默认）；custom=既有函数直调，作为回滚路径。两条分支共用同一确定性
-    # 检索核心，非法值在配置解析期直接报错，不静默切换。
-    rag_retriever_backend: Literal["custom", "langchain"] = "langchain"
     # 召回规模直接决定分类阶段的 (考点, chunk) 对数量与模型 token 消耗。
-    # top_k 维持 12：瓶颈在 min_score 而非 top_k。min_score 标定随语料口径变化：
-    # 0.30→0.40 是在原始块语料上砍低分尾部垃圾对（分类侧对级浪费 80.7%）；
-    # 语料换成蒸馏陈述后（1971 原始块 → 452 条陈述），打分 = 0.35*词法 +
-    # 0.65*语义，短 intent×短陈述的词法项≈0，0.40 等效语义门槛≈0.62，而已达
-    # top1 语义中位数仅 0.60——阈值恰好卡在可达分布中位数上，离线回放（对账
-    # 99/99 复现线上召回）显示 62 个考点中 26 个零召回，是覆盖不足的主因。
-    # 回落 0.30：零召回归零，候选对 112→670（约 6 倍分类输入，噪声由分类器
-    # out_of_scope 承接）。
+    # top_k 维持 12：瓶颈在 min_score 而非 top_k。min_score 现为**向量通道的
+    # cosine 下限**（语义门槛）：融合排序改由加权 RRF 决定，只看通道内排名、
+    # 不看绝对分值，因此不必再为"词面+语义加权分"标定阈值。
+    # 0.30 沿用历史标定：0.30→0.40 是在原始块语料上砍低分尾部垃圾对（分类侧
+    # 对级浪费 80.7%）；语料换成蒸馏陈述后（1971 原始块 → 452 条陈述），0.40
+    # 等效语义门槛过高，离线回放（对账 99/99 复现线上召回）显示 62 个考点中
+    # 26 个零召回，是覆盖不足的主因。回落 0.30：零召回归零，候选对 112→670
+    #（约 6 倍分类输入，噪声由分类器 out_of_scope 承接）。
     organization_retrieval_top_k: int = Field(default=12, gt=0)
     organization_retrieval_min_score: float = Field(default=0.30, ge=0, le=1)
     # 检索查询集已改为确定性装配（organization_graph.retrieve_per_exam_point）：

@@ -17,6 +17,7 @@
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16-4169E1?logo=postgresql&logoColor=white)
 ![Redis](https://img.shields.io/badge/Redis-7-DC382D?logo=redis&logoColor=white)
 ![LangGraph](https://img.shields.io/badge/LangGraph-Workflow-1C3C3C)
+![LangChain](https://img.shields.io/badge/LangChain-Retrieval-1C3C3C)
 
 </div>
 
@@ -83,13 +84,13 @@ PaperPact 的做法是把「计划」和「约束」从模型手里拿走：
 | 模块 | 能力 |
 | --- | --- |
 | 大纲与框架 | 双大纲驱动，抽取考点、认知要求、章节权重与题型比例，生成本地可编辑的命题框架 |
-| 知识目录 | 知识点抽取、证据关系判定、知识卡归并；图谱与树双视图，卡片必须落到直接证据 |
+| 知识目录 | 知识点抽取、证据关系判定、知识卡归并；图谱与树双视图，可评分事实必须由所属考点的直接证据支撑 |
 | 蓝图 | 按考核规则推导题位：题型、分值、章节、难度标签；题量超出卡池容量时保持总分与题型占比不变做等比缩容 |
 | 合同 | 确定性算法完成原子分配、答案域互斥与卷内唯一性约束 |
 | 生成 | 按合同分批生成，单题 schema 校验、三级回退、终检 |
 | 审核 | 双栏阅读器，逐题改题、查看答案与难度依据、定稿 |
 | 导出 | 学生卷 / 答卷 / 答题卡 HTML 与 DOCX，答案细则 JSON，档案卡六文件打包 |
-| AI 助手 | 整卷评审、框架评审、蓝图建议、考核规则提案与问答；状态快照区分「计划口径」与「成卷实况」 |
+| AI 助手 | 整卷评审、框架评审、蓝图建议、考核规则提案与问答；资料问答走 LangChain 混合检索（VectorStore + BM25 → 加权 RRF）并附可回溯来源卡；状态快照区分「计划口径」与「成卷实况」 |
 | 后台管理 | 组织（学校 → 学院）与账号、模型用途绑定、模型调用监控 |
 
 ## 系统架构
@@ -102,13 +103,13 @@ flowchart TB
 
   UI --> API[FastAPI 应用层 9 个业务路由 + 管理后台]
 
-  API --> PG[(PostgreSQL 44 表 course_id 隔离)]
+  API --> PG[(PostgreSQL 44 表：38 张课程级按 course_id 隔离)]
   API --> RD[(Redis)]
   API --> OS[(MinIO S3)]
   API --> OB[Outbox 事件]
 
   OB --> W[Celery Worker]
-  W --> G[领域引擎 LangGraph 框架 知识目录 生成]
+  W --> G[领域引擎 LangGraph 框架 知识目录 生成 · 检索链]
   G --> LLM[LLM Embedding 网关]
   W --> MU[MinerU 文档解析]
 ```
@@ -133,11 +134,14 @@ flowchart TB
 **6. 多租户是硬约束**
 38 张课程级表全部按 `course_id` 过滤，缓存键与对象存储路径同样带课程维度。后台管理对平台管理员与组织管理员做数据范围隔离。
 
+**7. 检索是组件化的 LangChain 混合链**
+资料问答与知识目录取证共用一套检索组件：`VectorStore`（pgvector / 无扩展时的库内余弦 / 内存，按数据库能力自动选择）+ 不新增第三方依赖的 `BM25Retriever` → 加权 RRF（通道权重 语义 0.65 / 词面 0.35）→ 确定性多查询 → 邻域扩展。融合只看排名，`minimum_score` 只过滤向量通道 cosine；嵌入或后端失败降级纯词面，不断轮。来源卡只展示正文与定位，不把相关度当可信度。
+
 ## 技术栈
 
 | 层 | 选型 |
 | --- | --- |
-| 后端 | FastAPI · SQLAlchemy 2.0 · Pydantic v2 · PostgreSQL · Redis · Celery · LangGraph |
+| 后端 | FastAPI · SQLAlchemy 2.0 · Pydantic v2 · PostgreSQL · Redis · Celery · LangGraph · LangChain（检索与切分） |
 | 前端 | React 19 · TypeScript · Vite · Zustand · Oxlint |
 | 文档与存储 | MinerU（解析）· MinIO / S3 |
 | 模型 | OpenAI 兼容网关 · LLM / Embedding · 型号调优档案 |
@@ -182,7 +186,7 @@ backend/
 │   ├── workflows/         # LangGraph 领域引擎：框架 / 知识目录 / 生成
 │   ├── domain/            # 蓝图、合同、知识、生成等领域模块
 │   ├── services/          # 用例编排与导出
-│   ├── adapters/          # LLM / MinerU / MinIO-S3 适配器
+│   ├── adapters/          # LLM / MinerU / MinIO-S3 适配器 + retrieval/（VectorStore、BM25、RRF、多查询、邻域扩展）
 │   ├── db/                # schema.py 与 init_db
 │   └── infrastructure/    # Celery、outbox、worker
 ├── tests/                 # unit / integration / contract / workflow / domain
@@ -215,6 +219,7 @@ npm run lint
 ## 文档
 
 - [后端接口清单](docs/backend-api.md)
+- [检索链路详解（面试版）](docs/RAG_PIPELINE_INTERVIEW.md)
 - [部署指南（Ubuntu）](docs/DEPLOY_UBUNTU.md)
 - [模型调优与换模型手册](docs/LLM_TUNING.md)
 - [后台管理设计](docs/ADMIN_CONSOLE_DESIGN.md)

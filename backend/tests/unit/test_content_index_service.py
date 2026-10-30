@@ -8,6 +8,7 @@ import pytest
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
+from app.adapters.retrieval.vector_store import detect_vector_backend
 from app.config import settings
 from app.db.schema import (
     Base,
@@ -426,15 +427,10 @@ def test_load_content_chunks_skips_structural_fragments(session):
     assert ids == ["b1", "b2"]  # b3 空图、b5 结构残片都被剔除；b4 属失败 run
 
 
-def test_semantic_pushdown_rejected_off_postgres(session):
-    """非 PG 方言不支持下推（PG 专用 SQL），load_semantic_scores 返回 None。"""
-    assert content_index_service.supports_semantic_pushdown(session) is False
-    assert (
-        content_index_service.load_semantic_scores(
-            session, course_id="c1", material_ids=None, query_vectors=[[1.0, 0.0]]
-        )
-        is None
-    )
+def test_vector_backend_detection_falls_back_to_memory_off_postgres(session):
+    """SQLite（测试库/无扩展）走内存向量后端，不试 SQL 下推。"""
+
+    assert detect_vector_backend(session) == "memory"
 
 
 def test_enqueue_index_task_is_idempotent(session):

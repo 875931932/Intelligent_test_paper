@@ -236,6 +236,11 @@ content_blocks = _course_table(
     # embedding_text_version 记录嵌入输入的清洗版本（清洗逻辑变更 bump 后按版本
     # 自动重嵌）。嵌入过滤条件为 embedding IS NULL OR embedding_model != 当前模型
     # OR embedding_text_version < 当前清洗版本
+    #
+    # 另有一列 ``embedding_vec``（pgvector 原生 ``vector(n)``）不由本文件声明：
+    # 它有数据库扩展依赖，无法在 SQLite / 无扩展的 PG 上 create_all，因此由
+    # init_db 的 _migrate_content_block_vector_column 幂等建列 + HNSW 索引，
+    # 缺失时检索自动退回 JSON 下推后端（见 adapters/retrieval/vector_store.py）。
     Column("embedding", JSON),
     Column("embedding_model", String(64)),
     Column("embedding_text_version", Integer, nullable=False, default=0),

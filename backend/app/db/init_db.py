@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 from uuid import uuid4
 
@@ -17,6 +18,7 @@ from app.services.auth_service import hash_password
 
 ADMIN_USER_ID = "admin"
 LEGACY_DEV_OWNER_ID = "owner-dev"
+logger = logging.getLogger("db.init_db")
 
 
 def _engine(database_url: str) -> Engine:
@@ -147,6 +149,137 @@ def _migrate_content_block_columns(engine: Engine) -> None:
                     "INTEGER NOT NULL DEFAULT 0"
                 )
             )
+
+
+_CONTENT_BLOCK_VECTOR_INDEX = "ix_content_blocks_embedding_vec_hnsw"
+
+
+def _content_block_vector_dimension(engine: Engine) -> int | None:
+    """确定 ``content_blocks.embedding_vec`` 的维度。
+
+    优先级：既有列的实际 typmod → 库内已有向量的长度。都拿不到（新库尚无向量）
+    时返回 None，调用方跳过建列——检索自动退到 JSON 下推后端，不会建出一列
+    与嵌入模型维度不符的向量列（那次写入会直接报错）。
+    """
+
+    insp = inspect(engine)
+    existing = {c["name"] for c in insp.get_columns("content_blocks")}
+    with engine.connect() as conn:
+        if "embedding_vec" in existing:
+            formatted = conn.execute(
+                text(
+                    "SELECT format_type(atttypid, atttypmod) FROM pg_attribute "
+                    "WHERE attrelid = 'content_blocks'::regclass "
+                    "AND attname = 'embedding_vec' AND NOT attisdropped"
+                )
+            ).scalar_one_or_none()
+            if formatted and "(" in str(formatted):
+                return int(str(formatted).split("(")[1].rstrip(")"))
+        row = conn.execute(
+            text(
+                "SELECT embedding FROM content_blocks "
+                "WHERE embedding IS NOT NULL LIMIT 1"
+            )
+        ).scalar_one_or_none()
+    if isinstance(row, list) and row:
+        return len(row)
+    return None
+
+
+def _migrate_content_block_vector_column(engine: Engine) -> None:
+    """建 ``content_blocks.embedding_vec``（pgvector 原生列）与 HNSW 索引。
+
+    LangChain ``PaperPactVectorStore`` 的 pgvector 后端靠这一列走最近邻算子；
+    没有该列（或没有 vector 扩展）时自动退回 JSON 下推后端，检索功能不受影响，
+    因此整段是"尽力而为"的幂等维护：
+
+    - 无 vector 扩展 / 非 PostgreSQL → 直接跳过；
+    - 维度与当前嵌入模型不符（换模型换了维度）→ 列改型并清空旧值（旧向量本就
+      不可比），与 ``ALTER ... USING NULL`` 等价，随后由 ensure_embedded 重嵌；
+    - HNSW 索引建失败（旧版 pgvector 或 maintenance_work_mem 不足）→ 只告警，
+      检索退化为顺序扫描，仍然正确。
+    """
+
+    if engine.dialect.name != "postgresql":
+        return
+    try:
+        insp = inspect(engine)
+        if not insp.has_table("content_blocks"):
+            return
+        with engine.connect() as conn:
+            has_vector_type = bool(
+                conn.execute(
+                    text("SELECT 1 FROM pg_type WHERE typname = 'vector' LIMIT 1")
+                ).first()
+            )
+        if not has_vector_type:
+            return
+        dimension = _content_block_vector_dimension(engine)
+    except Exception:
+        # 迁移是尽力而为的幂等维护：无法内省（bootstrap 单测的 mock engine）时
+        # 不阻断启动（与其余迁移同口径）。
+        return
+    if not dimension:
+        return
+
+    existing = {c["name"] for c in inspect(engine).get_columns("content_blocks")}
+    current = _content_block_vector_dimension(engine) if "embedding_vec" in existing else None
+    resize = bool(current and current != dimension)
+    with engine.begin() as conn:
+        if "embedding_vec" not in existing:
+            conn.execute(
+                text(f"ALTER TABLE content_blocks ADD COLUMN embedding_vec vector({dimension})")
+            )
+        elif resize:
+            conn.execute(text(f"DROP INDEX IF EXISTS {_CONTENT_BLOCK_VECTOR_INDEX}"))
+            conn.execute(
+                text(
+                    "ALTER TABLE content_blocks ALTER COLUMN embedding_vec "
+                    f"TYPE vector({dimension}) USING NULL"
+                )
+            )
+    # 索引单独一个事务：建失败（旧版 pgvector / maintenance_work_mem 不足）时
+    # 只回滚这一次，不会把上面的建列/改型一起回滚。
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    f"CREATE INDEX IF NOT EXISTS {_CONTENT_BLOCK_VECTOR_INDEX} "
+                    "ON content_blocks USING hnsw (embedding_vec vector_cosine_ops)"
+                )
+            )
+    except Exception as exc:  # noqa: BLE001 — 索引是加速项，失败不影响正确性
+        logger.warning(
+            "content_blocks HNSW 索引创建失败（检索退化为顺序扫描）: %s", exc
+        )
+    if not resize:
+        # 改型后旧向量与新维度不符，回填必然失败——交给 ensure_embedded 重嵌。
+        _backfill_content_block_vectors(engine)
+
+
+def _backfill_content_block_vectors(engine: Engine) -> None:
+    """把既有 JSON 向量就地回填进原生向量列（纯库内转换，不调嵌入 API）。
+
+    存量块（已有 embedding JSON、embedding_model 未变）不会经过 ensure_embedded
+    的"缺向量/换模型"过滤，若不回填，pgvector 后端检索会把它们全部漏掉——召回
+    静默丢历史资料。``json -> text -> vector`` 是 pgvector 的标准输入格式
+    （``[0.1,0.2,...]``），与实际维度不符的行会抛错，故整段失败只告警，随后由
+    下次 ensure_embedded 重嵌补齐（不回滚已成功的行）。
+    """
+
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE content_blocks "
+                    "SET embedding_vec = CAST(embedding::text AS vector) "
+                    "WHERE embedding_vec IS NULL AND embedding IS NOT NULL"
+                )
+            )
+    except Exception as exc:  # noqa: BLE001 — 回填失败不阻断启动
+        logger.warning(
+            "content_blocks 向量列回填失败（将在下次嵌入自愈时补齐）: %s", exc
+        )
 
 
 def _backfill_assistant_sessions(conn: Connection) -> None:
@@ -624,6 +757,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             _migrate_evidence_link_score(engine)
             _migrate_knowledge_link_role(engine)
             _migrate_content_block_columns(engine)
+            _migrate_content_block_vector_column(engine)
             _migrate_assistant_session(engine)
             _migrate_course_columns(engine)
             _migrate_generated_question_nullable(engine)
@@ -645,6 +779,7 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             _migrate_evidence_link_score(engine)
             _migrate_knowledge_link_role(engine)
             _migrate_content_block_columns(engine)
+            _migrate_content_block_vector_column(engine)
             _migrate_assistant_session(engine)
             _migrate_course_columns(engine)
             _migrate_generated_question_nullable(engine)
