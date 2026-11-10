@@ -3,6 +3,36 @@
 AI 驱动的试卷命题平台，支持课程资料解析、考纲框架构建、知识图谱组织、合同式组卷生成，
 导出学生卷 / 答卷 / 答题卡 HTML 与答案细则 JSON（阅卷端直接输入）。
 
+## 开发者与项目成果
+
+**个人开发项目，开发者：张新彦。** 面向高校教师，将课程资料整理、试卷生成与教师审核导出组织为可追踪的业务流程。
+
+**获奖：** 2026 全球人工智能算法精英大赛省赛二等奖，获奖证书待发放。
+
+### 个人实现重点
+
+| 实现重点 | 源码入口 |
+| --- | --- |
+| 基于 LangChain 实现关键词与向量混合检索，为资料问答组织来源依据 | [Gitee 当前检索实现](https://gitee.com/yan-ace/zhinengchujuanxitong/blob/main/backend/app/services/langchain_retrieval.py) |
+| 使用 LangGraph 编排按考点分批生成、格式校验与失败局部重试 | [生成工作流](backend/app/workflows/generation_graph.py) |
+| 为 AI 助手接入 16 个工具，按工具配置区分自动执行与教师确认 | [工具注册表](backend/app/services/assistant_tools.py) |
+
+技术实践：Python / FastAPI / LangChain / LangGraph / RAG。
+
+> 版本说明：最新检索实现及完整作品说明位于 [Gitee 主仓库](https://gitee.com/yan-ace/zhinengchujuanxitong)。GitHub 当前代码保留较早快照，本次仅更新项目展示文档与截图；其中的 LangChain 检索源码链接指向 Gitee 当前实现。下方截图展示当前产品界面。
+
+## 页面预览
+
+| 课程概览 | 命题框架 |
+| --- | --- |
+| ![课程概览](docs/assets/readme/overview.png) | ![命题框架](docs/assets/readme/framework.png) |
+| **知识目录** | **出卷流水线** |
+| ![知识目录](docs/assets/readme/knowledge-graph.png) | ![出卷流水线](docs/assets/readme/pipeline.png) |
+| **试卷审核与导出** | **AI 助手** |
+| ![试卷审核与导出](docs/assets/readme/review.png) | ![AI 助手](docs/assets/readme/assistant.png) |
+
+[Gitee 项目主页](https://gitee.com/yan-ace/zhinengchujuanxitong) · [生成工作流测试](backend/tests/workflow/test_generation_graph.py) · [部署文档](docs/DEPLOY_UBUNTU.md)
+
 ## 技术栈
 
 ### 后端
@@ -30,7 +60,7 @@ AI 驱动的试卷命题平台，支持课程资料解析、考纲框架构建�
 - **LLM / Embedding**：均为按量计费的云服务（按 token 或调用次数），费用以所选服务商定价与控制台用量为准；开发联调建议选用低价档模型，换模型与档位调优见 [`docs/LLM_TUNING.md`](docs/LLM_TUNING.md)。
 - **MinerU（文档解析）**：使用云端 API 按解析量计费，需在 [mineru.net](https://mineru.net) 注册申请 token；不上传解析资料时不产生费用。
 - **MinIO / S3（对象存储）**：默认自托管 MinIO，无外部费用。
-- **版本口径**：本 README 与 `main` 分支同步演进，文中功能描述与数字均以标注日期的内部记录为准（如"2026-10-05 内部记录"）；部署时的实际代码版本可用 `git log -1` 核对。
+- **版本口径**：项目展示与截图对应 Gitee 当前实现；GitHub 代码快照范围见上方版本说明。文中功能描述与数字均以标注日期的内部记录为准（如"2026-10-05 内部记录"）；部署时的实际代码版本可用 `git log -1` 核对。
 
 ## 环境要求
 
