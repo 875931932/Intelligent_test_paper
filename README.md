@@ -21,6 +21,20 @@
 
 </div>
 
+## 开发者与实现重点
+
+**个人开发项目，开发者：张新彦。** 面向高校教师，提供资料问答、知识卡构建、试卷生成与审核导出。
+
+| 实现重点 | 代码入口 |
+| --- | --- |
+| 基于 LangChain 组合关键词与向量检索，并融合候选结果，为资料问答提供来源依据 | [混合检索](backend/app/services/langchain_retrieval.py) |
+| 使用 LangGraph 编排分批生成、格式校验与失败重试 | [生成工作流](backend/app/workflows/generation_graph.py) |
+| 为 AI 助手接入 16 个工具；按工具配置区分自动执行与教师确认 | [工具注册表](backend/app/services/assistant_tools.py) |
+
+**项目成果：** 2026 全球人工智能算法精英大赛省赛二等奖，获奖证书待发放。
+
+[查看界面](#页面预览) · [阅读系统架构](#系统架构) · [生成工作流测试](backend/tests/workflow/test_generation_graph.py)
+
 ## 这是什么
 
 PaperPact 面向高校教师，解决一门课从「有大纲」到「有卷子」之间最耗时的一段工作：
