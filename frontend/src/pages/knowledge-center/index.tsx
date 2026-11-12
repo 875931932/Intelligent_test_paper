@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Activity,
   AlertTriangle,
@@ -12,7 +12,6 @@ import {
   LibraryBig,
   LogOut,
   Plus,
-  School,
   Send,
   ShieldCheck,
   Users,
@@ -46,6 +45,9 @@ const ROLE_STYLE: Record<KnowledgeRole, { bg: string; ink: string }> = {
 
 export default function KnowledgeCenterPage() {
   const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const fromCourse = params.get('fromCourse');
+  const courseQuery = fromCourse ? `?fromCourse=${fromCourse}` : '';
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const addToast = useToastStore((s) => s.addToast);
@@ -64,6 +66,7 @@ export default function KnowledgeCenterPage() {
   const [scope, setScope] = useState<ReadScope>('members');
   const [tagText, setTagText] = useState('');
   const [governance, setGovernance] = useState<KnowledgeGovernanceSummary | null>(null);
+  const [governanceError, setGovernanceError] = useState<string | null>(null);
 
   // 跨库问答（最多 5 个有权空间）
   const [crossOpen, setCrossOpen] = useState(false);
@@ -95,9 +98,20 @@ export default function KnowledgeCenterPage() {
     api.knowledgeBase
       .adminSummary()
       .then((value) => {
-        if (!cancelled) setGovernance(value);
+        if (!cancelled) {
+          setGovernance(value);
+          setGovernanceError(null);
+        }
       })
-      .catch(() => undefined);
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        const status = (err as { status?: number }).status;
+        setGovernanceError(
+          status === 403
+            ? '当前账号没有可用的学校归属，无法查看治理汇总；这不影响你访问已授权的共享资料。'
+            : '治理汇总暂时不可用，请稍后重试。'
+        );
+      });
     return () => {
       cancelled = true;
     };
@@ -135,7 +149,7 @@ export default function KnowledgeCenterPage() {
       setName('');
       setTagText('');
       setScope('members');
-      navigate('/knowledge/' + space.id);
+      navigate('/knowledge/' + space.id + courseQuery);
     } catch (err) {
       addToast(err instanceof Error ? err.message : '创建失败', 'error');
     } finally {
@@ -217,9 +231,12 @@ export default function KnowledgeCenterPage() {
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <button onClick={() => navigate('/courses')} style={ghostButton}>
+            <button
+              onClick={() => navigate(fromCourse ? `/courses/${fromCourse}` : '/courses')}
+              style={ghostButton}
+            >
               <ArrowLeft size={15} />
-              返回课程空间
+              {fromCourse ? '返回当前课程' : '返回课程空间'}
             </button>
             <button onClick={logout} title="退出登录" style={ghostButton}>
               <LogOut size={15} />
@@ -228,12 +245,10 @@ export default function KnowledgeCenterPage() {
           </div>
         </header>
 
-        {/* Hero */}
+        {/* 页面标题与统计：与课程工作台保持同一标题/工具栏层级 */}
         <section
-          className="glass-panel"
           style={{
             marginTop: 26,
-            padding: '30px 32px',
             display: 'flex',
             alignItems: 'flex-end',
             justifyContent: 'space-between',
@@ -241,29 +256,11 @@ export default function KnowledgeCenterPage() {
             flexWrap: 'wrap',
           }}
         >
-          <div style={{ maxWidth: 620 }}>
-            <div
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 6,
-                padding: '5px 10px',
-                borderRadius: 999,
-                background: 'var(--brand-subtle)',
-                color: 'var(--brand-ink)',
-                fontSize: '0.75rem',
-                fontWeight: 600,
-              }}
-            >
-              <School size={13} />
-              校本教研 · 跨课程复用
-            </div>
-            <h1 style={{ margin: '14px 0 8px', fontSize: '1.75rem', letterSpacing: '-0.02em' }}>
-              {user?.name || '老师'}，把好资料留在校内
-            </h1>
-            <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.9375rem', lineHeight: 1.7 }}>
-              只共享教师主动发布的可共享教学资料；考试保密材料不入库，
-              每位老师的课程与个人会话仍然彼此隔离。
+          <div style={{ maxWidth: 640 }}>
+            <h1 className="page-title">校级共享库</h1>
+            <p className="page-subtitle" style={{ marginTop: 6 }}>
+              这里是跨课程共享的教学资料。课程内的「课程资料」和「课程知识目录」仍只属于当前课程；
+              共享库资料需先发布，其他教师才能检索或在课程中导入固定版本。
             </p>
           </div>
           <div style={{ display: 'flex', gap: 12 }}>
@@ -272,6 +269,24 @@ export default function KnowledgeCenterPage() {
             <StatTile icon={<Users size={17} />} value={docCount} label="已发布资料" />
           </div>
         </section>
+
+        {governanceError && (
+          <section
+            className="glass-panel"
+            style={{
+              marginTop: 18,
+              padding: '14px 18px',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              color: 'var(--text-secondary)',
+              fontSize: '0.8125rem',
+            }}
+          >
+            <AlertTriangle size={16} color="var(--warning-ink, #b45309)" />
+            {governanceError}
+          </section>
+        )}
 
         {governance && (
           <section
@@ -370,7 +385,7 @@ export default function KnowledgeCenterPage() {
             {visible.map((space) => (
               <button
                 key={space.id}
-                onClick={() => navigate('/knowledge/' + space.id)}
+                onClick={() => navigate('/knowledge/' + space.id + courseQuery)}
                 className="card-hover"
                 style={{
                   textAlign: 'left',
@@ -607,7 +622,7 @@ export default function KnowledgeCenterPage() {
                         title={source.quote}
                         onClick={() => {
                           setCrossOpen(false);
-                          navigate('/knowledge/' + source.space_id);
+                          navigate('/knowledge/' + source.space_id + courseQuery);
                         }}
                         style={{
                           border: '1px solid var(--line-strong)',

@@ -193,7 +193,7 @@ export default function CourseSpacePage() {
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
           <button
             onClick={() => navigate('/knowledge')}
-            title="进入校级教师共享知识库"
+            title="进入校级共享库"
             style={{
               display: 'flex', alignItems: 'center', gap: '6px',
               background: 'none', border: 'none', cursor: 'pointer',
@@ -204,7 +204,7 @@ export default function CourseSpacePage() {
             onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
           >
             <LibraryBig size={15} />
-            共享知识库
+            校级共享库
           </button>
           {canOpenAdmin && (
             <button

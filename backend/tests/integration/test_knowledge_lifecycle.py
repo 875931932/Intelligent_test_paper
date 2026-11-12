@@ -347,6 +347,12 @@ def test_import_fixed_version_to_course(env):
     assert materials[0]["logical_name"] == "图论基础"
     assert materials[0]["latest_version"]["version_no"] == 1
     assert materials[0]["latest_version"]["sha256"] == body["sha256"]
+    # 资料卡展示来源库与源版本，而不是只留一份无出处副本。
+    assert materials[0]["knowledge_origin"] == {
+        "space_id": space_id,
+        "space_name": "导入知识库",
+        "version_no": 1,
+    }
 
     again = a.post(
         f"{API}/spaces/{space_id}/documents/{done['document_id']}/versions/{done['version_id']}/import-to-course",

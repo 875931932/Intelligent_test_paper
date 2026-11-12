@@ -3,7 +3,7 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   Upload, RefreshCw, Trash2, FileText,
   Folder, FolderOpen, BookOpen, ClipboardCheck, BookMarked, X, Files, Eye,
-  Package, Pencil, RotateCcw,
+  Package, Pencil, RotateCcw, LibraryBig,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { api } from '@/api/client';
@@ -18,6 +18,7 @@ import { PARSE_STATUS_LABELS } from '@/utils/format';
 import { qlabel, questionNumbers } from '@/lib/examDisplay';
 import type { PaperExportKind } from '@/api/domains/paperVersions';
 import type { MaterialResponse, PaperArchiveDetail, PaperArchiveSummary } from '@/types/api';
+import type { KnowledgeDocument, KnowledgeSpace } from '@/api/domains/knowledgeBase';
 
 type FolderKey = 'syllabus' | 'materials' | 'papers';
 type SubFolderKey = 'teaching_syllabus' | 'assessment_syllabus' | 'teaching_material' | 'exercise';
@@ -163,6 +164,13 @@ export default function MaterialsPage() {
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // 从校级共享库导入固定版本到当前课程
+  const [importOpen, setImportOpen] = useState(false);
+  const [importSpaces, setImportSpaces] = useState<KnowledgeSpace[]>([]);
+  const [importDocs, setImportDocs] = useState<Record<string, KnowledgeDocument[]>>({});
+  const [importLoading, setImportLoading] = useState(false);
+  const [importingDocId, setImportingDocId] = useState<string | null>(null);
+
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   // 资料解析内容预览（「查看」按钮）：教师核对解析质量与 AI 引用依据
@@ -215,6 +223,68 @@ export default function MaterialsPage() {
       if (!silent) setLoading(false);
     }
   }, [courseId, addToast]);
+
+  const openImport = useCallback(async () => {
+    setImportOpen(true);
+    setImportLoading(true);
+    try {
+      const spaces = await api.knowledgeBase.listSpaces();
+      const allowed = spaces.filter(
+        (space) => space.status === 'active' && space.allow_course_import
+      );
+      setImportSpaces(allowed);
+      const entries = await Promise.all(
+        allowed.map(async (space) => {
+          const docs = await api.knowledgeBase.listDocuments(space.id);
+          return [
+            space.id,
+            docs.filter((doc) => doc.status === 'published' && doc.published_version_id),
+          ] as const;
+        })
+      );
+      setImportDocs(Object.fromEntries(entries));
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : '加载共享库失败', 'error');
+    } finally {
+      setImportLoading(false);
+    }
+  }, [addToast]);
+
+  const handleImport = async (space: KnowledgeSpace, doc: KnowledgeDocument) => {
+    if (!courseId || !doc.published_version_id) return;
+    const targetType = activeSubFolder ?? 'teaching_material';
+    setImportingDocId(doc.id);
+    try {
+      const result = await api.knowledgeBase.importToCourse(
+        space.id,
+        doc.id,
+        doc.published_version_id,
+        {
+          course_id: courseId,
+          material_type: targetType,
+          title: doc.title,
+        }
+      );
+      addToast(
+        result.idempotent
+          ? `《${doc.title}》已导入过，已定位到原副本`
+          : `已从「${space.name}」导入《${doc.title}》`,
+        'success'
+      );
+      setImportOpen(false);
+      await loadMaterials();
+      // 直接切到目标分区，避免导入后在根目录/其他文件夹里找不到新资料
+      const group = FOLDER_GROUPS.find((f) => f.subFolders.some((s) => s.key === targetType));
+      if (group) {
+        setActiveFolder(group.key);
+        setActiveSubFolder(targetType);
+      }
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : '导入失败', 'error');
+    } finally {
+      setImportingDocId(null);
+    }
+  };
 
   // 归档列表随页面挂载取一次：状态变更全部落在 await 之后，不进 effect 同步 setState；
   // 供根文件夹计数与「试卷」文件夹列表共用
@@ -662,6 +732,21 @@ export default function MaterialsPage() {
                 <p style={{ fontSize: '0.8rem', color: 'var(--text-tertiary)', marginTop: '4px' }}>
                   {m.latest_version ? formatFileSize(m.latest_version.size_bytes) : '-'} · v{m.latest_version?.version_no ?? '-'}
                 </p>
+                {m.knowledge_origin && (
+                  <p
+                    style={{
+                      fontSize: '0.72rem',
+                      color: 'var(--purple-ink)',
+                      marginTop: '4px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 4,
+                    }}
+                  >
+                    <LibraryBig size={12} />
+                    来自「{m.knowledge_origin.space_name}」· 源版本 v{m.knowledge_origin.version_no}
+                  </p>
+                )}
               </div>
             </div>
 
@@ -715,13 +800,18 @@ export default function MaterialsPage() {
       {/* Header（「试卷」文件夹不上传材料，藏掉上传入口） */}
       <div className="page-header">
         <div>
-          <h1 className="page-title">资料库</h1>
-          <p className="page-subtitle">按文件夹管理课程大纲与教学资料</p>
+          <h1 className="page-title">课程资料</h1>
+          <p className="page-subtitle">当前课程的大纲与教学资料，也可从校级共享库导入</p>
         </div>
         {activeFolder !== 'papers' && (
-          <Button onClick={openUpload} icon={<Upload size={16} />}>
-            上传资料
-          </Button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <Button variant="secondary" onClick={() => void openImport()} icon={<LibraryBig size={16} />}>
+              从共享库导入
+            </Button>
+            <Button onClick={openUpload} icon={<Upload size={16} />}>
+              上传资料
+            </Button>
+          </div>
         )}
       </div>
 
@@ -861,6 +951,92 @@ export default function MaterialsPage() {
           {fileGrid()}
         </div>
       )}
+
+      {/* ── 从校级共享库导入（固定版本复制到当前课程） ── */}
+      <Modal
+        open={importOpen}
+        onClose={() => {
+          if (!importingDocId) setImportOpen(false);
+        }}
+        title="从校级共享库导入"
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <p style={{ margin: 0, fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
+            导入的是共享库当前发布版本，会复制为当前课程的独立副本，并保留来源库与版本信息。
+            源库之后撤回或升级不会删除已导入内容。
+          </p>
+          {importLoading ? (
+            <div style={{ display: 'flex', justifyContent: 'center', padding: 24 }}>
+              <div className="spinner" />
+            </div>
+          ) : importSpaces.length === 0 ? (
+            <div className="empty-state" style={{ padding: 24, textAlign: 'center' }}>
+              <p style={{ margin: 0, color: 'var(--text-secondary)' }}>
+                暂无允许导入的共享库，或你还没有可访问的已发布资料。
+              </p>
+            </div>
+          ) : (
+            importSpaces.map((space) => {
+              const docs = importDocs[space.id] ?? [];
+              return (
+                <div key={space.id} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <LibraryBig size={15} style={{ color: 'var(--purple-ink)' }} />
+                    <span style={{ fontSize: '0.875rem', fontWeight: 600 }}>{space.name}</span>
+                    <span className="badge badge-default">{space.read_scope_label}</span>
+                  </div>
+                  {docs.length === 0 ? (
+                    <p style={{ margin: 0, fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
+                      该库暂无已发布资料
+                    </p>
+                  ) : (
+                    docs.map((doc) => (
+                      <div
+                        key={doc.id}
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 10,
+                          padding: '10px 12px',
+                          border: '1px solid var(--line)',
+                          borderRadius: 12,
+                          background: 'var(--surface-elevated)',
+                        }}
+                      >
+                        <FileText size={16} style={{ color: 'var(--text-tertiary)', flexShrink: 0 }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div
+                            style={{
+                              fontSize: '0.8125rem',
+                              fontWeight: 500,
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {doc.title}
+                          </div>
+                          <div style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>
+                            {space.name} · 版本 v{doc.version?.version_no ?? 1}
+                          </div>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          loading={importingDocId === doc.id}
+                          onClick={() => void handleImport(space, doc)}
+                        >
+                          导入
+                        </Button>
+                      </div>
+                    ))
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      </Modal>
 
       {/* ── 多文件上传弹窗 ── */}
       <Modal

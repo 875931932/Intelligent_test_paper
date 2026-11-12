@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   AlertTriangle,
   Archive,
@@ -53,6 +53,10 @@ type Tab = 'documents' | 'ask' | 'settings';
 export default function KnowledgeSpacePage() {
   const { spaceId = '' } = useParams<{ spaceId: string }>();
   const navigate = useNavigate();
+  // 从课程进入时带上 fromCourse，空间内仍可回跳当前课程
+  const [searchParams] = useSearchParams();
+  const fromCourse = searchParams.get('fromCourse');
+  const courseQuery = fromCourse ? `?fromCourse=${fromCourse}` : '';
   const addToast = useToastStore((s) => s.addToast);
   const currentUser = useAuthStore((s) => s.user);
   const upsertSpace = useKnowledgeBaseStore((s) => s.upsert);
@@ -517,8 +521,12 @@ export default function KnowledgeSpacePage() {
   if (error || !space) {
     return (
       <div style={{ maxWidth: 1080, margin: '0 auto', padding: '48px 32px' }}>
-        <Button variant="secondary" icon={<ArrowLeft size={16} />} onClick={() => navigate('/knowledge')}>
-          返回知识中心
+        <Button
+          variant="secondary"
+          icon={<ArrowLeft size={16} />}
+          onClick={() => navigate('/knowledge' + courseQuery)}
+        >
+          返回校级共享库
         </Button>
         <div className="glass-panel" style={{ marginTop: 20, padding: 28 }}>
           <div style={{ color: 'var(--error-ink)', fontWeight: 600 }}>
@@ -541,9 +549,9 @@ export default function KnowledgeSpacePage() {
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
       <div style={{ maxWidth: 1080, margin: '0 auto', padding: '28px 32px 72px' }}>
-        <button onClick={() => navigate('/knowledge')} style={backLink}>
+        <button onClick={() => navigate('/knowledge' + courseQuery)} style={backLink}>
           <ArrowLeft size={15} />
-          共享知识中心
+          校级共享库
         </button>
 
         <header
@@ -575,7 +583,17 @@ export default function KnowledgeSpacePage() {
               </div>
             )}
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {fromCourse && (
+              <Button
+                variant="secondary"
+                size="sm"
+                icon={<ArrowLeft size={14} />}
+                onClick={() => navigate(`/courses/${fromCourse}`)}
+              >
+                返回当前课程
+              </Button>
+            )}
             <Button variant="secondary" size="sm" icon={<RefreshCw size={14} />} onClick={() => void refresh()}>
               刷新
             </Button>

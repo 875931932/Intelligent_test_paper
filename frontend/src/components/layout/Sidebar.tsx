@@ -12,6 +12,7 @@ import {
   ArrowLeft,
   PanelLeftClose,
   PanelLeft,
+  LibraryBig,
   type LucideIcon,
 } from 'lucide-react';
 import { useCourseStore } from '@/stores/course';
@@ -60,12 +61,13 @@ export function Sidebar({ onLogout }: Props) {
   // 出卷流水线与试卷查看/审核/导出已合并为同一个「试卷」页面
   const navItems: Array<{ to: string; icon: LucideIcon; label: string }> = [
     { to: base, icon: LayoutDashboard, label: '概览' },
-    { to: `${base}/materials`, icon: FolderOpen, label: '资料库' },
+    { to: `${base}/materials`, icon: FolderOpen, label: '课程资料' },
     { to: `${base}/framework`, icon: FlaskConical, label: '命题框架' },
-    { to: `${base}/knowledge`, icon: FolderTree, label: '知识目录' },
+    { to: `${base}/knowledge`, icon: FolderTree, label: '课程知识目录' },
     { to: `${base}/paper`, icon: FileQuestion, label: '试卷' },
     { to: `${base}/assistant`, icon: Bot, label: 'AI 助手' },
   ];
+  const sharedLibTo = courseId ? `/knowledge?fromCourse=${courseId}` : '/knowledge';
 
   return (
     <aside
@@ -210,6 +212,42 @@ export function Sidebar({ onLogout }: Props) {
             {!collapsed && <span>{label}</span>}
           </NavLink>
         ))}
+
+        {/* 全局分组：跨课程共享资料独立于当前课程，但入口始终在场 */}
+        {!collapsed && (
+          <div
+            style={{
+              margin: '14px 11px 6px',
+              fontSize: 11,
+              fontWeight: 600,
+              letterSpacing: '0.04em',
+              color: 'var(--text-tertiary)',
+            }}
+          >
+            校内共享
+          </div>
+        )}
+        <NavLink
+          to={sharedLibTo}
+          title="校级共享库"
+          style={({ isActive }) => ({
+            display: 'flex',
+            alignItems: 'center',
+            gap: collapsed ? 0 : 11,
+            justifyContent: collapsed ? 'center' : 'flex-start',
+            padding: collapsed ? '10px 0' : '10px 11px',
+            borderRadius: 12,
+            color: isActive ? 'var(--purple-ink)' : TEXT_SECONDARY,
+            background: isActive ? 'var(--purple-subtle)' : 'transparent',
+            textDecoration: 'none',
+            fontSize: 14,
+            fontWeight: isActive ? 600 : 500,
+            transition: 'all 0.2s cubic-bezier(0, 0, 0.2, 1)',
+          })}
+        >
+          <LibraryBig size={18} />
+          {!collapsed && <span>校级共享库</span>}
+        </NavLink>
       </nav>
 
       {/* Logout */}

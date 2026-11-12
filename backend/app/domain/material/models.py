@@ -100,3 +100,5 @@ class MaterialResponse(BaseModel):
     latest_version: MaterialVersionResponse | None = None
     # 最新版本的解析状态（{id,status,error_code,error_summary} 或 None=未解析）
     parse_status: dict | None = None
+    # 从校级共享库导入时的来源：{space_id, space_name, version_no}
+    knowledge_origin: dict | None = None

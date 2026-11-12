@@ -12,12 +12,15 @@ from sqlalchemy.orm import Session
 
 from app.adapters.storage.minio_storage import ObjectInfo, StoragePort, StoragePreconditionError, StorageUnavailableError
 from app.db.schema import (
+    course_knowledge_imports,
     evidence_chunks,
     exam_point_evidence_links,
     index_memberships,
     index_versions,
     knowledge_cards,
+    knowledge_document_versions,
     knowledge_evidence_links,
+    knowledge_spaces,
     material_versions,
     materials,
     upload_sessions,
@@ -259,9 +262,49 @@ def _version_response(session: Session, *, course_id: str, material_id: str) -> 
     return dict(value) if value else None
 
 
+def _knowledge_origins(
+    session: Session, *, course_id: str, version_ids: list[str]
+) -> dict[str, dict]:
+    """从共享库导入的资料：附加来源库与源版本号，供资料卡展示来源。"""
+
+    if not version_ids:
+        return {}
+    rows = session.execute(
+        select(
+            course_knowledge_imports.c.target_material_version_id,
+            course_knowledge_imports.c.space_id,
+            knowledge_spaces.c.name.label("space_name"),
+            knowledge_document_versions.c.version_no,
+        )
+        .join(knowledge_spaces, knowledge_spaces.c.id == course_knowledge_imports.c.space_id)
+        .join(
+            knowledge_document_versions,
+            knowledge_document_versions.c.id == course_knowledge_imports.c.source_version_id,
+        )
+        .where(
+            course_knowledge_imports.c.course_id == course_id,
+            course_knowledge_imports.c.target_material_version_id.in_(version_ids),
+        )
+    ).mappings()
+    return {
+        row["target_material_version_id"]: {
+            "space_id": row["space_id"],
+            "space_name": row["space_name"],
+            "version_no": row["version_no"],
+        }
+        for row in rows
+    }
+
+
 def _material_response(session: Session, row) -> dict:
     value = dict(row)
     value["latest_version"] = _version_response(session, course_id=value["course_id"], material_id=value["id"])
+    version = value["latest_version"]
+    if version is not None:
+        origins = _knowledge_origins(
+            session, course_id=value["course_id"], version_ids=[version["id"]]
+        )
+        value["knowledge_origin"] = origins.get(version["id"])
     return value
 
 
@@ -286,10 +329,23 @@ def list_materials(session: Session, *, course_id: str, include_deleted: bool) -
         for version_row in version_rows:
             # 同料按版本号降序排布，首见即最新（与 _version_response 语义一致）
             latest_by_material.setdefault(version_row["material_id"], dict(version_row))
-    return [
+    items = [
         {**dict(row), "latest_version": latest_by_material.get(row["id"])}
         for row in rows
     ]
+    origins = _knowledge_origins(
+        session,
+        course_id=course_id,
+        version_ids=[
+            item["latest_version"]["id"]
+            for item in items
+            if item.get("latest_version") is not None
+        ],
+    )
+    for item in items:
+        version = item.get("latest_version")
+        item["knowledge_origin"] = origins.get(version["id"]) if version else None
+    return items
 
 
 def get_material(session: Session, *, course_id: str, material_id: str) -> dict:
