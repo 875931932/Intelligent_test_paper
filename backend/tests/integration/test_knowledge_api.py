@@ -10,8 +10,10 @@ from app.api.v1.knowledge import (
     _heal_interrupted_run,
     _mark_organization_run_failed,
 )
+from app.api.v1.course_access import require_owned_course
 from app.config import settings
 from app.db.schema import Base, Course, User, organization_runs
+from app.db.session import get_session
 from app.main import app
 from app.services.llm_registry import clear_cache as clear_llm_registry_cache
 
@@ -115,6 +117,9 @@ def test_knowledge_requires_complete_llm_configuration(monkeypatch, missing_sett
             delattr(app.state, state_name)
 
     try:
+        # 本用例只验证 LLM 配置守卫；owner 校验与 DB 由依赖覆盖短路（P0.1）。
+        app.dependency_overrides[require_owned_course] = lambda: None
+        app.dependency_overrides[get_session] = lambda: None
         with TestClient(app, raise_server_exceptions=False) as client:
             response = client.post(
                 "/api/v1/courses/course/organization-runs",
@@ -126,6 +131,8 @@ def test_knowledge_requires_complete_llm_configuration(monkeypatch, missing_sett
         # consolidator。LLM 配置不全时，第一个 LLM 守卫（extractor）先失败。
         assert response.json()["detail"] == "knowledge point extractor is not configured"
     finally:
+        app.dependency_overrides.pop(require_owned_course, None)
+        app.dependency_overrides.pop(get_session, None)
         clear_llm_registry_cache()
         for state_name in (
             "organization_embedder",

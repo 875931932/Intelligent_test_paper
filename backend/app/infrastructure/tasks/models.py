@@ -63,9 +63,14 @@ def create_task_run(
     payload: dict,
     max_attempts: int = 3,
     task_id: str | None = None,
+    actor_id: str | None = None,
     now: datetime | None = None,
 ) -> str:
     """Create task and its initial event in the caller's transaction.
+
+    ``actor_id`` 是服务端从当前登录身份派生的事实，不是客户端入参；worker
+    会按它复核账号状态与课程归属。历史调用不传时保留 NULL，worker 回退到
+    课程 owner 解析。
 
     The caller owns commit/rollback; therefore a rollback can never leave one
     half of the task/outbox pair committed.
@@ -95,6 +100,7 @@ def create_task_run(
             progress=0,
             attempt=0,
             max_attempts=max_attempts,
+            actor_id=actor_id,
             payload=payload,
             created_at=current_time,
             updated_at=current_time,

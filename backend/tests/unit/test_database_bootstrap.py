@@ -32,11 +32,42 @@ EXPECTED_CORE_TABLES = {
     "assistant_messages",
     "organizations",
     "llm_providers", "llm_models", "llm_bindings",
+    "course_knowledge_imports",
+    # 校级教师共享知识库（新增显式隔离域：school_id + space_id，不带 course_id）
+    "knowledge_spaces", "knowledge_memberships", "knowledge_upload_sessions",
+    "knowledge_documents", "knowledge_document_versions", "knowledge_parse_runs",
+    "knowledge_blocks", "knowledge_retrieval_profiles", "knowledge_index_builds",
+    "knowledge_chunks", "knowledge_sessions", "knowledge_messages", "knowledge_jobs",
+    "knowledge_outbox_events", "knowledge_model_calls", "knowledge_audit_events",
 }
 
 # 平台级全局表（后台管理设计 §8 的显式边界）：不属于任何课程域，不带 course_id。
-# 除 users/courses/organizations 与 llm_* 三表外的每一张表都必须带 course_id（红线守护）。
-GLOBAL_TABLES = {"users", "courses", "organizations", "llm_providers", "llm_models", "llm_bindings"}
+# 除 users/courses/organizations、llm_* 三表与 knowledge_* 新域外的每一张表都必须
+# 带 course_id（红线守护）。course_knowledge_imports 是课程内导入记录，仍需 course_id。
+GLOBAL_TABLES = {
+    "users",
+    "courses",
+    "organizations",
+    "llm_providers",
+    "llm_models",
+    "llm_bindings",
+    "knowledge_spaces",
+    "knowledge_memberships",
+    "knowledge_upload_sessions",
+    "knowledge_documents",
+    "knowledge_document_versions",
+    "knowledge_parse_runs",
+    "knowledge_blocks",
+    "knowledge_retrieval_profiles",
+    "knowledge_index_builds",
+    "knowledge_chunks",
+    "knowledge_sessions",
+    "knowledge_messages",
+    "knowledge_jobs",
+    "knowledge_outbox_events",
+    "knowledge_model_calls",
+    "knowledge_audit_events",
+}
 
 
 @pytest.fixture

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { BookOpen, Plus, ChevronRight, LogOut, UserPlus } from 'lucide-react';
+import { BookOpen, Plus, ChevronRight, LogOut, UserPlus, LibraryBig } from 'lucide-react';
 import { useCourseStore, type Course } from '@/stores/course';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
@@ -191,6 +191,21 @@ export default function CourseSpacePage() {
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          <button
+            onClick={() => navigate('/knowledge')}
+            title="进入校级教师共享知识库"
+            style={{
+              display: 'flex', alignItems: 'center', gap: '6px',
+              background: 'none', border: 'none', cursor: 'pointer',
+              padding: '8px 12px', borderRadius: 'var(--radius-sm)',
+              color: 'var(--text-secondary)', fontSize: '0.8125rem',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--fill-strong)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
+          >
+            <LibraryBig size={15} />
+            共享知识库
+          </button>
           {canOpenAdmin && (
             <button
               onClick={() => navigate('/admin')}

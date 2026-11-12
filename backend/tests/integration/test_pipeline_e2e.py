@@ -255,6 +255,9 @@ def client(engine_and_factory):
                 role="admin",
             )
         )
+        s.flush()
+        # 课程 owner 校验（P0.1）不再给管理身份开后门：让登录账号成为课程 owner。
+        s.query(Course).filter(Course.id == "c1").update({"owner_id": "e2e_admin"})
         s.commit()
     runner = TestClient(app)
     login = runner.post("/api/v1/auth/login", json={"username": "e2e_admin", "password": "123456"})

@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 from app.adapters.storage.local_storage import LocalStorage
 from app.adapters.storage.minio_storage import MinioStorage, StoragePort, StoragePreconditionError, StorageUnavailableError
 from app.api.v1.auth import get_current_user
+from app.api.v1.course_access import require_owned_course
 from app.config import settings
 from app.db.schema import User
 from app.db.session import get_session
@@ -14,7 +15,13 @@ from app.services import course_service, material_service
 from app.services import content_index_service
 from app.services import parse_service
 
-router = APIRouter(prefix="/api/v1/courses/{course_id}", tags=["materials"])
+# 课程 owner 校验在路由组级挂载：资料读写、上传会话与解析全部继承，
+# 不再依赖每个端点各自记得检查（此前只校验登录，任意教师可读他人资料）。
+router = APIRouter(
+    prefix="/api/v1/courses/{course_id}",
+    tags=["materials"],
+    dependencies=[Depends(require_owned_course)],
+)
 
 
 def get_storage(request: Request) -> StoragePort:

@@ -10,12 +10,14 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.db.schema import (
+    User,
     blueprint_versions,
     exam_projects,
     paper_versions,
     task_runs,
 )
 from app.api.v1.auth import get_current_user
+from app.api.v1.course_access import require_owned_course
 from app.db.session import get_session, get_session_factory
 from app.services import blueprint_suggest_service, exam_project_service
 from app.services.llm_registry import llm_ready
@@ -42,12 +44,12 @@ from app.services.generation_runner_service import (
 
 logger = logging.getLogger(__name__)
 
-# 试卷生成→导出链路的项目/蓝图/合同/生成端点全部要求登录：
-# router 级依赖一次覆盖全部端点，新增端点默认带鉴权。
+# 试卷生成→导出链路的项目/蓝图/合同/生成端点要求登录且为本课程 owner：
+# router 级依赖一次覆盖全部端点（含任务查询），新增端点默认受保护。
 router = APIRouter(
     prefix="/api/v1/courses/{course_id}/exam-projects",
     tags=["exam-projects"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(require_owned_course)],
 )
 
 
@@ -572,6 +574,7 @@ def generate(
     body: GenerationStartRequest | None = None,
     session: Session = Depends(get_session),
     session_factory: sessionmaker[Session] = Depends(get_session_factory),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     _get_project_or_404(session, course_id=course_id, project_id=project_id)
     mock_graph = bool(body.mock_graph) if body is not None else False
@@ -580,7 +583,7 @@ def generate(
 
     try:
         task_run_id = enqueue_generation(
-            session, course_id=course_id, project_id=project_id
+            session, course_id=course_id, project_id=project_id, actor_id=current_user.id
         )
         # 显式 commit：接下来 inline_runner 会打开另一个 session 去抢任务，
         # 若当前事务尚未落地，SQLite/PostgreSQL 默认隔离级别会让 runner

@@ -34,6 +34,15 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     # 不让 Celery 重置根 logger，保留上面的 INFO 配置。
     worker_hijack_root_logger=False,
+    # 知识域长任务走独立队列，避免批量建索引挤占命题与问答并发。
+    task_routes={"knowledge.job": {"queue": "knowledge"}},
+    # 独立于页面的 outbox 重试：页面关闭或 broker 延迟恢复也能继续派发。
+    beat_schedule={
+        "knowledge-dispatch-outbox": {
+            "task": "knowledge.dispatch_outbox",
+            "schedule": 30.0,
+        }
+    },
 )
 
 
@@ -58,3 +67,29 @@ def dispatch_task(self, payload: dict) -> None:
         payload.get("task_id"), self.request.id or "unknown",
     )
     execute_task(payload["task_id"], worker_id=f"celery:{self.request.id or 'unknown'}")
+
+
+@celery_app.task(name="knowledge.job", bind=True, ignore_result=True)
+def knowledge_job_task(self, payload: dict) -> None:
+    """知识域任务入口：独立队列 ``knowledge``，不占用命题与问答并发。"""
+
+    from app.infrastructure.tasks.knowledge_tasks import execute_knowledge_job
+
+    job_id = payload.get("job_id")
+    if not job_id:
+        return
+    execute_knowledge_job(job_id, worker_id=f"celery:{self.request.id or 'unknown'}")
+
+
+@celery_app.task(name="knowledge.dispatch_outbox", ignore_result=True)
+def knowledge_dispatch_outbox_task(limit: int = 50) -> int:
+    """Beat 定时扫描 pending 知识事件，独立于页面轮询补派发。"""
+
+    from app.db.session import get_session_factory
+    from app.infrastructure.tasks.knowledge_tasks import dispatch_pending_knowledge_events
+
+    session = get_session_factory()()
+    try:
+        return dispatch_pending_knowledge_events(session, limit=limit)
+    finally:
+        session.close()

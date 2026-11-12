@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.v1.auth import get_current_user
+from app.api.v1.course_access import require_owned_course
 from app.db.schema import User
 from app.db.session import get_session
 from app.services.answer_card_docx import export_answer_card_docx
@@ -41,8 +42,8 @@ from app.services.paper_version_service import (
 router = APIRouter(
     prefix="/api/v1/courses/{course_id}",
     tags=["paper-archives"],
-    # 与试卷链路同口径：router 级鉴权一次覆盖全部端点
-    dependencies=[Depends(get_current_user)],
+    # 与试卷链路同口径：登录 + 本课程 owner，他人课程统一 404
+    dependencies=[Depends(require_owned_course)],
 )
 
 

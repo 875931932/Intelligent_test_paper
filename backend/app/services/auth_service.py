@@ -117,6 +117,10 @@ def user_from_payload(session: Session, payload: dict) -> User:
     user = session.get(User, payload.get("sub"))
     if user is None:
         raise UserNotFoundError
+    # 停用即时生效：登录时校验过状态，但已签发的 token 仍可能继续使用，
+    # 因此每次按 token 解析账号时都重新确认状态（不在签发时信任一次）。
+    if user.status != "active":
+        raise AuthenticationError("账号已停用，请联系管理员")
     return user
 
 

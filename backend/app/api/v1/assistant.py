@@ -19,16 +19,18 @@ from sqlalchemy.orm import Session
 from starlette.concurrency import run_in_threadpool
 
 from app.api.v1.auth import get_current_user
+from app.api.v1.course_access import require_owned_course
 from app.config import settings
-from app.db.schema import assistant_messages, task_runs
+from app.db.schema import User, assistant_messages, task_runs
 from app.db.session import get_session
 from app.services import assistant_service
 
-# 级鉴权：新增端点默认带登录（与 exam_projects 同款）
+# 课程 owner 校验在路由组级挂载：会话、轮次、SSE 与消息恢复全部继承。
+# 此前只校验登录，任意教师可凭已知课程 ID 读他人助手会话（2026-11-12 复现）。
 router = APIRouter(
     prefix="/api/v1/courses/{course_id}/assistant",
     tags=["assistant"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(require_owned_course)],
 )
 
 
@@ -156,6 +158,7 @@ def create_relay(
     course_id: str,
     body: AssistantRelayRequest,
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     """内部接力（202 + task_run_id）：推进出卷阶梯的下一张卡，**不写用户消息**。
 
@@ -172,6 +175,7 @@ def create_relay(
             course_id=course_id,
             session_id=body.session_id,
             after_message_id=body.after_message_id,
+            actor_id=current_user.id,
         )
         session.commit()
     except assistant_service.AssistantError as exc:
@@ -233,6 +237,7 @@ def create_turn(
     course_id: str,
     body: AssistantTurnRequest,
     session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
 ) -> dict:
     """写 user 消息并创建 assistant_turn 任务（202 + task_run_id）。
 
@@ -248,6 +253,7 @@ def create_turn(
             course_id=course_id,
             message=body.message,
             session_id=body.session_id,
+            actor_id=current_user.id,
         )
         # 显式 commit：outbox 派发会用另一个事务/连接读取事件，任务行必须先落地
         session.commit()

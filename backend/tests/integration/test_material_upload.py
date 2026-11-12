@@ -70,6 +70,19 @@ def test_course_endpoints_reject_unauthenticated_request(client):
     assert bare.post("/api/v1/courses", json={"name": "x", "slug": "x"}).status_code == 401
 
 
+def _owned_course(client) -> str:
+    """为配置守卫测试创建真实归当前账号所有的课程（P0.1 起先校验 owner）。"""
+
+    from uuid import uuid4
+
+    created = client.post(
+        "/api/v1/courses",
+        json={"name": "配置守卫占位课", "slug": f"guard-{uuid4().hex[:8]}"},
+    )
+    assert created.status_code == 201, created.text
+    return created.json()["id"]
+
+
 @pytest.mark.parametrize(
     ("missing_attribute", "expected_detail"),
     [
@@ -79,6 +92,7 @@ def test_course_endpoints_reject_unauthenticated_request(client):
     ],
 )
 def test_organization_run_requires_all_semantic_dependencies(client, monkeypatch, missing_attribute, expected_detail):
+    course_id = _owned_course(client)
     monkeypatch.setattr(settings, "embedding_api_key", "")
     monkeypatch.setattr(settings, "embedding_base_url", "")
     monkeypatch.setattr(settings, "embedding_model", "")
@@ -100,7 +114,7 @@ def test_organization_run_requires_all_semantic_dependencies(client, monkeypatch
         delattr(client.app.state, "semantic_json_client")
     try:
         response = client.post(
-            "/api/v1/courses/not-needed/organization-runs",
+            f"/api/v1/courses/{course_id}/organization-runs",
             json={"material_version_ids": ["material-v1"]},
         )
     finally:
@@ -113,6 +127,7 @@ def test_organization_run_requires_all_semantic_dependencies(client, monkeypatch
 
 
 def test_organization_dependency_lazily_builds_embedding_client(client, monkeypatch):
+    course_id = _owned_course(client)
     monkeypatch.setattr(settings, "embedding_api_key", "embedding-test-key")
     monkeypatch.setattr(settings, "embedding_base_url", "https://embedding.invalid/v1")
     monkeypatch.setattr(settings, "embedding_model", "embedding-model")
@@ -123,10 +138,12 @@ def test_organization_dependency_lazily_builds_embedding_client(client, monkeypa
         del app.state.organization_embedder
     try:
         response = client.post(
-            "/api/v1/courses/not-needed/organization-runs",
+            f"/api/v1/courses/{course_id}/organization-runs",
             json={"material_version_ids": ["material-v1"]},
         )
-        assert response.status_code == 404
+        # 本用例只关心依赖被惰性构建；占位课程存在但资料版本不存在，
+        # 前置校验以 422 拒绝（此前依赖解析先于课程校验，曾断言 404）。
+        assert response.status_code == 422
         # 依赖注入统一暴露 LangChain Embeddings（内层仍是既有网关）
         installed = app.state.organization_embedder
         assert isinstance(installed, PaperPactEmbeddings)
@@ -153,6 +170,7 @@ def test_organization_semantic_dependencies_require_complete_llm_config(
     missing_attribute,
     expected_detail,
 ):
+    course_id = _owned_course(client)
     monkeypatch.setattr(settings, "llm_api_key", "configured-test-key")
     monkeypatch.setattr(settings, "llm_base_url", "https://llm.invalid/v1")
     monkeypatch.setattr(settings, "llm_model", "generic-model")
@@ -163,7 +181,7 @@ def test_organization_semantic_dependencies_require_complete_llm_config(
         delattr(app.state, missing_attribute)
     try:
         response = client.post(
-            "/api/v1/courses/not-needed/organization-runs",
+            f"/api/v1/courses/{course_id}/organization-runs",
             json={"material_version_ids": ["material-v1"]},
         )
         assert response.status_code == 503

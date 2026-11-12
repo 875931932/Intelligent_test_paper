@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.v1.auth import get_current_user
+from app.api.v1.course_access import require_owned_course
 from app.db.schema import User, paper_versions
 from app.db.session import get_session
 from app.services import ai_create_service, ai_revise_service, paper_review_service
@@ -38,12 +39,12 @@ from app.services.paper_version_service import (
     update_paper_item,
 )
 
-# 试卷链路（读/改/定稿/导出）全部要求登录：router 级依赖一次覆盖全部端点，
-# 新增端点默认带鉴权，避免再出现裸奔端点。
+# 试卷链路（读/改/定稿/导出）要求登录且**必须为本课程 owner**：
+# router 级依赖一次覆盖全部端点，他人课程统一 404。
 router = APIRouter(
     prefix="/api/v1/courses/{course_id}",
     tags=["paper-versions"],
-    dependencies=[Depends(get_current_user)],
+    dependencies=[Depends(require_owned_course)],
 )
 
 

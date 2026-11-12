@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters.model.client_factory import build_llm_client
 from app.adapters.model.llm_semantic_extractors import LLMSyllabusExtractor
+from app.api.v1.course_access import require_owned_course
 from app.config import settings
 from app.db.session import get_session
 from app.db.session import get_session_factory
@@ -20,7 +21,13 @@ from app.services.llm_registry import RegistryNotConfigured, llm_ready, resolve_
 from app.services.model_call_service import DatabaseModelCallRecorder
 from app.workflows.framework_graph import build_framework_graph
 
-router = APIRouter(prefix="/api/v1/courses/{course_id}", tags=["framework"])
+# 框架构建链路此前**完全没有鉴权**（未挂登录依赖，也不校验课程归属）。
+# 现于路由组级统一挂载 owner 校验：未登录 401，他人课程 404。
+router = APIRouter(
+    prefix="/api/v1/courses/{course_id}",
+    tags=["framework"],
+    dependencies=[Depends(require_owned_course)],
+)
 _syllabus_extractor_lock = Lock()
 
 

@@ -587,6 +587,174 @@ def _migrate_user_admin_columns(engine: Engine) -> None:
             conn.execute(text(f"ALTER TABLE users ADD COLUMN {name} {ddl}"))
 
 
+def _migrate_user_authz_version(engine: Engine) -> None:
+    """幂等补 users.authz_version（P0.2 知识域授权契约）。
+
+    账号状态、组织或角色变化时递增；旧库没有该列时补 1。
+    """
+
+    try:
+        insp = inspect(engine)
+        if not insp.has_table("users"):
+            return
+        existing = {c["name"] for c in insp.get_columns("users")}
+    except Exception:
+        # 与其余迁移同口径：内省失败（如 bootstrap 单测的假 engine）时跳过。
+        return
+    if "authz_version" in existing:
+        return
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "ALTER TABLE users ADD COLUMN authz_version INTEGER NOT NULL DEFAULT 1"
+            )
+        )
+
+
+def _migrate_task_run_actor(engine: Engine) -> None:
+    """幂等补 task_runs.actor_id（P0.1 任务 actor 复核）。
+
+    历史任务该列为空，worker 按课程 owner 解析，不需要回填。
+    """
+
+    try:
+        insp = inspect(engine)
+        if not insp.has_table("task_runs"):
+            return
+        existing = {c["name"] for c in insp.get_columns("task_runs")}
+    except Exception:
+        # 迁移是尽力而为的幂等维护：无法内省（bootstrap 单测的 mock engine）时跳过。
+        return
+    if "actor_id" in existing:
+        return
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE task_runs ADD COLUMN actor_id VARCHAR(64)"))
+
+
+def _migrate_knowledge_outbox_updated_at(engine: Engine) -> None:
+    """幂等补 knowledge_outbox_events.updated_at，并补齐非空与默认值。
+
+    旧库先 ADD COLUMN（SQLite 无法直接加非常量默认值），再回填；若字段已存在
+    但约束不完整，PostgreSQL 走 ALTER COLUMN，SQLite 重建表以与新库一致。
+    """
+
+    try:
+        insp = inspect(engine)
+        if not insp.has_table("knowledge_outbox_events"):
+            return
+        columns = {c["name"]: c for c in insp.get_columns("knowledge_outbox_events")}
+    except Exception:
+        return
+
+    with engine.begin() as conn:
+        if "updated_at" not in columns:
+            column_type = (
+                "TIMESTAMP WITH TIME ZONE"
+                if engine.dialect.name == "postgresql"
+                else "TIMESTAMP"
+            )
+            conn.execute(
+                text(
+                    f"ALTER TABLE knowledge_outbox_events "
+                    f"ADD COLUMN updated_at {column_type}"
+                )
+            )
+        conn.execute(
+            text(
+                "UPDATE knowledge_outbox_events SET updated_at = created_at "
+                "WHERE updated_at IS NULL"
+            )
+        )
+
+    try:
+        column = {
+            c["name"]: c for c in inspect(engine).get_columns("knowledge_outbox_events")
+        }["updated_at"]
+    except Exception:
+        return
+    if not column["nullable"] and column["default"] is not None:
+        return
+
+    if engine.dialect.name == "postgresql":
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "ALTER TABLE knowledge_outbox_events "
+                    "ALTER COLUMN updated_at SET DEFAULT now()"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE knowledge_outbox_events "
+                    "ALTER COLUMN updated_at SET NOT NULL"
+                )
+            )
+        return
+
+    # SQLite：重建表以带上 NOT NULL 与 CURRENT_TIMESTAMP 默认值。
+    from sqlalchemy.schema import CreateIndex, CreateTable
+
+    from app.db.schema import knowledge_outbox_events as table
+
+    legacy = "knowledge_outbox_events__legacy"
+    names = [c.name for c in table.columns]
+    try:
+        legacy_columns = {
+            c["name"] for c in inspect(engine).get_columns("knowledge_outbox_events")
+        }
+    except Exception:
+        legacy_columns = set(names)
+    select_exprs = []
+    for name in names:
+        if name == "updated_at":
+            select_exprs.append("COALESCE(updated_at, created_at)")
+        elif name in legacy_columns:
+            select_exprs.append(name)
+        else:
+            select_exprs.append("NULL")
+    with engine.begin() as conn:
+        conn.execute(text(f"ALTER TABLE knowledge_outbox_events RENAME TO {legacy}"))
+        conn.execute(CreateTable(table))
+        conn.execute(
+            text(
+                f"INSERT INTO knowledge_outbox_events ({', '.join(names)}) "
+                f"SELECT {', '.join(select_exprs)} FROM {legacy}"
+            )
+        )
+        conn.execute(text(f"DROP TABLE {legacy}"))
+        for index in table.indexes:
+            conn.execute(CreateIndex(index))
+
+
+def _migrate_knowledge_indexes(engine: Engine) -> None:
+    """知识域全文检索索引（PostgreSQL 专用）。
+
+    v1 词面通道 = 预分词文本 + ``to_tsvector('simple', ...)`` 表达式 GIN 索引；
+    索引与查询必须使用同一表达式。SQLite / 无 PostgreSQL 环境跳过（测试走
+    内存表，不做全文检索性能验证）。
+    """
+
+    if engine.dialect.name != "postgresql":
+        return
+    try:
+        if not inspect(engine).has_table("knowledge_chunks"):
+            return
+    except Exception:
+        # 幂等维护：无法内省时不阻断启动（同其余迁移口径）。
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_knowledge_chunks_lexical_gin "
+                    "ON knowledge_chunks USING gin "
+                    "(to_tsvector('simple', coalesce(lexical_tsv, '')))"
+                )
+            )
+    except Exception as exc:  # noqa: BLE001 - 索引失败只降级性能，不影响正确性
+        logger.warning("knowledge_chunks 全文检索索引创建失败（词面召回退化顺序扫描）: %s", exc)
+
+
 def _migrate_model_call_indexes(engine: Engine) -> None:
     """幂等补建监控聚合索引（设计 §6.1）：既有库缺这四条，create_all 不补已存在表的索引。"""
 
@@ -763,6 +931,10 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             _migrate_generated_question_nullable(engine)
             _migrate_delete_preserved_nullable(engine)
             _migrate_paper_item_confirmation(engine)
+            _migrate_user_authz_version(engine)
+            _migrate_task_run_actor(engine)
+            _migrate_knowledge_outbox_updated_at(engine)
+            _migrate_knowledge_indexes(engine)
             _migrate_model_call_indexes(engine)
             _seed_llm_registry(engine)
             if seed:
@@ -785,6 +957,10 @@ def bootstrap_database(database_url: str | None = None, seed: bool | None = None
             _migrate_generated_question_nullable(engine)
             _migrate_delete_preserved_nullable(engine)
             _migrate_paper_item_confirmation(engine)
+            _migrate_user_authz_version(engine)
+            _migrate_task_run_actor(engine)
+            _migrate_knowledge_outbox_updated_at(engine)
+            _migrate_knowledge_indexes(engine)
             _migrate_model_call_indexes(engine)
             _seed_llm_registry(engine)
             if seed:

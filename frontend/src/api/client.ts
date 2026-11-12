@@ -5,6 +5,7 @@ import { coursesApi } from './domains/courses';
 import { knowledgeRunApi } from './domains/knowledgeRun';
 import { knowledgePublishApi } from './domains/knowledgePublish';
 import { knowledgeViewApi } from './domains/knowledgeView';
+import { knowledgeBaseApi } from './domains/knowledgeBase';
 import { materialsApi } from './domains/materials';
 import { frameworkApi } from './domains/framework';
 import { examProjectsApi } from './domains/examProjects';
@@ -18,6 +19,7 @@ export const api = {
   auth: authApi,
   courses: coursesApi,
   knowledge: { ...knowledgeRunApi, ...knowledgePublishApi, ...knowledgeViewApi },
+  knowledgeBase: knowledgeBaseApi,
   materials: materialsApi,
   framework: frameworkApi,
   examProjects: examProjectsApi,

@@ -16,7 +16,7 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.schema import task_runs
+from app.db.schema import Course, User, task_runs
 from app.db.session import get_session_factory
 from app.infrastructure.tasks.models import (
     # 各类型租约时长的唯一权威表（与 lease 收尾逻辑同居 models）；
@@ -110,6 +110,25 @@ def _handler_error_message(payload: dict, exc: BaseException) -> str:
     return f"task handler failed: {detail}"[:2000]
 
 
+def _actor_authorized(session: Session, *, course_id: str, actor_id: str | None) -> bool:
+    """领取后复核：账号仍有效且仍是该课程 owner。
+
+    历史任务没有 actor_id 时按课程 owner 解析；课程已删除或账号停用都拒绝。
+    排队期间被撤权/停用的任务以 access_revoked 结束，不进入模型调用。
+    """
+
+    owner_id = session.execute(
+        select(Course.owner_id).where(Course.id == course_id)
+    ).scalar_one_or_none()
+    if not owner_id:
+        return False
+    resolved_actor = actor_id or owner_id
+    if resolved_actor != owner_id:
+        return False
+    user = session.get(User, resolved_actor)
+    return bool(user is not None and user.status == "active")
+
+
 def execute_task(task_id: str, *, worker_id: str | None = None) -> bool:
     """Claim and execute one durable task, returning whether it was handled."""
 
@@ -133,6 +152,17 @@ def execute_task(task_id: str, *, worker_id: str | None = None) -> bool:
         # 将租约作为独立事务提交。业务处理器可能因模型/数据库错误回滚，
         # 不能因此把已领取的任务恢复成 queued，导致重复执行或无法失败收敛。
         session.commit()
+        if not _actor_authorized(session, course_id=course_id, actor_id=row["actor_id"]):
+            fail_task(
+                session,
+                course_id=course_id,
+                task_id=task_id,
+                worker_id=worker_id,
+                error_code="access_revoked",
+                error_message="操作者账号停用、课程已删除或不再拥有该课程",
+            )
+            session.commit()
+            return False
         handler = _HANDLERS.get(row["task_type"])
         if handler is None:
             fail_task(
@@ -162,6 +192,21 @@ def execute_task(task_id: str, *, worker_id: str | None = None) -> bool:
                 worker_id=worker_id,
                 error_code="handler_error",
                 error_message=_handler_error_message(row["payload"], exc),
+            )
+            session.commit()
+            return False
+        # 返回前复核（P0）：调用期间撤权/停用则丢弃待输出结果，不提交成功态。
+        # 注意只在拒绝分支 rollback：正常分支需要把处理器尚未提交的派生写入
+        # （如索引向量）随 complete_task 一起提交。
+        if not _actor_authorized(session, course_id=course_id, actor_id=row["actor_id"]):
+            session.rollback()
+            fail_task(
+                session,
+                course_id=course_id,
+                task_id=task_id,
+                worker_id=worker_id,
+                error_code="access_revoked",
+                error_message="任务执行期间操作者权限已失效，结果已丢弃",
             )
             session.commit()
             return False

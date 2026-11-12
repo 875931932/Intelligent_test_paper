@@ -14,6 +14,11 @@ import { lazyWithRetry } from '@/lib/lazyWithRetry';
    走 lazyWithRetry：链路偶发 RST/挂起导致 chunk 拉取失败时自动换新连接
    重试、必要时整页重载，不再让用户手动刷新。 */
 const CourseSpacePage = lazyWithRetry(() => import('@/pages/course-space'));
+/* 校级教师共享知识库（/knowledge）：空间列表 + 空间详情（资料/成员/策略） */
+const KnowledgeCenterPage = lazyWithRetry(() => import('@/pages/knowledge-center'));
+const KnowledgeSpaceDetailPage = lazyWithRetry(() =>
+  import('@/pages/knowledge-center/SpacePage')
+);
 const Dashboard = lazyWithRetry(() => import('@/pages/dashboard'));
 const Materials = lazyWithRetry(() => import('@/pages/materials'));
 const Framework = lazyWithRetry(() => import('@/pages/framework'));
@@ -77,6 +82,22 @@ export default function App() {
           element={
             <ProtectedRoute>
               <CourseSpacePage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/knowledge"
+          element={
+            <ProtectedRoute>
+              <KnowledgeCenterPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/knowledge/:spaceId"
+          element={
+            <ProtectedRoute>
+              <KnowledgeSpaceDetailPage />
             </ProtectedRoute>
           }
         />

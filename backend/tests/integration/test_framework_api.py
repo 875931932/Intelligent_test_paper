@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 
+from app.api.v1.auth import get_current_user
 from app.db.schema import (
     Base,
     Course,
@@ -26,6 +27,17 @@ from app.config import settings
 from app.domain.framework.exam_points import ExamPoint, OperationalDetailPolicy, WeightSource
 from app.domain.framework.models import AssessmentAnchor, AssessmentOutline, TeachingTopic
 from app.main import app
+
+# 框架路由现在强制登录 + 课程 owner（P0.1 修复了此前的完全裸奔）。
+# 本模块各用例的自建库都以 owner-dev 作为课程 owner，统一在认证依赖上固定
+# 该身份，避免每个用例重复构造登录 token。
+@pytest.fixture(autouse=True)
+def _authenticated_owner():
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id="owner-dev", display_name="Owner", role="teacher", status="active"
+    )
+    yield
+    app.dependency_overrides.pop(get_current_user, None)
 
 
 class FakeSyllabusExtractor:
@@ -338,6 +350,12 @@ def test_teaching_depth_conflicts_are_advisory_and_do_not_block_publish(tmp_path
 def test_framework_build_requires_configured_semantic_extractor(tmp_path, monkeypatch, missing_setting):
     engine = create_engine(f"sqlite:///{tmp_path / 'framework-no-model.db'}", connect_args={"check_same_thread": False})
     Base.metadata.create_all(engine)
+    # P0.1 起先校验课程 owner，占位课程必须真实存在且归当前账号所有。
+    with Session(engine) as setup:
+        setup.add(User(id="owner-dev", display_name="Owner", role="teacher"))
+        setup.flush()
+        setup.add(Course(id="course", owner_id="owner-dev", slug="course", name="Course"))
+        setup.commit()
 
     def session_override():
         with Session(engine) as session:
@@ -372,6 +390,12 @@ def test_framework_dependency_lazily_builds_llm_extractor(tmp_path, monkeypatch)
         connect_args={"check_same_thread": False},
     )
     Base.metadata.create_all(engine)
+    # 同上有主课程：让 extractor 依赖先于输入端校验构建，再以 404 收敛。
+    with Session(engine) as setup:
+        setup.add(User(id="owner-dev", display_name="Owner", role="teacher"))
+        setup.flush()
+        setup.add(Course(id="course", owner_id="owner-dev", slug="course", name="Course"))
+        setup.commit()
 
     def session_override():
         with Session(engine) as session:
@@ -386,13 +410,15 @@ def test_framework_dependency_lazily_builds_llm_extractor(tmp_path, monkeypatch)
     try:
         with TestClient(app) as client:
             response = client.post(
-                "/api/v1/courses/missing/framework-runs",
+                "/api/v1/courses/course/framework-runs",
                 json={
                     "teaching_material_version_id": "teaching-v1",
                     "assessment_material_version_id": "assessment-v1",
                 },
             )
-        assert response.status_code == 404
+        # 占位课程存在但资料版本不存在，前置校验以 422 拒绝；本用例只关心
+        # extractor 依赖被惰性构建。
+        assert response.status_code == 422
         assert isinstance(app.state.syllabus_extractor, LLMSyllabusExtractor)
     finally:
         app.dependency_overrides.clear()

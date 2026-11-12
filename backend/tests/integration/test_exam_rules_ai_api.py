@@ -13,6 +13,7 @@ from sqlalchemy import create_engine, event, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import StaticPool
 
+from app.api.v1.auth import get_current_user
 from app.db.schema import Base, Course, User, framework_versions, task_runs
 from app.db.session import get_session
 from app.main import app
@@ -54,6 +55,12 @@ def env(monkeypatch):
             yield session
 
     app.dependency_overrides[get_session] = session_override
+
+    # 框架路由现在强制登录 + 课程 owner（P0.1 修复）。本测试聚焦规则提案
+    # 任务落库，认证用依赖覆盖固定为课程 owner，不重复走登录流程。
+    app.dependency_overrides[get_current_user] = lambda: User(
+        id="owner-dev", display_name="Owner", role="teacher", status="active"
+    )
 
     # outbox 派发打桩：记录调用，避免构造/连接 Celery 与 Redis
     dispatched: list[str] = []

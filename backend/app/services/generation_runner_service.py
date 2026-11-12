@@ -133,6 +133,7 @@ def enqueue_generation(
     *,
     course_id: str,
     project_id: str,
+    actor_id: str | None = None,
 ) -> str:
     """为项目的 active_generation_run 入队任务；同 project:run 组合幂等。
 
@@ -202,6 +203,7 @@ def enqueue_generation(
             "project_id": project_id,
             "generation_run_id": active_run,
         },
+        actor_id=actor_id,
     )
 
 

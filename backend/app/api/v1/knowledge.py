@@ -24,6 +24,7 @@ from app.adapters.model.llm_semantic_extractors import (
 )
 from app.adapters.model.embedding_gateway import OpenAICompatibleEmbeddingGateway
 from app.adapters.model.langchain_embeddings import PaperPactEmbeddings
+from app.api.v1.course_access import require_owned_course
 from app.config import settings
 from app.db.session import get_session, get_session_factory
 from app.domain.knowledge.models import (
@@ -39,7 +40,13 @@ from app.services.model_call_service import DatabaseModelCallRecorder
 from app.services.staging_retrieval_service import HybridStagingRetriever
 from app.workflows.organization_graph import build_organization_graph
 
-router = APIRouter(prefix="/api/v1/courses/{course_id}", tags=["knowledge"])
+# 知识目录链路此前**完全没有鉴权**（未挂登录依赖，也不校验课程归属）。
+# 现于路由组级统一挂载 owner 校验：未登录 401，他人课程 404。
+router = APIRouter(
+    prefix="/api/v1/courses/{course_id}",
+    tags=["knowledge"],
+    dependencies=[Depends(require_owned_course)],
+)
 _organization_state_lock = RLock()
 _logger = logging.getLogger("organization")
 

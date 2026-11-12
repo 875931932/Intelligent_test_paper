@@ -2784,6 +2784,7 @@ def enqueue_turn(
     course_id: str,
     message: str,
     session_id: str | None = None,
+    actor_id: str | None = None,
 ) -> dict:
     """写 user 消息并创建 assistant_turn 任务；调用方负责 commit 与 outbox 派发。
 
@@ -2843,6 +2844,7 @@ def enqueue_turn(
             "session_id": resolved_session_id,
         },
         task_id=turn_id,
+        actor_id=actor_id,
     )
     _insert_message(
         session,
@@ -2875,6 +2877,7 @@ def enqueue_relay(
     course_id: str,
     session_id: str,
     after_message_id: str,
+    actor_id: str | None = None,
 ) -> dict:
     """确认/自动执行成功后推进下一张卡的**内部**轮次（不写用户消息）。
 
@@ -2932,6 +2935,7 @@ def enqueue_relay(
             "relay_after": after_message_id,
         },
         task_id=turn_id,
+        actor_id=actor_id,
     )
     return {
         "task_run_id": turn_id,

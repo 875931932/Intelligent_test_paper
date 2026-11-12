@@ -50,7 +50,7 @@ $existing = Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name =
 if ($existing) {
     Write-Output "worker_already_running=$($existing.ProcessId -join ',')"
     Write-Output "An already-running worker keeps the settings it was started with."
-    Write-Output "Stop it first so the new .env takes effect:"
+    Write-Output "Stop it first so the new .env and knowledge/beat consumers take effect:"
     Write-Output "  Stop-Process -Id $($existing.ProcessId -join ',') -Force"
     exit 0
 }
@@ -58,25 +58,51 @@ if ($existing) {
 $python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path $python)) { $python = 'python' }
 
-$outLog = Join-Path $PSScriptRoot 'worker.out.log'
-$errLog = Join-Path $PSScriptRoot 'worker.err.log'
-$process = Start-Process -FilePath $python `
-    -ArgumentList '-m', 'celery', '-A', 'app.infrastructure.tasks.celery_app', 'worker',
-                  "--pool=$pool", "--loglevel=$loglevel" `
-    -WorkingDirectory $PSScriptRoot -WindowStyle Hidden `
-    -RedirectStandardOutput $outLog -RedirectStandardError $errLog -PassThru
-
-Start-Sleep -Seconds 4
-if ($process.HasExited) {
-    Write-Output "ERROR: worker failed to start (pid $($process.Id)); see $errLog"
-    Get-Content $errLog -Tail 20
-    exit 1
+function Start-CeleryProcess {
+    param(
+        [string]$Name,
+        [string[]]$CeleryArgs
+    )
+    $outLog = Join-Path $PSScriptRoot "$Name.out.log"
+    $errLog = Join-Path $PSScriptRoot "$Name.err.log"
+    $process = Start-Process -FilePath $python `
+        -ArgumentList $CeleryArgs `
+        -WorkingDirectory $PSScriptRoot -WindowStyle Hidden `
+        -RedirectStandardOutput $outLog -RedirectStandardError $errLog -PassThru
+    Start-Sleep -Seconds 4
+    if ($process.HasExited) {
+        Write-Output "ERROR: $Name failed to start (pid $($process.Id)); see $errLog"
+        Get-Content $errLog -Tail 20
+        exit 1
+    }
+    return $process
 }
 
-Write-Output "worker_pid=$($process.Id)  pool=$pool  loglevel=$loglevel"
-Write-Output "stdout_log=$outLog"
-Write-Output "stderr_log=$errLog"
-Write-Output "tail -f:  Get-Content -Wait $errLog"
+# Default worker: course/paper tasks on the default "celery" queue.
+$worker = Start-CeleryProcess -Name 'worker' -CeleryArgs @(
+    '-m', 'celery', '-A', 'app.infrastructure.tasks.celery_app', 'worker',
+    "--pool=$pool", "--loglevel=$loglevel"
+)
+
+# Dedicated knowledge worker: consumes the "knowledge" queue only.
+$knowledgeWorker = Start-CeleryProcess -Name 'worker_knowledge' -CeleryArgs @(
+    '-m', 'celery', '-A', 'app.infrastructure.tasks.celery_app', 'worker',
+    '-Q', 'knowledge', "--pool=$pool", "--loglevel=$loglevel"
+)
+
+# Beat: retries knowledge outbox events even when no page is polling.
+$beat = Start-CeleryProcess -Name 'beat' -CeleryArgs @(
+    '-m', 'celery', '-A', 'app.infrastructure.tasks.celery_app', 'beat',
+    '--loglevel=INFO'
+)
+
+Write-Output "worker_pid=$($worker.Id)  queue=celery  pool=$pool  loglevel=$loglevel"
+Write-Output "knowledge_worker_pid=$($knowledgeWorker.Id)  queue=knowledge"
+Write-Output "beat_pid=$($beat.Id)"
+Write-Output "stdout_log=$PSScriptRoot\worker.out.log"
+Write-Output "stderr_log=$PSScriptRoot\worker.err.log"
+Write-Output "knowledge_logs=$PSScriptRoot\worker_knowledge.out.log"
+Write-Output "tail -f:  Get-Content -Wait $PSScriptRoot\worker.err.log"
 Write-Output "--- effective LLM config (from $envPath) ---"
 Select-String -Path $envPath -Pattern '^(LLM_BASE_URL|LLM_MODEL)=' | ForEach-Object { "  $($_.Line)" }
 Write-Output "During generation the log must show: LLMGateway ... base_url=<the value above>"

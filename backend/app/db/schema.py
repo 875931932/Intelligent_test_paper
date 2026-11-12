@@ -69,6 +69,11 @@ class User(Base):
     status: Mapped[str] = mapped_column(
         String(20), nullable=False, default="active", server_default="active"
     )
+    # 授权版本：账号状态、组织归属或平台角色变化时递增。知识域不缓存正向
+    # 授权结论，该列仅用于让外部缓存/会话感知策略已变化（P0.2 契约）。
+    authz_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
     last_login_at = mapped_column(DateTime(timezone=True))
     created_by: Mapped[str | None] = mapped_column(String(64), ForeignKey("users.id"))
     created_at = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
@@ -730,6 +735,10 @@ task_runs = _course_table(
     Column("task_type", String(80), nullable=False),
     Column("input_version", String(160), nullable=False),
     Column("idempotency_key", String(160), nullable=False),
+    # 入队时的操作者。worker 领取前后按它复核账号仍有效且仍是课程 owner；
+    # 历史任务为空时按课程 owner 解析（见 infrastructure/tasks/worker.py）。
+    # 不保存客户端提交的授权结论，只存服务端派生的事实。
+    Column("actor_id", String(64), ForeignKey("users.id")),
     Column("status", String(40), nullable=False, default="queued", server_default="queued"),
     Column("stage", String(80), nullable=False, default="queued", server_default="queued"),
     Column("progress", Integer, nullable=False, default=0, server_default="0"),
@@ -830,6 +839,435 @@ Index(
     unique=True,
     sqlite_where=outbox_events.c.status.in_(("pending", "claimed")),
     postgresql_where=outbox_events.c.status.in_(("pending", "claimed")),
+)
+
+
+# ── 校级教师共享知识库（新增显式隔离域：school_id + space_id）──────────────
+# 与课程域严格分开：本区表不带 course_id，课程隔离规则不变。复合外键在文末
+# 统一追加（同 school，空间表再加 space），防止子资源跨校/跨空间引用。
+
+
+def _knowledge_table(name: str, *columns: Column, constraints: tuple = (), scoped: bool = True) -> Table:
+    """知识域表：强制 school_id；``scoped`` 为真时再强制 space_id 与同域唯一键。"""
+
+    indexed_columns = [Column("school_id", String(64), nullable=False)]
+    unique = [UniqueConstraint("id", "school_id", name=f"uq_{name}_id_school")]
+    if scoped:
+        indexed_columns.append(Column("space_id", String(64), nullable=False))
+        unique.append(
+            UniqueConstraint("id", "school_id", "space_id", name=f"uq_{name}_id_school_space")
+        )
+    table = Table(
+        name,
+        Base.metadata,
+        _id_column(),
+        *indexed_columns,
+        *columns,
+        *unique,
+        *constraints,
+    )
+    if scoped:
+        Index(f"ix_{name}_school_space", table.c.school_id, table.c.space_id)
+    else:
+        Index(f"ix_{name}_school", table.c.school_id)
+    return table
+
+
+knowledge_spaces = _knowledge_table(
+    "knowledge_spaces",
+    Column("org_id", String(64), ForeignKey("organizations.id"), nullable=False),
+    Column("name", String(200), nullable=False),
+    Column("read_scope", String(20), nullable=False, default="members", server_default="members"),
+    Column("retrieval_mode", String(20), nullable=False, default="hybrid", server_default="hybrid"),
+    Column("allow_course_import", Boolean, nullable=False, server_default=false()),
+    Column("subject_tags", JSON, nullable=False, default=list, server_default="[]"),
+    Column("status", String(20), nullable=False, default="active", server_default="active"),
+    # 成员或共享策略变化时递增；外部缓存用它感知撤权。
+    Column("policy_version", Integer, nullable=False, default=1, server_default="1"),
+    Column("created_by", String(64), ForeignKey("users.id")),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    constraints=(
+        UniqueConstraint("school_id", "org_id", "name", name="uq_knowledge_spaces_org_name"),
+        CheckConstraint(
+            "read_scope IN ('members', 'organization', 'school')",
+            name="ck_knowledge_spaces_read_scope",
+        ),
+        CheckConstraint(
+            "retrieval_mode IN ('hybrid', 'lexical')", name="ck_knowledge_spaces_retrieval_mode"
+        ),
+        CheckConstraint("status IN ('active', 'archived')", name="ck_knowledge_spaces_status"),
+    ),
+    scoped=False,
+)
+Index("ix_knowledge_spaces_school_org_status", knowledge_spaces.c.school_id, knowledge_spaces.c.org_id, knowledge_spaces.c.status)
+
+knowledge_memberships = _knowledge_table(
+    "knowledge_memberships",
+    Column("user_id", String(64), ForeignKey("users.id"), nullable=False),
+    Column("role", String(20), nullable=False, default="reader", server_default="reader"),
+    Column("created_by", String(64), ForeignKey("users.id")),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    constraints=(
+        UniqueConstraint("space_id", "user_id", name="uq_knowledge_memberships_space_user"),
+        CheckConstraint(
+            "role IN ('owner', 'editor', 'publisher', 'reader')",
+            name="ck_knowledge_memberships_role",
+        ),
+    ),
+)
+Index("ix_knowledge_memberships_user_school", knowledge_memberships.c.user_id, knowledge_memberships.c.school_id)
+# 每个空间恰有一个 owner（移交在单事务完成；不能只靠前端隐藏删除按钮）。
+Index(
+    "uq_knowledge_memberships_one_owner",
+    knowledge_memberships.c.space_id,
+    unique=True,
+    postgresql_where=knowledge_memberships.c.role == "owner",
+    sqlite_where=knowledge_memberships.c.role == "owner",
+)
+
+knowledge_upload_sessions = _knowledge_table(
+    "knowledge_upload_sessions",
+    Column("uploader_id", String(64), ForeignKey("users.id"), nullable=False),
+    Column("object_key", String(500), nullable=False),
+    Column("expected_hash", String(64), nullable=False),
+    Column("size_bytes", Integer, nullable=False),
+    Column("mime_type", String(200), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("status", String(20), nullable=False, default="created", server_default="created"),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    constraints=(
+        CheckConstraint("size_bytes > 0", name="ck_knowledge_upload_sessions_size"),
+        CheckConstraint("length(expected_hash) = 64", name="ck_knowledge_upload_sessions_hash"),
+        CheckConstraint(
+            "status IN ('created', 'uploaded', 'verified', 'completed', 'expired', 'failed')",
+            name="ck_knowledge_upload_sessions_status",
+        ),
+    ),
+)
+
+knowledge_documents = _knowledge_table(
+    "knowledge_documents",
+    Column("title", String(255), nullable=False),
+    Column(
+        "classification",
+        String(40),
+        nullable=False,
+        default="shareable_teaching",
+        server_default="shareable_teaching",
+    ),
+    Column("status", String(20), nullable=False, default="draft", server_default="draft"),
+    # 活跃版本必须属于该文档（应用层校验 + 发布事务锁定）。
+    Column("published_version_id", String(64)),
+    # 撤回或发布状态变化时递增。
+    Column("access_version", Integer, nullable=False, default=1, server_default="1"),
+    Column("created_by", String(64), ForeignKey("users.id")),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    constraints=(
+        CheckConstraint(
+            "classification IN ('shareable_teaching', 'limited_teaching')",
+            name="ck_knowledge_documents_classification",
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'processing', 'ready', 'published', 'superseded', 'withdrawn', 'rejected')",
+            name="ck_knowledge_documents_status",
+        ),
+    ),
+)
+Index("ix_knowledge_documents_school_space_status", knowledge_documents.c.school_id, knowledge_documents.c.space_id, knowledge_documents.c.status)
+
+knowledge_document_versions = _knowledge_table(
+    "knowledge_document_versions",
+    Column("document_id", String(64), nullable=False),
+    Column("version_no", Integer, nullable=False),
+    Column("file_hash", String(64), nullable=False),
+    Column("object_key", String(500), nullable=False),
+    Column("size_bytes", Integer, nullable=False),
+    Column("mime_type", String(200), nullable=False),
+    Column("state", String(20), nullable=False, default="draft", server_default="draft"),
+    Column("effective_from", DateTime(timezone=True)),
+    Column("effective_to", DateTime(timezone=True)),
+    Column("approved_by", String(64), ForeignKey("users.id")),
+    Column("published_at", DateTime(timezone=True)),
+    # 发布时的 classification / read_scope / 责任单位快照：旧版权限不随新版扩大。
+    Column("publication_policy_snapshot", JSON, nullable=False, default=dict, server_default="{}"),
+    Column("serving_build_id", String(64)),
+    Column("import_origin", JSON),
+    Column("created_by", String(64), ForeignKey("users.id")),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    constraints=(
+        UniqueConstraint("document_id", "version_no", name="uq_knowledge_document_versions_number"),
+        CheckConstraint("version_no > 0", name="ck_knowledge_document_versions_number"),
+        CheckConstraint("size_bytes > 0", name="ck_knowledge_document_versions_size"),
+        CheckConstraint("length(file_hash) = 64", name="ck_knowledge_document_versions_hash"),
+        CheckConstraint(
+            "state IN ('draft', 'processing', 'ready', 'published', 'superseded', 'withdrawn', 'rejected', 'failed')",
+            name="ck_knowledge_document_versions_state",
+        ),
+    ),
+)
+Index("ix_knowledge_document_versions_document_state", knowledge_document_versions.c.document_id, knowledge_document_versions.c.state)
+
+knowledge_parse_runs = _knowledge_table(
+    "knowledge_parse_runs",
+    Column("version_id", String(64), nullable=False),
+    Column("parser_profile_hash", String(80), nullable=False),
+    Column("state", String(20), nullable=False, default="queued", server_default="queued"),
+    Column("artifact_prefix", String(500)),
+    Column("error_code", String(120)),
+    Column("attempts", Integer, nullable=False, default=0, server_default="0"),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    constraints=(
+        CheckConstraint(
+            "state IN ('queued', 'running', 'ready', 'failed')", name="ck_knowledge_parse_runs_state"
+        ),
+        CheckConstraint("attempts >= 0", name="ck_knowledge_parse_runs_attempts"),
+    ),
+)
+
+knowledge_blocks = _knowledge_table(
+    "knowledge_blocks",
+    Column("parse_run_id", String(64), nullable=False),
+    Column("block_index", Integer, nullable=False),
+    Column("block_type", String(60), nullable=False),
+    Column("text", Text, nullable=False, default=""),
+    Column("markdown", Text),
+    Column("latex", Text),
+    Column("page_index", Integer),
+    Column("bbox", JSON),
+    Column("heading_path", JSON, nullable=False, default=list),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    constraints=(UniqueConstraint("parse_run_id", "block_index", name="uq_knowledge_blocks_run_index"),),
+)
+
+knowledge_retrieval_profiles = _knowledge_table(
+    "knowledge_retrieval_profiles",
+    Column("version_no", Integer, nullable=False),
+    Column("embedding_config_ref", String(200), nullable=False),
+    Column("embedding_model_id", String(120), nullable=False),
+    Column("embedding_dim", Integer, nullable=False),
+    Column("tokenizer_version", String(80), nullable=False),
+    Column("chunking_config", JSON, nullable=False, default=dict, server_default="{}"),
+    Column("state", String(20), nullable=False, default="candidate", server_default="candidate"),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    constraints=(
+        UniqueConstraint("school_id", "version_no", name="uq_knowledge_retrieval_profiles_number"),
+        CheckConstraint("embedding_dim > 0", name="ck_knowledge_retrieval_profiles_dim"),
+        CheckConstraint(
+            "state IN ('candidate', 'active', 'retired')",
+            name="ck_knowledge_retrieval_profiles_state",
+        ),
+    ),
+    scoped=False,
+)
+# 每校至多一个 active 配置；切换与各版本 serving_build 在同一事务完成。
+Index(
+    "uq_knowledge_retrieval_profiles_active",
+    knowledge_retrieval_profiles.c.school_id,
+    unique=True,
+    postgresql_where=knowledge_retrieval_profiles.c.state == "active",
+    sqlite_where=knowledge_retrieval_profiles.c.state == "active",
+)
+
+knowledge_index_builds = _knowledge_table(
+    "knowledge_index_builds",
+    Column("version_id", String(64), nullable=False),
+    Column("parse_run_id", String(64), nullable=False),
+    Column("retrieval_profile_id", String(64), nullable=False),
+    Column("pipeline_hash", String(80), nullable=False),
+    Column("embedding_model_id", String(120), nullable=False),
+    Column("embedding_dim", Integer, nullable=False),
+    Column("state", String(20), nullable=False, default="queued", server_default="queued"),
+    Column("expected_chunks", Integer, nullable=False, default=0, server_default="0"),
+    Column("ready_chunks", Integer, nullable=False, default=0, server_default="0"),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    constraints=(
+        CheckConstraint(
+            "state IN ('queued', 'running', 'ready', 'failed')", name="ck_knowledge_index_builds_state"
+        ),
+    ),
+)
+
+knowledge_chunks = _knowledge_table(
+    "knowledge_chunks",
+    Column("build_id", String(64), nullable=False),
+    Column("chunk_index", Integer, nullable=False),
+    Column("text", Text, nullable=False),
+    # [{"block_id":..., "char_start":..., "char_end":...}]：引用定位的稳定来源。
+    Column("source_blocks", JSON, nullable=False, default=list),
+    Column("content_hash", String(64), nullable=False),
+    # 预分词后的全文检索文本（PostgreSQL 上由 init_db 建 GIN 表达式索引）。
+    Column("lexical_tsv", Text),
+    # 向量先以 JSON 存（SQLite/无扩展 PG 可跑），原生 vector 列由部署迁移补。
+    Column("embedding", JSON),
+    Column("embedding_model_id", String(120)),
+    Column("embedding_dim", Integer),
+    constraints=(
+        UniqueConstraint("build_id", "chunk_index", name="uq_knowledge_chunks_build_index"),
+    ),
+)
+
+knowledge_sessions = _knowledge_table(
+    "knowledge_sessions",
+    Column("owner_id", String(64), ForeignKey("users.id"), nullable=False),
+    Column("kind", String(20), nullable=False, default="conversation", server_default="conversation"),
+    Column("title", String(120), nullable=False, default="新会话", server_default="新会话"),
+    Column("selected_space_ids", JSON, nullable=False, default=list, server_default="[]"),
+    Column("status", String(20), nullable=False, default="active", server_default="active"),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    constraints=(
+        CheckConstraint("kind IN ('conversation', 'search')", name="ck_knowledge_sessions_kind"),
+        CheckConstraint("status IN ('active', 'deleted')", name="ck_knowledge_sessions_status"),
+    ),
+    scoped=False,
+)
+Index("ix_knowledge_sessions_school_owner_updated", knowledge_sessions.c.school_id, knowledge_sessions.c.owner_id, knowledge_sessions.c.updated_at)
+
+knowledge_messages = _knowledge_table(
+    "knowledge_messages",
+    Column("session_id", String(64), nullable=False),
+    Column("role", String(20), nullable=False),
+    Column("content", Text, nullable=False, default=""),
+    Column("state", String(20), nullable=False, default="complete", server_default="complete"),
+    Column("sources", JSON, nullable=False, default=list, server_default="[]"),
+    Column("dependency_versions", JSON, nullable=False, default=list, server_default="[]"),
+    Column("retrieval_snapshot", JSON, nullable=False, default=dict, server_default="{}"),
+    Column("feedback", JSON, nullable=False, default=dict, server_default="{}"),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    constraints=(
+        CheckConstraint("role IN ('user', 'assistant')", name="ck_knowledge_messages_role"),
+        CheckConstraint(
+            "state IN ('pending', 'complete', 'failed', 'cancelled', 'hidden')",
+            name="ck_knowledge_messages_state",
+        ),
+    ),
+    scoped=False,
+)
+Index("ix_knowledge_messages_session_created", knowledge_messages.c.session_id, knowledge_messages.c.created_at)
+
+knowledge_jobs = _knowledge_table(
+    "knowledge_jobs",
+    Column("space_id", String(64)),
+    Column("session_id", String(64)),
+    Column("actor_id", String(64), ForeignKey("users.id"), nullable=False),
+    Column("kind", String(80), nullable=False),
+    Column("payload", JSON, nullable=False, default=dict, server_default="{}"),
+    Column("payload_hash", String(64)),
+    Column("state", String(20), nullable=False, default="queued", server_default="queued"),
+    Column("progress", Integer, nullable=False, default=0, server_default="0"),
+    Column("attempts", Integer, nullable=False, default=0, server_default="0"),
+    Column("fencing_token", Integer, nullable=False, default=0, server_default="0"),
+    Column("lease_owner", String(160)),
+    Column("lease_until", DateTime(timezone=True)),
+    Column("idempotency_key", String(160), nullable=False),
+    Column("result", JSON),
+    Column("error_code", String(120)),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("completed_at", DateTime(timezone=True)),
+    constraints=(
+        # 空间处理任务与个人问答任务作用域互斥：恰好一个非空。
+        CheckConstraint(
+            "(space_id IS NULL) <> (session_id IS NULL)", name="ck_knowledge_jobs_single_scope"
+        ),
+        CheckConstraint(
+            "state IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')",
+            name="ck_knowledge_jobs_state",
+        ),
+        UniqueConstraint(
+            "school_id", "actor_id", "kind", "idempotency_key",
+            name="uq_knowledge_jobs_idempotency",
+        ),
+    ),
+    scoped=False,
+)
+Index("ix_knowledge_jobs_school_state_lease", knowledge_jobs.c.school_id, knowledge_jobs.c.state, knowledge_jobs.c.lease_until)
+
+knowledge_outbox_events = _knowledge_table(
+    "knowledge_outbox_events",
+    Column("job_id", String(64), nullable=False),
+    Column("event_type", String(80), nullable=False),
+    Column("state", String(20), nullable=False, default="pending", server_default="pending"),
+    Column("attempts", Integer, nullable=False, default=0, server_default="0"),
+    Column("available_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("claim_owner", String(160)),
+    Column("claim_until", DateTime(timezone=True)),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    constraints=(
+        CheckConstraint(
+            "state IN ('pending', 'claimed', 'published', 'failed')",
+            name="ck_knowledge_outbox_events_state",
+        ),
+    ),
+    scoped=False,
+)
+Index(
+    "uq_knowledge_outbox_active_job_event",
+    knowledge_outbox_events.c.job_id,
+    knowledge_outbox_events.c.event_type,
+    unique=True,
+    sqlite_where=knowledge_outbox_events.c.state.in_(("pending", "claimed")),
+    postgresql_where=knowledge_outbox_events.c.state.in_(("pending", "claimed")),
+)
+
+knowledge_model_calls = _knowledge_table(
+    "knowledge_model_calls",
+    Column("job_id", String(64)),
+    Column("actor_id", String(64), ForeignKey("users.id")),
+    Column("stage", String(80), nullable=False),
+    Column("provider", String(80), nullable=False),
+    Column("model", String(120), nullable=False),
+    Column("status", String(40), nullable=False),
+    Column("tokens", Integer),
+    Column("duration_ms", Integer),
+    Column("prompt_hash", String(64)),
+    Column("error_code", String(120)),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    scoped=False,
+)
+Index("ix_knowledge_model_calls_school_created", knowledge_model_calls.c.school_id, knowledge_model_calls.c.created_at)
+
+knowledge_audit_events = _knowledge_table(
+    "knowledge_audit_events",
+    Column("space_id", String(64)),
+    Column("actor_id", String(64), ForeignKey("users.id")),
+    Column("action", String(80), nullable=False),
+    Column("resource_type", String(60), nullable=False),
+    Column("resource_id", String(64)),
+    # 只记元数据，禁止保存完整资料正文。
+    Column("before_metadata", JSON, nullable=False, default=dict, server_default="{}"),
+    Column("after_metadata", JSON, nullable=False, default=dict, server_default="{}"),
+    Column("request_id", String(120)),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    scoped=False,
+)
+Index("ix_knowledge_audit_events_school_resource", knowledge_audit_events.c.school_id, knowledge_audit_events.c.resource_type, knowledge_audit_events.c.resource_id)
+
+# 知识库 -> 课程 的固定版本导入溯源。课程删除时随 course_id 清理（见
+# course_service.delete_course），但不反向牵连知识域数据；不建跨域硬外键。
+course_knowledge_imports = _course_table(
+    "course_knowledge_imports",
+    Column("school_id", String(64), nullable=False),
+    Column("space_id", String(64), nullable=False),
+    Column("source_document_id", String(64), nullable=False),
+    Column("source_version_id", String(64), nullable=False),
+    Column("target_material_version_id", String(64)),
+    Column("source_hash", String(64), nullable=False),
+    Column("permission_receipt", JSON, nullable=False, default=dict, server_default="{}"),
+    Column("state", String(20), nullable=False, default="queued", server_default="queued"),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=func.now()),
+    constraints=(
+        UniqueConstraint("course_id", "source_version_id", name="uq_course_knowledge_imports_source"),
+        CheckConstraint(
+            "state IN ('queued', 'running', 'succeeded', 'failed')",
+            name="ck_course_knowledge_imports_state",
+        ),
+    ),
 )
 
 
@@ -981,6 +1419,64 @@ for _child, _column, _parent in (
     ("exam_projects", "active_paper_version_id", "paper_versions"),
 ):
     _same_course_fk(_child, _column, _parent, use_alter=True)
+
+
+def _same_knowledge_fk(child_name: str, column: str, parent_name: str) -> None:
+    """知识域复合外键：子资源只能指向同校（空间表再加同空间）的父资源。
+
+    与课程域的 ``_same_course_fk`` 同思路：单列外键管存在性，复合外键管
+    租户/空间归属，防止通过已知 ID 把子资源挂到别的空间或学校。
+    """
+
+    child = Base.metadata.tables[child_name]
+    parent = Base.metadata.tables[parent_name]
+    key = f"{child_name}:{column}:{parent_name}"
+    suffix = sha1(key.encode("utf-8")).hexdigest()[:10]
+    local_columns = [column, "school_id"]
+    remote_columns = [f"{parent_name}.id", f"{parent_name}.school_id"]
+    # 只有声明了 (id, school_id, space_id) 唯一键的父表才能带 space_id 一起引用；
+    # knowledge_jobs 等"空间上下文可空"的表只按 (id, school_id) 约束。
+    if (
+        parent_name not in _SCHOOL_ONLY_PARENT_TABLES
+        and "space_id" in parent.c
+        and "space_id" in child.c
+    ):
+        local_columns.append("space_id")
+        remote_columns.append(f"{parent_name}.space_id")
+    child.append_constraint(
+        ForeignKeyConstraint(
+            local_columns,
+            remote_columns,
+            name=f"fk_{child_name[:18]}_{column[:12]}_{suffix}",
+        )
+    )
+
+
+_SCHOOL_ONLY_PARENT_TABLES = {
+    "knowledge_spaces",
+    "knowledge_sessions",
+    "knowledge_jobs",
+    "knowledge_retrieval_profiles",
+}
+
+
+for _child, _column, _parent in (
+    ("knowledge_memberships", "space_id", "knowledge_spaces"),
+    ("knowledge_upload_sessions", "space_id", "knowledge_spaces"),
+    ("knowledge_documents", "space_id", "knowledge_spaces"),
+    ("knowledge_document_versions", "document_id", "knowledge_documents"),
+    ("knowledge_parse_runs", "version_id", "knowledge_document_versions"),
+    ("knowledge_blocks", "parse_run_id", "knowledge_parse_runs"),
+    ("knowledge_index_builds", "version_id", "knowledge_document_versions"),
+    ("knowledge_index_builds", "parse_run_id", "knowledge_parse_runs"),
+    ("knowledge_chunks", "build_id", "knowledge_index_builds"),
+    ("knowledge_messages", "session_id", "knowledge_sessions"),
+    ("knowledge_jobs", "space_id", "knowledge_spaces"),
+    ("knowledge_outbox_events", "job_id", "knowledge_jobs"),
+    ("knowledge_model_calls", "job_id", "knowledge_jobs"),
+    ("knowledge_audit_events", "space_id", "knowledge_spaces"),
+):
+    _same_knowledge_fk(_child, _column, _parent)
 
 
 CORE_TABLE_NAMES = set(Base.metadata.tables)
