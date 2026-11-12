@@ -49,6 +49,38 @@ const ROLE_LABEL: Record<KnowledgeRole, string> = {
   reader: '阅读者',
 };
 
+// 仅 ready / published 的版本才有可供读取的正文，避免对未解析版本反复请求 409
+const READABLE_VERSION_STATES = new Set(['ready', 'published']);
+
+const VERSION_STATE_LABEL: Record<string, string> = {
+  draft: '待解析',
+  processing: '解析中',
+  ready: '已解析',
+  failed: '解析失败',
+  published: '已发布',
+  superseded: '已被新版替代',
+  withdrawn: '已撤回',
+  rejected: '已拒绝',
+};
+
+type DocVersion = KnowledgeDocumentDetail['versions'][number];
+
+/** 优先展示发布版：维护者上传新版后，旧发布版仍应可正常阅读。 */
+function pickDisplayVersion(detail: KnowledgeDocumentDetail): DocVersion | null {
+  const published =
+    detail.versions.find((item) => item.id === detail.published_version_id) ?? null;
+  const latest = detail.versions[0] ?? null;
+  if (published) return published;
+  return latest;
+}
+
+function versionContentUnavailableMessage(version: DocVersion): string {
+  if (version.state === 'failed') {
+    return '该版本解析失败，无法查看正文；请重新上传或联系资料维护者。';
+  }
+  return '该版本尚未解析完成，完成后可查看正文。';
+}
+
 type Tab = 'documents' | 'ask' | 'settings';
 
 export default function KnowledgeSpacePage() {
@@ -94,7 +126,9 @@ export default function KnowledgeSpacePage() {
   const [uploading, setUploading] = useState(false);
 
   const [docDetail, setDocDetail] = useState<KnowledgeDocumentDetail | null>(null);
+  const [docVersion, setDocVersion] = useState<DocVersion | null>(null);
   const [docContent, setDocContent] = useState<KnowledgeVersionContent | null>(null);
+  const [docContentError, setDocContentError] = useState<string | null>(null);
   const [docLoading, setDocLoading] = useState(false);
   const [publishTarget, setPublishTarget] = useState<KnowledgeDocument | null>(null);
   const [withdrawTarget, setWithdrawTarget] = useState<KnowledgeDocument | null>(null);
@@ -115,6 +149,36 @@ export default function KnowledgeSpacePage() {
   const canEdit = Boolean(space && space.role !== 'reader' && space.status === 'active');
   const canPublish = Boolean(
     space && (space.role === 'owner' || space.role === 'publisher') && space.status === 'active'
+  );
+
+  // 只在版本可读时取正文；未解析/失败版本直接给状态说明，避免无意义 409 请求
+  const loadVersionContent = useCallback(
+    async (documentId: string, version: DocVersion | null) => {
+      setDocVersion(version);
+      if (!version) {
+        setDocContent(null);
+        setDocContentError(null);
+        return;
+      }
+      if (!READABLE_VERSION_STATES.has(version.state)) {
+        setDocContent(null);
+        setDocContentError(versionContentUnavailableMessage(version));
+        return;
+      }
+      try {
+        const content = await api.knowledgeBase.getVersionContent(
+          spaceId,
+          documentId,
+          version.id
+        );
+        setDocContent(content);
+        setDocContentError(null);
+      } catch (err) {
+        setDocContent(null);
+        setDocContentError(err instanceof Error ? err.message : '正文暂时不可用，请稍后重试');
+      }
+    },
+    [spaceId]
   );
 
   const refresh = useCallback(async () => {
@@ -192,22 +256,40 @@ export default function KnowledgeSpacePage() {
     return () => { cancelled = true; clearInterval(timer); };
   }, [documents, spaceId]);
 
-  const parsingDocumentId = docDetail?.versions[0]?.state === 'processing' ? docDetail.id : null;
+  const pendingDocumentId = docDetail && docVersion?.state === 'processing' ? docDetail.id : null;
   useEffect(() => {
-    if (!parsingDocumentId) return;
+    if (!pendingDocumentId) return;
     let cancelled = false;
+    let inFlight = false;
     const timer = setInterval(async () => {
+      // 单个文档的解析轮询：上一轮未返回时跳过，避免 3 秒定时器叠加请求
+      if (inFlight) return;
+      inFlight = true;
       try {
-        const detail = await api.knowledgeBase.getDocument(spaceId, parsingDocumentId);
-        const version = detail.versions[0];
-        const content = version && version.state !== 'processing'
-          ? await api.knowledgeBase.getVersionContent(spaceId, detail.id, version.id).catch(() => null)
-          : null;
-        if (!cancelled) { setDocDetail(detail); setDocContent(content); }
-      } catch { /* 用户仍可手动刷新，授权以后端每次读取为准。 */ }
+        const detail = await api.knowledgeBase.getDocument(spaceId, pendingDocumentId);
+        if (cancelled) return;
+        setDocDetail(detail);
+        const version = pickDisplayVersion(detail);
+        setDocVersion(version);
+        if (version && READABLE_VERSION_STATES.has(version.state)) {
+          const content = await api.knowledgeBase
+            .getVersionContent(spaceId, detail.id, version.id)
+            .catch(() => null);
+          if (cancelled) return;
+          setDocContent(content);
+          setDocContentError(content ? null : '正文暂时不可用，请点击刷新后重试。');
+        } else if (version) {
+          setDocContent(null);
+          setDocContentError(versionContentUnavailableMessage(version));
+        }
+      } catch {
+        /* 用户仍可手动刷新，授权以后端每次读取为准。 */
+      } finally {
+        inFlight = false;
+      }
     }, 3000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [parsingDocumentId, spaceId]);
+  }, [pendingDocumentId, spaceId]);
 
   const scopeOptions = useMemo(
     () =>
@@ -412,21 +494,14 @@ export default function KnowledgeSpacePage() {
     setImportedCourseId(null);
     setDocLoading(true);
     setDocDetail(null);
+    setDocVersion(null);
     setDocContent(null);
+    setDocContentError(null);
     try {
       const detail = await api.knowledgeBase.getDocument(space.id, doc.id);
       setDocDetail(detail);
-      const version =
-        canEdit ? detail.versions[0] : detail.versions.find((item) => item.id === detail.published_version_id);
-      if (version) {
-        try {
-          setDocContent(
-            await api.knowledgeBase.getVersionContent(space.id, doc.id, version.id)
-          );
-        } catch {
-          /* 解析未完成或无权预览正文 */
-        }
-      }
+      // 发布版优先；只有尚无发布版时才展示最新版本（如首次上传后的解析预览）
+      await loadVersionContent(detail.id, pickDisplayVersion(detail));
     } catch (err) {
       addToast(err instanceof Error ? err.message : '资料打开失败', 'error');
     } finally {
@@ -522,16 +597,16 @@ export default function KnowledgeSpacePage() {
     if (!space) return;
     setDocLoading(true);
     setDocDetail(null);
+    setDocVersion(null);
     setDocContent(null);
+    setDocContentError(null);
     try {
-      setDocDetail(await api.knowledgeBase.getDocument(space.id, source.document_id));
-      setDocContent(
-        await api.knowledgeBase.getVersionContent(
-          space.id,
-          source.document_id,
-          source.version_id
-        )
-      );
+      const detail = await api.knowledgeBase.getDocument(space.id, source.document_id);
+      setDocDetail(detail);
+      const version =
+        detail.versions.find((item) => item.id === source.version_id) ??
+        pickDisplayVersion(detail);
+      await loadVersionContent(detail.id, version);
     } catch (err) {
       addToast(err instanceof Error ? err.message : '引用已不可访问', 'error');
     } finally {
@@ -549,10 +624,27 @@ export default function KnowledgeSpacePage() {
         const detail = await api.knowledgeBase.getDocument(spaceId, linkedDocumentId);
         if (cancelled) return;
         setDocDetail(detail);
-        const version = detail.versions[0];
-        if (version) {
-          const content = await api.knowledgeBase.getVersionContent(spaceId, detail.id, version.id).catch(() => null);
-          if (!cancelled) setDocContent(content);
+        const version =
+          (linkedSourceVersion
+            ? detail.versions.find((item) => item.id === linkedSourceVersion)
+            : undefined) ?? pickDisplayVersion(detail);
+        setDocVersion(version);
+        if (!version) {
+          setDocContent(null);
+          setDocContentError(null);
+          return;
+        }
+        if (!READABLE_VERSION_STATES.has(version.state)) {
+          setDocContent(null);
+          setDocContentError(versionContentUnavailableMessage(version));
+          return;
+        }
+        const content = await api.knowledgeBase
+          .getVersionContent(spaceId, detail.id, version.id)
+          .catch(() => null);
+        if (!cancelled) {
+          setDocContent(content);
+          setDocContentError(content ? null : '正文暂时不可用，请稍后重试。');
         }
       } catch (err) {
         if (!cancelled) addToast(err instanceof Error ? err.message : '资料不可用', 'error');
@@ -1043,13 +1135,17 @@ export default function KnowledgeSpacePage() {
         onClose={() => {
           if (docLoading) return;
           setDocDetail(null);
+          setDocVersion(null);
           setDocContent(null);
+          setDocContentError(null);
         }}
         title={docDetail?.title || '资料正文'}
         confirmLabel="关闭"
         onConfirm={() => {
           setDocDetail(null);
+          setDocVersion(null);
           setDocContent(null);
+          setDocContentError(null);
         }}
         loading={docLoading}
       >
@@ -1059,7 +1155,7 @@ export default function KnowledgeSpacePage() {
               来源：{version.course_origin.course_name ? `${version.course_origin.course_name} / ` : ''}{version.course_origin.material_title} · 原资料 v{version.course_origin.version_no}
               {version.course_origin.update_available && <span className="badge badge-warning" style={{ marginLeft: 8 }}>有新源版本</span>}
               {canEdit && version === docDetail.versions[0] && version.course_origin.update_available && version.course_origin.course_id && version.course_origin.latest_version_id && (
-                <Button size="sm" variant="secondary" style={{ marginTop: 8 }} onClick={() => { setDocDetail(null); setDocContent(null); setShareSource({
+                <Button size="sm" variant="secondary" style={{ marginTop: 8 }} onClick={() => { setDocDetail(null); setDocVersion(null); setDocContent(null); setDocContentError(null); setShareSource({
                   course_id: version.course_origin!.course_id!, version_id: version.course_origin!.latest_version_id!,
                   title: version.course_origin!.material_title, version_no: version.course_origin!.latest_version_no!,
                 }); }}>添加源资料新版</Button>
@@ -1074,12 +1170,47 @@ export default function KnowledgeSpacePage() {
               <span className={`badge ${docDetail.status === 'published' ? 'badge-success' : 'badge-default'}`}>
                 {docDetail.status === 'published' ? '已发布' : docDetail.status}
               </span>
-              {docContent && (
-                <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
-                  v{docContent.version_no} · {docContent.blocks.length} 个内容块
+              {docVersion && (
+                <span
+                  className={`badge ${
+                    docVersion.state === 'failed'
+                      ? 'badge-error'
+                      : READABLE_VERSION_STATES.has(docVersion.state)
+                        ? 'badge-success'
+                        : 'badge-warning'
+                  }`}
+                >
+                  v{docVersion.version_no} · {VERSION_STATE_LABEL[docVersion.state] ?? docVersion.state}
                 </span>
               )}
+              {docContent && (
+                <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
+                  {docContent.blocks.length} 个内容块
+                </span>
+              )}
+              {canEdit &&
+                docDetail.versions[0] &&
+                docDetail.versions[0].id !== docVersion?.id &&
+                READABLE_VERSION_STATES.has(docDetail.versions[0].state) && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => void loadVersionContent(docDetail.id, docDetail.versions[0])}
+                  >
+                    查看最新 v{docDetail.versions[0].version_no}
+                  </Button>
+                )}
             </div>
+            {canEdit &&
+              docDetail.versions[0] &&
+              docDetail.versions[0].id !== docVersion?.id &&
+              !READABLE_VERSION_STATES.has(docDetail.versions[0].state) && (
+                <div style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
+                  最新版 v{docDetail.versions[0].version_no} ·{' '}
+                  {VERSION_STATE_LABEL[docDetail.versions[0].state] ?? docDetail.versions[0].state}
+                  {docVersion ? '；当前展示可阅读的发布版本' : ''}
+                </div>
+              )}
             <div style={{ maxHeight: 420, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
               {docContent?.blocks.map((block) => (
                 <div
@@ -1104,7 +1235,7 @@ export default function KnowledgeSpacePage() {
               ))}
               {!docContent && (
                 <div style={{ fontSize: '0.8125rem', color: 'var(--text-tertiary)' }}>
-                  解析尚未完成，完成后再查看正文。
+                  {docContentError ?? '正文暂时不可用。'}
                 </div>
               )}
             </div>
