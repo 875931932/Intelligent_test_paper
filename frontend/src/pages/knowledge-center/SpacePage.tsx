@@ -22,6 +22,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { useKnowledgeBaseStore } from '@/stores/knowledgeBase';
 import { api } from '@/api/client';
+import { fileMime, uploadFileObject } from '@/api/uploads';
 import { computeSha256 } from '@/lib/sha256';
 import { coursesApi } from '@/api/domains/courses';
 import type { CourseResponse } from '@/types/api';
@@ -37,9 +38,9 @@ import type {
   KnowledgeVersionContent,
   PolicyPreview,
   ReadScope,
-  UploadSessionResult,
 } from '@/api/domains/knowledgeBase';
 import { Button, Input, Modal, Select } from '@/components/ui';
+import { ShareCourseMaterialModal, type ShareMaterialSource } from '@/components/ShareCourseMaterialModal';
 
 const ROLE_LABEL: Record<KnowledgeRole, string> = {
   owner: '负责人',
@@ -56,7 +57,7 @@ export default function KnowledgeSpacePage() {
   // 从课程进入时带上 fromCourse，空间内仍可回跳当前课程
   const [searchParams] = useSearchParams();
   const fromCourse = searchParams.get('fromCourse');
-  const courseQuery = fromCourse ? `?fromCourse=${fromCourse}` : '';
+  const courseQuery = '?view=shared' + (fromCourse ? `&fromCourse=${fromCourse}` : '');
   const addToast = useToastStore((s) => s.addToast);
   const currentUser = useAuthStore((s) => s.user);
   const upsertSpace = useKnowledgeBaseStore((s) => s.upsert);
@@ -107,6 +108,8 @@ export default function KnowledgeSpacePage() {
   const [courses, setCourses] = useState<CourseResponse[]>([]);
   const [importCourseId, setImportCourseId] = useState('');
   const [importing, setImporting] = useState(false);
+  const [shareSource, setShareSource] = useState<ShareMaterialSource | null>(null);
+  const [importedCourseId, setImportedCourseId] = useState<string | null>(null);
 
   const isOwner = space?.role === 'owner';
   const canEdit = Boolean(space && space.role !== 'reader' && space.status === 'active');
@@ -171,14 +174,40 @@ export default function KnowledgeSpacePage() {
       .then((items) => {
         if (!cancelled) {
           setCourses(items);
-          setImportCourseId((current) => current || items[0]?.id || '');
+          setImportCourseId((current) => current || items.find((item) => item.id === fromCourse)?.id || items[0]?.id || '');
         }
       })
       .catch(() => undefined);
     return () => {
       cancelled = true;
     };
-  }, [space?.allow_course_import]);
+  }, [space?.allow_course_import, fromCourse]);
+
+  useEffect(() => {
+    if (!documents.some((doc) => doc.latest_version?.state === 'processing' || doc.status === 'processing')) return;
+    let cancelled = false;
+    const timer = setInterval(() => {
+      api.knowledgeBase.listDocuments(spaceId).then((docs) => { if (!cancelled) setDocuments(docs); }).catch(() => undefined);
+    }, 4000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [documents, spaceId]);
+
+  const parsingDocumentId = docDetail?.versions[0]?.state === 'processing' ? docDetail.id : null;
+  useEffect(() => {
+    if (!parsingDocumentId) return;
+    let cancelled = false;
+    const timer = setInterval(async () => {
+      try {
+        const detail = await api.knowledgeBase.getDocument(spaceId, parsingDocumentId);
+        const version = detail.versions[0];
+        const content = version && version.state !== 'processing'
+          ? await api.knowledgeBase.getVersionContent(spaceId, detail.id, version.id).catch(() => null)
+          : null;
+        if (!cancelled) { setDocDetail(detail); setDocContent(content); }
+      } catch { /* 用户仍可手动刷新，授权以后端每次读取为准。 */ }
+    }, 3000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [parsingDocumentId, spaceId]);
 
   const scopeOptions = useMemo(
     () =>
@@ -323,8 +352,8 @@ export default function KnowledgeSpacePage() {
       addToast('请选择要上传的资料', 'info');
       return;
     }
-    const mime = uploadFile.type || mimeFromName(uploadFile.name);
-    if (!mime) {
+    const mime = fileMime(uploadFile);
+    if (!mimeFromName(uploadFile.name)) {
       addToast('仅支持 Markdown、TXT、PDF 与 DOCX', 'error');
       return;
     }
@@ -337,7 +366,7 @@ export default function KnowledgeSpacePage() {
         mime_type: mime,
         sha256,
       });
-      await putObject(session, uploadFile, sha256);
+      await uploadFileObject(session, uploadFile, sha256);
       const completed = await api.knowledgeBase.completeUpload(space.id, session.session_id, {
         title: uploadTitle.trim() || undefined,
         classification: uploadClassification,
@@ -380,6 +409,7 @@ export default function KnowledgeSpacePage() {
 
   const openDocument = async (doc: KnowledgeDocument) => {
     if (!space) return;
+    setImportedCourseId(null);
     setDocLoading(true);
     setDocDetail(null);
     setDocContent(null);
@@ -387,8 +417,7 @@ export default function KnowledgeSpacePage() {
       const detail = await api.knowledgeBase.getDocument(space.id, doc.id);
       setDocDetail(detail);
       const version =
-        detail.versions.find((item) => item.id === detail.published_version_id) ??
-        detail.versions[0];
+        canEdit ? detail.versions[0] : detail.versions.find((item) => item.id === detail.published_version_id);
       if (version) {
         try {
           setDocContent(
@@ -478,9 +507,10 @@ export default function KnowledgeSpacePage() {
         { course_id: importCourseId }
       );
       addToast(
-        result.idempotent ? '该版本已导入过，已返回原副本' : '已复制到课程，可继续原命题流程',
+        result.reused_source ? '源资料就在该课程，已定位原资料' : result.idempotent ? '该版本已导入过，已返回原副本' : result.appended_version ? '已向原课程资料追加新版，旧版引用保留' : '已复制到课程，可继续原命题流程',
         'success'
       );
+      setImportedCourseId(importCourseId + (result.material_id ? `/materials?material=${result.material_id}` : '/materials'));
     } catch (err) {
       addToast(err instanceof Error ? err.message : '导入失败', 'error');
     } finally {
@@ -508,6 +538,28 @@ export default function KnowledgeSpacePage() {
       setDocLoading(false);
     }
   };
+
+  const linkedDocumentId = searchParams.get('document');
+  const linkedSourceVersion = searchParams.get('sourceVersion');
+  useEffect(() => {
+    if (!linkedDocumentId || !spaceId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const detail = await api.knowledgeBase.getDocument(spaceId, linkedDocumentId);
+        if (cancelled) return;
+        setDocDetail(detail);
+        const version = detail.versions[0];
+        if (version) {
+          const content = await api.knowledgeBase.getVersionContent(spaceId, detail.id, version.id).catch(() => null);
+          if (!cancelled) setDocContent(content);
+        }
+      } catch (err) {
+        if (!cancelled) addToast(err instanceof Error ? err.message : '资料不可用', 'error');
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [linkedDocumentId, linkedSourceVersion, spaceId, addToast]);
 
   if (loading && !space) {
     return (
@@ -548,8 +600,9 @@ export default function KnowledgeSpacePage() {
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+      <ShareCourseMaterialModal source={shareSource} targetSpaceId={spaceId} onClose={() => setShareSource(null)} onShared={() => { if (docDetail) void openDocument(docDetail); void refresh(); }} />
       <div style={{ maxWidth: 1080, margin: '0 auto', padding: '28px 32px 72px' }}>
-        <button onClick={() => navigate('/knowledge' + courseQuery)} style={backLink}>
+        <button onClick={() => navigate('/knowledge?view=shared' + (fromCourse ? `&fromCourse=${fromCourse}` : ''))} style={backLink}>
           <ArrowLeft size={15} />
           校级共享库
         </button>
@@ -598,9 +651,10 @@ export default function KnowledgeSpacePage() {
               刷新
             </Button>
             {canEdit && (
-              <Button size="sm" icon={<UploadCloud size={14} />} onClick={() => setUploadOpen(true)}>
-                上传资料
-              </Button>
+              <>
+                <Button size="sm" icon={<BookOpen size={14} />} onClick={() => navigate(`/knowledge?view=mine&targetSpace=${spaceId}` + (fromCourse ? `&fromCourse=${fromCourse}` : ''))}>从我的资料添加</Button>
+                <Button variant="secondary" size="sm" icon={<UploadCloud size={14} />} onClick={() => setUploadOpen(true)}>上传新资料</Button>
+              </>
             )}
             {isOwner && space.status === 'active' && (
               <Button variant="secondary" size="sm" icon={<Archive size={14} />} onClick={() => setArchiveOpen(true)}>
@@ -674,6 +728,24 @@ export default function KnowledgeSpacePage() {
                   策略版本 v{space.policy_version}
                 </div>
               </div>
+            </section>
+
+            <section className="glass-panel" style={{ padding: '22px 24px' }}>
+              <SectionTitle icon={<BookOpen size={17} />} title="课程选用许可" />
+              <label style={{ display: 'flex', gap: 10, marginTop: 14, fontSize: '0.875rem', lineHeight: 1.7 }}>
+                <input type="checkbox" checked={space.allow_course_import} disabled={busy || space.status !== 'active'} onChange={async (event) => {
+                  const allowed = event.target.checked;
+                  setBusy(true);
+                  try {
+                    const updated = await api.knowledgeBase.updateSpace(space.id, { expected_policy_version: space.policy_version, allow_course_import: allowed });
+                    setSpace(updated); upsertSpace(updated);
+                    addToast(allowed ? '已允许教师选用到课程' : '已停止新的课程选用，已有副本仍保留', 'success');
+                  } catch (err) { addToast(err instanceof Error ? err.message : '许可更新失败', 'error'); }
+                  finally { setBusy(false); }
+                }} />
+                允许有权阅读的教师选用已发布资料到自己的课程
+              </label>
+              <p style={{ marginTop: 8, fontSize: '0.75rem', color: 'var(--text-secondary)' }}>课程保留固定版本副本。关闭许可或撤回源资料后，已经选用的副本仍保留。</p>
             </section>
 
             {/* 成员 */}
@@ -983,6 +1055,18 @@ export default function KnowledgeSpacePage() {
       >
         {docDetail && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            {docDetail.versions.map((version) => version.course_origin && <div key={version.id} style={{ padding: '10px 0', borderBottom: '1px solid var(--line)', fontSize: '0.8125rem' }}>
+              来源：{version.course_origin.course_name ? `${version.course_origin.course_name} / ` : ''}{version.course_origin.material_title} · 原资料 v{version.course_origin.version_no}
+              {version.course_origin.update_available && <span className="badge badge-warning" style={{ marginLeft: 8 }}>有新源版本</span>}
+              {canEdit && version === docDetail.versions[0] && version.course_origin.update_available && version.course_origin.course_id && version.course_origin.latest_version_id && (
+                <Button size="sm" variant="secondary" style={{ marginTop: 8 }} onClick={() => { setDocDetail(null); setDocContent(null); setShareSource({
+                  course_id: version.course_origin!.course_id!, version_id: version.course_origin!.latest_version_id!,
+                  title: version.course_origin!.material_title, version_no: version.course_origin!.latest_version_no!,
+                }); }}>添加源资料新版</Button>
+              )}
+            </div>)}
+            {importedCourseId && <Button variant="secondary" onClick={() => navigate(`/courses/${importedCourseId}`)}>前往课程资料，继续解析与命题</Button>}
+            <Button variant="secondary" size="sm" icon={<RefreshCw size={14} />} onClick={() => void openDocument(docDetail)}>刷新解析与版本状态</Button>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
               <span className="badge badge-default">
                 {docDetail.classification === 'limited_teaching' ? '限指定教师' : '可共享教学资料'}
@@ -1037,7 +1121,7 @@ export default function KnowledgeSpacePage() {
               >
                 <div style={{ flex: 1, minWidth: 200 }}>
                   <Select
-                    label="导入我的课程"
+                    label="选用到我的课程"
                     value={importCourseId}
                     options={courses.map((course) => ({
                       value: course.id,
@@ -1052,10 +1136,10 @@ export default function KnowledgeSpacePage() {
                   loading={importing}
                   onClick={() => void handleImport()}
                 >
-                  复制固定版本
+                  选用已发布 v{docDetail.versions.find((item) => item.id === docDetail.published_version_id)?.version_no}
                 </Button>
                 <div style={{ width: '100%', fontSize: '0.6875rem', color: 'var(--text-tertiary)', lineHeight: 1.7 }}>
-                  导入为课程独立副本；知识库后续撤回或更新不会改动已复制的版本。
+                  首次选用创建固定版本副本；选用同源新版时追加到原课程资料，旧版引用保留。课程存在本地修改时会提示冲突。
                 </div>
               </div>
             )}
@@ -1297,11 +1381,14 @@ function DocumentsPanel({
             <span className={`badge ${isPublished ? 'badge-success' : 'badge-default'}`} style={{ flexShrink: 0 }}>
               {STATUS_LABEL[doc.status] || doc.status}
             </span>
+            {doc.latest_version && doc.latest_version.id !== doc.published_version_id && (
+              <span className="badge badge-default">v{doc.latest_version.version_no} · {STATUS_LABEL[doc.latest_version.state] || doc.latest_version.state}</span>
+            )}
             <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
               <button onClick={() => onView(doc)} title="阅读正文" style={iconButton}>
                 <Eye size={15} />
               </button>
-              {canPublish && !isPublished && doc.status === 'ready' && (
+              {canPublish && (doc.latest_version?.state === 'ready' || (!isPublished && doc.status === 'ready')) && (
                 <button onClick={() => onPublish(doc)} title="发布给读者" style={iconButton}>
                   <Send size={15} />
                 </button>
@@ -1385,32 +1472,9 @@ const STATUS_LABEL: Record<string, string> = {
   published: '已发布',
   superseded: '已被新版替换',
   withdrawn: '已撤回',
+  failed: '解析失败',
   rejected: '已拒绝',
 };
-
-/** 未配置 S3 时后端返回本地存储路径，需要带登录态走统一请求。 */
-async function putObject(
-  session: UploadSessionResult,
-  file: File,
-  sha256: string
-): Promise<void> {
-  if (session.upload_url.includes('/_local-storage/')) {
-    await api.uploadBinary('/_local-storage/' + session.object_key, file);
-    return;
-  }
-  const response = await fetch(session.upload_url, {
-    method: 'PUT',
-    body: file,
-    headers: {
-      'Content-Type': file.type || 'application/octet-stream',
-      'x-amz-meta-sha256': sha256,
-      ...session.headers,
-    },
-  });
-  if (!response.ok) {
-    throw new Error('对象上传失败(' + response.status + ')');
-  }
-}
 
 function mimeFromName(filename: string): string | null {
   const lower = filename.toLowerCase();

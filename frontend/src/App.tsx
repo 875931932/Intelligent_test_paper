@@ -137,7 +137,7 @@ export default function App() {
           <Route path="llm" element={<AdminModels />} />
           <Route path="monitoring" element={<AdminMonitoring />} />
         </Route>
-        <Route path="*" element={<Navigate to="/courses" replace />} />
+        <Route path="*" element={<Navigate to="/knowledge" replace />} />
       </Routes>
     </Suspense>
   );

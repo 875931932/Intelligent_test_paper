@@ -44,7 +44,7 @@ export function LoginPage() {
       const role = user.role === 'admin' || user.role === 'org_admin' ? user.role : 'teacher';
       setAuth({ id: user.id, username: user.username, name: user.name, role }, token);
       addToast('登录成功，欢迎回来！', 'success');
-      navigate('/courses', { replace: true });
+      navigate('/knowledge', { replace: true });
     } catch (err) {
       const msg = err instanceof ApiError ? err.message : '登录失败，请稍后再试';
       addToast(msg, 'error');
@@ -61,7 +61,7 @@ export function LoginPage() {
             <BookOpen size={28} strokeWidth={1.8} />
           </div>
           <h1 className="login-title">PaperPact</h1>
-          <p className="login-subtitle">AI 命题系统 · 从课程资料到成品试卷</p>
+          <p className="login-subtitle">教学知识平台 · 资料共享与 AI 命题</p>
         </div>
 
         <form className="login-form" onSubmit={handleSubmit}>

@@ -187,13 +187,13 @@ export default function CourseSpacePage() {
           </div>
           <div>
             <div style={{ fontSize: '1rem', fontWeight: 600, lineHeight: 1.2 }}>PaperPact</div>
-            <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)' }}>AI 命题系统</div>
+            <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)' }}>教学知识与 AI 命题</div>
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
           <button
             onClick={() => navigate('/knowledge')}
-            title="进入校级共享库"
+            title="进入资料与知识中心"
             style={{
               display: 'flex', alignItems: 'center', gap: '6px',
               background: 'none', border: 'none', cursor: 'pointer',
@@ -204,7 +204,7 @@ export default function CourseSpacePage() {
             onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
           >
             <LibraryBig size={15} />
-            校级共享库
+            资料与知识中心
           </button>
           {canOpenAdmin && (
             <button

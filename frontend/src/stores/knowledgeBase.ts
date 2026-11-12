@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { api } from '@/api/client';
-import type { KnowledgeSpace, ReadScope } from '@/api/domains/knowledgeBase';
+import type { KnowledgeSpace, SpaceCreatePayload } from '@/api/domains/knowledgeBase';
 
 interface KnowledgeBaseState {
   spaces: KnowledgeSpace[];
@@ -8,11 +8,7 @@ interface KnowledgeBaseState {
   error: string | null;
   load: (subjectTag?: string) => Promise<void>;
   upsert: (space: KnowledgeSpace) => void;
-  create: (payload: {
-    name: string;
-    read_scope: ReadScope;
-    subject_tags: string[];
-  }) => Promise<KnowledgeSpace>;
+  create: (payload: SpaceCreatePayload) => Promise<KnowledgeSpace>;
   update: (spaceId: string, payload: Parameters<typeof api.knowledgeBase.updateSpace>[1]) => Promise<KnowledgeSpace>;
 }
 

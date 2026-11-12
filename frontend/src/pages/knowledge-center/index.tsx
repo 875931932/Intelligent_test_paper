@@ -28,6 +28,7 @@ import type {
   ReadScope,
 } from '@/api/domains/knowledgeBase';
 import { Button, Input, Modal, Select } from '@/components/ui';
+import { CourseMaterialsPanel } from './CourseMaterialsPanel';
 
 const ROLE_LABEL: Record<KnowledgeRole, string> = {
   owner: '负责人',
@@ -45,7 +46,8 @@ const ROLE_STYLE: Record<KnowledgeRole, { bg: string; ink: string }> = {
 
 export default function KnowledgeCenterPage() {
   const navigate = useNavigate();
-  const [params] = useSearchParams();
+  const [params, setParams] = useSearchParams();
+  const view = params.get('view') === 'shared' ? 'shared' : 'mine';
   const fromCourse = params.get('fromCourse');
   const courseQuery = fromCourse ? `?fromCourse=${fromCourse}` : '';
   const user = useAuthStore((s) => s.user);
@@ -65,6 +67,7 @@ export default function KnowledgeCenterPage() {
   const [name, setName] = useState('');
   const [scope, setScope] = useState<ReadScope>('members');
   const [tagText, setTagText] = useState('');
+  const [allowCourseImport, setAllowCourseImport] = useState(false);
   const [governance, setGovernance] = useState<KnowledgeGovernanceSummary | null>(null);
   const [governanceError, setGovernanceError] = useState<string | null>(null);
 
@@ -143,11 +146,12 @@ export default function KnowledgeCenterPage() {
         .map((tag) => tag.trim())
         .filter(Boolean)
         .slice(0, 8);
-      const space = await create({ name: trimmed, read_scope: scope, subject_tags: subjectTags });
+      const space = await create({ name: trimmed, read_scope: scope, subject_tags: subjectTags, allow_course_import: allowCourseImport });
       addToast('知识库已创建', 'success');
       setCreateOpen(false);
       setName('');
       setTagText('');
+      setAllowCourseImport(false);
       setScope('members');
       navigate('/knowledge/' + space.id + courseQuery);
     } catch (err) {
@@ -207,7 +211,7 @@ export default function KnowledgeCenterPage() {
     <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
       <div style={{ maxWidth: 1180, margin: '0 auto', padding: '28px 32px 64px' }}>
         {/* Top bar */}
-        <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+        <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <span
               style={{
@@ -226,7 +230,7 @@ export default function KnowledgeCenterPage() {
             <div>
               <div style={{ fontSize: '1rem', fontWeight: 700 }}>PaperPact</div>
               <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)' }}>
-                校级教师共享知识库
+                教学知识与 AI 命题
               </div>
             </div>
           </div>
@@ -236,7 +240,7 @@ export default function KnowledgeCenterPage() {
               style={ghostButton}
             >
               <ArrowLeft size={15} />
-              {fromCourse ? '返回当前课程' : '返回课程空间'}
+              {fromCourse ? '返回当前课程' : '课程命题'}
             </button>
             <button onClick={logout} title="退出登录" style={ghostButton}>
               <LogOut size={15} />
@@ -257,18 +261,26 @@ export default function KnowledgeCenterPage() {
           }}
         >
           <div style={{ maxWidth: 640 }}>
-            <h1 className="page-title">校级共享库</h1>
+            <h1 className="page-title">资料与知识中心</h1>
             <p className="page-subtitle" style={{ marginTop: 6 }}>
-              这里是跨课程共享的教学资料。课程内的「课程资料」和「课程知识目录」仍只属于当前课程；
-              共享库资料需先发布，其他教师才能检索或在课程中导入固定版本。
+              管理教学资料、发布共享版本，并在课程中选用资料开展命题。
             </p>
           </div>
-          <div style={{ display: 'flex', gap: 12 }}>
+          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
             <StatTile icon={<BookMarked size={17} />} value={spaces.length} label="可见知识库" />
             <StatTile icon={<ShieldCheck size={17} />} value={ownedCount} label="我负责的" />
             <StatTile icon={<Users size={17} />} value={docCount} label="已发布资料" />
           </div>
         </section>
+
+        <div role="tablist" aria-label="资料范围" style={{ display: 'flex', gap: 8, marginTop: 24, borderBottom: '1px solid var(--line)', paddingBottom: 12 }}>
+          {([{ id: 'mine', label: '我的资料' }, { id: 'shared', label: '校级共享库' }] as const).map((item) => (
+            <button key={item.id} role="tab" aria-selected={view === item.id} className={view === item.id ? 'btn btn-primary' : 'btn btn-secondary'} onClick={() => {
+              const next = new URLSearchParams(params); next.set('view', item.id); setParams(next);
+            }}>{item.label}</button>
+          ))}
+        </div>
+        {view === 'mine' ? <CourseMaterialsPanel fromCourse={fromCourse} targetSpaceId={params.get('targetSpace')} /> : <>
 
         {governanceError && (
           <section
@@ -501,6 +513,7 @@ export default function KnowledgeCenterPage() {
             </Button>
           </div>
         )}
+        </>}
       </div>
 
       <Modal
@@ -540,6 +553,10 @@ export default function KnowledgeCenterPage() {
             value={tagText}
             onChange={(e) => setTagText(e.target.value)}
           />
+          <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', fontSize: '0.8125rem', lineHeight: 1.7 }}>
+            <input type="checkbox" checked={allowCourseImport} onChange={(e) => setAllowCourseImport(e.target.checked)} style={{ marginTop: 5 }} />
+            允许有权阅读的教师选用到自己的课程。选用后保留独立副本，源库撤回不会收回已有课程副本。
+          </label>
         </div>
       </Modal>
 
@@ -703,7 +720,7 @@ function StatTile({ icon, value, label }: { icon: ReactNode; value: number; labe
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--text-secondary)' }}>
         {icon}
-        <span style={{ fontSize: '0.6875rem' }}>{label}</span>
+        <span style={{ fontSize: '0.6875rem', whiteSpace: 'nowrap' }}>{label}</span>
       </div>
       <div style={{ marginTop: 6, fontSize: '1.25rem', fontWeight: 700, letterSpacing: '-0.02em' }}>
         {value}

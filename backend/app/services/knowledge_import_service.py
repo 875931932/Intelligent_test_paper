@@ -19,11 +19,13 @@ from sqlalchemy.orm import Session
 from app.adapters.storage.minio_storage import StoragePort
 from app.config import settings
 from app.db.schema import (
+    Course,
     User,
     course_knowledge_imports,
     knowledge_audit_events,
     knowledge_document_versions,
     knowledge_documents,
+    knowledge_spaces,
     material_versions,
     materials,
 )
@@ -58,7 +60,6 @@ def _unique_material_name(session: Session, *, course_id: str, base: str) -> str
             select(materials.c.id).where(
                 materials.c.course_id == course_id,
                 materials.c.logical_name == candidate,
-                materials.c.status != "deleted",
             )
         ).scalar_one_or_none()
         if exists is None:
@@ -81,7 +82,11 @@ def import_fixed_version(
 ) -> dict:
     """把知识库某个已发布固定版本复制为课程独立资料版本。"""
 
+    session.execute(select(User.id).where(User.id == user.id).with_for_update())
     actor = load_actor(session, user)
+    session.execute(select(knowledge_spaces.c.id).where(
+        knowledge_spaces.c.id == space_id, knowledge_spaces.c.school_id == actor.school_id,
+    ).with_for_update())
     try:
         space, _role = require_space_access(session, actor, space_id=space_id, action="read")
     except KnowledgeError:
@@ -96,7 +101,7 @@ def import_fixed_version(
             knowledge_documents.c.id == document_id,
             knowledge_documents.c.school_id == actor.school_id,
             knowledge_documents.c.space_id == space_id,
-        )
+        ).with_for_update()
     ).mappings().one_or_none()
     version = session.execute(
         select(knowledge_document_versions).where(
@@ -120,6 +125,24 @@ def import_fixed_version(
     except CourseNotFoundError:
         raise _not_found()
 
+    # 同一课程的重复选用/版本追加串行化，避免创建两份同源资料。
+    session.execute(select(Course.id).where(Course.id == course_id, Course.owner_id == user.id).with_for_update())
+
+    origin = version.import_origin or {}
+    if origin.get("kind") == "course_material" and origin.get("course_id") == course_id:
+        original = session.execute(select(material_versions).join(
+            materials, (materials.c.id == material_versions.c.material_id)
+            & (materials.c.course_id == material_versions.c.course_id),
+        ).where(
+            material_versions.c.course_id == course_id,
+            material_versions.c.id == origin.get("material_version_id"),
+            material_versions.c.status == "staged", materials.c.status != "deleted",
+        )).mappings().one_or_none()
+        if original is not None and original.sha256 == version.file_hash:
+            return {"state": "succeeded", "idempotent": True, "reused_source": True,
+                    "course_id": course_id, "material_id": original.material_id,
+                    "material_version_id": original.id, "source_version_id": version_id}
+
     existing = session.execute(
         select(course_knowledge_imports).where(
             course_knowledge_imports.c.course_id == course_id,
@@ -127,11 +150,19 @@ def import_fixed_version(
         )
     ).mappings().one_or_none()
     if existing is not None and existing.state == "succeeded":
+        retained = session.execute(select(material_versions.c.material_id).join(
+            materials, (materials.c.id == material_versions.c.material_id) & (materials.c.course_id == material_versions.c.course_id)
+        ).where(
+            material_versions.c.id == existing.target_material_version_id,
+            material_versions.c.course_id == course_id, materials.c.status != "deleted",
+        )).scalar_one_or_none()
+        if retained is None:
+            raise KnowledgeError(409, VERSION_CONFLICT, "该版本的课程副本已删除；请选用其他资料或源资料的后续发布版本")
         return {
             "state": "succeeded",
             "idempotent": True,
             "course_id": course_id,
-            "material_id": None,
+            "material_id": retained,
             "material_version_id": existing.target_material_version_id,
             "source_version_id": version_id,
         }
@@ -140,20 +171,45 @@ def import_fixed_version(
     digest = hashlib.sha256()
     chunks: list[bytes] = []
     total = 0
-    for chunk in storage.stream_object(version.object_key):
-        total += len(chunk)
-        if total > settings.upload_max_bytes:
-            raise KnowledgeError(409, VERSION_CONFLICT, "源文件超过课程导入大小限制")
-        digest.update(chunk)
-        chunks.append(chunk)
+    try:
+        for chunk in storage.stream_object(version.object_key):
+            total += len(chunk)
+            if total > settings.upload_max_bytes:
+                raise KnowledgeError(409, VERSION_CONFLICT, "源文件超过课程导入大小限制")
+            digest.update(chunk)
+            chunks.append(chunk)
+    except KnowledgeError:
+        raise
+    except Exception as exc:
+        raise KnowledgeError(503, "STORAGE_UNAVAILABLE", "源文件暂不可用，请稍后重试") from exc
     content = b"".join(chunks)
     if digest.hexdigest() != version.file_hash:
         raise KnowledgeError(409, VERSION_CONFLICT, "源文件哈希校验失败，请重新发布后再导入")
 
     filename = PurePosixPath(version.object_key).name or "knowledge-import"
     base_name = (title or document.title or PurePosixPath(filename).stem).strip()
-    logical_name = _unique_material_name(session, course_id=course_id, base=base_name)
-    material_id = uuid4().hex
+    prior = session.execute(select(
+        material_versions.c.id, material_versions.c.material_id, materials.c.logical_name,
+    ).join(
+        course_knowledge_imports,
+        (course_knowledge_imports.c.target_material_version_id == material_versions.c.id)
+        & (course_knowledge_imports.c.course_id == material_versions.c.course_id),
+    ).join(materials, (materials.c.id == material_versions.c.material_id) & (materials.c.course_id == material_versions.c.course_id)).where(
+        course_knowledge_imports.c.course_id == course_id,
+        course_knowledge_imports.c.source_document_id == document_id,
+        course_knowledge_imports.c.space_id == space_id,
+        course_knowledge_imports.c.school_id == actor.school_id,
+        course_knowledge_imports.c.state == "succeeded",
+        materials.c.status != "deleted",
+    ).order_by(material_versions.c.version_no.desc())).mappings().first()
+    if prior:
+        latest_id = session.scalar(select(material_versions.c.id).where(
+            material_versions.c.course_id == course_id, material_versions.c.material_id == prior.material_id,
+        ).order_by(material_versions.c.version_no.desc()).limit(1))
+        if latest_id != prior.id:
+            raise KnowledgeError(409, VERSION_CONFLICT, "课程资料已有本地新版本，请先核对，不能直接更新共享副本")
+    logical_name = prior.logical_name if prior else _unique_material_name(session, course_id=course_id, base=base_name)
+    material_id = prior.material_id if prior else uuid4().hex
     new_version_id = uuid4().hex
     object_key = f"courses/{course_id}/materials/{material_id}/versions/{new_version_id}/{filename}"
 
@@ -164,15 +220,14 @@ def import_fixed_version(
 
     now = _now()
     try:
-        session.execute(
-            materials.insert().values(
+        if prior is None:
+            session.execute(materials.insert().values(
                 id=material_id,
                 course_id=course_id,
                 logical_name=logical_name,
                 material_type=material_type,
                 status="staged",
-            )
-        )
+            ))
         version_no = session.scalar(
             select(func.coalesce(func.max(material_versions.c.version_no), 0) + 1).where(
                 material_versions.c.course_id == course_id,
@@ -203,6 +258,8 @@ def import_fixed_version(
             "imported_at": now.isoformat(),
             "course_id": course.id,
             "independent_copy": True,
+            "source_space_name": space.name,
+            "source_version_no": version.version_no,
         }
         if existing is not None:
             session.execute(
@@ -260,6 +317,7 @@ def import_fixed_version(
     return {
         "state": "succeeded",
         "idempotent": False,
+        "appended_version": prior is not None,
         "course_id": course_id,
         "material_id": material_id,
         "material_version_id": new_version_id,

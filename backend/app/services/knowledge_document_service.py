@@ -350,6 +350,72 @@ def complete_upload_session(
         session.rollback()
         raise KnowledgeError(409, VERSION_CONFLICT, "上传会话已被其他请求处理")
 
+    result = stage_document_version(
+        session,
+        user=user,
+        space_id=space_id,
+        filename=PurePosixPath(row.object_key).name,
+        size_bytes=int(row.size_bytes),
+        mime_type=row.mime_type,
+        digest=digest,
+        title=title,
+        classification=classification,
+        document_id=target_document_id,
+        store_object=lambda final_key: storage.finalize_object(row.object_key, final_key, upload_etag),
+    )
+    session.execute(
+        update(knowledge_upload_sessions)
+        .where(knowledge_upload_sessions.c.id == session_id)
+        .values(status="completed")
+    )
+    try:
+        session.commit()
+    except IntegrityError as exc:
+        session.rollback()
+        raise KnowledgeError(409, VERSION_CONFLICT, "文档版本与已有记录冲突") from exc
+    return result
+
+
+def stage_document_version(
+    session: Session,
+    *,
+    user: User,
+    space_id: str,
+    filename: str,
+    size_bytes: int,
+    mime_type: str,
+    digest: str,
+    title: str | None,
+    classification: str,
+    document_id: str | None,
+    store_object: Callable[[str], None],
+    import_origin: dict | None = None,
+) -> dict:
+    """上传与课程选用共用的版本入库事务；调用者负责提交。"""
+
+    # 与入队采用同一锁顺序，避免账号/空间锁顺序反转。
+    session.execute(select(User.id).where(User.id == user.id).with_for_update())
+    actor = load_actor(session, user)
+    session.execute(
+        select(knowledge_spaces.c.id).where(
+            knowledge_spaces.c.id == space_id,
+            knowledge_spaces.c.school_id == actor.school_id,
+        ).with_for_update()
+    )
+    space, _role = require_space_access(session, actor, space_id=space_id, action="edit")
+    if space.status != "active":
+        raise KnowledgeValidationError("知识库已归档，不能添加资料", status_code=409)
+    target_document_id = document_id
+    if document_id is not None:
+        target = _document_row(session, school_id=actor.school_id, space_id=space_id, document_id=document_id)
+        if target is None:
+            raise _not_found()
+        classification = target.classification
+    error = validate_classification(classification, space.read_scope)
+    if error is not None:
+        raise KnowledgeValidationError("资料分类与目标共享范围不兼容", code=error)
+    name = _safe_filename(filename)
+    now = datetime.now(timezone.utc)
     is_new_document = target_document_id is None
     if is_new_document:
         # 完成上传时重新核对额度（创建会话后可能已有其他资料入库），并锁定空间串行化。
@@ -370,7 +436,7 @@ def complete_upload_session(
         if int(document_count or 0) >= MAX_DOCUMENTS_PER_SPACE:
             raise _too_many("该知识库资料数量已达上限")
         target_document_id = uuid4().hex
-        doc_title = (title or "").strip() or PurePosixPath(_safe_filename(PurePosixPath(row.object_key).name)).stem
+        doc_title = (title or "").strip() or PurePosixPath(name).stem
         doc_title = doc_title[:255] or "未命名资料"
         session.execute(
             knowledge_documents.insert().values(
@@ -415,13 +481,13 @@ def complete_upload_session(
     version_id = uuid4().hex
     final_key = (
         f"knowledge/{actor.school_id}/spaces/{space_id}/documents/"
-        f"{target_document_id}/versions/{version_id}/{PurePosixPath(row.object_key).name}"
+        f"{target_document_id}/versions/{version_id}/{name}"
     )
     try:
-        storage.finalize_object(row.object_key, final_key, upload_etag)
+        store_object(final_key)
     except Exception as exc:
         session.rollback()
-        raise KnowledgeError(409, VERSION_CONFLICT, "上传对象在完成前发生变化，请重新上传") from exc
+        raise KnowledgeError(409, VERSION_CONFLICT, "源文件在入库前发生变化或存储不可用，请重试") from exc
 
     session.execute(
         knowledge_document_versions.insert().values(
@@ -432,10 +498,11 @@ def complete_upload_session(
             version_no=int(version_no),
             file_hash=digest,
             object_key=final_key,
-            size_bytes=int(row.size_bytes),
-            mime_type=row.mime_type,
+            size_bytes=size_bytes,
+            mime_type=mime_type,
             state="processing",
             publication_policy_snapshot={},
+            import_origin=import_origin,
             created_by=actor.user_id,
             created_at=now,
         )
@@ -445,7 +512,7 @@ def complete_upload_session(
         school_id=actor.school_id,
         space_id=space_id,
         version_id=version_id,
-        mime_type=row.mime_type,
+        mime_type=mime_type,
     )
     from app.infrastructure.tasks.knowledge_tasks import enqueue_parse_job
 
@@ -456,11 +523,6 @@ def complete_upload_session(
         actor_id=actor.user_id,
         version_id=version_id,
         parse_run_id=parse_run_id,
-    )
-    session.execute(
-        update(knowledge_upload_sessions)
-        .where(knowledge_upload_sessions.c.id == session_id)
-        .values(status="completed")
     )
     _audit(
         session,
@@ -473,16 +535,11 @@ def complete_upload_session(
             "document_id": target_document_id,
             "version_no": int(version_no),
             "classification": classification,
-            "mime_type": row.mime_type,
-            "size_bytes": int(row.size_bytes),
+            "mime_type": mime_type,
+            "size_bytes": size_bytes,
+            "source": "course" if import_origin else "upload",
         },
     )
-    try:
-        session.commit()
-    except IntegrityError as exc:
-        session.rollback()
-        raise KnowledgeError(409, VERSION_CONFLICT, "文档版本与已有记录冲突") from exc
-
     return {
         "document_id": target_document_id,
         "version_id": version_id,
@@ -821,6 +878,8 @@ def _parse_status(session: Session, *, school_id: str, space_id: str, version_id
 def get_document(session: Session, user: User, space_id: str, document_id: str) -> dict:
     """文档详情。读者只看到当前可服务发布版本；维护者可见全部版本与解析状态。"""
 
+    from app.services.knowledge_course_service import origin_view
+
     actor = load_actor(session, user)
     space, role = require_space_access(session, actor, space_id=space_id)
     doc = _document_row(session, school_id=actor.school_id, space_id=space_id, document_id=document_id)
@@ -867,6 +926,7 @@ def get_document(session: Session, user: User, space_id: str, document_id: str) 
                 "effective_from": _iso(version.effective_from),
                 "effective_to": _iso(version.effective_to),
                 "published_at": _iso(version.published_at),
+                "course_origin": origin_view(session, user, version.import_origin),
                 "parse": _parse_status(
                     session,
                     school_id=actor.school_id,

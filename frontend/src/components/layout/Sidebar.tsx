@@ -224,12 +224,12 @@ export function Sidebar({ onLogout }: Props) {
               color: 'var(--text-tertiary)',
             }}
           >
-            校内共享
+            资料与知识
           </div>
         )}
         <NavLink
           to={sharedLibTo}
-          title="校级共享库"
+          title="资料与知识中心"
           style={({ isActive }) => ({
             display: 'flex',
             alignItems: 'center',
@@ -246,7 +246,7 @@ export function Sidebar({ onLogout }: Props) {
           })}
         >
           <LibraryBig size={18} />
-          {!collapsed && <span>校级共享库</span>}
+          {!collapsed && <span>资料与知识中心</span>}
         </NavLink>
       </nav>
 

@@ -352,6 +352,8 @@ def test_import_fixed_version_to_course(env):
         "space_id": space_id,
         "space_name": "导入知识库",
         "version_no": 1,
+        "document_id": done["document_id"],
+        "version_id": done["version_id"],
     }
 
     again = a.post(

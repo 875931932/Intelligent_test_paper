@@ -633,6 +633,14 @@ def list_documents(session: Session, user: User, space_id: str) -> list[dict]:
             ).fetchall()
         }
     now = datetime.now(timezone.utc)
+    latest_versions = {}
+    if role != "reader" and docs:
+        for latest in session.execute(select(knowledge_document_versions).where(
+            knowledge_document_versions.c.school_id == actor.school_id,
+            knowledge_document_versions.c.space_id == space_id,
+            knowledge_document_versions.c.document_id.in_([doc.id for doc in docs]),
+        ).order_by(knowledge_document_versions.c.version_no.desc())).mappings():
+            latest_versions.setdefault(latest.document_id, latest)
     result = []
     for doc in docs:
         version = versions.get(doc.published_version_id) if doc.published_version_id else None
@@ -650,6 +658,11 @@ def list_documents(session: Session, user: User, space_id: str) -> list[dict]:
                 "published_version_id": doc.published_version_id,
                 "access_version": doc.access_version,
                 "updated_at": _iso(doc.updated_at),
+                "latest_version": ({
+                    "id": latest_versions[doc.id].id,
+                    "version_no": latest_versions[doc.id].version_no,
+                    "state": latest_versions[doc.id].state,
+                } if doc.id in latest_versions else None),
                 "version": (
                     {
                         "id": version.id,

@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.adapters.storage.minio_storage import ObjectInfo, StoragePort, StoragePreconditionError, StorageUnavailableError
 from app.db.schema import (
+    Course,
     course_knowledge_imports,
     evidence_chunks,
     exam_point_evidence_links,
@@ -174,6 +175,7 @@ def complete_upload_session(session: Session, storage: StoragePort, *, course_id
     claim_now = datetime.now(UTC)
     try:
         with session.begin():
+            session.execute(select(Course.id).where(Course.id == course_id).with_for_update())
             claimed = session.execute(
                 update(upload_sessions)
                 .where(
@@ -269,13 +271,29 @@ def _knowledge_origins(
 
     if not version_ids:
         return {}
+    requested = select(
+        material_versions.c.id.label("requested_version_id"),
+        material_versions.c.material_id, material_versions.c.version_no,
+    ).where(
+        material_versions.c.course_id == course_id, material_versions.c.id.in_(version_ids),
+    ).subquery()
     rows = session.execute(
         select(
+            requested.c.requested_version_id,
             course_knowledge_imports.c.target_material_version_id,
             course_knowledge_imports.c.space_id,
+            course_knowledge_imports.c.source_document_id,
+            course_knowledge_imports.c.source_version_id,
+            course_knowledge_imports.c.permission_receipt,
             knowledge_spaces.c.name.label("space_name"),
             knowledge_document_versions.c.version_no,
         )
+        .select_from(requested)
+        .join(material_versions, (material_versions.c.material_id == requested.c.material_id)
+              & (material_versions.c.course_id == course_id)
+              & (material_versions.c.version_no <= requested.c.version_no))
+        .join(course_knowledge_imports, (course_knowledge_imports.c.target_material_version_id == material_versions.c.id)
+              & (course_knowledge_imports.c.course_id == material_versions.c.course_id))
         .join(knowledge_spaces, knowledge_spaces.c.id == course_knowledge_imports.c.space_id)
         .join(
             knowledge_document_versions,
@@ -283,17 +301,20 @@ def _knowledge_origins(
         )
         .where(
             course_knowledge_imports.c.course_id == course_id,
-            course_knowledge_imports.c.target_material_version_id.in_(version_ids),
         )
+        .order_by(material_versions.c.version_no.desc())
     ).mappings()
-    return {
-        row["target_material_version_id"]: {
+    result = {}
+    for row in rows:
+        result.setdefault(row.requested_version_id, {
             "space_id": row["space_id"],
-            "space_name": row["space_name"],
-            "version_no": row["version_no"],
-        }
-        for row in rows
-    }
+            "space_name": (row["permission_receipt"] or {}).get("source_space_name", row["space_name"]),
+            "version_no": (row["permission_receipt"] or {}).get("source_version_no", row["version_no"]),
+            "document_id": row["source_document_id"],
+            "version_id": row["source_version_id"],
+            **({"locally_modified": True} if row.target_material_version_id != row.requested_version_id else {}),
+        })
+    return result
 
 
 def _material_response(session: Session, row) -> dict:

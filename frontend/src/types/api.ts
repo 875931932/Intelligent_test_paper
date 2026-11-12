@@ -80,7 +80,7 @@ export interface MaterialResponse {
   latest_version: MaterialVersionResponse | null;
   parse_status: MaterialParseStatus;
   /** 从校级共享库导入时的溯源；本地上传为 null */
-  knowledge_origin?: { space_id: string; space_name: string; version_no: number } | null;
+  knowledge_origin?: { space_id: string; space_name: string; version_no: number; document_id?: string; version_id?: string; locally_modified?: boolean } | null;
   created_at: string;
 }
 

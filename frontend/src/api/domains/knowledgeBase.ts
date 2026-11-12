@@ -42,6 +42,7 @@ export interface KnowledgeDocument {
   access_version: number;
   updated_at?: string | null;
   version?: KnowledgeDocumentVersion | null;
+  latest_version?: { id: string; version_no: number; state: string } | null;
 }
 
 export interface KnowledgeMember {
@@ -63,6 +64,52 @@ export interface KnowledgeParseStatus {
 export interface KnowledgeDocumentVersionDetail extends KnowledgeDocumentVersion {
   file_hash: string;
   parse?: KnowledgeParseStatus | null;
+  course_origin?: {
+    kind: 'course_material';
+    material_title: string;
+    version_no: number;
+    imported_at: string;
+    course_id?: string;
+    course_name?: string;
+    material_id?: string;
+    source_available?: boolean;
+    latest_version_id?: string | null;
+    latest_version_no?: number | null;
+    update_available?: boolean;
+  } | null;
+}
+
+export interface CourseMaterialResource {
+  course_id: string;
+  course_name: string;
+  material_id: string;
+  title: string;
+  material_type: string;
+  version_id: string;
+  version_no: number;
+  size_bytes: number;
+  can_share: boolean;
+  share_blocked_reason?: string | null;
+  knowledge_origin?: { space_id: string; space_name: string; document_id?: string; version_no: number; locally_modified?: boolean } | null;
+  shared_versions: Array<{
+    space_id: string;
+    space_name: string;
+    document_id: string;
+    version_id: string;
+    version_no: number;
+    state: string;
+    document_status: string;
+    source_version_id: string;
+  }>;
+}
+
+export interface CourseShareResult {
+  document_id: string;
+  version_id: string;
+  version_no: number;
+  job_id?: string | null;
+  state: string;
+  idempotent: boolean;
 }
 
 export interface KnowledgeDocumentDetail {
@@ -220,6 +267,18 @@ export interface SpaceUpdatePayload {
 }
 
 export const knowledgeBaseApi = {
+  listCourseMaterials: (courseId?: string): Promise<CourseMaterialResource[]> =>
+    request('/knowledge/course-materials' + (courseId ? '?course_id=' + encodeURIComponent(courseId) : '')),
+  importFromCourse: (spaceId: string, payload: {
+    course_id: string;
+    material_version_id: string;
+    expected_policy_version: number;
+    confirm_shareable: boolean;
+    classification: 'shareable_teaching' | 'limited_teaching';
+  }): Promise<CourseShareResult> =>
+    request('/knowledge/spaces/' + spaceId + '/import-from-course', {
+      method: 'POST', body: JSON.stringify(payload),
+    }),
   meta: (): Promise<KnowledgeMeta> => request('/knowledge/meta'),
   listSpaces: (subjectTag?: string): Promise<KnowledgeSpace[]> =>
     request(
@@ -305,6 +364,9 @@ export const knowledgeBaseApi = {
     state: string;
     idempotent: boolean;
     material_version_id: string;
+    material_id?: string;
+    appended_version?: boolean;
+    reused_source?: boolean;
     logical_name?: string;
   }> =>
     request(

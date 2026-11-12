@@ -23,6 +23,7 @@ from app.db.schema import User, knowledge_jobs
 from app.db.session import get_session
 from app.infrastructure.tasks import knowledge_tasks
 from app.services import (
+    knowledge_course_service,
     knowledge_answer_service,
     knowledge_document_service,
     knowledge_governance_service,
@@ -142,6 +143,47 @@ class ImportToCourseRequest(BaseModel):
     course_id: str
     material_type: str = "teaching_material"
     title: str | None = Field(default=None, max_length=200)
+
+
+class ImportFromCourseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    course_id: str
+    material_version_id: str
+    expected_policy_version: int
+    confirm_shareable: bool = False
+    classification: str = "shareable_teaching"
+
+
+@router.get("/course-materials")
+def own_course_materials(
+    course_id: str | None = None,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> list[dict]:
+    try:
+        return knowledge_course_service.list_course_materials(session, current_user, course_id=course_id)
+    except KnowledgeError as exc:
+        _raise(exc)
+
+
+@router.post("/spaces/{space_id}/import-from-course")
+def import_from_course(
+    space_id: str,
+    payload: ImportFromCourseRequest,
+    session: Session = Depends(get_session),
+    storage: StoragePort = Depends(get_storage),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    try:
+        result = knowledge_course_service.import_course_version(
+            session, storage, current_user, space_id=space_id, **payload.model_dump()
+        )
+        if result.get("job_id") and result["state"] == "processing":
+            knowledge_tasks.publish_job_event(session, result["job_id"])
+        return result
+    except KnowledgeError as exc:
+        _raise(exc)
 
 
 def _http(exc: KnowledgeError) -> HTTPException:

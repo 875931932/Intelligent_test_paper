@@ -3,15 +3,17 @@ import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   Upload, RefreshCw, Trash2, FileText,
   Folder, FolderOpen, BookOpen, ClipboardCheck, BookMarked, X, Files, Eye,
-  Package, Pencil, RotateCcw, LibraryBig,
+  Package, Pencil, RotateCcw, LibraryBig, Share2,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { api } from '@/api/client';
+import { fileMime, uploadFileObject } from '@/api/uploads';
 import { isApiError } from '@/api/errors';
 import { useCourseStore } from '@/stores/course';
 import { useToastStore } from '@/stores/toast';
 import { Button, Modal, Badge, SkeletonCardGrid } from '@/components/ui';
 import { MaterialContentPreview } from '@/components/MaterialContentPreview';
+import { ShareCourseMaterialModal, type ShareMaterialSource } from '@/components/ShareCourseMaterialModal';
 import { computeSha256 } from '@/lib/sha256';
 import { downloadBlob } from '@/lib/download';
 import { PARSE_STATUS_LABELS } from '@/utils/format';
@@ -128,9 +130,6 @@ const ALL_TYPE_OPTIONS = [
   { value: 'exercise', label: '习题' },
 ];
 
-// 直传对象存储的最长等待时间，超时即中止并报错，避免无限挂起
-const DIRECT_UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
-
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return bytes + ' B';
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -159,8 +158,10 @@ export default function MaterialsPage() {
   });
   const [activeSubFolder, setActiveSubFolder] = useState<SubFolderKey | null>(null);
 
-  const [uploadOpen, setUploadOpen] = useState(false);
+  const [uploadOpen, setUploadOpen] = useState(searchParams.get('upload') === '1');
+  const [shareSource, setShareSource] = useState<ShareMaterialSource | null>(null);
   const [uploadItems, setUploadItems] = useState<UploadItem[]>([]);
+  const [updateMaterial, setUpdateMaterial] = useState<MaterialResponse | null>(null);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -194,6 +195,8 @@ export default function MaterialsPage() {
   const pollingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   // 定时器只建一次、回调闭包会拿首轮的旧清单：解析中的文件清单必须经 ref 取当前值
   const materialsRef = useRef<MaterialResponse[]>([]);
+  const locatedMaterialRef = useRef('');
+  const linkedMaterial = searchParams.get('material') || '';
   useEffect(() => {
     materialsRef.current = materials;
   }, [materials]);
@@ -205,6 +208,15 @@ export default function MaterialsPage() {
       if (!silent) setLoading(true);
       const data = await api.materials.list(courseId);
       setMaterials(Array.isArray(data) ? data : []);
+      const target = data.find((item) => item.id === linkedMaterial);
+      if (target && locatedMaterialRef.current !== linkedMaterial) {
+        const group = FOLDER_GROUPS.find((item) => item.subFolders.some((sub) => sub.key === target.material_type));
+        if (group) {
+          setActiveFolder(group.key);
+          setActiveSubFolder(target.material_type as SubFolderKey);
+          locatedMaterialRef.current = linkedMaterial;
+        }
+      }
     } catch (err) {
       // 404 = 课程已被删除：重试/轮询都不可能恢复。必须就地停表——
       // 停表条件（materials 不再有"解析中"）在数据取不到时永远无法满足，
@@ -222,7 +234,7 @@ export default function MaterialsPage() {
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [courseId, addToast]);
+  }, [courseId, addToast, linkedMaterial]);
 
   const openImport = useCallback(async () => {
     setImportOpen(true);
@@ -266,9 +278,9 @@ export default function MaterialsPage() {
         }
       );
       addToast(
-        result.idempotent
+        result.reused_source ? `《${doc.title}》的源资料就在当前课程，无需重复导入` : result.idempotent
           ? `《${doc.title}》已导入过，已定位到原副本`
-          : `已从「${space.name}」导入《${doc.title}》`,
+          : result.appended_version ? `已为《${doc.title}》追加课程资料版本` : `已从「${space.name}」导入《${doc.title}》`,
         'success'
       );
       setImportOpen(false);
@@ -397,6 +409,7 @@ export default function MaterialsPage() {
 
   // ── 多文件上传 ──
   const openUpload = () => {
+    setUpdateMaterial(null);
     setUploadItems([]);
     setUploadOpen(true);
   };
@@ -409,34 +422,11 @@ export default function MaterialsPage() {
     return 'teaching_material';
   };
 
-  const directPut = async (url: string, file: File, sha256: string, extraHeaders: Record<string, string>) => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), DIRECT_UPLOAD_TIMEOUT_MS);
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method: 'PUT',
-        body: file,
-        signal: controller.signal,
-        headers: {
-          'Content-Type': file.type || 'application/octet-stream',
-          'x-amz-meta-sha256': sha256,
-          ...extraHeaders,
-        },
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!res.ok) {
-      throw new Error('object storage upload failed: ' + res.status);
-    }
-  };
-
   const handleFilesChange = (files: FileList | null) => {
     if (!files || files.length === 0) return;
-    const defaultType = defaultTypeForNewFile();
+    const defaultType = updateMaterial?.material_type || defaultTypeForNewFile();
     const newItems: UploadItem[] = Array.from(files).map((file) => ({ file, type: defaultType }));
-    setUploadItems((prev) => [...prev, ...newItems]);
+    setUploadItems((prev) => updateMaterial ? newItems.slice(0, 1) : [...prev, ...newItems]);
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -463,21 +453,17 @@ export default function MaterialsPage() {
           material_type: item.type,
           size_bytes: item.file.size,
           sha256,
-          mime_type: item.file.type || 'application/octet-stream',
+          mime_type: fileMime(item.file),
+          existing_material_id: updateMaterial?.id,
         });
 
-        // 直传对象存储（若后端返回 upload_url）
-        if (session?.upload_url) {
-          await directPut(session.upload_url, item.file, sha256, session.headers || {});
-        } else {
-          await api.uploadBinary('/_local-storage/' + session.object_key, item.file);
-        }
+        await uploadFileObject(session, item.file, sha256);
 
         await api.materials.completeUpload(courseId, session.session_id);
 
         successCount++;
       }
-      addToast(`成功上传 ${successCount} 份资料`, 'success');
+      addToast(updateMaterial ? '已追加新版本，旧版本与已冻结命题引用保留' : `成功上传 ${successCount} 份资料`, 'success');
       setUploadOpen(false);
       setUploadItems([]);
       loadMaterials();
@@ -745,6 +731,7 @@ export default function MaterialsPage() {
                   >
                     <LibraryBig size={12} />
                     来自「{m.knowledge_origin.space_name}」· 源版本 v{m.knowledge_origin.version_no}
+                    {m.knowledge_origin.locally_modified ? ' · 已在课程修改' : ''}
                   </p>
                 )}
               </div>
@@ -789,6 +776,18 @@ export default function MaterialsPage() {
                 icon={<Trash2 size={14} />}
               />
             </div>
+            {m.latest_version && !m.knowledge_origin && m.material_type !== 'assessment_syllabus' && (
+              <Button variant="secondary" size="sm" icon={<Share2 size={14} />} onClick={() => setShareSource({
+                course_id: courseId, version_id: m.latest_version!.id, title: m.logical_name,
+                version_no: m.latest_version!.version_no,
+              })}>发布到共享库</Button>
+            )}
+            <Button variant="secondary" size="sm" icon={<Upload size={14} />} disabled={isParsing(m)} onClick={() => {
+              setUpdateMaterial(m); setUploadItems([]); setUploadOpen(true);
+            }}>上传新版</Button>
+            {m.knowledge_origin && <Button variant="secondary" size="sm" icon={<LibraryBig size={14} />} onClick={() => navigate(
+              `/knowledge/${m.knowledge_origin!.space_id}?fromCourse=${courseId}` + (m.knowledge_origin!.document_id ? `&document=${m.knowledge_origin!.document_id}` : '')
+            )}>查看共享来源与更新</Button>}
           </div>
         ))}
       </div>
@@ -797,6 +796,7 @@ export default function MaterialsPage() {
 
   return (
     <div className="page-enter page-stack">
+      <ShareCourseMaterialModal source={shareSource} onClose={() => setShareSource(null)} />
       {/* Header（「试卷」文件夹不上传材料，藏掉上传入口） */}
       <div className="page-header">
         <div>
@@ -964,6 +964,7 @@ export default function MaterialsPage() {
           <p style={{ margin: 0, fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
             导入的是共享库当前发布版本，会复制为当前课程的独立副本，并保留来源库与版本信息。
             源库之后撤回或升级不会删除已导入内容。
+            再次选用同源新版本会追加到原课程资料；本地已有修改时会提示冲突。
           </p>
           {importLoading ? (
             <div style={{ display: 'flex', justifyContent: 'center', padding: 24 }}>
@@ -1042,7 +1043,7 @@ export default function MaterialsPage() {
       <Modal
         open={uploadOpen}
         onClose={() => { if (!uploading) setUploadOpen(false); }}
-        title="上传资料"
+        title={updateMaterial ? `上传新版：${updateMaterial.logical_name}` : '上传资料'}
         onConfirm={handleUpload}
         confirmLabel={uploadItems.length > 0 ? `确认上传（${uploadItems.length} 份）` : '确认上传'}
         loading={uploading}
@@ -1050,17 +1051,17 @@ export default function MaterialsPage() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
             <label style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--text-secondary)' }}>
-              选择文件（可多选）
+              {updateMaterial ? '选择新版文件' : '选择文件（可多选）'}
             </label>
             <input
               ref={fileInputRef}
               type="file"
-              multiple
+              multiple={!updateMaterial}
               onChange={(e) => handleFilesChange(e.target.files)}
               className="input-field"
             />
             <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', marginTop: '4px' }}>
-              支持同时选择多个文件，每个文件可单独指定类型
+              {updateMaterial ? '追加资料版本，旧版本与已冻结的命题引用保留。共享库需另行确认更新。' : '支持同时选择多个文件，每个文件可单独指定类型'}
             </p>
           </div>
 
@@ -1085,6 +1086,7 @@ export default function MaterialsPage() {
                   </div>
                   <select
                     value={item.type}
+                    disabled={Boolean(updateMaterial)}
                     onChange={(e) => updateItemType(idx, e.target.value)}
                     className="input-field"
                     style={{ width: 'auto', padding: '4px 8px', fontSize: '0.8125rem' }}
