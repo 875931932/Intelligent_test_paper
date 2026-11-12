@@ -51,6 +51,12 @@ export async function executeProposalAction(
 ): Promise<ProposalExecResult> {
   const payload = m.action.payload ?? {};
   const body = payload.body ?? {};
+  // 卡片生成时固化的目标课程优先；历史卡片没有该字段时回退当前路由绑定。
+  const targetCourseId =
+    typeof payload.course_id === 'string' && payload.course_id ? payload.course_id : courseId;
+  if (m.action.tool !== 'create_course' && targetCourseId !== courseId) {
+    throw new Error('该提案属于其他课程，请回到原课程执行');
+  }
   const done = (receipt: string, relay = true): ProposalExecResult => ({ receipt, relay });
 
   switch (m.action.tool) {
@@ -62,7 +68,7 @@ export async function executeProposalAction(
     }
     case 'update_course': {
       const updated = await api.courses.update(
-        payload.course_id ?? courseId,
+        targetCourseId,
         body as CourseUpdate,
         token,
       );

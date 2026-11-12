@@ -129,6 +129,12 @@ class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=500)
 
 
+class SessionRenameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=120)
+
+
 class FeedbackRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -644,6 +650,37 @@ def get_knowledge_session(
 ) -> dict:
     try:
         return knowledge_answer_service.get_session(session, current_user, session_id)
+    except KnowledgeError as exc:
+        _raise(exc)
+
+
+@router.patch("/sessions/{session_id}")
+def rename_knowledge_session(
+    session_id: str,
+    payload: SessionRenameRequest,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """重命名本人知识会话；仅改标题，不影响资料与消息。"""
+
+    try:
+        return knowledge_answer_service.rename_session(
+            session, current_user, session_id, title=payload.title
+        )
+    except KnowledgeError as exc:
+        _raise(exc)
+
+
+@router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_knowledge_session(
+    session_id: str,
+    session: Session = Depends(get_session),
+    current_user: User = Depends(get_current_user),
+) -> None:
+    """删除本人知识会话；软删除后详情、提问与反馈均不可访问。"""
+
+    try:
+        knowledge_answer_service.delete_session(session, current_user, session_id)
     except KnowledgeError as exc:
         _raise(exc)
 

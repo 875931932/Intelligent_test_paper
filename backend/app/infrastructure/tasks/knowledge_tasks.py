@@ -29,11 +29,14 @@ from app.db.schema import (
 logger = logging.getLogger(__name__)
 
 JOB_EVENT_TYPE = "knowledge.job"
+ANSWER_JOB_KIND = "answer_question"
 _ACTIVE_STATES = ("queued", "running")
 
 # 并发预算：单账号同时进行的知识任务与单库排队上限，避免批量上传挤占解析。
 MAX_ACTIVE_JOBS_PER_ACTOR = 5
 MAX_QUEUED_JOBS_PER_SPACE = 50
+# 个人问答任务单账号并发上限：回答是同步 ask 的异步替代，不需要大批量排队。
+MAX_ACTIVE_ANSWERS_PER_ACTOR = 2
 
 
 def _now() -> datetime:
@@ -152,6 +155,80 @@ def enqueue_parse_job(
     )
     return job_id
 
+
+def enqueue_answer_job(
+    session: Session,
+    *,
+    school_id: str,
+    session_id: str,
+    actor_id: str,
+    message_id: str,
+    question: str,
+) -> str:
+    """模型回答任务与 outbox 同事务写入；同一助手消息重复入队返回既有任务。"""
+
+    idempotency_key = f"answer:{message_id}"
+    existing = session.scalar(
+        select(knowledge_jobs.c.id).where(
+            knowledge_jobs.c.school_id == school_id,
+            knowledge_jobs.c.actor_id == actor_id,
+            knowledge_jobs.c.kind == ANSWER_JOB_KIND,
+            knowledge_jobs.c.idempotency_key == idempotency_key,
+        )
+    )
+    if existing is not None:
+        return existing
+
+    from app.services.knowledge_space_service import KnowledgeError
+
+    # 锁定账号行，串行化同一账号的并发问答入队与限额计数。
+    session.execute(select(User.id).where(User.id == actor_id).with_for_update())
+    active_for_actor = session.scalar(
+        select(func.count()).where(
+            knowledge_jobs.c.actor_id == actor_id,
+            knowledge_jobs.c.school_id == school_id,
+            knowledge_jobs.c.kind == ANSWER_JOB_KIND,
+            knowledge_jobs.c.state.in_(_ACTIVE_STATES),
+        )
+    )
+    if int(active_for_actor or 0) >= MAX_ACTIVE_ANSWERS_PER_ACTOR:
+        raise KnowledgeError(429, "RATE_LIMITED", "同时生成中的回答过多，请稍候再提问")
+
+    job_id = uuid4().hex
+    now = _now()
+    session.execute(
+        knowledge_jobs.insert().values(
+            id=job_id,
+            school_id=school_id,
+            space_id=None,
+            session_id=session_id,
+            actor_id=actor_id,
+            kind=ANSWER_JOB_KIND,
+            payload={"message_id": message_id, "question": question},
+            payload_hash=None,
+            state="queued",
+            progress=0,
+            attempts=0,
+            fencing_token=0,
+            idempotency_key=idempotency_key,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    session.execute(
+        knowledge_outbox_events.insert().values(
+            id=uuid4().hex,
+            school_id=school_id,
+            job_id=job_id,
+            event_type=JOB_EVENT_TYPE,
+            state="pending",
+            attempts=0,
+            available_at=now,
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    return job_id
 
 # ── 租约与 fencing ──────────────────────────────────────────────────────────
 
@@ -327,6 +404,31 @@ def execute_knowledge_job(
         school_id = job["school_id"]
         space_id = job["space_id"]
         payload = dict(job["payload"] or {})
+
+        if job["kind"] == ANSWER_JOB_KIND:
+            from app.services import knowledge_model_answer_service
+
+            ok, error_code, result = knowledge_model_answer_service.execute_answer(
+                session,
+                job_id=job_id,
+                school_id=school_id,
+                session_id=str(job["session_id"] or ""),
+                actor_id=job["actor_id"],
+                message_id=str(payload.get("message_id") or ""),
+                question=str(payload.get("question") or ""),
+                worker_id=worker_id,
+                fencing_token=fencing_token,
+            )
+            finish_knowledge_job(
+                session,
+                job_id=job_id,
+                worker_id=worker_id,
+                fencing_token=fencing_token,
+                state="succeeded" if ok else "failed",
+                result=result,
+                error_code=None if ok else error_code,
+            )
+            return ok
 
         if job["kind"] != "parse_document":
             finish_knowledge_job(

@@ -14,6 +14,7 @@ import {
   Plus,
   Send,
   ShieldCheck,
+  Sparkles,
   Users,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
@@ -235,6 +236,10 @@ export default function KnowledgeCenterPage() {
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <button onClick={() => navigate('/home')} style={ghostButton}>
+              <Sparkles size={15} />
+              AI 助手
+            </button>
             <button
               onClick={() => navigate(fromCourse ? `/courses/${fromCourse}` : '/courses')}
               style={ghostButton}

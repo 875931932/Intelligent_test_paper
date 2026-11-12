@@ -15,9 +15,18 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.adapters.storage.minio_storage import ObjectInfo, StoragePreconditionError
-from app.db.schema import Base, Organization, User
+from app.db.schema import (
+    Base,
+    Organization,
+    User,
+    knowledge_jobs,
+    knowledge_messages,
+    knowledge_sessions,
+)
 from app.db.session import get_session
+from app.infrastructure.tasks.knowledge_tasks import execute_knowledge_job
 from app.main import app
+from app.services import knowledge_model_answer_service
 from app.services.auth_service import hash_password
 
 API = "/api/v1/knowledge"
@@ -439,14 +448,172 @@ def test_cross_space_qa_uses_only_authorized_spaces(env):
     space_hits = {source["space_id"] for source in assistant["sources"]}
     assert space_hits == {space_one["id"], space_two["id"]}, assistant["sources"]
 
-    # 未授权空间 id 被静默排除，不创建可读会话。
+    # 未授权空间不能被静默排除后创建“看似完整”的会话。
     other = _login("teacher-c").post(f"{API}/spaces", json={"name": "他人库"}).json()
     filtered = b.post(
         f"{API}/sessions",
         json={"selected_space_ids": [space_one["id"], other["id"]]},
     )
-    assert filtered.status_code == 201
-    assert filtered.json()["selected_space_ids"] == [space_one["id"]]
+    assert filtered.status_code == 409
+    assert filtered.json()["detail"]["code"] == "SCOPE_CHANGED"
+
+
+def test_revoked_space_blocks_ask_instead_of_shrinking_scope(env):
+    """会话创建后失去一个空间权限：提问整体阻断，且不落新的用户消息。"""
+
+    storage = env
+    a = _login("teacher-a")
+    b = _login("teacher-b")
+    space = a.post(f"{API}/spaces", json={"name": "撤权范围"}).json()
+    space_id = space["id"]
+    a.put(f"{API}/spaces/{space_id}/members/teacher-b", json={"role": "reader"})
+    _publish_document(
+        a, storage, space_id, "# 队列\n\n队列先进先出。\n".encode("utf-8"), "队列"
+    )
+    created = b.post(
+        f"{API}/sessions", json={"selected_space_ids": [space_id], "title": "撤权问答"}
+    )
+    assert created.status_code == 201, created.text
+    session_id = created.json()["id"]
+
+    assert a.delete(f"{API}/spaces/{space_id}/members/teacher-b").status_code == 204
+    blocked = b.post(
+        f"{API}/sessions/{session_id}/ask", json={"question": "队列的顺序是什么？"}
+    )
+    assert blocked.status_code == 409
+    assert blocked.json()["detail"]["code"] == "SCOPE_CHANGED"
+    # 阻断发生在写消息之前，历史里不能留下一条未回答的提问。
+    assert b.get(f"{API}/sessions/{session_id}").json()["messages"] == []
+
+
+def test_knowledge_session_rename_delete_and_late_write(env, monkeypatch):
+    """本人可重命名/删除会话；删除后迟到检索结果不得写回或恢复会话。"""
+
+    storage = env
+    a = _login("teacher-a")
+    b = _login("teacher-b")
+    space = a.post(f"{API}/spaces", json={"name": "会话管理"}).json()
+    space_id = space["id"]
+    a.put(f"{API}/spaces/{space_id}/members/teacher-b", json={"role": "reader"})
+    _publish_document(
+        a, storage, space_id, "# 栈\n\n栈后进先出。\n".encode("utf-8"), "栈"
+    )
+
+    created = b.post(
+        f"{API}/sessions", json={"selected_space_ids": [space_id], "title": "原标题"}
+    ).json()
+    session_id = created["id"]
+    b.post(f"{API}/sessions/{session_id}/ask", json={"question": "栈的顺序？"})
+
+    renamed = b.patch(f"{API}/sessions/{session_id}", json={"title": "新标题"})
+    assert renamed.status_code == 200 and renamed.json()["title"] == "新标题"
+    assert (
+        b.patch(f"{API}/sessions/{session_id}", json={"title": "   "}).status_code == 422
+    )
+    assert (
+        _login("teacher-c")
+        .patch(f"{API}/sessions/{session_id}", json={"title": "越权"})
+        .status_code
+        == 404
+    )
+
+    assert b.delete(f"{API}/sessions/{session_id}").status_code == 204
+    assert b.get(f"{API}/sessions/{session_id}").status_code == 404
+    assert (
+        b.post(f"{API}/sessions/{session_id}/ask", json={"question": "还在吗？"}).status_code
+        == 404
+    )
+    assert all(item["id"] != session_id for item in b.get(f"{API}/sessions").json())
+    # 软删除不物理清理消息，但会话已不可访问。
+    with next(app.dependency_overrides[get_session]()) as db:
+        assert db.scalar(
+            select(func.count()).select_from(knowledge_messages).where(
+                knowledge_messages.c.session_id == session_id
+            )
+        ) == 2
+        assert db.scalar(
+            select(knowledge_sessions.c.status).where(knowledge_sessions.c.id == session_id)
+        ) == "deleted"
+
+    # 检索期间会话被删除：迟到结果不能落助手消息，也不能返回答案。
+    late_session = b.post(
+        f"{API}/sessions", json={"selected_space_ids": [space_id], "title": "迟到测试"}
+    ).json()["id"]
+    from app.services import knowledge_answer_service as service
+
+    original_search = service.search
+
+    def delete_during_search(session, user, **kwargs):
+        result = original_search(session, user, **kwargs)
+        session.execute(
+            update(knowledge_sessions)
+            .where(knowledge_sessions.c.id == late_session)
+            .values(status="deleted")
+        )
+        session.commit()
+        return result
+
+    monkeypatch.setattr(service, "search", delete_during_search)
+    late = b.post(f"{API}/sessions/{late_session}/ask", json={"question": "栈的顺序？"})
+    assert late.status_code == 404
+    with next(app.dependency_overrides[get_session]()) as db:
+        assert db.scalar(
+            select(func.count()).select_from(knowledge_messages).where(
+                knowledge_messages.c.session_id == late_session,
+                knowledge_messages.c.role == "assistant",
+            )
+        ) == 0
+
+
+def test_assistant_history_summary_isolated_and_paginated(env):
+    """统一历史摘要：只返回本人会话与可展示目标，不返回正文，游标不重复。"""
+
+    a = _login("teacher-a")
+    b = _login("teacher-b")
+    course = a.post(
+        "/api/v1/courses", json={"name": "历史课程", "slug": "history-course"}
+    ).json()
+    course_session = a.post(
+        f"/api/v1/courses/{course['id']}/assistant/sessions", json={}
+    ).json()
+    space = a.post(f"{API}/spaces", json={"name": "历史共享库"}).json()
+    a.put(f"{API}/spaces/{space['id']}/members/teacher-b", json={"role": "reader"})
+    b_session = b.post(
+        f"{API}/sessions",
+        json={"selected_space_ids": [space["id"]], "title": "共享问答"},
+    ).json()
+
+    listed_a = a.get("/api/v1/assistant/sessions").json()
+    assert {item["domain"] for item in listed_a["items"]} == {"course"}
+    assert listed_a["items"][0]["target"]["course_id"] == course["id"]
+    assert "content" not in listed_a["items"][0]
+
+    listed_b = b.get("/api/v1/assistant/sessions").json()
+    assert [item["session_id"] for item in listed_b["items"]] == [b_session["id"]]
+    assert listed_b["items"][0]["target"]["complete"] is True
+    assert listed_b["items"][0]["target"]["names"] == ["历史共享库"]
+
+    assert b.get("/api/v1/assistant/sessions?domain=course").json()["items"] == []
+    assert (
+        b.get(f"/api/v1/assistant/sessions?course_id={course['id']}").status_code == 404
+    )
+    filtered = a.get(f"/api/v1/assistant/sessions?course_id={course['id']}").json()
+    assert filtered["items"][0]["session_id"] == course_session["id"]
+
+    a.post(f"/api/v1/courses/{course['id']}/assistant/sessions", json={"title": "第二会话"})
+    page_one = a.get("/api/v1/assistant/sessions?limit=1").json()
+    assert len(page_one["items"]) == 1 and page_one["next_cursor"]
+    page_two = a.get(
+        f"/api/v1/assistant/sessions?limit=1&cursor={page_one['next_cursor']}"
+    ).json()
+    assert len(page_two["items"]) == 1
+    assert page_two["items"][0]["session_id"] != page_one["items"][0]["session_id"]
+
+    # 撤权后摘要仍能看到本人会话，但不返回已失权空间名称。
+    a.delete(f"{API}/spaces/{space['id']}/members/teacher-b")
+    after = b.get("/api/v1/assistant/sessions").json()["items"][0]
+    assert after["target"]["complete"] is False
+    assert after["target"]["names"] == []
 
 
 def test_governance_summary_scope_and_permissions(env):
@@ -898,3 +1065,173 @@ def test_unsupported_mime_and_limited_classification(env):
         json={"classification": "limited_teaching"},
     )
     assert limited.status_code == 200, limited.text
+
+
+class _StubModelClient:
+    def __init__(self, *, response=None, error: Exception | None = None):
+        self.response = response
+        self.error = error
+
+    def request_json(self, **kwargs):
+        if self.error is not None:
+            raise self.error
+        validator = kwargs.get("response_validator")
+        if validator is not None:
+            validator(self.response)
+        return self.response
+
+
+def _model_answer_fixture(env, monkeypatch):
+    storage = env
+    a = _login("teacher-a")
+    b = _login("teacher-b")
+    space = a.post(f"{API}/spaces", json={"name": "模型回答"}).json()
+    space_id = space["id"]
+    a.put(f"{API}/spaces/{space_id}/members/teacher-b", json={"role": "reader"})
+    _publish_document(
+        a,
+        storage,
+        space_id,
+        "# 栈\n\n栈是后进先出的线性表，只能在栈顶插入和删除。\n".encode("utf-8"),
+        "栈结构",
+    )
+    session = b.post(
+        f"{API}/sessions",
+        json={"selected_space_ids": [space_id], "title": "模型问答"},
+    ).json()
+    # 不依赖本机真实 .env：显式打开异步分支，LLM 客户端由各用例打桩。
+    monkeypatch.setattr(
+        "app.services.knowledge_answer_service.model_answer_available", lambda: True
+    )
+    return a, b, space, session
+
+
+def _run_answer_job(session_id: str):
+    with next(app.dependency_overrides[get_session]()) as db:
+        job_id = db.scalar(
+            select(knowledge_jobs.c.id).where(
+                knowledge_jobs.c.session_id == session_id,
+                knowledge_jobs.c.kind == "answer_question",
+            )
+        )
+        assert job_id
+        ok = execute_knowledge_job(job_id, worker_id="test-worker", session=db)
+        state = db.scalar(select(knowledge_jobs.c.state).where(knowledge_jobs.c.id == job_id))
+    return ok, state, job_id
+
+
+def test_model_answer_success_is_written_by_worker(env, monkeypatch):
+    a, b, _space, session = _model_answer_fixture(env, monkeypatch)
+
+    class Stub:
+        def request_json(self, **kwargs):
+            data = {
+                "status": "answered",
+                "answer": "栈是后进先出的线性表。",
+                "citations": [{"source_id": 1, "quote": "后进先出"}],
+            }
+            kwargs["response_validator"](data)
+            return data
+
+    monkeypatch.setattr(
+        knowledge_model_answer_service, "build_llm_client", lambda *args, **kwargs: Stub()
+    )
+    asked = b.post(
+        f"{API}/sessions/{session['id']}/ask", json={"question": "栈的插入删除在哪里进行？"}
+    )
+    assert asked.status_code == 200, asked.text
+    pending = asked.json()["messages"][-1]
+    assert pending["role"] == "assistant" and pending["state"] == "pending"
+
+    ok, state, _job_id = _run_answer_job(session["id"])
+    assert ok is True and state == "succeeded"
+
+    detail = b.get(f"{API}/sessions/{session['id']}").json()
+    answer = [m for m in detail["messages"] if m["role"] == "assistant"][-1]
+    assert answer["state"] == "complete"
+    assert answer["content"] == "栈是后进先出的线性表。"
+    assert answer["retrieval_snapshot"]["channel"] == "model"
+    assert answer["sources"][0]["document_title"] == "栈结构"
+    assert answer["dependency_versions"]
+
+
+def test_model_answer_falls_back_to_extractive_on_model_failure(env, monkeypatch):
+    _a, b, _space, session = _model_answer_fixture(env, monkeypatch)
+    monkeypatch.setattr(
+        knowledge_model_answer_service,
+        "build_llm_client",
+        lambda *args, **kwargs: _StubModelClient(error=RuntimeError("model unavailable")),
+    )
+    b.post(f"{API}/sessions/{session['id']}/ask", json={"question": "栈的插入删除在哪里进行？"})
+
+    ok, state, _job_id = _run_answer_job(session["id"])
+    assert ok is True and state == "succeeded"
+    detail = b.get(f"{API}/sessions/{session['id']}").json()
+    answer = [m for m in detail["messages"] if m["role"] == "assistant"][-1]
+    assert answer["state"] == "complete"
+    assert answer["retrieval_snapshot"]["channel"] == "extractive"
+    assert answer["retrieval_snapshot"]["degraded"] is True
+    assert "后进先出" in answer["content"]
+    assert answer["sources"]
+
+
+def test_model_answer_rejects_fabricated_citation(env, monkeypatch):
+    _a, b, _space, session = _model_answer_fixture(env, monkeypatch)
+
+    class Fabricated:
+        def request_json(self, **kwargs):
+            data = {
+                "status": "answered",
+                "answer": "栈是先进先出的结构。",
+                "citations": [{"source_id": 1, "quote": "栈是先进先出的结构"}],
+            }
+            kwargs["response_validator"](data)
+            return data
+
+    monkeypatch.setattr(
+        knowledge_model_answer_service, "build_llm_client", lambda *args, **kwargs: Fabricated()
+    )
+    b.post(f"{API}/sessions/{session['id']}/ask", json={"question": "栈的插入删除在哪里进行？"})
+    ok, state, _job_id = _run_answer_job(session["id"])
+    assert ok is True and state == "succeeded"
+    detail = b.get(f"{API}/sessions/{session['id']}").json()
+    answer = [m for m in detail["messages"] if m["role"] == "assistant"][-1]
+    assert answer["retrieval_snapshot"]["channel"] == "extractive"
+    assert answer["retrieval_snapshot"]["degraded"] is True
+    assert "后进先出" in answer["content"]
+
+
+def test_stale_pending_answer_times_out(env, monkeypatch):
+    _a, b, _space, session = _model_answer_fixture(env, monkeypatch)
+    b.post(f"{API}/sessions/{session['id']}/ask", json={"question": "栈的插入删除在哪里进行？"})
+    from datetime import datetime, timedelta, timezone
+
+    with next(app.dependency_overrides[get_session]()) as db:
+        db.execute(
+            update(knowledge_messages)
+            .where(
+                knowledge_messages.c.session_id == session["id"],
+                knowledge_messages.c.state == "pending",
+            )
+            .values(created_at=datetime.now(timezone.utc) - timedelta(minutes=10))
+        )
+        db.commit()
+    detail = b.get(f"{API}/sessions/{session['id']}").json()
+    answer = [m for m in detail["messages"] if m["role"] == "assistant"][-1]
+    assert answer["state"] == "failed"
+    assert "超时" in answer["content"]
+
+
+def test_model_answer_rechecks_scope_before_writing(env, monkeypatch):
+    a, b, space, session = _model_answer_fixture(env, monkeypatch)
+    b.post(f"{API}/sessions/{session['id']}/ask", json={"question": "栈的插入删除在哪里进行？"})
+    assert a.delete(f"{API}/spaces/{space['id']}/members/teacher-b").status_code == 204
+
+    ok, state, _job_id = _run_answer_job(session["id"])
+    assert ok is False and state == "failed"
+    detail = b.get(f"{API}/sessions/{session['id']}").json()
+    answer = [m for m in detail["messages"] if m["role"] == "assistant"][-1]
+    assert answer["state"] == "complete"
+    assert answer["sources"] == []
+    assert "范围已变化" in answer["content"]
+    assert answer["retrieval_snapshot"]["status"] == "scope_changed"

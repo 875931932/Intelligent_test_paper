@@ -230,6 +230,34 @@ export default function KnowledgeSpacePage() {
     };
   }, [tab, space, qaSession]);
 
+  // P2 异步模型回答：只轮询仍在 processing 的助手消息，完成后自动停下。
+  const pendingAnswerSessionId = qaSession?.messages.some(
+    (message) => message.role === 'assistant' && message.state === 'pending'
+  )
+    ? qaSession.id
+    : null;
+  useEffect(() => {
+    if (!pendingAnswerSessionId) return;
+    let cancelled = false;
+    let inFlight = false;
+    const timer = setInterval(async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const detail = await api.knowledgeBase.getSession(pendingAnswerSessionId);
+        if (!cancelled) setQaSession(detail);
+      } catch {
+        /* 轮询失败不覆盖当前视图，用户可手动刷新 */
+      } finally {
+        inFlight = false;
+      }
+    }, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [pendingAnswerSessionId]);
+
   useEffect(() => {
     if (!space?.allow_course_import) return;
     let cancelled = false;
@@ -1348,8 +1376,25 @@ function QaPanel({
               padding: '12px 14px',
             }}
           >
+            {message.role === 'assistant' &&
+              typeof message.retrieval_snapshot.channel === 'string' && (
+              <div
+                style={{
+                  fontSize: '0.68rem',
+                  fontWeight: 600,
+                  color: 'var(--purple-ink)',
+                  marginBottom: 4,
+                }}
+              >
+                {message.retrieval_snapshot.channel === 'model'
+                  ? '模型综合回答'
+                  : message.retrieval_snapshot.degraded
+                    ? '资料摘录（模型不可用，已降级）'
+                    : '资料摘录'}
+              </div>
+            )}
             <div style={{ fontSize: '0.8125rem', lineHeight: 1.8, whiteSpace: 'pre-wrap' }}>
-              {message.content}
+              {message.state === 'pending' ? '正在综合回答…' : message.content}
             </div>
             {message.sources.length > 0 && (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>

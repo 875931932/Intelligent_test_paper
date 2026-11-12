@@ -24,6 +24,7 @@ from app.api.v1.exam_projects import router as exam_projects_router
 from app.api.v1.paper_versions import router as paper_versions_router
 from app.api.v1.paper_archives import router as paper_archives_router
 from app.api.v1.assistant import router as assistant_router
+from app.api.v1.assistant_history import router as assistant_history_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -102,6 +103,7 @@ app.include_router(exam_projects_router)
 app.include_router(paper_versions_router)
 app.include_router(paper_archives_router)
 app.include_router(assistant_router)
+app.include_router(assistant_history_router)
 
 
 @app.get("/api/v1/health")

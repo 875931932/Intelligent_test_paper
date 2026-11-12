@@ -13,6 +13,7 @@ import {
   PanelLeftClose,
   PanelLeft,
   LibraryBig,
+  Sparkles,
   type LucideIcon,
 } from 'lucide-react';
 import { useCourseStore } from '@/stores/course';
@@ -186,6 +187,42 @@ export function Sidebar({ onLogout }: Props) {
 
       {/* Navigation */}
       <nav style={{ flex: 1, padding: '10px 8px', overflowY: 'auto' }}>
+        {/* 统一助手入口：跨课程与共享库的首页，不属于当前课程数据 */}
+        <NavLink
+          to="/home"
+          title="AI 助手首页"
+          style={({ isActive }) => ({
+            display: 'flex',
+            alignItems: 'center',
+            gap: collapsed ? 0 : 11,
+            justifyContent: collapsed ? 'center' : 'flex-start',
+            padding: collapsed ? '10px 0' : '10px 11px',
+            borderRadius: 12,
+            marginBottom: 4,
+            color: isActive ? 'var(--brand-ink)' : TEXT_SECONDARY,
+            background: isActive ? 'var(--brand-subtle)' : 'transparent',
+            textDecoration: 'none',
+            fontSize: 14,
+            fontWeight: isActive ? 600 : 500,
+            transition: 'all 0.2s cubic-bezier(0, 0, 0.2, 1)',
+          })}
+        >
+          <Sparkles size={18} />
+          {!collapsed && <span>AI 助手首页</span>}
+        </NavLink>
+        {!collapsed && (
+          <div
+            style={{
+              margin: '14px 11px 6px',
+              fontSize: 11,
+              fontWeight: 600,
+              letterSpacing: '0.04em',
+              color: 'var(--text-tertiary)',
+            }}
+          >
+            课程工作台
+          </div>
+        )}
         {navItems.map(({ to, icon: Icon, label }) => (
 
           <NavLink

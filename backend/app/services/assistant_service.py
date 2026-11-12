@@ -1745,6 +1745,10 @@ def route_intent(intent: dict, *, session: Session, context: dict, message: str 
 
     if tool in PROPOSAL_TOOLS:
         payload = build_proposal_payload(tool, args, context=context)
+        # 卡片固化目标课程：统一首页可能出现多门课程的卡片，执行时必须据此校验，
+        # 不能只依赖当前页面路由。新建课程不属于既有课程目标。
+        if tool != "create_course":
+            payload.setdefault("course_id", context["course_id"])
         # 确认类提案附实物预览（蓝图题位/合同槽位）：教师点确认前能看到内容，
         # 而不是只有一行项目名。现势读库，任何缺失都不阻断提案本身。
         payload.update(

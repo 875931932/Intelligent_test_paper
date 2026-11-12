@@ -44,7 +44,7 @@ export function LoginPage() {
       const role = user.role === 'admin' || user.role === 'org_admin' ? user.role : 'teacher';
       setAuth({ id: user.id, username: user.username, name: user.name, role }, token);
       addToast('登录成功，欢迎回来！', 'success');
-      navigate('/knowledge', { replace: true });
+      navigate('/home', { replace: true });
     } catch (err) {
       const msg = err instanceof ApiError ? err.message : '登录失败，请稍后再试';
       addToast(msg, 'error');

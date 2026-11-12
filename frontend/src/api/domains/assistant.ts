@@ -8,6 +8,24 @@ import type {
   AssistantTurnCreated,
 } from '../../types/api';
 
+/** 统一助手历史摘要：本人课程会话与共享库问答。 */
+export type AssistantHistoryTarget =
+  | { kind: 'course'; course_id: string; name: string }
+  | { kind: 'knowledge'; space_ids: string[]; names: string[]; complete: boolean };
+
+export interface AssistantHistoryItem {
+  domain: 'course' | 'knowledge';
+  session_id: string;
+  title: string;
+  target: AssistantHistoryTarget;
+  updated_at: string;
+}
+
+export interface AssistantHistoryPage {
+  items: AssistantHistoryItem[];
+  next_cursor: string | null;
+}
+
 /** 流结束原因：terminal=收到 done/error 正常收口；give-up=断线重连一次后仍失败 */
 export type StreamEndReason = 'terminal' | 'give-up';
 
@@ -234,4 +252,19 @@ export const assistantApi = {
     }, token),
   /** SSE 事件流（delta/card/done/error），见 streamTurn */
   stream: streamTurn,
+  /** 跨课程/知识域的本人会话摘要（只读，不含消息正文） */
+  listAllSessions: (params?: {
+    domain?: 'course' | 'knowledge';
+    courseId?: string;
+    limit?: number;
+    cursor?: string;
+  }): Promise<AssistantHistoryPage> => {
+    const query = new URLSearchParams();
+    if (params?.domain) query.set('domain', params.domain);
+    if (params?.courseId) query.set('course_id', params.courseId);
+    if (params?.limit) query.set('limit', String(params.limit));
+    if (params?.cursor) query.set('cursor', params.cursor);
+    const suffix = query.toString();
+    return request('/assistant/sessions' + (suffix ? '?' + suffix : ''));
+  },
 };

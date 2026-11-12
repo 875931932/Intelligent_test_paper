@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     # 知识点抽取模型：把原始文本块蒸馏成自包含知识点陈述、剔除封面/行政/纯
     # 操作流程等非知识块。留空回退到 llm_model，不受影响。
     llm_extract_model: str = ""
+    # 共享库模型综合回答（P2）：关闭时沿用同步资料摘录，行为与既有测试一致。
+    # 开启且 LLM 配置可用时，提问只落 processing 消息并入队，由 knowledge
+    # worker 在授权复核后写最终答案；模型失败降级为资料摘录。
+    knowledge_model_answer_enabled: bool = False
+    knowledge_model_answer_timeout_seconds: float = 60.0
+    knowledge_model_answer_max_citations: int = 6
+    knowledge_model_answer_max_chars: int = 4000
     # 抽取阶段单次调用送入的原始块数：chunk 约 1200 字符（合并后为数百至一千余
     # 字的聚合大块），输出为每块 0~20 条陈述（2026-09-25 放开原 3 条天花板）。
     # step-3.7-flash 是推理型模型：批过大（6 块重型块）时模型把全部输出

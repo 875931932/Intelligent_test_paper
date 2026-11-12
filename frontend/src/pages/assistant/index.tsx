@@ -1641,8 +1641,19 @@ function SessionBar() {
   );
 }
 
-const AssistantPage: FC = () => {
-  const { courseId = '' } = useParams<{ courseId: string }>();
+interface CourseAssistantPanelProps {
+  courseId: string;
+  /** 嵌入统一首页时收掉页面标题并按容器高度排版 */
+  embedded?: boolean;
+  /** 历史入口恢复指定会话（可选） */
+  initialSessionId?: string;
+}
+
+export function CourseAssistantPanel({
+  courseId,
+  embedded = false,
+  initialSessionId,
+}: CourseAssistantPanelProps) {
   const token = useAuthStore((s) => s.token);
   const navigate = useNavigate();
   const addToast = useToastStore((s) => s.addToast);
@@ -1661,6 +1672,7 @@ const AssistantPage: FC = () => {
   const stop = useAssistantStore((s) => s.stop);
   const cancelTurn = useAssistantStore((s) => s.cancelTurn);
   const createSession = useAssistantStore((s) => s.createSession);
+  const switchSession = useAssistantStore((s) => s.switchSession);
   const patchProposal = useAssistantStore((s) => s.patchProposal);
   const retryProposal = useAssistantStore((s) => s.retryProposal);
   const relayTurn = useAssistantStore((s) => s.relay);
@@ -1683,14 +1695,21 @@ const AssistantPage: FC = () => {
   useEffect(() => {
     if (!courseId) return;
     let cancelled = false;
-    void restore(courseId).catch((err) => {
-      if (!cancelled) addToast('恢复对话失败: ' + getErrorMessage(err), 'error');
-    });
+    void (async () => {
+      try {
+        await restore(courseId);
+        if (!cancelled && initialSessionId) {
+          await switchSession(initialSessionId);
+        }
+      } catch (err) {
+        if (!cancelled) addToast('恢复对话失败: ' + getErrorMessage(err), 'error');
+      }
+    })();
     return () => {
       cancelled = true;
       stop();
     };
-  }, [courseId, restore, stop, addToast]);
+  }, [courseId, initialSessionId, restore, stop, switchSession, addToast]);
 
   // 新消息 / 流式文本变化时滚到底（在途轮次属于别的会话时不动本会话视口）
   useEffect(() => {
@@ -1793,8 +1812,8 @@ const AssistantPage: FC = () => {
         display: 'flex',
         flexDirection: 'column',
         gap: 'var(--space-lg)',
-        // 对话页定高：时间线内部滚动，输入框钉在底部
-        height: 'calc(100vh - 48px)',
+        // 对话页定高：时间线内部滚动，输入框钉在底部；嵌入统一首页时跟随容器高度
+        height: embedded ? '100%' : 'calc(100vh - 48px)',
         minHeight: 0,
       }}
     >
@@ -1807,12 +1826,21 @@ const AssistantPage: FC = () => {
           flexWrap: 'wrap',
         }}
       >
-        <div>
-          <h1 className="page-title">AI 助手</h1>
-          <p className="page-subtitle">
-            资料正文问答直达依据片段，查询直达结果，写操作生成提案卡——确认后才执行
-          </p>
-        </div>
+        {embedded ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: '0.875rem', fontWeight: 650 }}>课程助手</span>
+            <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
+              使用当前课程资料与出卷工具
+            </span>
+          </div>
+        ) : (
+          <div>
+            <h1 className="page-title">AI 助手</h1>
+            <p className="page-subtitle">
+              资料正文问答直达依据片段，查询直达结果，写操作生成提案卡——确认后才执行
+            </p>
+          </div>
+        )}
         <SessionBar />
       </div>
 
@@ -2114,6 +2142,11 @@ const AssistantPage: FC = () => {
       </div>
     </div>
   );
+}
+
+const AssistantPage: FC = () => {
+  const { courseId = '' } = useParams<{ courseId: string }>();
+  return <CourseAssistantPanel courseId={courseId} />;
 };
 
 export default AssistantPage;

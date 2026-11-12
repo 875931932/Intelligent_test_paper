@@ -391,6 +391,13 @@ export const knowledgeBaseApi = {
     }),
   getSession: (sessionId: string): Promise<KnowledgeSessionDetail> =>
     request('/knowledge/sessions/' + sessionId),
+  renameSession: (sessionId: string, title: string): Promise<KnowledgeSessionDetail> =>
+    request('/knowledge/sessions/' + sessionId, {
+      method: 'PATCH',
+      body: JSON.stringify({ title }),
+    }),
+  deleteSession: (sessionId: string): Promise<void> =>
+    request('/knowledge/sessions/' + sessionId, { method: 'DELETE' }),
   ask: (sessionId: string, question: string): Promise<KnowledgeSessionDetail> =>
     request('/knowledge/sessions/' + sessionId + '/ask', {
       method: 'POST',
