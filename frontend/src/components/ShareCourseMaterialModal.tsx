@@ -65,7 +65,16 @@ function ShareModalContent({ source, targetSpaceId, onClose, onShared }: ShareMo
         classification,
       });
       setResult({ spaceId: space.id, documentId: value.document_id });
-      addToast(value.idempotent ? '此版本已添加，未重复创建' : '已添加到共享库，解析后可预览并发布', 'success');
+      addToast(
+        value.idempotent
+          ? value.state === 'ready'
+            ? '此版本已就绪，无需重复解析'
+            : '此版本已添加，未重复创建'
+          : value.state === 'ready'
+            ? '已添加到共享库，可直接预览并发布'
+            : '已添加到共享库，解析后可预览并发布',
+        'success'
+      );
       onShared?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : '添加失败');

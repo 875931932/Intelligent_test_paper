@@ -5,16 +5,17 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
+from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import case, delete, select, update
 from sqlalchemy.orm import Session
 
 from app.adapters.storage.minio_storage import StoragePort
 from app.config import settings
 from app.db.schema import (
-    Course, User, course_knowledge_imports, knowledge_documents,
-    knowledge_document_versions, knowledge_jobs, knowledge_spaces,
-    material_versions, materials,
+    Course, User, content_blocks, course_knowledge_imports, document_parse_runs,
+    knowledge_blocks, knowledge_documents, knowledge_document_versions, knowledge_jobs,
+    knowledge_parse_runs, knowledge_spaces, material_versions, materials,
 )
 from app.services import knowledge_document_service as documents
 from app.services.material_service import _knowledge_origins
@@ -35,6 +36,147 @@ def _mime(version) -> str:
     if version.mime_type in documents.ALLOWED_MIME_TYPES:
         return version.mime_type
     return _MIME_BY_SUFFIX.get(PurePosixPath(version.object_key).suffix.lower(), "")
+
+
+def _ready_content_blocks(
+    session: Session, *, course_id: str, material_version_id: str
+) -> list[dict] | None:
+    """取该课程版本最新 ready 解析结果的正文块；没有可复用结果时返回 None。"""
+
+    run_id = session.scalar(
+        select(document_parse_runs.c.id)
+        .where(
+            document_parse_runs.c.course_id == course_id,
+            document_parse_runs.c.material_version_id == material_version_id,
+            document_parse_runs.c.status == "ready",
+        )
+        .order_by(
+            document_parse_runs.c.completed_at.desc(),
+            document_parse_runs.c.id.desc(),
+        )
+        .limit(1)
+    )
+    if run_id is None:
+        return None
+    rows = session.execute(
+        select(
+            content_blocks.c.block_index,
+            content_blocks.c.block_type,
+            content_blocks.c.text,
+            content_blocks.c.markdown,
+            content_blocks.c.latex,
+            content_blocks.c.page_index,
+            content_blocks.c.bbox,
+            content_blocks.c.heading_path,
+        )
+        .where(
+            content_blocks.c.course_id == course_id,
+            content_blocks.c.document_parse_run_id == run_id,
+        )
+        .order_by(content_blocks.c.block_index)
+    ).mappings().all()
+    return [dict(row) for row in rows] or None
+
+
+def _reuse_existing_blocks(
+    session: Session, *, actor, space_id: str, duplicate, blocks: list[dict]
+) -> bool:
+    """把课程 ready 解析块补写进已存在的共享版本，修复卡在解析中的旧副本。
+
+    只有能确定接管该版本的解析任务时才执行；worker 已领取时返回 False，
+    交给原任务收尾，避免两个写入者竞争同一 parse run。
+    """
+
+    now = datetime.now(timezone.utc)
+    job_id = session.scalar(
+        select(knowledge_jobs.c.id)
+        .where(
+            knowledge_jobs.c.school_id == actor.school_id,
+            knowledge_jobs.c.space_id == space_id,
+            knowledge_jobs.c.idempotency_key == f"parse:{duplicate.id}",
+        )
+        .with_for_update()
+    )
+    if job_id is not None:
+        cancelled = session.execute(
+            update(knowledge_jobs)
+            .where(
+                knowledge_jobs.c.id == job_id,
+                knowledge_jobs.c.state.in_(("queued", "failed")),
+            )
+            .values(state="cancelled", completed_at=now, updated_at=now)
+        ).rowcount
+        if cancelled != 1:
+            return False
+    run_id = session.scalar(
+        select(knowledge_parse_runs.c.id)
+        .where(
+            knowledge_parse_runs.c.school_id == actor.school_id,
+            knowledge_parse_runs.c.space_id == space_id,
+            knowledge_parse_runs.c.version_id == duplicate.id,
+        )
+        .order_by(knowledge_parse_runs.c.created_at.desc())
+        .limit(1)
+    )
+    if run_id is None:
+        return False
+    session.execute(delete(knowledge_blocks).where(knowledge_blocks.c.parse_run_id == run_id))
+    session.execute(
+        knowledge_blocks.insert(),
+        [
+            {
+                "id": uuid4().hex,
+                "school_id": actor.school_id,
+                "space_id": space_id,
+                "parse_run_id": run_id,
+                "block_index": int(block["block_index"]),
+                "block_type": str(block.get("block_type") or "paragraph"),
+                "text": str(block.get("text") or ""),
+                "markdown": block.get("markdown"),
+                "latex": block.get("latex"),
+                "page_index": block.get("page_index"),
+                "bbox": block.get("bbox"),
+                "heading_path": list(block.get("heading_path") or []),
+                "created_at": now,
+            }
+            for block in blocks
+        ],
+    )
+    session.execute(
+        update(knowledge_parse_runs)
+        .where(knowledge_parse_runs.c.id == run_id)
+        .values(state="ready", error_code=None, updated_at=now)
+    )
+    session.execute(
+        update(knowledge_document_versions)
+        .where(knowledge_document_versions.c.id == duplicate.id)
+        .values(state="ready")
+    )
+    session.execute(
+        update(knowledge_documents)
+        .where(
+            knowledge_documents.c.id == duplicate.document_id,
+            knowledge_documents.c.school_id == actor.school_id,
+            knowledge_documents.c.space_id == space_id,
+        )
+        .values(
+            status=case(
+                (knowledge_documents.c.published_version_id.is_(None), "ready"),
+                else_=knowledge_documents.c.status,
+            ),
+            updated_at=now,
+        )
+    )
+    documents._audit(
+        session,
+        actor=actor,
+        space_id=space_id,
+        action="document.parse.reused",
+        resource_type="knowledge_document_version",
+        resource_id=duplicate.id,
+        after={"source": "course_blocks", "block_count": len(blocks)},
+    )
+    return True
 
 
 def list_course_materials(session: Session, user: User, *, course_id: str | None = None) -> list[dict]:
@@ -166,6 +308,11 @@ def import_course_version(
             material_versions.c.material_id == material.id,
         )):
             raise KnowledgeError(403, "ACTION_FORBIDDEN", "共享库导入副本不能重新发布扩大范围，请使用原共享版本")
+        # 课程阶段已经解析过同一版本时直接复用正文块，不再让共享库重跑一次解析。
+        # 这样 md 等程序解析资料共享后立即可读，也不再依赖 knowledge 队列。
+        parsed_blocks = _ready_content_blocks(
+            session, course_id=course_id, material_version_id=material_version_id
+        )
         # 只匹配该学校/空间内的同一源资料；空间行锁序列化重复点击。
         previous = session.execute(select(knowledge_document_versions).where(
             knowledge_document_versions.c.school_id == actor.school_id,
@@ -175,6 +322,17 @@ def import_course_version(
         ).order_by(knowledge_document_versions.c.version_no.desc())).mappings().all()
         duplicate = next((row for row in previous if row.import_origin["material_version_id"] == material_version_id), None)
         if duplicate is not None:
+            # 旧副本曾因等待 knowledge 队列卡在解析中：源课程已解析时原地补齐，
+            # 让重复点击共享也能自愈，而不是永远返回 processing。
+            if duplicate.state in {"processing", "failed"} and parsed_blocks:
+                if _reuse_existing_blocks(
+                    session, actor=actor, space_id=space_id,
+                    duplicate=duplicate, blocks=parsed_blocks,
+                ):
+                    session.commit()
+                    return {"document_id": duplicate.document_id, "version_id": duplicate.id,
+                            "version_no": duplicate.version_no, "job_id": None,
+                            "state": "ready", "idempotent": True}
             job_id = session.scalar(select(knowledge_jobs.c.id).where(
                 knowledge_jobs.c.school_id == actor.school_id, knowledge_jobs.c.space_id == space_id,
                 knowledge_jobs.c.idempotency_key == f"parse:{duplicate.id}",
@@ -206,12 +364,15 @@ def import_course_version(
             "file_hash": digest, "imported_by": user.id,
             "imported_at": datetime.now(timezone.utc).isoformat(),
         }
+        # 课程阶段已经解析过同一版本时直接复用正文块，不再让共享库重跑一次解析。
+        # 这样 md 等程序解析资料共享后立即可读，也不再依赖 knowledge 队列。
         result = documents.stage_document_version(
             session, user=user, space_id=space_id,
             filename=PurePosixPath(version.object_key).name, size_bytes=version.size_bytes,
             mime_type=mime, digest=digest, title=material.logical_name,
             classification=classification, document_id=previous[0].document_id if previous else None,
             store_object=lambda key: storage.put_bytes(key, bytes(content), mime), import_origin=origin,
+            parsed_blocks=parsed_blocks,
         )
         session.commit()
         return {**result, "idempotent": False}

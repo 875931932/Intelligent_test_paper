@@ -5,7 +5,14 @@ import hashlib
 import pytest
 from sqlalchemy import func, select
 
-from app.db.schema import knowledge_document_versions, knowledge_documents, knowledge_jobs, material_versions
+from app.db.schema import (
+    knowledge_blocks,
+    knowledge_document_versions,
+    knowledge_documents,
+    knowledge_jobs,
+    knowledge_parse_runs,
+    material_versions,
+)
 from app.db.session import get_session
 from app.main import app
 from tests.integration.test_knowledge_lifecycle import env, _login, API
@@ -88,6 +95,79 @@ def test_share_parse_publish_and_import_back_without_reupload(env):
     # 二次转发不能把原受限共享资料扩大到另一空间。
     other = b.post(f"{API}/spaces", json={"name": "Other"}).json()
     assert share(b, other, target, {"id": imported.json()["material_version_id"]}).status_code == 403
+
+
+def test_share_reuses_ready_course_parse_without_reparse(env):
+    """课程阶段已解析（md 本地解析）的资料共享后直接可用，不再重复解析。"""
+
+    a = _login("teacher-a")
+    course, version = course_material(a, env)
+    parsed = a.post(f"/api/v1/courses/{course}/materials/{version['material_id']}/parse")
+    assert parsed.status_code == 202, parsed.text
+    assert parsed.json()["status"] == "ready"
+    space = a.post(f"{API}/spaces", json={"name": "Reuse", "allow_course_import": True}).json()
+
+    copied = share(a, space, course, version).json()
+    assert copied["state"] == "ready" and copied["job_id"] is None
+
+    with next(app.dependency_overrides[get_session]()) as session:
+        assert session.scalar(
+            select(func.count()).select_from(knowledge_jobs).where(
+                knowledge_jobs.c.space_id == space["id"]
+            )
+        ) == 0
+        assert session.scalar(
+            select(knowledge_parse_runs.c.state).where(
+                knowledge_parse_runs.c.id == copied["parse_run_id"]
+            )
+        ) == "ready"
+        assert session.scalar(
+            select(func.count()).select_from(knowledge_blocks).where(
+                knowledge_blocks.c.parse_run_id == copied["parse_run_id"]
+            )
+        ) > 0
+
+    published = a.post(
+        f"{API}/spaces/{space['id']}/documents/{copied['document_id']}/publish", json={}
+    )
+    assert published.status_code == 200, published.text
+    content = a.get(
+        f"{API}/spaces/{space['id']}/documents/{copied['document_id']}"
+        f"/versions/{copied['version_id']}/content"
+    )
+    assert content.status_code == 200 and content.json()["blocks"]
+
+
+def test_repeat_share_heals_copy_stuck_in_parse(env):
+    """先共享后解析的旧副本：再次共享时用课程 ready 结果原地补齐。"""
+
+    a = _login("teacher-a")
+    course, version = course_material(a, env)
+    space = a.post(f"{API}/spaces", json={"name": "Heal", "allow_course_import": True}).json()
+    first = share(a, space, course, version).json()
+    assert first["state"] == "processing" and first["job_id"]
+
+    parsed = a.post(f"/api/v1/courses/{course}/materials/{version['material_id']}/parse")
+    assert parsed.status_code == 202 and parsed.json()["status"] == "ready"
+
+    healed = share(a, space, course, version).json()
+    assert healed["idempotent"] and healed["state"] == "ready" and healed["job_id"] is None
+
+    with next(app.dependency_overrides[get_session]()) as session:
+        job_state = session.scalar(
+            select(knowledge_jobs.c.state).where(knowledge_jobs.c.id == first["job_id"])
+        )
+        assert job_state == "cancelled"
+        assert session.scalar(
+            select(knowledge_parse_runs.c.state).where(
+                knowledge_parse_runs.c.id == first["parse_run_id"]
+            )
+        ) == "ready"
+
+    published = a.post(
+        f"{API}/spaces/{space['id']}/documents/{first['document_id']}/publish", json={}
+    )
+    assert published.status_code == 200, published.text
 
 
 def test_new_source_version_appends_and_old_publication_remains(env):

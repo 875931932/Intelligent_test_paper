@@ -390,8 +390,13 @@ def stage_document_version(
     document_id: str | None,
     store_object: Callable[[str], None],
     import_origin: dict | None = None,
+    parsed_blocks: list[dict] | None = None,
 ) -> dict:
-    """上传与课程选用共用的版本入库事务；调用者负责提交。"""
+    """上传与课程选用共用的版本入库事务；调用者负责提交。
+
+    ``parsed_blocks`` 非空表示来源版本已有解析结果（如课程资料共享）：直接复制
+    正文块并标记 ready，不再重复入队解析。
+    """
 
     # 与入队采用同一锁顺序，避免账号/空间锁顺序反转。
     session.execute(select(User.id).where(User.id == user.id).with_for_update())
@@ -514,6 +519,79 @@ def stage_document_version(
         version_id=version_id,
         mime_type=mime_type,
     )
+    if parsed_blocks:
+        # 课程阶段已解析的同一文件：复制正文块，版本立即可读/可发布。
+        ready_at = datetime.now(timezone.utc)
+        block_rows = [
+            {
+                "id": uuid4().hex,
+                "school_id": actor.school_id,
+                "space_id": space_id,
+                "parse_run_id": parse_run_id,
+                "block_index": int(block["block_index"]),
+                "block_type": str(block.get("block_type") or "paragraph"),
+                "text": str(block.get("text") or ""),
+                "markdown": block.get("markdown"),
+                "latex": block.get("latex"),
+                "page_index": block.get("page_index"),
+                "bbox": block.get("bbox"),
+                "heading_path": list(block.get("heading_path") or []),
+                "created_at": ready_at,
+            }
+            for block in parsed_blocks
+        ]
+        session.execute(knowledge_blocks.insert(), block_rows)
+        session.execute(
+            update(knowledge_parse_runs)
+            .where(knowledge_parse_runs.c.id == parse_run_id)
+            .values(state="ready", error_code=None, updated_at=ready_at)
+        )
+        session.execute(
+            update(knowledge_document_versions)
+            .where(knowledge_document_versions.c.id == version_id)
+            .values(state="ready")
+        )
+        session.execute(
+            update(knowledge_documents)
+            .where(
+                knowledge_documents.c.id == target_document_id,
+                knowledge_documents.c.school_id == actor.school_id,
+                knowledge_documents.c.space_id == space_id,
+            )
+            .values(
+                status=case(
+                    (knowledge_documents.c.published_version_id.is_(None), "ready"),
+                    else_=knowledge_documents.c.status,
+                ),
+                updated_at=ready_at,
+            )
+        )
+        _audit(
+            session,
+            actor=actor,
+            space_id=space_id,
+            action="document.version.create",
+            resource_type="knowledge_document_version",
+            resource_id=version_id,
+            after={
+                "document_id": target_document_id,
+                "version_no": int(version_no),
+                "classification": classification,
+                "mime_type": mime_type,
+                "size_bytes": size_bytes,
+                "source": "course" if import_origin else "upload",
+                "parse": "reused_course_blocks",
+                "block_count": len(block_rows),
+            },
+        )
+        return {
+            "document_id": target_document_id,
+            "version_id": version_id,
+            "version_no": int(version_no),
+            "parse_run_id": parse_run_id,
+            "job_id": None,
+            "state": "ready",
+        }
     from app.infrastructure.tasks.knowledge_tasks import enqueue_parse_job
 
     job_id = enqueue_parse_job(
