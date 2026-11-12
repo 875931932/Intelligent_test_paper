@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
+  ArrowRight,
   Bot,
   BookOpen,
   Clock,
   FolderOpen,
+  Home,
   LibraryBig,
   LogOut,
   Menu,
@@ -49,11 +51,41 @@ const QUICK_TASKS: Array<{
   hint: string;
   kind: 'course' | 'knowledge';
   icon: typeof BookOpen;
+  bg: string;
+  fg: string;
 }> = [
-  { label: '问课程资料', hint: '基于课程已解析资料回答', kind: 'course', icon: BookOpen },
-  { label: '问共享资料', hint: '检索已发布共享库并给出引用', kind: 'knowledge', icon: LibraryBig },
-  { label: '查看课程进度', hint: '资料、框架、试卷的当前状态', kind: 'course', icon: Clock },
-  { label: '帮我推进出卷', hint: '从考核规则到生成逐卡确认', kind: 'course', icon: Sparkles },
+  {
+    label: '问课程资料',
+    hint: '基于课程已解析资料回答',
+    kind: 'course',
+    icon: BookOpen,
+    bg: 'var(--brand-subtle)',
+    fg: 'var(--brand-ink)',
+  },
+  {
+    label: '问共享资料',
+    hint: '检索已发布共享库并给出引用',
+    kind: 'knowledge',
+    icon: LibraryBig,
+    bg: 'var(--purple-subtle)',
+    fg: 'var(--purple-ink)',
+  },
+  {
+    label: '查看课程进度',
+    hint: '资料、框架、试卷的当前状态',
+    kind: 'course',
+    icon: Clock,
+    bg: 'var(--info-subtle)',
+    fg: 'var(--info-ink)',
+  },
+  {
+    label: '帮我推进出卷',
+    hint: '从考核规则到生成逐卡确认',
+    kind: 'course',
+    icon: Sparkles,
+    bg: 'var(--warning-subtle)',
+    fg: 'var(--warning-ink)',
+  },
 ];
 
 const iconButton = {
@@ -111,6 +143,11 @@ export default function HomeAssistantPage() {
   const [pickerKind, setPickerKind] = useState<'course' | 'knowledge'>('course');
   const [pickerCourse, setPickerCourse] = useState('');
   const [pickerSpaces, setPickerSpaces] = useState<string[]>([]);
+
+  // 首屏只保留大屏 + 输入框；选范围或打开历史后才进入聊天布局。
+  const [landingDraft, setLandingDraft] = useState('');
+  const [pendingPrompt, setPendingPrompt] = useState('');
+  const [courseInitialMessage, setCourseInitialMessage] = useState('');
 
   const [courseSessionId, setCourseSessionId] = useState<string | undefined>();
   const [ksession, setKsession] = useState<KnowledgeSessionDetail | null>(null);
@@ -229,15 +266,17 @@ export default function HomeAssistantPage() {
     setPickerSpaces([...pickerSpaces, spaceId]);
   };
 
-  const confirmRange = () => {
+  const confirmRange = async () => {
     stopSessionPolling();
+    let nextRange: Range = null;
     if (pickerKind === 'course') {
       const course = courses.find((item) => item.id === pickerCourse);
       if (!course) {
         addToast('请选择一门课程', 'info');
         return;
       }
-      setRange({ kind: 'course', courseId: course.id, name: course.name });
+      nextRange = { kind: 'course', courseId: course.id, name: course.name };
+      setRange(nextRange);
       setCourseSessionId(undefined);
       setKsession(null);
     } else {
@@ -248,12 +287,58 @@ export default function HomeAssistantPage() {
       const names = pickerSpaces
         .map((id) => spaces.find((space) => space.id === id)?.name ?? '')
         .filter(Boolean);
-      setRange({ kind: 'knowledge', spaceIds: pickerSpaces, names });
+      nextRange = { kind: 'knowledge', spaceIds: pickerSpaces, names };
+      setRange(nextRange);
       setKsession(null);
       setCourseSessionId(undefined);
     }
     setScopeChanged(false);
     setRangeOpen(false);
+
+    const prompt = pendingPrompt.trim();
+    setPendingPrompt('');
+    if (!prompt || !nextRange) return;
+    setLandingDraft('');
+    if (nextRange.kind === 'course') {
+      setCourseInitialMessage(prompt);
+      return;
+    }
+    try {
+      const current = await api.knowledgeBase.createSession(
+        nextRange.spaceIds,
+        `${nextRange.names[0] ?? '共享资料'}问答`
+      );
+      const updated = await api.knowledgeBase.ask(current.id, prompt);
+      setKsession(updated);
+      if (updated.messages.some((message) => message.state === 'pending')) {
+        startSessionPolling(updated.id);
+      }
+      void refreshHistory();
+    } catch (err) {
+      if ((err as { status?: number }).status === 409) setScopeChanged(true);
+      addToast(getErrorMessage(err), 'error');
+    }
+  };
+
+  const goHome = useCallback(() => {
+    stopSessionPolling();
+    setRange(null);
+    setKsession(null);
+    setCourseSessionId(undefined);
+    setScopeChanged(false);
+    setLandingDraft('');
+    setPendingPrompt('');
+    setCourseInitialMessage('');
+    setMobileHistory(false);
+  }, [stopSessionPolling]);
+
+  const consumeCourseMessage = useCallback(() => setCourseInitialMessage(''), []);
+
+  const submitLanding = () => {
+    const text = landingDraft.trim();
+    if (!text) return;
+    setPendingPrompt(text);
+    openPicker('course');
   };
 
   const openHistory = async (item: AssistantHistoryItem) => {
@@ -400,10 +485,18 @@ export default function HomeAssistantPage() {
     return ksession?.id ?? null;
   }, [range, courseSessionId, ksession]);
 
+  const chatMode = Boolean(range || ksession || courseSessionId);
+
   return (
     <div className="home-shell">
       <header className="home-topbar">
-        <div className="home-brand">
+        <button
+          type="button"
+          className="home-brand"
+          onClick={goHome}
+          title="返回 AI 助手首页"
+          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left' }}
+        >
           <span className="home-brand-mark">
             <Bot size={20} />
           </span>
@@ -413,18 +506,25 @@ export default function HomeAssistantPage() {
               课程与共享资料统一入口
             </div>
           </div>
-        </div>
+        </button>
         <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          <button
-            type="button"
-            className="home-menu-btn"
-            style={{ ...iconButton, padding: 8 }}
-            title="历史会话"
-            onClick={() => setMobileHistory(true)}
-          >
-            <Menu size={18} />
-          </button>
+          {chatMode && (
+            <button
+              type="button"
+              className="home-menu-btn"
+              style={{ ...iconButton, padding: 8 }}
+              title="历史会话"
+              onClick={() => setMobileHistory(true)}
+            >
+              <Menu size={18} />
+            </button>
+          )}
           <div className="home-nav">
+            {chatMode && (
+              <Button variant="ghost" size="sm" icon={<Home size={14} />} onClick={goHome}>
+                首页
+              </Button>
+            )}
             <Button variant="ghost" size="sm" onClick={() => navigate('/courses')}>
               课程空间
             </Button>
@@ -440,7 +540,8 @@ export default function HomeAssistantPage() {
 
       <div className={`home-backdrop ${mobileHistory ? 'is-open' : ''}`} onClick={() => setMobileHistory(false)} />
 
-      <div className="home-body">
+      <div className={`home-body ${chatMode ? '' : 'is-landing'}`}>
+        {chatMode && (
         <aside className={`home-history ${mobileHistory ? 'is-open' : ''}`}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
             <strong style={{ fontSize: '0.875rem' }}>我的对话</strong>
@@ -458,11 +559,7 @@ export default function HomeAssistantPage() {
           <Button
             icon={<Plus size={15} />}
             onClick={() => {
-              setRange(null);
-              setKsession(null);
-              setCourseSessionId(undefined);
-              setScopeChanged(false);
-              setRangeOpen(true);
+              goHome();
               setMobileHistory(false);
             }}
           >
@@ -594,8 +691,10 @@ export default function HomeAssistantPage() {
             </Button>
           </div>
         </aside>
+        )}
 
-        <main className="home-main">
+        <main className={`home-main ${chatMode ? '' : 'is-landing'}`}>
+          {chatMode && (
           <div className="home-range-bar">
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
               <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>当前范围</span>
@@ -636,14 +735,17 @@ export default function HomeAssistantPage() {
               )}
             </div>
           </div>
+          )}
 
           {range?.kind === 'course' ? (
-            <div style={{ flex: 1, minHeight: 0 }}>
+            <div className="home-chat-shell">
               <CourseAssistantPanel
                 key={range.courseId}
                 courseId={range.courseId}
                 embedded
                 initialSessionId={courseSessionId}
+                initialMessage={courseInitialMessage}
+                onInitialMessageConsumed={consumeCourseMessage}
               />
             </div>
           ) : range?.kind === 'knowledge' ? (
@@ -828,16 +930,17 @@ export default function HomeAssistantPage() {
               </div>
             </>
           ) : (
-            <div className="home-conversation">
-              <div className="home-empty">
-                <Bot size={28} color="var(--brand-ink)" />
-                <div style={{ maxWidth: 520 }}>
-                  <div style={{ fontSize: '1.0625rem', fontWeight: 700, color: 'var(--text)' }}>
-                    从一个问题开始
-                  </div>
-                  <div style={{ fontSize: '0.8125rem', marginTop: 6 }}>
-                    先选择一门课程或 1～5 个共享库。课程范围使用完整课程助手；共享范围使用资料摘录问答。
-                  </div>
+            <div className="home-landing">
+              <div className="home-landing-inner">
+                <span className="home-landing-mark">
+                  <Bot size={28} />
+                </span>
+                <div className="home-landing-copy">
+                  <h1>从一个问题开始</h1>
+                  <p>
+                    先选择一门课程或 1～5 个共享库。课程范围使用完整课程助手；
+                    共享范围使用资料摘录或模型综合回答。
+                  </p>
                 </div>
                 <div className="home-quick-grid">
                   {QUICK_TASKS.map((task) => {
@@ -847,18 +950,60 @@ export default function HomeAssistantPage() {
                         key={task.label}
                         type="button"
                         className="home-quick-card"
-                        onClick={() => openPicker(task.kind)}
+                        onClick={() => {
+                          if (landingDraft.trim()) setPendingPrompt(landingDraft.trim());
+                          openPicker(task.kind);
+                        }}
                       >
-                        <Icon size={18} color="var(--brand-ink)" />
-                        <span style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                          <span style={{ fontWeight: 600 }}>{task.label}</span>
-                          <span style={{ fontSize: '0.72rem', color: 'var(--text-tertiary)' }}>
-                            {task.hint}
-                          </span>
+                        <span
+                          className="home-quick-icon"
+                          style={{ background: task.bg, color: task.fg }}
+                        >
+                          <Icon size={18} />
                         </span>
+                        <span className="home-quick-copy">
+                          <strong>{task.label}</strong>
+                          <small>{task.hint}</small>
+                        </span>
+                        <ArrowRight className="home-quick-arrow" size={16} />
                       </button>
                     );
                   })}
+                </div>
+                <div className="home-landing-composer">
+                  <div className="home-composer">
+                    <textarea
+                      className="input-field"
+                      style={{ flex: 1, resize: 'none', maxHeight: 120, minHeight: 38 }}
+                      rows={1}
+                      value={landingDraft}
+                      placeholder="输入问题，发送时选择课程或共享资料…"
+                      aria-label="输入问题"
+                      onChange={(event) => setLandingDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (
+                          event.key === 'Enter' &&
+                          !event.shiftKey &&
+                          !event.nativeEvent.isComposing
+                        ) {
+                          event.preventDefault();
+                          void submitLanding();
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="chat-send"
+                      onClick={() => void submitLanding()}
+                      disabled={!landingDraft.trim()}
+                      title="发送并选择范围"
+                    >
+                      <Send size={16} />
+                    </button>
+                  </div>
+                  <div className="home-landing-hint">
+                    未选择范围前不会调用模型，也不会写入业务数据
+                  </div>
                 </div>
               </div>
             </div>
@@ -868,12 +1013,29 @@ export default function HomeAssistantPage() {
 
       <Modal
         open={rangeOpen}
-        onClose={() => setRangeOpen(false)}
+        onClose={() => {
+          setRangeOpen(false);
+          setPendingPrompt('');
+        }}
         title="选择对话范围"
         onConfirm={confirmRange}
         confirmLabel="确定"
         maxWidth="620px"
       >
+        {pendingPrompt && (
+          <div
+            style={{
+              marginBottom: 12,
+              padding: '10px 12px',
+              borderRadius: 10,
+              background: 'var(--brand-subtle)',
+              color: 'var(--brand-ink)',
+              fontSize: '0.8125rem',
+            }}
+          >
+            选择范围后将继续发送：{pendingPrompt}
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
           <Button
             size="sm"

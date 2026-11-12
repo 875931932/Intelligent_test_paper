@@ -1647,12 +1647,17 @@ interface CourseAssistantPanelProps {
   embedded?: boolean;
   /** 历史入口恢复指定会话（可选） */
   initialSessionId?: string;
+  /** 从首页大屏带入的首条问题：恢复会话后自动发送 */
+  initialMessage?: string;
+  onInitialMessageConsumed?: () => void;
 }
 
 export function CourseAssistantPanel({
   courseId,
   embedded = false,
   initialSessionId,
+  initialMessage,
+  onInitialMessageConsumed,
 }: CourseAssistantPanelProps) {
   const token = useAuthStore((s) => s.token);
   const navigate = useNavigate();
@@ -1683,6 +1688,11 @@ export function CourseAssistantPanel({
   const [busyMessageId, setBusyMessageId] = useState<string | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
+  // 首条问题只消费一次；避免 restore/重渲染导致重复发送。
+  const initialMessageRef = useRef(initialMessage);
+  initialMessageRef.current = initialMessage;
+  const consumedRef = useRef(onInitialMessageConsumed);
+  consumedRef.current = onInitialMessageConsumed;
 
   // composer 自适应长高：单行起步（placeholder 垂直居中），输入增长、封顶 120px 后滚动
   const growTa = (el: HTMLTextAreaElement | null) => {
@@ -1698,18 +1708,25 @@ export function CourseAssistantPanel({
     void (async () => {
       try {
         await restore(courseId);
-        if (!cancelled && initialSessionId) {
+        if (cancelled) return;
+        if (initialSessionId) {
           await switchSession(initialSessionId);
         }
+        if (cancelled) return;
+        const pending = initialMessageRef.current?.trim();
+        if (pending) {
+          await send(pending);
+          consumedRef.current?.();
+        }
       } catch (err) {
-        if (!cancelled) addToast('恢复对话失败: ' + getErrorMessage(err), 'error');
+        if (!cancelled) addToast('打开课程助手失败: ' + getErrorMessage(err), 'error');
       }
     })();
     return () => {
       cancelled = true;
       stop();
     };
-  }, [courseId, initialSessionId, restore, stop, switchSession, addToast]);
+  }, [courseId, initialSessionId, restore, stop, switchSession, send, addToast]);
 
   // 新消息 / 流式文本变化时滚到底（在途轮次属于别的会话时不动本会话视口）
   useEffect(() => {
@@ -1827,21 +1844,20 @@ export function CourseAssistantPanel({
         }}
       >
         {embedded ? (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: '0.875rem', fontWeight: 650 }}>课程助手</span>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>
-              使用当前课程资料与出卷工具
-            </span>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
+            <SessionBar />
           </div>
         ) : (
-          <div>
-            <h1 className="page-title">AI 助手</h1>
-            <p className="page-subtitle">
-              资料正文问答直达依据片段，查询直达结果，写操作生成提案卡——确认后才执行
-            </p>
-          </div>
+          <>
+            <div>
+              <h1 className="page-title">AI 助手</h1>
+              <p className="page-subtitle">
+                资料正文问答直达依据片段，查询直达结果，写操作生成提案卡——确认后才执行
+              </p>
+            </div>
+            <SessionBar />
+          </>
         )}
-        <SessionBar />
       </div>
 
       {/* 消息时间线 */}
@@ -1906,7 +1922,7 @@ export function CourseAssistantPanel({
               >
                 <div
                   style={{
-                    maxWidth: '78%',
+                    maxWidth: embedded ? '88%' : '78%',
                     background: 'var(--accent)',
                     color: 'var(--text-on-accent)',
                     borderRadius: '18px 18px 6px 18px',
