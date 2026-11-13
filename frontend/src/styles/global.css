@@ -1199,21 +1199,28 @@ body > .floating-pill:nth-of-type(2) { top: 112px; }
 
 .home-body {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
-  gap: 20px;
-  max-width: 1400px;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 16px;
+  /* 对话工作区填满主区（其它页面仍走 1400 内容宽）：对话是阅读+表格密集场景，
+     两侧留白会把消息列挤窄 */
+  max-width: none;
   margin: 0 auto;
-  padding: 20px 24px;
+  padding: 16px 20px;
   height: calc(100vh - 61px);
   min-height: 0;
+}
+
+/* 首页（含对话）独占整屏宽度——历史栏窄、消息列宽 */
+.app-main:has(.home-body) {
+  max-width: none;
 }
 
 .home-history {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   min-height: 0;
-  padding-right: 16px;
+  padding-right: 12px;
   border-right: 1px solid var(--border);
 }
 
@@ -1223,16 +1230,16 @@ body > .floating-pill:nth-of-type(2) { top: 112px; }
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   padding-right: 2px;
 }
 
 .home-history-item {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
+  gap: 6px;
   width: 100%;
-  padding: 10px 10px;
+  padding: 7px 8px;
   border: 1px solid transparent;
   border-radius: var(--radius-md);
   background: transparent;

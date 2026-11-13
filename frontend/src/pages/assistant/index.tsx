@@ -1648,6 +1648,8 @@ interface CourseAssistantPanelProps {
   initialSessionId?: string;
   /** 从首页大屏带入的首条问题：恢复会话后自动发送 */
   initialMessage?: string;
+  /** 首页大屏/快捷任务进入：即使没问题也开新会话（不复用上次会话） */
+  startFresh?: boolean;
   onInitialMessageConsumed?: () => void;
 }
 
@@ -1656,6 +1658,7 @@ export function CourseAssistantPanel({
   embedded = false,
   initialSessionId,
   initialMessage,
+  startFresh = false,
   onInitialMessageConsumed,
 }: CourseAssistantPanelProps) {
   const token = useAuthStore((s) => s.token);
@@ -1690,6 +1693,9 @@ export function CourseAssistantPanel({
   // 首条问题只消费一次；避免 restore/重渲染导致重复发送。
   const initialMessageRef = useRef(initialMessage);
   initialMessageRef.current = initialMessage;
+  // startFresh 同理走 ref：只在挂载那一拍读取，不参与 effect 依赖
+  const startFreshRef = useRef(startFresh);
+  startFreshRef.current = startFresh;
   const consumedRef = useRef(onInitialMessageConsumed);
   consumedRef.current = onInitialMessageConsumed;
 
@@ -1713,18 +1719,19 @@ export function CourseAssistantPanel({
         }
         if (cancelled) return;
         const pending = initialMessageRef.current?.trim();
-        if (pending) {
-          // 首页大屏「直接输入问题」= 一个新话题，不能沿用上次会话：restore 会把
-          // localStorage 里记住的旧会话恢复成当前会话，直接把新问题发进去会让模型
-          // 拿旧对话当上下文（实测教师问新问题却被答成上一轮在聊的项目）。
-          // 只有被恢复的会话仍是空会话时才复用，避免多建一条空壳会话。
-          const state = useAssistantStore.getState();
-          const startFresh = !initialSessionId && state.messages.length > 0;
-          if (startFresh && state.sending) {
-            // 单在途约束：上一轮还在跑时不静默丢弃，提示后保留输入由教师重发
-            addToast('上一轮还在生成，请稍候再发送', 'info');
-          } else {
-            if (startFresh) await createSession();
+        // 两条"新话题"入口都不能沿用上次会话：① 首页大屏直接输入问题；
+        // ② 首页快捷任务（startFresh，可能不带问题）。restore 会把 localStorage
+        // 里记住的旧会话恢复成当前会话，新问题因此带着旧历史作答。
+        // 只有被恢复的会话仍是空会话时才复用，避免多建一条空壳会话。
+        const st = useAssistantStore.getState();
+        const wantFresh = !initialSessionId && (startFreshRef.current || Boolean(pending));
+        const blocked = wantFresh && st.messages.length > 0 && st.sending;
+        if (blocked) {
+          // 单在途约束：上一轮还在跑时不能静默丢弃，提示后保留输入由教师重发
+          addToast('上一轮还在生成，请稍候再发送', 'info');
+        } else {
+          if (wantFresh && st.messages.length > 0) await createSession();
+          if (pending) {
             await send(pending);
             consumedRef.current?.();
           }
@@ -1844,7 +1851,7 @@ export function CourseAssistantPanel({
           gap: 12,
           flexWrap: 'wrap',
           width: '100%',
-          maxWidth: 780,
+          maxWidth: 1180,
           margin: '0 auto',
         }}
       >
@@ -1882,7 +1889,7 @@ export function CourseAssistantPanel({
             flexDirection: 'column',
             gap: 10,
             width: '100%',
-            maxWidth: 780,
+            maxWidth: 1180,
             margin: '0 auto',
           }}
         >
@@ -2099,7 +2106,7 @@ export function CourseAssistantPanel({
       {/* 输入区：composer 白卡承托 + 主色发送钮（Enter 发送 / Shift+Enter 换行） */}
       <div
         className="chat-composer"
-        style={{ flexShrink: 0, width: '100%', maxWidth: 780, margin: '0 auto' }}
+        style={{ flexShrink: 0, width: '100%', maxWidth: 1180, margin: '0 auto' }}
       >
         <textarea
           ref={taRef}

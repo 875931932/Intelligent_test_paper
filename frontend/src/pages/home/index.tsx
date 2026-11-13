@@ -53,6 +53,8 @@ const QUICK_TASKS: Array<{
   icon: typeof BookOpen;
   bg: string;
   fg: string;
+  /** 选完范围后自动发送的首条问题（快捷任务不带问题会只剩"跳转到旧会话"） */
+  prompt?: string;
 }> = [
   {
     label: '问课程资料',
@@ -61,6 +63,7 @@ const QUICK_TASKS: Array<{
     icon: BookOpen,
     bg: 'var(--brand-subtle)',
     fg: 'var(--brand-ink)',
+    prompt: '这门课的资料主要讲了什么？',
   },
   {
     label: '问共享资料',
@@ -77,6 +80,7 @@ const QUICK_TASKS: Array<{
     icon: Clock,
     bg: 'var(--info-subtle)',
     fg: 'var(--info-ink)',
+    prompt: '课程现在进行到哪一步了？',
   },
   {
     label: '帮我推进出卷',
@@ -85,6 +89,7 @@ const QUICK_TASKS: Array<{
     icon: Sparkles,
     bg: 'var(--warning-subtle)',
     fg: 'var(--warning-ink)',
+    prompt: '帮我推进出卷，下一步该做什么？',
   },
 ];
 
@@ -148,6 +153,8 @@ export default function HomeAssistantPage() {
   const [landingDraft, setLandingDraft] = useState('');
   const [pendingPrompt, setPendingPrompt] = useState('');
   const [courseInitialMessage, setCourseInitialMessage] = useState('');
+  // 大屏/快捷任务选课程进入 = 新话题：要求助手面板开新会话（不复用上次会话）
+  const [courseStartFresh, setCourseStartFresh] = useState(false);
 
   const [courseSessionId, setCourseSessionId] = useState<string | undefined>();
   const [ksession, setKsession] = useState<KnowledgeSessionDetail | null>(null);
@@ -278,6 +285,9 @@ export default function HomeAssistantPage() {
       nextRange = { kind: 'course', courseId: course.id, name: course.name };
       setRange(nextRange);
       setCourseSessionId(undefined);
+      // 从大屏/快捷任务选课程进入 = 新话题：让助手面板开新会话，
+      // 不能沿用上次会话（否则旧对话会继续被当成上下文）
+      setCourseStartFresh(true);
       setKsession(null);
     } else {
       if (!pickerSpaces.length) {
@@ -297,12 +307,14 @@ export default function HomeAssistantPage() {
 
     const prompt = pendingPrompt.trim();
     setPendingPrompt('');
-    if (!prompt || !nextRange) return;
-    setLandingDraft('');
+    if (!nextRange) return;
     if (nextRange.kind === 'course') {
+      // 无首条问题也照常进对话页：面板按 startFresh 开一条空的新会话
+      setLandingDraft('');
       setCourseInitialMessage(prompt);
       return;
     }
+    if (!prompt) return;
     try {
       const current = await api.knowledgeBase.createSession(
         nextRange.spaceIds,
@@ -329,6 +341,7 @@ export default function HomeAssistantPage() {
     setLandingDraft('');
     setPendingPrompt('');
     setCourseInitialMessage('');
+    setCourseStartFresh(false);
     setMobileHistory(false);
   }, [stopSessionPolling]);
 
@@ -612,7 +625,7 @@ export default function HomeAssistantPage() {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div
                       style={{
-                        fontSize: '0.8125rem',
+                        fontSize: '0.8rem',
                         fontWeight: 600,
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
@@ -741,6 +754,7 @@ export default function HomeAssistantPage() {
                 key={range.courseId}
                 courseId={range.courseId}
                 embedded
+                startFresh={courseStartFresh}
                 initialSessionId={courseSessionId}
                 initialMessage={courseInitialMessage}
                 onInitialMessageConsumed={consumeCourseMessage}
@@ -949,7 +963,9 @@ export default function HomeAssistantPage() {
                         type="button"
                         className="home-quick-card"
                         onClick={() => {
-                          if (landingDraft.trim()) setPendingPrompt(landingDraft.trim());
+                          // 大屏已输入优先；否则用快捷任务自带的首条问题
+                          const text = landingDraft.trim() || task.prompt || '';
+                          if (text) setPendingPrompt(text);
                           openPicker(task.kind);
                         }}
                       >
