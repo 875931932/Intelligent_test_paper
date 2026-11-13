@@ -737,12 +737,12 @@ body > .floating-pill:nth-of-type(2) { top: 112px; }
 .chat-run::before {
   content: '';
   position: absolute;
-  left: 13px;
+  left: 12px;
   width: 1px;
   pointer-events: none;
   background: var(--line);
 }
-.chat-run.is-start::before { top: 38px; bottom: -14px; }
+.chat-run.is-start::before { top: 34px; bottom: -14px; }
 .chat-run.is-cont::before { top: -14px; bottom: -14px; }
 .chat-run.is-end::before {
   background: linear-gradient(to bottom, var(--line) 0%, var(--line) 55%, transparent 100%);
@@ -750,13 +750,13 @@ body > .floating-pill:nth-of-type(2) { top: 112px; }
 .chat-run.is-lone::before { display: none; }
 
 /* 头像等高占位：续条消息与首条内容列对齐（无头像但不丢缩进） */
-.chat-avatar-spacer { width: 28px; flex-shrink: 0; }
+.chat-avatar-spacer { width: 26px; flex-shrink: 0; }
 
 /* 助手头像：品牌渐变小方牌 + 入场弹现（只在回合开头出现一次） */
 .chat-avatar {
-  width: 28px;
-  height: 28px;
-  border-radius: 9px;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
   background: linear-gradient(135deg, var(--brand) 0%, var(--acc-violet) 100%);
   color: #ffffff;
   display: inline-flex;
@@ -772,7 +772,7 @@ body > .floating-pill:nth-of-type(2) { top: 112px; }
 }
 
 /* 助手正文：无框直接落在画布上；结构化内容（结果/提案/来源/引导）才用卡片承托 */
-.chat-text { min-width: 0; font-size: 0.875rem; line-height: 1.7; color: var(--text); }
+.chat-text { min-width: 0; font-size: 0.845rem; line-height: 1.65; color: var(--text); }
 
 /* 结构化卡片：白底 + 发丝线 + 常驻柔影；悬停阴影加深一档 */
 .chat-card {
@@ -819,15 +819,18 @@ body > .floating-pill:nth-of-type(2) { top: 112px; }
 }
 .chat-detail:active { transform: scale(0.97); }
 
-/* 消息时间戳：悬停该轮才浮现（默认隐形，减少时间线噪音） */
+/* 消息时间戳：悬停该轮才浮现（默认隐形，减少时间线噪音）；
+   两侧共用同一规则——助手靠左缩进对齐内容列，用户靠右对齐气泡 */
 .chat-time {
   font-size: 0.7rem;
   color: var(--text-tertiary);
-  margin-left: 36px;
+  margin-left: 34px;
   opacity: 0;
   transition: opacity var(--duration-hover) var(--ease-snappy);
 }
-.chat-run:hover .chat-time { opacity: 1; }
+.chat-time--user { margin-left: 0; margin-right: 2px; align-self: flex-end; }
+.chat-run:hover .chat-time,
+.msg-in:hover .chat-time { opacity: 1; }
 
 /* 详情弹窗内的长表容器：限高滚动，不撑爆弹窗 */
 .chat-detail-table {
@@ -842,7 +845,7 @@ body > .floating-pill:nth-of-type(2) { top: 112px; }
   display: flex;
   align-items: flex-end;
   gap: 8px;
-  padding: 8px 8px 8px 14px;
+  padding: 6px 6px 6px 12px;
   background: var(--surface-solid);
   border: 1px solid var(--line);
   border-radius: var(--radius-lg);
@@ -858,16 +861,16 @@ body > .floating-pill:nth-of-type(2) { top: 112px; }
   border: none;
   background: transparent;
   box-shadow: none;
-  padding: 8px 0;
+  padding: 6px 0;
 }
 .chat-composer .input-field:focus { box-shadow: none; }
 
-/* 发送钮：品牌蓝方牌，hover 深化 + 微放大，禁用转锌 */
+/* 发送钮：主色（近黑，与用户气泡同色）方牌，hover 深化 + 微放大，禁用转锌 */
 .chat-send {
-  width: 38px;
-  height: 38px;
-  border-radius: var(--radius-md);
-  background: var(--brand);
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
   color: #ffffff;
   border: none;
   display: inline-flex;
@@ -878,7 +881,7 @@ body > .floating-pill:nth-of-type(2) { top: 112px; }
   transition: background-color var(--duration-hover) var(--ease-snappy),
               transform var(--duration-hover) var(--ease-snappy);
 }
-.chat-send:hover:not(:disabled) { background: var(--brand-ink); transform: scale(1.05); }
+.chat-send:hover:not(:disabled) { background: var(--accent-hover); transform: scale(1.05); }
 .chat-send:active:not(:disabled) { transform: scale(0.95); }
 .chat-send:disabled { background: var(--fill-strong); color: var(--text-tertiary); cursor: not-allowed; }
 

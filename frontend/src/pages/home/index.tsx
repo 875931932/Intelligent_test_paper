@@ -629,13 +629,11 @@ export default function HomeAssistantPage() {
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
+                        marginTop: 2,
                       }}
-                      title={historyTargetLabel(item)}
+                      title={`${historyTargetLabel(item)} · ${formatTime(item.updated_at)}`}
                     >
-                      {historyTargetLabel(item)}
-                    </div>
-                    <div style={{ fontSize: '0.68rem', color: 'var(--text-tertiary)', marginTop: 2 }}>
-                      {formatTime(item.updated_at)}
+                      {historyTargetLabel(item)} · {formatTime(item.updated_at)}
                     </div>
                   </div>
                   <div className="home-history-actions">

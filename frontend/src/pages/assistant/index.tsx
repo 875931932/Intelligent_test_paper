@@ -187,28 +187,28 @@ const ARCHETYPE_LABELS: Record<string, string> = {
 
 const thStyle: CSSProperties = {
   border: '1px solid var(--line-strong)',
-  padding: '5px 9px',
+  padding: '4px 8px',
   textAlign: 'left',
   fontWeight: 600,
   background: 'var(--fill)',
-  lineHeight: 1.6,
+  lineHeight: 1.55,
 };
 
 const tdStyle: CSSProperties = {
   border: '1px solid var(--line-strong)',
-  padding: '5px 9px',
-  lineHeight: 1.6,
+  padding: '4px 8px',
+  lineHeight: 1.55,
 };
 
 /** 键值行（概览/框架类信息用） */
 function KVTable({ rows }: { rows: Array<[string, string]> }) {
   if (rows.length === 0) return null;
   return (
-    <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '0.82rem', margin: '6px 0' }}>
+    <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '0.8rem', margin: '4px 0' }}>
       <tbody>
         {rows.map(([k, v]) => (
           <tr key={k}>
-            <td style={{ ...tdStyle, width: 110, color: 'var(--text-secondary)' }}>{k}</td>
+            <td style={{ ...tdStyle, width: 108, color: 'var(--text-secondary)' }}>{k}</td>
             <td style={tdStyle}>{v}</td>
           </tr>
         ))}
@@ -220,7 +220,7 @@ function KVTable({ rows }: { rows: Array<[string, string]> }) {
 function GridTable({ header, rows }: { header: string[]; rows: string[][] }) {
   if (rows.length === 0) return null;
   return (
-    <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '0.82rem', margin: '6px 0' }}>
+    <table style={{ borderCollapse: 'collapse', width: '100%', fontSize: '0.8rem', margin: '4px 0' }}>
       <thead>
         <tr>
           {header.map((h) => (
@@ -413,14 +413,14 @@ function ResultBody({
   }
 }
 
-const muted: CSSProperties = { fontSize: '0.82rem', color: 'var(--text-secondary)', margin: '4px 0' };
+const muted: CSSProperties = { fontSize: '0.8rem', color: 'var(--text-secondary)', margin: '4px 0' };
 
 /** 结构化卡片的内布局（外观由 .chat-card 承载：白底/描边/柔影/hover 动效） */
 const cardBox: CSSProperties = {
-  padding: '14px 16px',
+  padding: '12px 14px',
   display: 'flex',
   flexDirection: 'column',
-  gap: 8,
+  gap: 6,
   minWidth: 0,
 };
 
@@ -1520,9 +1520,8 @@ function SessionBar() {
               border: 'none',
               borderRadius: 6,
               background: 'transparent',
-              color: 'var(--accent)',
-              fontSize: '0.82rem',
-              fontWeight: 600,
+              color: 'var(--text-secondary)',
+              fontSize: '0.8rem',
               cursor: 'pointer',
             }}
           >
@@ -1715,8 +1714,20 @@ export function CourseAssistantPanel({
         if (cancelled) return;
         const pending = initialMessageRef.current?.trim();
         if (pending) {
-          await send(pending);
-          consumedRef.current?.();
+          // 首页大屏「直接输入问题」= 一个新话题，不能沿用上次会话：restore 会把
+          // localStorage 里记住的旧会话恢复成当前会话，直接把新问题发进去会让模型
+          // 拿旧对话当上下文（实测教师问新问题却被答成上一轮在聊的项目）。
+          // 只有被恢复的会话仍是空会话时才复用，避免多建一条空壳会话。
+          const state = useAssistantStore.getState();
+          const startFresh = !initialSessionId && state.messages.length > 0;
+          if (startFresh && state.sending) {
+            // 单在途约束：上一轮还在跑时不静默丢弃，提示后保留输入由教师重发
+            addToast('上一轮还在生成，请稍候再发送', 'info');
+          } else {
+            if (startFresh) await createSession();
+            await send(pending);
+            consumedRef.current?.();
+          }
         }
       } catch (err) {
         if (!cancelled) addToast('打开课程助手失败: ' + getErrorMessage(err), 'error');
@@ -1726,7 +1737,7 @@ export function CourseAssistantPanel({
       cancelled = true;
       stop();
     };
-  }, [courseId, initialSessionId, restore, stop, switchSession, send, addToast]);
+  }, [courseId, initialSessionId, restore, stop, switchSession, send, addToast, createSession]);
 
   // 新消息 / 流式文本变化时滚到底（在途轮次属于别的会话时不动本会话视口）
   useEffect(() => {
@@ -1753,15 +1764,6 @@ export function CourseAssistantPanel({
       await cancelTurn();
     } catch (err) {
       addToast('停止失败: ' + getErrorMessage(err), 'error');
-    }
-  };
-
-  /** 无会话时的「开始新对话」（有会话后走建议问题/输入框，send 自带兜底建会话） */
-  const handleNewSession = async () => {
-    try {
-      await createSession();
-    } catch (err) {
-      addToast('新建会话失败: ' + getErrorMessage(err), 'error');
     }
   };
 
@@ -1828,7 +1830,7 @@ export function CourseAssistantPanel({
       style={{
         display: 'flex',
         flexDirection: 'column',
-        gap: 'var(--space-lg)',
+        gap: 12,
         // 对话页定高：时间线内部滚动，输入框钉在底部；嵌入统一首页时跟随容器高度
         height: embedded ? '100%' : 'calc(100vh - 48px)',
         minHeight: 0,
@@ -1841,6 +1843,9 @@ export function CourseAssistantPanel({
           justifyContent: 'space-between',
           gap: 12,
           flexWrap: 'wrap',
+          width: '100%',
+          maxWidth: 780,
+          margin: '0 auto',
         }}
       >
         {embedded ? (
@@ -1860,7 +1865,7 @@ export function CourseAssistantPanel({
         )}
       </div>
 
-      {/* 消息时间线 */}
+      {/* 消息时间线：定宽居中列（宽屏下不让气泡铺满整屏，行宽保持可读） */}
       <div
         role="log"
         aria-live="polite"
@@ -1868,40 +1873,32 @@ export function CourseAssistantPanel({
           flex: 1,
           minHeight: 0,
           overflowY: 'auto',
-          display: 'flex',
-          flexDirection: 'column',
-          gap: 12,
           paddingRight: 4,
         }}
       >
+        <div
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+            width: '100%',
+            maxWidth: 780,
+            margin: '0 auto',
+          }}
+        >
         {restoring && messages.length === 0 && (
           <p style={muted}>正在恢复对话…</p>
         )}
 
-        {activeSessionId === null && !restoring && (
-          <div className="chat-card" style={{ ...cardBox, alignItems: 'flex-start', gap: 10 }}>
+        {(activeSessionId === null || empty) && !restoring && (
+          <div className="chat-card" style={{ ...cardBox, alignItems: 'flex-start', gap: 8 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span className="chat-avatar" style={{ width: 32, height: 32 }} aria-hidden>
-                <Bot size={17} />
+              <span className="chat-avatar" aria-hidden>
+                <Bot size={15} />
               </span>
-              <strong style={{ fontSize: '0.9rem' }}>你好，我是本课程的 AI 助手</strong>
+              <strong style={{ fontSize: '0.88rem' }}>你好，我是本课程的 AI 助手</strong>
             </div>
             <p style={muted}>{ASSISTANT_INTRO}</p>
-            <Button onClick={() => void handleNewSession()} icon={<Plus size={15} />}>
-              开始新对话
-            </Button>
-          </div>
-        )}
-
-        {activeSessionId !== null && empty && (
-          <div className="chat-card" style={{ ...cardBox, alignItems: 'flex-start', gap: 10 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span className="chat-avatar" style={{ width: 32, height: 32 }} aria-hidden>
-                <Bot size={17} />
-              </span>
-              <strong style={{ fontSize: '0.9rem' }}>你好，我是本课程的 AI 助手</strong>
-            </div>
-            <p style={muted}>{ASSISTANT_INTRO}试试：</p>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
               {SUGGESTIONS.map((s) => (
                 <Button key={s} size="sm" variant="secondary" className="chat-suggestion" onClick={() => void send(s)}>
@@ -1922,13 +1919,13 @@ export function CourseAssistantPanel({
               >
                 <div
                   style={{
-                    maxWidth: embedded ? '88%' : '78%',
+                    maxWidth: embedded ? '80%' : '72%',
                     background: 'var(--accent)',
                     color: 'var(--text-on-accent)',
-                    borderRadius: '18px 18px 6px 18px',
-                    padding: '10px 14px',
-                    fontSize: '0.875rem',
-                    lineHeight: 1.65,
+                    borderRadius: '14px 14px 4px 14px',
+                    padding: '8px 12px',
+                    fontSize: '0.85rem',
+                    lineHeight: 1.6,
                     whiteSpace: 'pre-wrap',
                     wordBreak: 'break-word',
                     boxShadow: 'var(--shadow-1)',
@@ -1937,9 +1934,7 @@ export function CourseAssistantPanel({
                   {m.content}
                 </div>
                 {m.created_at && (
-                  <span style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)', marginRight: 4 }}>
-                    {msgTime(m.created_at)}
-                  </span>
+                  <span className="chat-time chat-time--user">{msgTime(m.created_at)}</span>
                 )}
               </div>
             );
@@ -1972,10 +1967,9 @@ export function CourseAssistantPanel({
                   style={{
                     flex: 1,
                     minWidth: 0,
-                    maxWidth: 820,
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: 8,
+                    gap: 6,
                   }}
                 >
                   {m.thinking && <ThinkingBlock text={m.thinking} />}
@@ -2030,12 +2024,6 @@ export function CourseAssistantPanel({
                       <MarkdownText text={m.content} />
                     </div>
                   )}
-                  {(m.action.kind === undefined || m.action.kind === 'sources') &&
-                    m.stream_status === 'failed' && (
-                    <div>
-                      <Badge variant="warning">网关未走流式，整段返回</Badge>
-                    </div>
-                  )}
                   {m.stream_status === 'stopped' && (
                     <div>
                       <Badge variant="warning">已停止</Badge>
@@ -2071,10 +2059,9 @@ export function CourseAssistantPanel({
                 style={{
                   flex: 1,
                   minWidth: 0,
-                  maxWidth: 820,
                   display: 'flex',
                   flexDirection: 'column',
-                  gap: 8,
+                  gap: 6,
                 }}
               >
                 {streamThink && <ThinkingBlock text={streamThink} live />}
@@ -2106,14 +2093,18 @@ export function CourseAssistantPanel({
         )}
 
         <div ref={bottomRef} />
+        </div>
       </div>
 
-      {/* 输入区：composer 白卡承托 + 品牌蓝发送钮（Enter 发送 / Shift+Enter 换行） */}
-      <div className="chat-composer" style={{ flexShrink: 0 }}>
+      {/* 输入区：composer 白卡承托 + 主色发送钮（Enter 发送 / Shift+Enter 换行） */}
+      <div
+        className="chat-composer"
+        style={{ flexShrink: 0, width: '100%', maxWidth: 780, margin: '0 auto' }}
+      >
         <textarea
           ref={taRef}
           className="input-field"
-          style={{ flex: 1, resize: 'none', maxHeight: 120, minHeight: 38 }}
+          style={{ flex: 1, resize: 'none', maxHeight: 120, minHeight: 36 }}
           rows={1}
           value={input}
           disabled={sending}
@@ -2151,10 +2142,6 @@ export function CourseAssistantPanel({
         >
           <Send size={16} />
         </button>
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.72rem', color: 'var(--text-tertiary)', flexShrink: 0, marginTop: -8 }}>
-        <Sparkles size={12} />
-        AI 只读查询与提案：所有写操作都需你在提案卡上确认
       </div>
     </div>
   );

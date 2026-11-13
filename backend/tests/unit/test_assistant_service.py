@@ -1068,6 +1068,19 @@ def test_prompt_documents_framework_review_and_honest_fallback():
     assert "不得臆造工具名" in system_prompt
 
 
+def test_prompt_scopes_history_to_anaphora_only():
+    """history 只作指代与阶梯承接，不得把旧话题当成新问题的默认对象。
+
+    线上实测：教师直接输入一个全新问题，模型沿用了上一轮在聊的项目作答
+    （首页大屏直接输入会落到旧会话上下文）。除前端改为新问题开新会话外，
+    提示词也要明确「history 不是当前问题的默认对象」这条边界。
+    """
+    system_prompt, _payload = build_intent_prompt(_paper_ctx(), "综合题为什么不是代码题")
+    assert "history 只用于理解指代" in system_prompt
+    assert "不是**当前问题的默认对象" in system_prompt
+    assert "不要凭历史猜" in system_prompt
+
+
 def test_prompt_documents_paper_pipeline_ladder():
     """prompt 装配出卷主线阶梯与五个新工具；蓝图确认/发起生成移出拒绝话术。"""
     system_prompt, _payload = build_intent_prompt(_paper_ctx(), "我需要出一张试卷")
