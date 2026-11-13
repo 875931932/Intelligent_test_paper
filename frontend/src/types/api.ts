@@ -919,7 +919,7 @@ export interface TaskRun {
 }
 
 // ---------------------------------------------------------------------------
-// AI 助手对话（/courses/:courseId/assistant：消息恢复 / 提案卡回写 / SSE）
+// AI 助手对话（统一首页 /home，课程上下文 ?course=<id>：消息恢复 / 提案卡回写 / SSE）
 // ---------------------------------------------------------------------------
 
 export type AssistantRole = 'user' | 'assistant';

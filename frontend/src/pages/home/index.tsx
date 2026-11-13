@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowLeftRight,
   ArrowRight,
@@ -169,11 +169,15 @@ function channelLabel(message: KnowledgeMessage): string | null {
 
 export default function HomeAssistantPage() {
   const navigate = useNavigate();
+  // 课程上下文走 URL（/home?course=<id>）：课程工作台、旧助手地址都汇到这里，
+  // 刷新/前进后退也能回到同一门课的对话，不再要求教师重复选范围。
+  const [searchParams, setSearchParams] = useSearchParams();
   const logout = useAuthStore((s) => s.logout);
   const user = useAuthStore((s) => s.user);
   const addToast = useToastStore((s) => s.addToast);
 
   const [courses, setCourses] = useState<CourseResponse[]>([]);
+  const [coursesReady, setCoursesReady] = useState(false);
   const [spaces, setSpaces] = useState<KnowledgeSpace[]>([]);
   const [history, setHistory] = useState<AssistantHistoryItem[]>([]);
   const [historyCursor, setHistoryCursor] = useState<string | null>(null);
@@ -196,6 +200,8 @@ export default function HomeAssistantPage() {
   const [courseStartFresh, setCourseStartFresh] = useState(false);
 
   const [courseSessionId, setCourseSessionId] = useState<string | undefined>();
+  // 同一课程内点「新建对话」时自增，强制助手面板重建并在恢复后开新会话
+  const [courseSessionEpoch, setCourseSessionEpoch] = useState(0);
   const [ksession, setKsession] = useState<KnowledgeSessionDetail | null>(null);
   const [question, setQuestion] = useState('');
   const [asking, setAsking] = useState(false);
@@ -242,16 +248,57 @@ export default function HomeAssistantPage() {
 
   useEffect(() => () => stopSessionPolling(), [stopSessionPolling]);
 
+  /** URL 中的课程上下文：选课程时写入，切共享范围/新对话时移除（刷新语义一致） */
+  const syncCourseParam = useCallback(
+    (courseId: string | null) => {
+      const next = new URLSearchParams(searchParams);
+      if (courseId) next.set('course', courseId);
+      else next.delete('course');
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams]
+  );
+
   useEffect(() => {
     void api.courses
       .list()
       .then(setCourses)
-      .catch(() => addToast('课程加载失败', 'error'));
+      .catch(() => addToast('课程加载失败', 'error'))
+      .finally(() => setCoursesReady(true));
     void api.knowledgeBase
       .listSpaces()
       .then((list) => setSpaces(list.filter((space) => space.status === 'active')))
       .catch(() => undefined);
   }, [addToast]);
+
+  // 深链 /home?course=<id>：课程工作台与旧助手地址都从这里直达，
+  // 进来即进入该课程的助手对话并沿用上次会话，不再让教师重复选范围。
+  useEffect(() => {
+    if (!coursesReady) return;
+    const courseId = searchParams.get('course');
+    if (!courseId) return;
+    if (range?.kind === 'course' && range.courseId === courseId) return;
+    const course = courses.find((item) => item.id === courseId);
+    if (!course) {
+      addToast('课程不存在或已删除，请重新选择对话范围', 'info');
+      setSearchParams({}, { replace: true });
+      return;
+    }
+    stopSessionPolling();
+    setRange({ kind: 'course', courseId: course.id, name: course.name });
+    setCourseSessionId(undefined);
+    setKsession(null);
+    setScopeChanged(false);
+    setCourseStartFresh(false);
+  }, [
+    coursesReady,
+    courses,
+    searchParams,
+    range,
+    addToast,
+    setSearchParams,
+    stopSessionPolling,
+  ]);
 
   const refreshHistory = useCallback(async () => {
     setHistoryLoading(true);
@@ -316,6 +363,7 @@ export default function HomeAssistantPage() {
 
   const confirmRange = async () => {
     stopSessionPolling();
+    setRightSideOpen(false);
     let nextRange: Range = null;
     if (pickerKind === 'course') {
       const course = courses.find((item) => item.id === pickerCourse);
@@ -325,6 +373,7 @@ export default function HomeAssistantPage() {
       }
       nextRange = { kind: 'course', courseId: course.id, name: course.name };
       setRange(nextRange);
+      syncCourseParam(course.id);
       setCourseSessionId(undefined);
       // 从大屏/快捷任务选课程进入 = 新话题：让助手面板开新会话，
       // 不能沿用上次会话（否则旧对话会继续被当成上下文）
@@ -340,6 +389,7 @@ export default function HomeAssistantPage() {
         .filter(Boolean);
       nextRange = { kind: 'knowledge', spaceIds: pickerSpaces, names };
       setRange(nextRange);
+      syncCourseParam(null);
       setKsession(null);
       setCourseSessionId(undefined);
     }
@@ -373,19 +423,24 @@ export default function HomeAssistantPage() {
     }
   };
 
-  const goHome = useCallback(() => {
-    stopSessionPolling();
-    setRange(null);
-    setKsession(null);
-    setCourseSessionId(undefined);
-    setScopeChanged(false);
-    setLandingDraft('');
-    setPendingPrompt('');
-    setCourseInitialMessage('');
-    setCourseStartFresh(false);
+  /** 新建对话：保留当前范围——课程内开新会话，共享范围内清空当前会话 */
+  const startNewChat = useCallback(() => {
     setSideOpen(false);
     setRightSideOpen(false);
-  }, [stopSessionPolling]);
+    if (range?.kind === 'course') {
+      setCourseStartFresh(true);
+      setCourseInitialMessage('');
+      setCourseSessionId(undefined);
+      setCourseSessionEpoch((v) => v + 1);
+      return;
+    }
+    if (range?.kind === 'knowledge') {
+      stopSessionPolling();
+      setKsession(null);
+      setQuestion('');
+      setScopeChanged(false);
+    }
+  }, [range, stopSessionPolling]);
 
   const consumeCourseMessage = useCallback(() => setCourseInitialMessage(''), []);
 
@@ -401,6 +456,7 @@ export default function HomeAssistantPage() {
     if (item.target.kind === 'course') {
       stopSessionPolling();
       setRange({ kind: 'course', courseId: item.target.course_id, name: item.target.name });
+      syncCourseParam(item.target.course_id);
       setCourseSessionId(item.session_id);
       setKsession(null);
       setScopeChanged(false);
@@ -413,6 +469,7 @@ export default function HomeAssistantPage() {
         spaceIds: detail.selected_space_ids,
         names: item.target.names,
       });
+      syncCourseParam(null);
       setKsession(detail);
       setScopeChanged(!item.target.complete);
       if (detail.messages.some((message) => message.state === 'pending')) {
@@ -580,7 +637,7 @@ export default function HomeAssistantPage() {
           </button>
         </div>
 
-        <button type="button" className="home-new-chat" onClick={goHome}>
+        <button type="button" className="home-new-chat" onClick={startNewChat}>
           <Plus size={15} />
           新建对话
         </button>
@@ -741,9 +798,8 @@ export default function HomeAssistantPage() {
           {range?.kind === 'course' ? (
             <div className="home-chat-shell">
               <CourseAssistantPanel
-                key={range.courseId}
+                key={`${range.courseId}:${courseSessionEpoch}`}
                 courseId={range.courseId}
-                embedded
                 startFresh={courseStartFresh}
                 initialSessionId={courseSessionId}
                 initialMessage={courseInitialMessage}
@@ -1037,7 +1093,7 @@ export default function HomeAssistantPage() {
       {/* 悬浮入口：贴在右侧边缘中部，点击展开右侧工作空间栏 */}
       <button
         type="button"
-        className={`home-fab ${rightSideOpen ? 'is-hidden' : ''}`}
+        className={`home-fab ${rightSideOpen ? 'is-hidden' : ''} ${chatMode ? 'is-docked-off' : ''}`}
         onClick={() => setRightSideOpen(true)}
         title="工作空间"
         aria-label="打开工作空间"
@@ -1046,13 +1102,17 @@ export default function HomeAssistantPage() {
         <span className="home-fab-label">工作空间</span>
       </button>
 
-      {/* 右侧栏：工作空间预览（课程 + 共享库），点悬浮按钮滑出 */}
-      <aside className={`home-right-side ${rightSideOpen ? 'is-open' : ''}`}>
+      {/* 右侧栏：首屏经悬浮按钮滑出；进入聊天后常驻为布局第三列 */}
+      <aside
+        className={`home-right-side ${chatMode ? 'is-docked' : ''} ${
+          rightSideOpen ? 'is-open' : ''
+        }`}
+      >
         <div className="home-right-head">
           <span className="home-right-title">工作空间</span>
           <button
             type="button"
-            className="home-icon-btn"
+            className="home-icon-btn home-right-close"
             title="关闭"
             onClick={() => setRightSideOpen(false)}
           >

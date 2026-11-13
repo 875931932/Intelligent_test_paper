@@ -1614,6 +1614,59 @@ body > .floating-pill:nth-of-type(2) { top: 112px; }
   transform: translateX(0);
 }
 
+/* 聊天态：右侧栏常驻为布局第三列，不悬浮、不遮挡对话 */
+.home-right-side.is-docked {
+  position: relative;
+  top: auto;
+  right: auto;
+  bottom: auto;
+  z-index: 1;
+  width: 300px;
+  flex-shrink: 0;
+  transform: none;
+  background: var(--fill);
+  box-shadow: none;
+  transition: none;
+}
+
+/* 常驻态不需要关闭按钮（仅窄屏退回抽屉时显示） */
+.home-right-side.is-docked .home-right-close {
+  display: none;
+}
+
+/* 悬浮入口：常驻态下隐藏（窄屏退回抽屉时恢复） */
+.home-fab.is-docked-off {
+  display: none;
+}
+
+/* 窄屏放不下常驻栏，退回抽屉模式 */
+@media (max-width: 1100px) {
+  .home-right-side.is-docked {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 22;
+    width: min(86vw, 320px);
+    transform: translateX(105%);
+    background: var(--surface-solid);
+    box-shadow: var(--shadow-2);
+    transition: transform 0.22s var(--ease-snappy);
+  }
+
+  .home-right-side.is-docked.is-open {
+    transform: translateX(0);
+  }
+
+  .home-right-side.is-docked .home-right-close {
+    display: inline-flex;
+  }
+
+  .home-fab.is-docked-off {
+    display: inline-flex;
+  }
+}
+
 .home-right-head {
   display: flex;
   align-items: center;

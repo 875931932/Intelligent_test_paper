@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type FC } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowUpRight, Bot, Check, ChevronDown, ExternalLink, Eye, Pencil, Plus, Send, Sparkles, Square, Trash2, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { ArrowUpRight, Bot, Check, ChevronDown, ExternalLink, Eye, Send, Sparkles, Square, X } from 'lucide-react';
 import { getErrorMessage } from '@/api/errors';
 import { executeProposalAction, RELAY_TOOLS } from '@/lib/assistantProposalExecution';
 import { useAuthStore } from '@/stores/auth';
@@ -19,7 +19,6 @@ import {
 import {
   MATERIAL_TYPE_LABELS,
   PARSE_STATUS_LABELS,
-  formatDateTime,
 } from '@/utils/format';
 import type {
   AssistantActionPayload,
@@ -1328,322 +1327,9 @@ function ProposalCard({
   );
 }
 
-/** 相对时间（会话列表用）：近一天说人话，更早回退到日期时间 */
-function relTime(iso: string | null): string {
-  if (!iso) return '';
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return '';
-  const diff = Date.now() - t;
-  if (diff < 60_000) return '刚刚';
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
-  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`;
-  return formatDateTime(iso);
-}
-
-const sessionTriggerStyle: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 6,
-  maxWidth: 240,
-  padding: '6px 10px',
-  borderRadius: 'var(--radius-sm)',
-  border: '1px solid var(--line)',
-  background: 'var(--surface-solid)',
-  color: 'var(--text)',
-  fontSize: '0.85rem',
-  cursor: 'pointer',
-};
-
-const iconBtnStyle: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  flexShrink: 0,
-  padding: 4,
-  border: 'none',
-  borderRadius: 4,
-  background: 'transparent',
-  color: 'var(--text-secondary)',
-  cursor: 'pointer',
-};
-
-/**
- * 页头会话选择器（v3 多会话）：下拉列出会话（标题 + 相对时间），
- * 行内改名（Enter/失焦提交、Esc 取消）、删除（行内「确认删除？」是/否），
- * 顶部「新对话」。按 spec §7 不引新组件，全部内联实现。
- */
-function SessionBar() {
-  const sessions = useAssistantStore((s) => s.sessions);
-  const activeSessionId = useAssistantStore((s) => s.activeSessionId);
-  const switchSession = useAssistantStore((s) => s.switchSession);
-  const createSession = useAssistantStore((s) => s.createSession);
-  const renameSession = useAssistantStore((s) => s.renameSession);
-  const deleteSession = useAssistantStore((s) => s.deleteSession);
-  const addToast = useToastStore((s) => s.addToast);
-
-  const [open, setOpen] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [draft, setDraft] = useState('');
-  const [confirmId, setConfirmId] = useState<string | null>(null);
-  // Enter/Esc 提交后编辑框卸载可能再触发 blur：用 ref 挡住第二次提交
-  const renameDoneRef = useRef<string | null>(null);
-  const boxRef = useRef<HTMLDivElement>(null);
-
-  const active = sessions.find((s) => s.id === activeSessionId) ?? null;
-
-  const closeAll = () => {
-    setOpen(false);
-    setEditingId(null);
-    setConfirmId(null);
-  };
-
-  // 点击下拉外部关闭（直接操作 setter，不引组件函数进依赖）
-  useEffect(() => {
-    if (!open) return;
-    const onDoc = (e: MouseEvent) => {
-      if (boxRef.current && !boxRef.current.contains(e.target as Node)) {
-        setOpen(false);
-        setEditingId(null);
-        setConfirmId(null);
-      }
-    };
-    document.addEventListener('mousedown', onDoc);
-    return () => document.removeEventListener('mousedown', onDoc);
-  }, [open]);
-
-  const handleCreate = () => {
-    closeAll();
-    void createSession().catch((err) =>
-      addToast('新建会话失败: ' + getErrorMessage(err), 'error'),
-    );
-  };
-
-  const handleSwitch = (sid: string) => {
-    closeAll();
-    void switchSession(sid).catch(() => {
-      /* switchSession 内部已 toast 并回滚 */
-    });
-  };
-
-  const beginRename = (sid: string, title: string) => {
-    renameDoneRef.current = null;
-    setConfirmId(null);
-    setDraft(title);
-    setEditingId(sid);
-  };
-
-  const submitRename = (sid: string) => {
-    if (renameDoneRef.current === sid) return;
-    renameDoneRef.current = sid;
-    const title = draft.trim();
-    setEditingId(null);
-    if (!title) return;
-    void renameSession(sid, title).catch((err) =>
-      addToast('重命名失败: ' + getErrorMessage(err), 'error'),
-    );
-  };
-
-  const cancelRename = (sid: string) => {
-    renameDoneRef.current = sid;
-    setEditingId(null);
-  };
-
-  const askDelete = (sid: string) => {
-    setEditingId(null);
-    setConfirmId(sid);
-  };
-
-  const handleDelete = (sid: string) => {
-    setConfirmId(null);
-    void deleteSession(sid).catch((err) =>
-      addToast('删除会话失败: ' + getErrorMessage(err), 'error'),
-    );
-  };
-
-  return (
-    <div ref={boxRef} style={{ position: 'relative', flexShrink: 0 }}>
-      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-        <Button size="sm" variant="secondary" onClick={handleCreate} icon={<Plus size={14} />}>
-          新对话
-        </Button>
-        <button
-          type="button"
-          style={sessionTriggerStyle}
-          aria-label="切换会话"
-          aria-expanded={open}
-          onClick={() => setOpen((v) => !v)}
-        >
-          <span
-            style={{
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {active ? active.title : '无会话'}
-          </span>
-          <ChevronDown size={14} color="var(--text-secondary)" />
-        </button>
-      </div>
-
-      {open && (
-        <div
-          role="listbox"
-          aria-label="会话列表"
-          style={{
-            position: 'absolute',
-            right: 0,
-            top: 'calc(100% + 6px)',
-            width: 300,
-            maxHeight: 320,
-            overflowY: 'auto',
-            zIndex: 30,
-            background: 'var(--surface-solid)',
-            border: '1px solid var(--line)',
-            borderRadius: 'var(--radius-sm)',
-            boxShadow: '0 8px 24px rgba(0, 0, 0, 0.12)',
-            padding: 6,
-            display: 'flex',
-            flexDirection: 'column',
-            gap: 4,
-          }}
-        >
-          <button
-            type="button"
-            onClick={handleCreate}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              padding: '7px 8px',
-              border: 'none',
-              borderRadius: 6,
-              background: 'transparent',
-              color: 'var(--text-secondary)',
-              fontSize: '0.8rem',
-              cursor: 'pointer',
-            }}
-          >
-            <Plus size={14} /> 新对话
-          </button>
-
-          {sessions.length === 0 && (
-            <p style={{ ...muted, padding: '4px 8px' }}>还没有会话</p>
-          )}
-
-          {sessions.map((s) => (
-            <div
-              key={s.id}
-              style={{
-                borderRadius: 6,
-                background: s.id === activeSessionId ? 'var(--fill)' : 'transparent',
-              }}
-            >
-              {editingId === s.id ? (
-                <input
-                  className="input-field"
-                  style={{ width: '100%', fontSize: '0.82rem', margin: '4px 0' }}
-                  value={draft}
-                  autoFocus
-                  aria-label="会话标题"
-                  onChange={(e) => setDraft(e.target.value)}
-                  onBlur={() => submitRename(s.id)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      submitRename(s.id);
-                    } else if (e.key === 'Escape') {
-                      e.preventDefault();
-                      cancelRename(s.id);
-                    }
-                  }}
-                />
-              ) : confirmId === s.id ? (
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 6,
-                    padding: '5px 8px',
-                    fontSize: '0.8rem',
-                  }}
-                >
-                  <span style={{ flex: 1, color: 'var(--text-secondary)' }}>确认删除？</span>
-                  <Button size="sm" variant="danger" onClick={() => handleDelete(s.id)}>
-                    是
-                  </Button>
-                  <Button size="sm" variant="ghost" onClick={() => setConfirmId(null)}>
-                    否
-                  </Button>
-                </div>
-              ) : (
-                <div style={{ display: 'flex', alignItems: 'center', gap: 2, padding: '5px 8px' }}>
-                  <button
-                    type="button"
-                    style={{
-                      flex: 1,
-                      minWidth: 0,
-                      display: 'flex',
-                      flexDirection: 'column',
-                      alignItems: 'flex-start',
-                      gap: 1,
-                      textAlign: 'left',
-                      border: 'none',
-                      background: 'transparent',
-                      cursor: 'pointer',
-                      padding: 0,
-                    }}
-                    onClick={() => handleSwitch(s.id)}
-                  >
-                    <span
-                      style={{
-                        fontSize: '0.82rem',
-                        color: 'var(--text)',
-                        maxWidth: '100%',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {s.title}
-                    </span>
-                    <span style={{ fontSize: '0.7rem', color: 'var(--text-tertiary)' }}>
-                      {relTime(s.updated_at ?? s.created_at)}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    title="重命名"
-                    aria-label={`重命名会话「${s.title}」`}
-                    style={iconBtnStyle}
-                    onClick={() => beginRename(s.id, s.title)}
-                  >
-                    <Pencil size={13} />
-                  </button>
-                  <button
-                    type="button"
-                    title="删除"
-                    aria-label={`删除会话「${s.title}」`}
-                    style={iconBtnStyle}
-                    onClick={() => askDelete(s.id)}
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
 
 interface CourseAssistantPanelProps {
   courseId: string;
-  /** 嵌入统一首页时收掉页面标题并按容器高度排版 */
-  embedded?: boolean;
   /** 历史入口恢复指定会话（可选） */
   initialSessionId?: string;
   /** 从首页大屏带入的首条问题：恢复会话后自动发送 */
@@ -1655,7 +1341,6 @@ interface CourseAssistantPanelProps {
 
 export function CourseAssistantPanel({
   courseId,
-  embedded = false,
   initialSessionId,
   initialMessage,
   startFresh = false,
@@ -1838,34 +1523,12 @@ export function CourseAssistantPanel({
         display: 'flex',
         flexDirection: 'column',
         gap: 12,
-        // 对话页定高：时间线内部滚动，输入框钉在底部；嵌入统一首页时跟随容器高度
-        height: embedded ? '100%' : 'calc(100vh - 48px)',
+        // 对话区定高：时间线内部滚动，输入框钉在底部（外层由首页统一布局）
+        height: '100%',
         minHeight: 0,
       }}
     >
-      {/* 嵌入统一首页时标题与会话切换由首页左侧栏承担，面板不再重复一行 */}
-      {!embedded && (
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'flex-start',
-            justifyContent: 'space-between',
-            gap: 12,
-            flexWrap: 'wrap',
-            width: '100%',
-            maxWidth: 1180,
-            margin: '0 auto',
-          }}
-        >
-          <div>
-            <h1 className="page-title">AI 助手</h1>
-            <p className="page-subtitle">
-              资料正文问答直达依据片段，查询直达结果，写操作生成提案卡——确认后才执行
-            </p>
-          </div>
-          <SessionBar />
-        </div>
-      )}
+      {/* 标题与会话切换由首页左侧栏承担，面板只负责对话本身 */}
 
       {/* 消息时间线：定宽居中列（宽屏下不让气泡铺满整屏，行宽保持可读） */}
       <div
@@ -1921,7 +1584,7 @@ export function CourseAssistantPanel({
               >
                 <div
                   style={{
-                    maxWidth: embedded ? '78%' : '72%',
+                    maxWidth: '78%',
                     background: 'var(--brand-subtle)',
                     color: 'var(--text)',
                     borderRadius: 16,
@@ -2150,10 +1813,3 @@ export function CourseAssistantPanel({
     </div>
   );
 }
-
-const AssistantPage: FC = () => {
-  const { courseId = '' } = useParams<{ courseId: string }>();
-  return <CourseAssistantPanel courseId={courseId} />;
-};
-
-export default AssistantPage;

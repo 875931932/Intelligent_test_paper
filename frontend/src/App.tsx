@@ -1,6 +1,5 @@
 import { Suspense } from 'react';
-import { Routes, Route, Navigate } from 'react-router-dom';
-import { Outlet } from 'react-router-dom';
+import { Routes, Route, Navigate, Outlet, useParams } from 'react-router-dom';
 import { ProtectedRoute } from '@/pages/auth/ProtectedRoute';
 import { AdminRoute } from '@/pages/auth/AdminRoute';
 import { useAuthStore } from '@/stores/auth';
@@ -28,7 +27,6 @@ const Knowledge = lazyWithRetry(() => import('@/pages/knowledge'));
 const PaperPage = lazyWithRetry(() => import('@/pages/paper'));
 /* 资料库「试卷」文件夹的归档快照编辑页（与试卷页同款双栏阅读器） */
 const PaperArchivePage = lazyWithRetry(() => import('@/pages/paper-archive'));
-const AssistantPage = lazyWithRetry(() => import('@/pages/assistant'));
 const LoginPage = lazyWithRetry(() =>
   import('@/pages/auth/LoginPage').then((m) => ({ default: m.LoginPage }))
 );
@@ -46,6 +44,15 @@ function RouteFallback() {
       <div className="spinner spinner-lg" />
     </div>
   );
+}
+
+/**
+ * 旧课程内 AI 助手地址回收：统一走 /home 并按课程上下文直达。
+ * 助手只有一个页面（首页），不再保留第二套课程内对话页。
+ */
+function CourseAssistantRedirect() {
+  const { courseId } = useParams<{ courseId: string }>();
+  return <Navigate to={courseId ? `/home?course=${courseId}` : '/home'} replace />;
 }
 
 function AppShell() {
@@ -127,8 +134,8 @@ export default function App() {
           <Route path="paper" element={<PaperPage />} />
           {/* 归档快照编辑：资料库「试卷」文件夹点「编辑」进来，只改副本 */}
           <Route path="paper-archive/:archiveId" element={<PaperArchivePage />} />
-          {/* AI 助手对话页：问答/查询流式回复，写操作提案卡确认制 */}
-          <Route path="assistant" element={<AssistantPage />} />
+          {/* 旧 AI 助手地址：回收为首页 + 课程上下文（单一助手入口） */}
+          <Route path="assistant" element={<CourseAssistantRedirect />} />
           <Route path="exam-projects" element={<Navigate to="../paper" replace />} />
           <Route path="paper-center" element={<Navigate to="../paper" replace />} />
         </Route>

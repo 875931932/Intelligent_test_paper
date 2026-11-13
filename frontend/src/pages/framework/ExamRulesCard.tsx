@@ -327,7 +327,7 @@ export function ExamRulesCard({
             background: 'var(--accent-subtle)', border: '1px dashed var(--accent-soft)',
           }}>
             <span style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '0.8rem', fontWeight: 600, color: 'var(--accent)', whiteSpace: 'nowrap' }}>
-              <Sparkles size={15} /> AI 助手
+              <Sparkles size={15} /> AI 起草
             </span>
             <input
               className="input-field" style={{ flex: 1, minWidth: 220 }}

@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { NavLink, useParams, useNavigate } from 'react-router-dom';
 import {
   BookOpen,
-  Bot,
   LayoutDashboard,
   FolderOpen,
   FlaskConical,
@@ -66,7 +65,6 @@ export function Sidebar({ onLogout }: Props) {
     { to: `${base}/framework`, icon: FlaskConical, label: '命题框架' },
     { to: `${base}/knowledge`, icon: FolderTree, label: '课程知识目录' },
     { to: `${base}/paper`, icon: FileQuestion, label: '试卷' },
-    { to: `${base}/assistant`, icon: Bot, label: 'AI 助手' },
   ];
   const sharedLibTo = courseId ? `/knowledge?fromCourse=${courseId}` : '/knowledge';
 
@@ -187,10 +185,10 @@ export function Sidebar({ onLogout }: Props) {
 
       {/* Navigation */}
       <nav style={{ flex: 1, padding: '10px 8px', overflowY: 'auto' }}>
-        {/* 统一助手入口：跨课程与共享库的首页，不属于当前课程数据 */}
+        {/* 唯一助手入口：统一首页；课程内进入时带上当前课程范围，免二次选择 */}
         <NavLink
-          to="/home"
-          title="AI 助手首页"
+          to={courseId ? `/home?course=${courseId}` : '/home'}
+          title="AI 助手"
           style={({ isActive }) => ({
             display: 'flex',
             alignItems: 'center',
@@ -208,7 +206,7 @@ export function Sidebar({ onLogout }: Props) {
           })}
         >
           <Sparkles size={18} />
-          {!collapsed && <span>AI 助手首页</span>}
+          {!collapsed && <span>AI 助手</span>}
         </NavLink>
         {!collapsed && (
           <div
