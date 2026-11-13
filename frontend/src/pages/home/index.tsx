@@ -9,12 +9,10 @@ import {
   ChevronDown,
   ChevronRight,
   Clock,
-  FolderOpen,
   LibraryBig,
   LogOut,
   PanelLeft,
   PanelLeftClose,
-  PanelRight,
   Pencil,
   Plus,
   Send,
@@ -22,7 +20,6 @@ import {
   ThumbsDown,
   ThumbsUp,
   Trash2,
-  X,
 } from 'lucide-react';
 import { api } from '@/api/client';
 import { getErrorMessage } from '@/api/errors';
@@ -210,7 +207,6 @@ export default function HomeAssistantPage() {
   const [scopeChanged, setScopeChanged] = useState(false);
 
   const [sideOpen, setSideOpen] = useState(false);
-  const [rightSideOpen, setRightSideOpen] = useState(false);
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [renameTarget, setRenameTarget] = useState<AssistantHistoryItem | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
@@ -367,7 +363,6 @@ export default function HomeAssistantPage() {
     stopSessionPolling();
     // 进入聊天后左侧消息列表常驻展开
     setSideOpen(true);
-    setRightSideOpen(false);
     let nextRange: Range = null;
     if (pickerKind === 'course') {
       const course = courses.find((item) => item.id === pickerCourse);
@@ -430,7 +425,6 @@ export default function HomeAssistantPage() {
   /** 新建对话：保留当前范围——课程内开新会话，共享范围内清空当前会话 */
   const startNewChat = useCallback(() => {
     setSideOpen(false);
-    setRightSideOpen(false);
     if (range?.kind === 'course') {
       setCourseStartFresh(true);
       setCourseInitialMessage('');
@@ -1095,118 +1089,6 @@ export default function HomeAssistantPage() {
             </div>
           )}
         </main>
-
-      {/* 悬浮入口：贴在右侧边缘中部，点击展开右侧课程与资料栏 */}
-      <button
-        type="button"
-        className={`home-fab ${rightSideOpen ? 'is-hidden' : ''}`}
-        onClick={() => setRightSideOpen(true)}
-        title="课程与资料"
-        aria-label="打开课程与资料"
-      >
-        <PanelRight size={18} />
-        <span className="home-fab-label">课程与资料</span>
-      </button>
-
-      {/* 右侧栏：课程 + 共享库快速进入，点悬浮按钮滑出 */}
-      <aside className={`home-right-side ${rightSideOpen ? 'is-open' : ''}`}>
-        <div className="home-right-head">
-          <span className="home-right-title">课程与资料</span>
-          <button
-            type="button"
-            className="home-icon-btn"
-            title="关闭"
-            onClick={() => setRightSideOpen(false)}
-          >
-            <X size={16} />
-          </button>
-        </div>
-
-        <div className="home-right-body">
-          <section className="home-right-section">
-            <div className="home-right-section-head">
-              <FolderOpen size={15} />
-              <span>课程空间</span>
-              <button
-                type="button"
-                className="home-right-enter-all"
-                onClick={() => {
-                  setRightSideOpen(false);
-                  navigate('/courses');
-                }}
-              >
-                全部 <ArrowUpRight size={12} />
-              </button>
-            </div>
-            <div className="home-right-list">
-              {courses.length ? (
-                courses.slice(0, 6).map((course) => (
-                  <button
-                    key={course.id}
-                    type="button"
-                    className="home-right-item"
-                    onClick={() => {
-                      setRightSideOpen(false);
-                      navigate(`/courses/${course.id}`);
-                    }}
-                  >
-                    <span className="home-right-item-name" title={course.name}>
-                      {course.name}
-                    </span>
-                    <span className="home-right-item-enter">进入</span>
-                  </button>
-                ))
-              ) : (
-                <p className="home-right-empty">暂无课程</p>
-              )}
-            </div>
-          </section>
-
-          <section className="home-right-section">
-            <div className="home-right-section-head">
-              <LibraryBig size={15} />
-              <span>资料与知识中心</span>
-              <button
-                type="button"
-                className="home-right-enter-all"
-                onClick={() => {
-                  setRightSideOpen(false);
-                  navigate('/knowledge');
-                }}
-              >
-                全部 <ArrowUpRight size={12} />
-              </button>
-            </div>
-            <div className="home-right-list">
-              {spaces.length ? (
-                spaces.slice(0, 6).map((space) => (
-                  <button
-                    key={space.id}
-                    type="button"
-                    className="home-right-item"
-                    onClick={() => {
-                      setRightSideOpen(false);
-                      navigate(`/knowledge/${space.id}`);
-                    }}
-                  >
-                    <span className="home-right-item-copy">
-                      <span className="home-right-item-name" title={space.name}>
-                        {space.name}
-                      </span>
-                      <span className="home-right-item-meta">
-                        {space.read_scope_label} · {space.document_count} 份资料
-                      </span>
-                    </span>
-                    <span className="home-right-item-enter">进入</span>
-                  </button>
-                ))
-              ) : (
-                <p className="home-right-empty">暂无可访问的共享库</p>
-              )}
-            </div>
-          </section>
-        </div>
-      </aside>
 
       <Modal
         open={rangeOpen}
