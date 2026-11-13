@@ -29,6 +29,7 @@ import { getErrorMessage } from '@/api/errors';
 import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { Button, Input, MarkdownText, Modal } from '@/components/ui';
+import { TopNavLinks } from '@/components/layout/TopNav';
 import { CourseAssistantPanel } from '@/pages/assistant';
 import type { AssistantHistoryItem } from '@/api/domains/assistant';
 import type {
@@ -794,6 +795,10 @@ export default function HomeAssistantPage() {
                 </div>
               )}
             </div>
+            {/* 顶层入口：与 /courses、/knowledge 共用同一组导航，避免首页成为孤岛 */}
+            <div className="home-main-head-nav">
+              <TopNavLinks />
+            </div>
           </header>
 
           {range?.kind === 'course' ? (
@@ -1091,22 +1096,22 @@ export default function HomeAssistantPage() {
           )}
         </main>
 
-      {/* 悬浮入口：贴在右侧边缘中部，点击展开右侧工作空间栏 */}
+      {/* 悬浮入口：贴在右侧边缘中部，点击展开右侧课程与资料栏 */}
       <button
         type="button"
         className={`home-fab ${rightSideOpen ? 'is-hidden' : ''}`}
         onClick={() => setRightSideOpen(true)}
-        title="工作空间"
-        aria-label="打开工作空间"
+        title="课程与资料"
+        aria-label="打开课程与资料"
       >
         <PanelRight size={18} />
-        <span className="home-fab-label">工作空间</span>
+        <span className="home-fab-label">课程与资料</span>
       </button>
 
-      {/* 右侧栏：工作空间预览（课程 + 共享库），点悬浮按钮滑出 */}
+      {/* 右侧栏：课程 + 共享库快速进入，点悬浮按钮滑出 */}
       <aside className={`home-right-side ${rightSideOpen ? 'is-open' : ''}`}>
         <div className="home-right-head">
-          <span className="home-right-title">工作空间</span>
+          <span className="home-right-title">课程与资料</span>
           <button
             type="button"
             className="home-icon-btn"

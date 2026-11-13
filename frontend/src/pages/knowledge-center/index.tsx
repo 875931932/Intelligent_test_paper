@@ -9,12 +9,9 @@ import {
   BookOpen,
   ChevronRight,
   FolderPlus,
-  LibraryBig,
-  LogOut,
   Plus,
   Send,
   ShieldCheck,
-  Sparkles,
   Users,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/auth';
@@ -29,6 +26,7 @@ import type {
   ReadScope,
 } from '@/api/domains/knowledgeBase';
 import { Button, Input, Modal, Select } from '@/components/ui';
+import { TopNav } from '@/components/layout/TopNav';
 import { CourseMaterialsPanel } from './CourseMaterialsPanel';
 
 const ROLE_LABEL: Record<KnowledgeRole, string> = {
@@ -52,7 +50,6 @@ export default function KnowledgeCenterPage() {
   const fromCourse = params.get('fromCourse');
   const courseQuery = fromCourse ? `?fromCourse=${fromCourse}` : '';
   const user = useAuthStore((s) => s.user);
-  const logout = useAuthStore((s) => s.logout);
   const addToast = useToastStore((s) => s.addToast);
 
   const spaces = useKnowledgeBaseStore((s) => s.spaces);
@@ -210,49 +207,15 @@ export default function KnowledgeCenterPage() {
 
   return (
     <div style={{ minHeight: '100vh', background: 'var(--bg)' }}>
+      <TopNav />
       <div style={{ maxWidth: 1180, margin: '0 auto', padding: '28px 32px 64px' }}>
-        {/* Top bar */}
-        <header style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16, flexWrap: 'wrap' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <span
-              style={{
-                width: 42,
-                height: 42,
-                borderRadius: 14,
-                background: 'var(--brand)',
-                color: '#fff',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <LibraryBig size={22} />
-            </span>
-            <div>
-              <div style={{ fontSize: '1rem', fontWeight: 700 }}>PaperPact</div>
-              <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)' }}>
-                教学知识与 AI 命题
-              </div>
-            </div>
-          </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-            <button onClick={() => navigate('/home')} style={ghostButton}>
-              <Sparkles size={15} />
-              AI 助手
-            </button>
-            <button
-              onClick={() => navigate(fromCourse ? `/courses/${fromCourse}` : '/courses')}
-              style={ghostButton}
-            >
-              <ArrowLeft size={15} />
-              {fromCourse ? '返回当前课程' : '课程命题'}
-            </button>
-            <button onClick={logout} title="退出登录" style={ghostButton}>
-              <LogOut size={15} />
-              退出登录
-            </button>
-          </div>
-        </header>
+        {/* 来自课程时的上下文回跳；顶层入口已统一在 TopNav */}
+        {fromCourse && (
+          <button onClick={() => navigate(`/courses/${fromCourse}`)} style={ghostButton}>
+            <ArrowLeft size={15} />
+            返回当前课程
+          </button>
+        )}
 
         {/* 页面标题与统计：与课程工作台保持同一标题/工具栏层级 */}
         <section

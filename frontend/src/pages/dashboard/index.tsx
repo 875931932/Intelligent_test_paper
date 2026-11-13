@@ -127,6 +127,57 @@ const DashboardPage: FC = () => {
 
   const recentProjects = examProjects.slice(-3);
 
+  // 下一步指引：按「资料 → 解析 → 框架 → 知识目录 → 试卷」顺序定位当前唯一阻塞点，
+  // 避免四个模块卡并排却看不出先做哪一步
+  const nextStep = (() => {
+    if (materialStats.total === 0) {
+      return {
+        title: '上传课程资料',
+        desc: '先上传教学大纲、教材或习题，AI 才能从中提取考核点',
+        to: 'materials',
+        cta: '去资料库',
+      };
+    }
+    if (materialStats.unparsed > 0) {
+      return {
+        title: '等待资料解析完成',
+        desc: `还有 ${materialStats.unparsed} 份资料未解析，解析完成后才能构建命题框架`,
+        to: 'materials',
+        cta: '查看解析进度',
+      };
+    }
+    if (!isFrameworkPublished) {
+      return {
+        title: '构建并发布命题框架',
+        desc: '从大纲中提取考核点与考试规则，作为后续出题依据',
+        to: 'framework',
+        cta: '去构建框架',
+      };
+    }
+    if (knowledgeCardCount === 0) {
+      return {
+        title: '构建课程知识目录',
+        desc: '为每个考核点落地可独立判分的知识卡，试卷才有题可出',
+        to: 'knowledge',
+        cta: '去构建目录',
+      };
+    }
+    if (examProjects.length === 0) {
+      return {
+        title: '创建第一份试卷项目',
+        desc: '按蓝图 → 合同 → 生成 → 审核 → 导出五步推进',
+        to: 'paper',
+        cta: '新建试卷项目',
+      };
+    }
+    return {
+      title: '继续推进试卷',
+      desc: `已有 ${examProjects.length} 个试卷项目，继续审核、定稿或导出`,
+      to: 'paper',
+      cta: '进入试卷页',
+    };
+  })();
+
   // ── 导航 ──
   const handleCardNavigate = (path: string) => navigate(path);
 
@@ -141,6 +192,44 @@ const DashboardPage: FC = () => {
       <div>
         <h1 className="page-title">课程概览</h1>
         <p className="page-subtitle">PaperPact·AI 命题系统 · 从课程资料到成品试卷的完整链路</p>
+      </div>
+
+      {/* 下一步指引：只给一个当前动作，避免四个模块卡并排却不知道先做哪一步 */}
+      <div
+        className="glass-card stagger-item"
+        style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '18px 22px', flexWrap: 'wrap' }}
+      >
+        <span
+          style={{
+            width: 40,
+            height: 40,
+            borderRadius: 12,
+            background: 'var(--brand-subtle)',
+            color: 'var(--brand-ink)',
+            display: 'inline-flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            flexShrink: 0,
+          }}
+        >
+          <ChevronRight size={20} />
+        </span>
+        <div style={{ flex: 1, minWidth: 220 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span className="badge badge-accent">下一步</span>
+            <strong style={{ fontSize: '0.9375rem' }}>{nextStep.title}</strong>
+          </div>
+          <p style={{ marginTop: 4, fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
+            {nextStep.desc}
+          </p>
+        </div>
+        <Button
+          size="sm"
+          onClick={() => navigate(`/courses/${activeCourseId}/${nextStep.to}`)}
+        >
+          {nextStep.cta}
+          <ChevronRight size={16} />
+        </Button>
       </div>
 
       {/* 统计瓦片行：白底 zinc + 色板三原色实色（蓝/紫/粉）混排 */}

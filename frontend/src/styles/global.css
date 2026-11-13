@@ -291,6 +291,177 @@ body {
 }
 
 /* ═══════════════════════════════════════════════
+   TopNav 顶层页面统一导航（/home、/courses、/knowledge）
+   三个无侧栏页面共用同一套入口，避免各自零散页头
+   ═══════════════════════════════════════════════ */
+
+.top-nav {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+  height: 60px;
+  padding: 0 24px;
+  background: var(--surface-solid);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.top-nav-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  text-decoration: none;
+  color: var(--text);
+}
+
+.top-nav-brand-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  background: var(--brand);
+  color: #ffffff;
+}
+
+.top-nav-brand-copy {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.top-nav-brand-copy strong {
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.top-nav-brand-copy small {
+  font-size: 0.6875rem;
+  font-weight: 400;
+  color: var(--text-tertiary);
+}
+
+.top-nav-links {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+
+.top-nav-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: color var(--duration-hover) var(--ease-snappy),
+              background-color var(--duration-hover) var(--ease-snappy);
+}
+
+.top-nav-link:hover {
+  color: var(--text);
+  background: var(--fill-strong);
+}
+
+.top-nav-link.is-active {
+  color: var(--brand-ink);
+  background: var(--brand-subtle);
+  font-weight: 600;
+}
+
+.top-nav-right {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  flex-shrink: 0;
+}
+
+.top-nav-user {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 9999px;
+  background: var(--fill-strong);
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.top-nav-user-name {
+  font-size: 0.8125rem;
+  color: var(--text-secondary);
+}
+
+.top-nav-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.8125rem;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: color var(--duration-hover) var(--ease-snappy),
+              background-color var(--duration-hover) var(--ease-snappy);
+}
+
+.top-nav-action:hover {
+  color: var(--text);
+  background: var(--fill-strong);
+}
+
+/* 窄屏只留图标与头像，入口数量和顺序不变 */
+@media (max-width: 900px) {
+  .top-nav {
+    gap: var(--space-md);
+    padding: 0 14px;
+  }
+
+  .top-nav-brand-copy small,
+  .top-nav-user-name,
+  .top-nav-action-label {
+    display: none;
+  }
+
+  .top-nav-link,
+  .top-nav-action {
+    padding: 7px 9px;
+  }
+}
+
+/* 首页页头内嵌的同一组入口 */
+.home-main-head-nav {
+  flex-shrink: 0;
+  padding-top: 1px;
+}
+
+@media (max-width: 900px) {
+  .home-main-head-nav .top-nav-link-label {
+    display: none;
+  }
+
+  .home-main-head-nav .top-nav-link {
+    padding: 7px 9px;
+  }
+}
+
+/* ═══════════════════════════════════════════════
    Card Grid Alignment（旧等格网格，保留给密集列表场景）
    ═══════════════════════════════════════════════ */
 

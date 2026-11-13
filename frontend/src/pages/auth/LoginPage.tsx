@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from 'react';
 import { BookOpen } from 'lucide-react';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { api } from '@/api/client';
 import { ApiError } from '@/api/errors';
 import { useAuthStore } from '../../stores/auth';
@@ -10,6 +10,7 @@ import { Input } from '../../components/ui/Input';
 
 export function LoginPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const setAuth = useAuthStore((s) => s.setAuth);
   const addToast = useToastStore((s) => s.addToast);
 
@@ -44,7 +45,13 @@ export function LoginPage() {
       const role = user.role === 'admin' || user.role === 'org_admin' ? user.role : 'teacher';
       setAuth({ id: user.id, username: user.username, name: user.name, role }, token);
       addToast('登录成功，欢迎回来！', 'success');
-      navigate('/home', { replace: true });
+      // 被拦截的深链（ProtectedRoute 传回的 from）优先回跳，否则落 AI 助手首页
+      const from = (location.state as { from?: { pathname?: string; search?: string; hash?: string } } | null)
+        ?.from;
+      const target = from?.pathname
+        ? `${from.pathname}${from.search ?? ''}${from.hash ?? ''}`
+        : '/home';
+      navigate(target, { replace: true });
     } catch (err) {
       const msg = err instanceof ApiError ? err.message : '登录失败，请稍后再试';
       addToast(msg, 'error');

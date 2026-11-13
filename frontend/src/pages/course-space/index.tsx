@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { BookOpen, Plus, ChevronRight, LogOut, UserPlus, LibraryBig, Sparkles } from 'lucide-react';
+import { BookOpen, Plus, ChevronRight } from 'lucide-react';
 import { useCourseStore, type Course } from '@/stores/course';
-import { useAuthStore } from '@/stores/auth';
 import { useToastStore } from '@/stores/toast';
 import { api } from '@/api/client';
 import { Modal, Input, Select } from '@/components/ui';
+import { TopNav } from '@/components/layout/TopNav';
 import type { CourseCategoryInfo } from '@/types/api';
 
 export default function CourseSpacePage() {
@@ -14,9 +14,6 @@ export default function CourseSpacePage() {
   const setCourses = useCourseStore((s) => s.setCourses);
   const setActiveCourse = useCourseStore((s) => s.setActiveCourse);
   const removeCourse = useCourseStore((s) => s.removeCourse);
-  const logout = useAuthStore((s) => s.logout);
-  const currentUser = useAuthStore((s) => s.user);
-  const canOpenAdmin = currentUser?.role === 'admin' || currentUser?.role === 'org_admin';
   const addToast = useToastStore((s) => s.addToast);
 
   const [loading, setLoading] = useState(true);
@@ -170,88 +167,7 @@ export default function CourseSpacePage() {
 
   return (
     <div style={{ minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
-      {/* 顶部栏 */}
-      <header style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '16px 32px', borderBottom: '1px solid var(--line-soft)',
-        position: 'sticky', top: 0, zIndex: 10, background: 'var(--surface-solid)',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-          <div style={{
-            width: 38, height: 38, borderRadius: '12px',
-            background: 'var(--brand)',
-            display: 'flex', alignItems: 'center', justifyContent: 'center',
-            color: 'white',
-          }}>
-            <BookOpen size={20} />
-          </div>
-          <div>
-            <div style={{ fontSize: '1rem', fontWeight: 600, lineHeight: 1.2 }}>PaperPact</div>
-            <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)' }}>教学知识与 AI 命题</div>
-          </div>
-        </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-          <button
-            onClick={() => navigate('/home')}
-            title="进入 AI 助手首页"
-            style={{
-              display: 'flex', alignItems: 'center', gap: '6px',
-              background: 'none', border: 'none', cursor: 'pointer',
-              padding: '8px 12px', borderRadius: 'var(--radius-sm)',
-              color: 'var(--text-secondary)', fontSize: '0.8125rem',
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--fill-strong)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
-          >
-            <Sparkles size={15} />
-            AI 助手
-          </button>
-          <button
-            onClick={() => navigate('/knowledge')}
-            title="进入资料与知识中心"
-            style={{
-              display: 'flex', alignItems: 'center', gap: '6px',
-              background: 'none', border: 'none', cursor: 'pointer',
-              padding: '8px 12px', borderRadius: 'var(--radius-sm)',
-              color: 'var(--text-secondary)', fontSize: '0.8125rem',
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--fill-strong)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
-          >
-            <LibraryBig size={15} />
-            资料与知识中心
-          </button>
-          {canOpenAdmin && (
-            <button
-              onClick={() => navigate('/admin')}
-              title="进入后台管理（账号、单位、模型、监控）"
-              style={{
-                display: 'flex', alignItems: 'center', gap: '6px',
-                background: 'none', border: 'none', cursor: 'pointer',
-                padding: '8px 12px', borderRadius: 'var(--radius-sm)',
-                color: 'var(--text-secondary)', fontSize: '0.8125rem',
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--fill-strong)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
-            >
-              <UserPlus size={15} />
-              后台管理
-            </button>
-          )}
-          <button onClick={logout} title="退出登录" style={{
-          display: 'flex', alignItems: 'center', gap: '6px',
-          background: 'none', border: 'none', cursor: 'pointer',
-          padding: '8px 12px', borderRadius: 'var(--radius-sm)',
-          color: 'var(--text-secondary)', fontSize: '0.8125rem',
-        }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--fill-strong)'; }}
-          onMouseLeave={(e) => { e.currentTarget.style.background = 'none'; }}
-        >
-          <LogOut size={15} />
-          退出登录
-          </button>
-        </div>
-      </header>
+      <TopNav />
 
       {/* 内容区 */}
       <main style={{
