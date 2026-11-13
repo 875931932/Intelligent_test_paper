@@ -1215,11 +1215,85 @@ body > .floating-pill:nth-of-type(2) { top: 112px; }
   transform: translateX(0);
 }
 
+/* 聊天态：左侧消息列表常驻为布局第一列，且仍可折叠 */
+.home-side.is-docked {
+  position: relative;
+  top: auto;
+  bottom: auto;
+  left: auto;
+  z-index: 1;
+  width: 280px;
+  flex-shrink: 0;
+  transform: none;
+  box-shadow: none;
+  opacity: 1;
+  transition: width 0.24s var(--ease-snappy),
+              opacity 0.18s ease;
+}
+
+/* 折叠后让出宽度，只保留顶部展开按钮 */
+.home-side.is-docked:not(.is-open) {
+  width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  opacity: 0;
+  overflow: hidden;
+  border-right: none;
+  pointer-events: none;
+}
+
+/* 常驻展开时隐藏顶部展开按钮，折叠后恢复 */
+.home-side.is-docked.is-open + .home-main .home-side-toggle {
+  display: none;
+}
+
+/* 窄屏放不下常驻栏，退回抽屉模式 */
+@media (max-width: 1100px) {
+  .home-side.is-docked {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 22;
+    width: min(86vw, 280px);
+    transform: translateX(-105%);
+    box-shadow: var(--shadow-2);
+    opacity: 1;
+    transition: transform 0.22s var(--ease-snappy);
+  }
+
+  .home-side.is-docked:not(.is-open) {
+    width: min(86vw, 280px);
+    padding-left: 10px;
+    padding-right: 10px;
+    overflow: visible;
+    border-right: 1px solid var(--line);
+    pointer-events: auto;
+  }
+
+  .home-side.is-docked.is-open {
+    transform: translateX(0);
+  }
+
+  .home-side.is-docked .home-side-close {
+    display: inline-flex;
+  }
+
+  .home-side.is-docked + .home-main .home-side-toggle {
+    display: inline-flex;
+  }
+}
+
 .home-side-top {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 4px 6px 6px;
+}
+
+/* 折叠按钮贴到侧栏最右侧 */
+.home-side-collapse {
+  margin-left: auto;
 }
 
 .home-brand-mark {
@@ -1591,79 +1665,55 @@ body > .floating-pill:nth-of-type(2) { top: 112px; }
   transform: translateY(-50%) translateX(16px);
 }
 
-/* ── 右侧栏：工作空间预览，默认收起，点悬浮按钮滑出 ── */
+/* ── 右侧栏：工作空间预览，展开后为占位的悬浮卡片 ── */
 .home-right-side {
-  position: fixed;
-  top: 0;
-  bottom: 0;
-  right: 0;
-  z-index: 22;
-  width: min(86vw, 320px);
+  position: relative;
+  z-index: 1;
+  width: 0;
+  flex-shrink: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 12px 12px 14px;
-  background: var(--surface-solid);
-  border-left: 1px solid var(--line);
-  box-shadow: var(--shadow-2);
-  transform: translateX(105%);
-  transition: transform 0.22s var(--ease-snappy);
-}
-
-.home-right-side.is-open {
-  transform: translateX(0);
-}
-
-/* 聊天态：右侧栏常驻为布局第三列，不悬浮、不遮挡对话 */
-.home-right-side.is-docked {
-  position: relative;
-  top: auto;
-  right: auto;
-  bottom: auto;
-  z-index: 1;
-  width: 300px;
-  flex-shrink: 0;
-  transform: none;
-  background: var(--fill);
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0 solid transparent;
+  border-radius: var(--radius-lg);
+  background: transparent;
   box-shadow: none;
-  transition: none;
+  opacity: 0;
+  transition: width 0.26s var(--ease-snappy),
+              margin 0.26s var(--ease-snappy),
+              padding 0.26s var(--ease-snappy),
+              opacity 0.2s ease;
 }
 
-/* 常驻态不需要关闭按钮（仅窄屏退回抽屉时显示） */
-.home-right-side.is-docked .home-right-close {
-  display: none;
+/* 展开时占据布局宽度并呈现为圆角卡片，不覆盖对话 */
+.home-right-side.is-open {
+  width: 320px;
+  margin: 14px 14px 14px 0;
+  padding: 12px 12px 14px;
+  border-width: 1px;
+  border-color: var(--line);
+  background: var(--surface-solid);
+  box-shadow: var(--shadow-2);
+  opacity: 1;
 }
 
-/* 悬浮入口：常驻态下隐藏（窄屏退回抽屉时恢复） */
-.home-fab.is-docked-off {
-  display: none;
+/* 过渡期间内容不重排，避免文字抖动 */
+.home-right-side > * {
+  min-width: 296px;
 }
 
-/* 窄屏放不下常驻栏，退回抽屉模式 */
+/* 窄屏让卡片窄一些，允许内容收缩 */
 @media (max-width: 1100px) {
-  .home-right-side.is-docked {
-    position: fixed;
-    top: 0;
-    right: 0;
-    bottom: 0;
-    z-index: 22;
-    width: min(86vw, 320px);
-    transform: translateX(105%);
-    background: var(--surface-solid);
-    box-shadow: var(--shadow-2);
-    transition: transform 0.22s var(--ease-snappy);
+  .home-right-side.is-open {
+    width: min(78vw, 320px);
+    margin: 10px 10px 10px 0;
   }
 
-  .home-right-side.is-docked.is-open {
-    transform: translateX(0);
-  }
-
-  .home-right-side.is-docked .home-right-close {
-    display: inline-flex;
-  }
-
-  .home-fab.is-docked-off {
-    display: inline-flex;
+  .home-right-side > * {
+    min-width: 0;
   }
 }
 

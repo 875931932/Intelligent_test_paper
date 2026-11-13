@@ -13,6 +13,7 @@ import {
   LibraryBig,
   LogOut,
   PanelLeft,
+  PanelLeftClose,
   PanelRight,
   Pencil,
   Plus,
@@ -363,6 +364,8 @@ export default function HomeAssistantPage() {
 
   const confirmRange = async () => {
     stopSessionPolling();
+    // 进入聊天后左侧消息列表常驻展开
+    setSideOpen(true);
     setRightSideOpen(false);
     let nextRange: Range = null;
     if (pickerKind === 'course') {
@@ -452,7 +455,7 @@ export default function HomeAssistantPage() {
   };
 
   const openHistory = async (item: AssistantHistoryItem) => {
-    setSideOpen(false);
+    setSideOpen(true);
     if (item.target.kind === 'course') {
       stopSessionPolling();
       setRange({ kind: 'course', courseId: item.target.course_id, name: item.target.name });
@@ -613,15 +616,12 @@ export default function HomeAssistantPage() {
   return (
     <div className="home-shell">
       <div
-        className={`home-backdrop ${sideOpen || rightSideOpen ? 'is-open' : ''}`}
-        onClick={() => {
-          setSideOpen(false);
-          setRightSideOpen(false);
-        }}
+        className={`home-backdrop ${sideOpen && !chatMode ? 'is-open' : ''}`}
+        onClick={() => setSideOpen(false)}
       />
 
-      {/* 左侧栏默认收起：顶部保留展开按钮，按需滑出 */}
-      <aside className={`home-side ${sideOpen ? 'is-open' : ''}`}>
+      {/* 左侧栏：首屏默认收起、按需滑出；进入聊天后常驻为布局第一列 */}
+      <aside className={`home-side ${chatMode ? 'is-docked' : ''} ${sideOpen ? 'is-open' : ''}`}>
         <div className="home-side-top">
           <span className="home-brand-mark">
             <Bot size={18} />
@@ -629,11 +629,12 @@ export default function HomeAssistantPage() {
           <span className="home-brand-word">PaperPact</span>
           <button
             type="button"
-            className="home-icon-btn"
-            title="收起侧栏"
+            className="home-icon-btn home-side-collapse"
+            title="折叠侧栏"
+            aria-label="折叠侧栏"
             onClick={() => setSideOpen(false)}
           >
-            <X size={16} />
+            <PanelLeftClose size={16} />
           </button>
         </div>
 
@@ -1093,7 +1094,7 @@ export default function HomeAssistantPage() {
       {/* 悬浮入口：贴在右侧边缘中部，点击展开右侧工作空间栏 */}
       <button
         type="button"
-        className={`home-fab ${rightSideOpen ? 'is-hidden' : ''} ${chatMode ? 'is-docked-off' : ''}`}
+        className={`home-fab ${rightSideOpen ? 'is-hidden' : ''}`}
         onClick={() => setRightSideOpen(true)}
         title="工作空间"
         aria-label="打开工作空间"
@@ -1102,17 +1103,13 @@ export default function HomeAssistantPage() {
         <span className="home-fab-label">工作空间</span>
       </button>
 
-      {/* 右侧栏：首屏经悬浮按钮滑出；进入聊天后常驻为布局第三列 */}
-      <aside
-        className={`home-right-side ${chatMode ? 'is-docked' : ''} ${
-          rightSideOpen ? 'is-open' : ''
-        }`}
-      >
+      {/* 右侧栏：工作空间预览（课程 + 共享库），点悬浮按钮滑出 */}
+      <aside className={`home-right-side ${rightSideOpen ? 'is-open' : ''}`}>
         <div className="home-right-head">
           <span className="home-right-title">工作空间</span>
           <button
             type="button"
-            className="home-icon-btn home-right-close"
+            className="home-icon-btn"
             title="关闭"
             onClick={() => setRightSideOpen(false)}
           >
