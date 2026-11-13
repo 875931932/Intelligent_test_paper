@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
+  ArrowLeftRight,
   ArrowRight,
+  ArrowUpRight,
   Bot,
   BookOpen,
+  ChevronDown,
+  ChevronRight,
   Clock,
   FolderOpen,
-  Home,
   LibraryBig,
   LogOut,
-  Menu,
+  PanelLeft,
+  PanelRight,
   Pencil,
   Plus,
   Send,
@@ -120,6 +124,38 @@ function historyTargetLabel(item: AssistantHistoryItem): string {
   return item.target.names.join('、') + (item.target.complete ? '' : '（部分失效）');
 }
 
+/** 历史按"7 天内 / 30 天内 / 年月"分组（对齐对话产品的常见时间分组） */
+function groupHistory(items: AssistantHistoryItem[]): Array<{
+  label: string;
+  items: AssistantHistoryItem[];
+}> {
+  const groups: Array<{ label: string; items: AssistantHistoryItem[] }> = [];
+  const push = (label: string) => {
+    let group = groups.find((g) => g.label === label);
+    if (!group) {
+      group = { label, items: [] };
+      groups.push(group);
+    }
+    return group;
+  };
+  const now = Date.now();
+  for (const item of items) {
+    const time = new Date(item.updated_at).getTime();
+    const days = Number.isNaN(time) ? Number.POSITIVE_INFINITY : (now - time) / 86_400_000;
+    if (days <= 7) {
+      push('7 天内').items.push(item);
+    } else if (days <= 30) {
+      push('30 天内').items.push(item);
+    } else if (Number.isNaN(time)) {
+      push('更早').items.push(item);
+    } else {
+      const date = new Date(time);
+      push(`${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`).items.push(item);
+    }
+  }
+  return groups;
+}
+
 function channelLabel(message: KnowledgeMessage): string | null {
   const channel = message.retrieval_snapshot.channel;
   if (channel === 'model') return '模型综合回答';
@@ -134,6 +170,7 @@ function channelLabel(message: KnowledgeMessage): string | null {
 export default function HomeAssistantPage() {
   const navigate = useNavigate();
   const logout = useAuthStore((s) => s.logout);
+  const user = useAuthStore((s) => s.user);
   const addToast = useToastStore((s) => s.addToast);
 
   const [courses, setCourses] = useState<CourseResponse[]>([]);
@@ -151,6 +188,8 @@ export default function HomeAssistantPage() {
 
   // 首屏只保留大屏 + 输入框；选范围或打开历史后才进入聊天布局。
   const [landingDraft, setLandingDraft] = useState('');
+  // 输入框聚焦时才展开预设问题卡片，避免首屏被占满
+  const [quickOpen, setQuickOpen] = useState(false);
   const [pendingPrompt, setPendingPrompt] = useState('');
   const [courseInitialMessage, setCourseInitialMessage] = useState('');
   // 大屏/快捷任务选课程进入 = 新话题：要求助手面板开新会话（不复用上次会话）
@@ -162,7 +201,9 @@ export default function HomeAssistantPage() {
   const [asking, setAsking] = useState(false);
   const [scopeChanged, setScopeChanged] = useState(false);
 
-  const [mobileHistory, setMobileHistory] = useState(false);
+  const [sideOpen, setSideOpen] = useState(false);
+  const [rightSideOpen, setRightSideOpen] = useState(false);
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
   const [renameTarget, setRenameTarget] = useState<AssistantHistoryItem | null>(null);
   const [renameTitle, setRenameTitle] = useState('');
   const [deleteTarget, setDeleteTarget] = useState<AssistantHistoryItem | null>(null);
@@ -342,7 +383,8 @@ export default function HomeAssistantPage() {
     setPendingPrompt('');
     setCourseInitialMessage('');
     setCourseStartFresh(false);
-    setMobileHistory(false);
+    setSideOpen(false);
+    setRightSideOpen(false);
   }, [stopSessionPolling]);
 
   const consumeCourseMessage = useCallback(() => setCourseInitialMessage(''), []);
@@ -355,7 +397,7 @@ export default function HomeAssistantPage() {
   };
 
   const openHistory = async (item: AssistantHistoryItem) => {
-    setMobileHistory(false);
+    setSideOpen(false);
     if (item.target.kind === 'course') {
       stopSessionPolling();
       setRange({ kind: 'course', courseId: item.target.course_id, name: item.target.name });
@@ -500,253 +542,201 @@ export default function HomeAssistantPage() {
 
   const chatMode = Boolean(range || ksession || courseSessionId);
 
+  const groupedHistory = useMemo(() => groupHistory(history), [history]);
+
+  /** 顶栏标题：优先显示当前会话标题（与左侧栏选中项一致），否则回落到范围名 */
+  const activeTitle = useMemo(() => {
+    if (!range) return '新对话';
+    const hit = history.find((item) => item.session_id === activeSessionId);
+    if (hit) return hit.title;
+    if (range.kind === 'knowledge') return ksession?.title || range.names[0] || '共享资料问答';
+    return range.name;
+  }, [range, history, activeSessionId, ksession]);
+
   return (
     <div className="home-shell">
-      <header className="home-topbar">
-        <button
-          type="button"
-          className="home-brand"
-          onClick={goHome}
-          title="返回 AI 助手首页"
-          style={{ background: 'none', border: 'none', padding: 0, cursor: 'pointer', textAlign: 'left' }}
-        >
+      <div
+        className={`home-backdrop ${sideOpen || rightSideOpen ? 'is-open' : ''}`}
+        onClick={() => {
+          setSideOpen(false);
+          setRightSideOpen(false);
+        }}
+      />
+
+      {/* 左侧栏默认收起：顶部保留展开按钮，按需滑出 */}
+      <aside className={`home-side ${sideOpen ? 'is-open' : ''}`}>
+        <div className="home-side-top">
           <span className="home-brand-mark">
-            <Bot size={20} />
+            <Bot size={18} />
           </span>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ fontSize: '0.9375rem', fontWeight: 700 }}>PaperPact AI 助手</div>
-            <div style={{ fontSize: '0.6875rem', color: 'var(--text-tertiary)' }}>
-              课程与共享资料统一入口
-            </div>
-          </div>
-        </button>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          {chatMode && (
-            <button
-              type="button"
-              className="home-menu-btn"
-              style={{ ...iconButton, padding: 8 }}
-              title="历史会话"
-              onClick={() => setMobileHistory(true)}
-            >
-              <Menu size={18} />
-            </button>
-          )}
-          <div className="home-nav">
-            {chatMode && (
-              <Button variant="ghost" size="sm" icon={<Home size={14} />} onClick={goHome}>
-                首页
-              </Button>
-            )}
-            <Button variant="ghost" size="sm" onClick={() => navigate('/courses')}>
-              课程空间
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => navigate('/knowledge')}>
-              资料与知识中心
-            </Button>
-          </div>
-          <Button variant="ghost" size="sm" icon={<LogOut size={14} />} onClick={logout}>
-            退出
-          </Button>
-        </div>
-      </header>
-
-      <div className={`home-backdrop ${mobileHistory ? 'is-open' : ''}`} onClick={() => setMobileHistory(false)} />
-
-      <div className={`home-body ${chatMode ? '' : 'is-landing'}`}>
-        {chatMode && (
-        <aside className={`home-history ${mobileHistory ? 'is-open' : ''}`}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-            <strong style={{ fontSize: '0.875rem' }}>我的对话</strong>
-            <button
-              type="button"
-              className="home-menu-btn"
-              style={{ ...iconButton, padding: 6 }}
-              onClick={() => setMobileHistory(false)}
-              title="关闭历史"
-            >
-              <X size={16} />
-            </button>
-          </div>
-
-          <Button
-            icon={<Plus size={15} />}
-            onClick={() => {
-              goHome();
-              setMobileHistory(false);
-            }}
+          <span className="home-brand-word">PaperPact</span>
+          <button
+            type="button"
+            className="home-icon-btn"
+            title="收起侧栏"
+            onClick={() => setSideOpen(false)}
           >
-            新建对话
-          </Button>
+            <X size={16} />
+          </button>
+        </div>
 
-          <div style={{ display: 'flex', gap: 4 }}>
-            {FILTERS.map((item) => (
-              <button
-                key={item.value}
-                type="button"
-                onClick={() => setFilter(item.value)}
-                style={{
-                  flex: 1,
-                  padding: '6px 8px',
-                  borderRadius: 8,
-                  border: '1px solid transparent',
-                  background: filter === item.value ? 'var(--fill-strong)' : 'transparent',
-                  color: filter === item.value ? 'var(--text)' : 'var(--text-tertiary)',
-                  fontSize: '0.75rem',
-                  fontWeight: filter === item.value ? 600 : 500,
-                  cursor: 'pointer',
-                }}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
+        <button type="button" className="home-new-chat" onClick={goHome}>
+          <Plus size={15} />
+          新建对话
+        </button>
 
-          <div className="home-history-list">
-            {history.map((item) => {
-              const active = item.session_id === activeSessionId;
-              return (
-                <div
-                  key={`${item.domain}-${item.session_id}`}
-                  role="button"
-                  tabIndex={0}
-                  className={`home-history-item ${active ? 'is-active' : ''}`}
-                  onClick={() => void openHistory(item)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter' || event.key === ' ') {
-                      event.preventDefault();
-                      void openHistory(item);
-                    }
-                  }}
+        <div className="home-filter-row">
+          {FILTERS.map((item) => (
+            <button
+              key={item.value}
+              type="button"
+              className={`home-filter ${filter === item.value ? 'is-active' : ''}`}
+              onClick={() => setFilter(item.value)}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="home-history">
+          {groupedHistory.map((group) => {
+            const collapsed = Boolean(collapsedGroups[group.label]);
+            return (
+              <div key={group.label} className="home-history-group">
+                <button
+                  type="button"
+                  className="home-history-group-head"
+                  onClick={() =>
+                    setCollapsedGroups((prev) => ({ ...prev, [group.label]: !prev[group.label] }))
+                  }
                 >
-                  <span style={{ marginTop: 2, color: 'var(--text-tertiary)', flexShrink: 0 }}>
-                    {item.domain === 'course' ? <BookOpen size={15} /> : <LibraryBig size={15} />}
-                  </span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div
-                      style={{
-                        fontSize: '0.8rem',
-                        fontWeight: 600,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                      title={item.title}
-                    >
-                      {item.title}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: '0.72rem',
-                        color: 'var(--text-tertiary)',
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                        marginTop: 2,
-                      }}
-                      title={`${historyTargetLabel(item)} · ${formatTime(item.updated_at)}`}
-                    >
-                      {historyTargetLabel(item)} · {formatTime(item.updated_at)}
-                    </div>
-                  </div>
-                  <div className="home-history-actions">
-                    <button
-                      type="button"
-                      style={iconButton}
-                      title="重命名"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        openRename(item);
-                      }}
-                    >
-                      <Pencil size={13} />
-                    </button>
-                    <button
-                      type="button"
-                      style={iconButton}
-                      title="删除"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        setDeleteTarget(item);
-                      }}
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-            {!history.length && !historyLoading && (
-              <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', padding: '8px 4px' }}>
-                暂无历史会话。选择范围后开始第一个问题。
-              </p>
-            )}
-            {historyLoading && (
-              <p style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)', padding: '8px 4px' }}>
-                加载中…
-              </p>
-            )}
-            {historyCursor && !historyLoading && (
-              <Button variant="ghost" size="sm" onClick={() => void loadMoreHistory()}>
-                加载更多
-              </Button>
-            )}
-          </div>
-
-          <div style={{ borderTop: '1px solid var(--border)', paddingTop: 10, display: 'flex', flexDirection: 'column', gap: 4 }}>
-            <Button variant="ghost" size="sm" icon={<FolderOpen size={14} />} onClick={() => navigate('/courses')}>
-              课程空间
-            </Button>
-            <Button variant="ghost" size="sm" icon={<LibraryBig size={14} />} onClick={() => navigate('/knowledge')}>
-              资料与知识中心
-            </Button>
-          </div>
-        </aside>
-        )}
-
-        <main className={`home-main ${chatMode ? '' : 'is-landing'}`}>
-          {chatMode && (
-          <div className="home-range-bar">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
-              <span style={{ fontSize: '0.75rem', color: 'var(--text-tertiary)' }}>当前范围</span>
-              {range ? (
-                <span className="home-range-chip">
-                  {range.kind === 'course'
-                    ? `课程：${range.name}`
-                    : `共享资料：${range.names.join('、') || '范围已失效'}`}
-                </span>
-              ) : (
-                <span style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
-                  尚未选择课程或共享资料
-                </span>
-              )}
-              {scopeChanged && (
-                <span style={{ fontSize: '0.75rem', color: 'var(--error-ink, #b91c1c)' }}>
-                  部分共享库已不可访问，请重新选择范围
-                </span>
-              )}
-            </div>
-            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-              {scopeChanged && (
-                <Button size="sm" onClick={() => openPicker('knowledge')}>
-                  重新选择范围
-                </Button>
-              )}
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => openPicker(range?.kind === 'knowledge' ? 'knowledge' : 'course')}
-              >
-                {range ? '更换范围' : '选择范围'}
-              </Button>
-              {range?.kind === 'course' && (
-                <Button variant="ghost" size="sm" onClick={() => navigate(`/courses/${range.courseId}`)}>
-                  课程工作台
-                </Button>
-              )}
-            </div>
-          </div>
+                  <span>{group.label}</span>
+                  {collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+                </button>
+                {!collapsed &&
+                  group.items.map((item) => {
+                    const active = item.session_id === activeSessionId;
+                    return (
+                      <div
+                        key={`${item.domain}-${item.session_id}`}
+                        role="button"
+                        tabIndex={0}
+                        title={`${historyTargetLabel(item)} · ${formatTime(item.updated_at)}`}
+                        className={`home-history-item ${active ? 'is-active' : ''}`}
+                        onClick={() => void openHistory(item)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault();
+                            void openHistory(item);
+                          }
+                        }}
+                      >
+                        <span className="home-history-title">{item.title}</span>
+                        <div className="home-history-actions">
+                          <button
+                            type="button"
+                            style={iconButton}
+                            title="重命名"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              openRename(item);
+                            }}
+                          >
+                            <Pencil size={13} />
+                          </button>
+                          <button
+                            type="button"
+                            style={iconButton}
+                            title="删除"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setDeleteTarget(item);
+                            }}
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+              </div>
+            );
+          })}
+          {!history.length && !historyLoading && (
+            <p className="home-history-empty">暂无历史会话。选个范围开始第一个问题。</p>
           )}
+          {historyLoading && <p className="home-history-empty">加载中…</p>}
+          {historyCursor && !historyLoading && (
+            <button type="button" className="home-history-more" onClick={() => void loadMoreHistory()}>
+              加载更多
+            </button>
+          )}
+        </div>
+
+        <div className="home-side-foot">
+          <span className="home-user-avatar">
+            {(user?.name || user?.username || '师').slice(0, 1)}
+          </span>
+          <span className="home-user-name">{user?.name || user?.username || '教师'}</span>
+          <button type="button" className="home-icon-btn" title="退出登录" onClick={logout}>
+            <LogOut size={15} />
+          </button>
+        </div>
+      </aside>
+
+        <main className="home-main">
+          <header className="home-main-head">
+            <div className="home-main-head-left">
+              <div className="home-title-row">
+                <button
+                  type="button"
+                  className="home-side-toggle"
+                  title="展开侧栏"
+                  aria-label="展开侧栏"
+                  onClick={() => setSideOpen(true)}
+                >
+                  <PanelLeft size={16} />
+                </button>
+                <div className="home-main-title">{chatMode ? activeTitle : '新对话'}</div>
+              </div>
+              {chatMode && (
+                <div className="home-main-sub">
+                  {range ? (
+                    <span className="home-scope-chip">
+                      {range.kind === 'course'
+                        ? `课程：${range.name}`
+                        : `共享资料：${range.names.join('、') || '范围已失效'}`}
+                    </span>
+                  ) : (
+                    <span>尚未选择课程或共享资料</span>
+                  )}
+                  {scopeChanged && (
+                    <span style={{ color: 'var(--error-ink, #b91c1c)' }}>
+                      部分共享库已不可访问，请重新选择范围
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    className="home-pill-btn"
+                    onClick={() => openPicker(range?.kind === 'knowledge' ? 'knowledge' : 'course')}
+                  >
+                    <ArrowLeftRight size={12} />
+                    {range ? '更换范围' : '选择范围'}
+                  </button>
+                  {range?.kind === 'course' && (
+                    <button
+                      type="button"
+                      className="home-pill-btn"
+                      onClick={() => navigate(`/courses/${range.courseId}`)}
+                    >
+                      <ArrowUpRight size={12} />
+                      课程工作台
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          </header>
 
           {range?.kind === 'course' ? (
             <div className="home-chat-shell">
@@ -761,7 +751,7 @@ export default function HomeAssistantPage() {
               />
             </div>
           ) : range?.kind === 'knowledge' ? (
-            <>
+            <div className="home-chat-shell">
               <div className="home-conversation" ref={threadRef}>
                 {emptyKnowledge && (
                   <div className="home-empty">
@@ -901,60 +891,71 @@ export default function HomeAssistantPage() {
                 )}
               </div>
 
-              <div className="home-composer">
-                <textarea
-                  className="input-field"
-                  style={{ flex: 1, resize: 'none', maxHeight: 120, minHeight: 38 }}
-                  rows={1}
-                  value={question}
-                  disabled={asking}
-                  placeholder={
-                    scopeChanged
-                      ? '当前范围已变化，请先重新选择资料范围'
-                      : asking
-                        ? '正在检索资料…'
-                        : '基于所选共享库提问，Enter 发送（Shift+Enter 换行）'
-                  }
-                  aria-label="向共享资料提问"
-                  onChange={(event) => setQuestion(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (
-                      event.key === 'Enter' &&
-                      !event.shiftKey &&
-                      !event.nativeEvent.isComposing &&
-                      !asking &&
-                      !scopeChanged
-                    ) {
-                      event.preventDefault();
-                      void sendKnowledge();
+              <div className="home-composer-wrap">
+                <div className="chat-composer">
+                  <textarea
+                    className="input-field"
+                    style={{ resize: 'none', maxHeight: 120, minHeight: 24 }}
+                    rows={1}
+                    value={question}
+                    disabled={asking}
+                    placeholder={
+                      scopeChanged
+                        ? '当前范围已变化，请先重新选择资料范围'
+                        : asking
+                          ? '正在检索资料…'
+                          : '基于所选共享库提问'
                     }
-                  }}
-                />
-                <button
-                  type="button"
-                  className="chat-send"
-                  onClick={() => void sendKnowledge()}
-                  disabled={!question.trim() || asking || scopeChanged}
-                  title="发送"
-                >
-                  <Send size={16} />
-                </button>
+                    aria-label="向共享资料提问"
+                    onChange={(event) => setQuestion(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (
+                        event.key === 'Enter' &&
+                        !event.shiftKey &&
+                        !event.nativeEvent.isComposing &&
+                        !asking &&
+                        !scopeChanged
+                      ) {
+                        event.preventDefault();
+                        void sendKnowledge();
+                      }
+                    }}
+                  />
+                  <div className="chat-composer-bar">
+                    <span className="chat-composer-note">Enter 发送 · Shift+Enter 换行</span>
+                    <div className="chat-composer-actions">
+                      <button
+                        type="button"
+                        className="chat-send"
+                        onClick={() => void sendKnowledge()}
+                        disabled={!question.trim() || asking || scopeChanged}
+                        title="发送"
+                      >
+                        <Send size={16} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <p className="chat-disclaimer">内容由 AI 生成，请核对引用来源</p>
               </div>
-            </>
+            </div>
           ) : (
             <div className="home-landing">
-              <div className="home-landing-inner">
-                <span className="home-landing-mark">
-                  <Bot size={28} />
-                </span>
-                <div className="home-landing-copy">
-                  <h1>从一个问题开始</h1>
-                  <p>
-                    先选择一门课程或 1～5 个共享库。课程范围使用完整课程助手；
-                    共享范围使用资料摘录或模型综合回答。
-                  </p>
+              <span className="home-landing-glow" aria-hidden />
+              <div className={`home-landing-inner ${quickOpen ? 'is-quick' : ''}`}>
+                <div className="home-landing-intro">
+                  <span className="home-landing-mark">
+                    <Bot size={28} />
+                  </span>
+                  <div className="home-landing-copy">
+                    <h1>从一个问题开始</h1>
+                    <p>
+                      先选择一门课程或 1～5 个共享库。课程范围使用完整课程助手；
+                      共享范围使用资料摘录或模型综合回答。
+                    </p>
+                  </div>
                 </div>
-                <div className="home-quick-grid">
+                <div className={`home-quick-grid ${quickOpen ? 'is-open' : ''}`}>
                   {QUICK_TASKS.map((task) => {
                     const Icon = task.icon;
                     return (
@@ -962,10 +963,12 @@ export default function HomeAssistantPage() {
                         key={task.label}
                         type="button"
                         className="home-quick-card"
+                        onMouseDown={(event) => event.preventDefault()}
                         onClick={() => {
                           // 大屏已输入优先；否则用快捷任务自带的首条问题
                           const text = landingDraft.trim() || task.prompt || '';
                           if (text) setPendingPrompt(text);
+                          setQuickOpen(false);
                           openPicker(task.kind);
                         }}
                       >
@@ -985,15 +988,17 @@ export default function HomeAssistantPage() {
                   })}
                 </div>
                 <div className="home-landing-composer">
-                  <div className="home-composer">
+                  <div className="chat-composer">
                     <textarea
                       className="input-field"
-                      style={{ flex: 1, resize: 'none', maxHeight: 120, minHeight: 38 }}
-                      rows={1}
+                      style={{ resize: 'none', maxHeight: 160, minHeight: 52 }}
+                      rows={2}
                       value={landingDraft}
                       placeholder="输入问题，发送时选择课程或共享资料…"
                       aria-label="输入问题"
                       onChange={(event) => setLandingDraft(event.target.value)}
+                      onFocus={() => setQuickOpen(true)}
+                      onBlur={() => window.setTimeout(() => setQuickOpen(false), 120)}
                       onKeyDown={(event) => {
                         if (
                           event.key === 'Enter' &&
@@ -1005,15 +1010,20 @@ export default function HomeAssistantPage() {
                         }
                       }}
                     />
-                    <button
-                      type="button"
-                      className="chat-send"
-                      onClick={() => void submitLanding()}
-                      disabled={!landingDraft.trim()}
-                      title="发送并选择范围"
-                    >
-                      <Send size={16} />
-                    </button>
+                    <div className="chat-composer-bar">
+                      <span className="chat-composer-note">发送时选择对话范围</span>
+                      <div className="chat-composer-actions">
+                        <button
+                          type="button"
+                          className="chat-send"
+                          onClick={() => void submitLanding()}
+                          disabled={!landingDraft.trim()}
+                          title="发送并选择范围"
+                        >
+                          <Send size={16} />
+                        </button>
+                      </div>
+                    </div>
                   </div>
                   <div className="home-landing-hint">
                     未选择范围前不会调用模型，也不会写入业务数据
@@ -1023,7 +1033,118 @@ export default function HomeAssistantPage() {
             </div>
           )}
         </main>
-      </div>
+
+      {/* 悬浮入口：贴在右侧边缘中部，点击展开右侧工作空间栏 */}
+      <button
+        type="button"
+        className={`home-fab ${rightSideOpen ? 'is-hidden' : ''}`}
+        onClick={() => setRightSideOpen(true)}
+        title="工作空间"
+        aria-label="打开工作空间"
+      >
+        <PanelRight size={18} />
+        <span className="home-fab-label">工作空间</span>
+      </button>
+
+      {/* 右侧栏：工作空间预览（课程 + 共享库），点悬浮按钮滑出 */}
+      <aside className={`home-right-side ${rightSideOpen ? 'is-open' : ''}`}>
+        <div className="home-right-head">
+          <span className="home-right-title">工作空间</span>
+          <button
+            type="button"
+            className="home-icon-btn"
+            title="关闭"
+            onClick={() => setRightSideOpen(false)}
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="home-right-body">
+          <section className="home-right-section">
+            <div className="home-right-section-head">
+              <FolderOpen size={15} />
+              <span>课程空间</span>
+              <button
+                type="button"
+                className="home-right-enter-all"
+                onClick={() => {
+                  setRightSideOpen(false);
+                  navigate('/courses');
+                }}
+              >
+                全部 <ArrowUpRight size={12} />
+              </button>
+            </div>
+            <div className="home-right-list">
+              {courses.length ? (
+                courses.slice(0, 6).map((course) => (
+                  <button
+                    key={course.id}
+                    type="button"
+                    className="home-right-item"
+                    onClick={() => {
+                      setRightSideOpen(false);
+                      navigate(`/courses/${course.id}`);
+                    }}
+                  >
+                    <span className="home-right-item-name" title={course.name}>
+                      {course.name}
+                    </span>
+                    <span className="home-right-item-enter">进入</span>
+                  </button>
+                ))
+              ) : (
+                <p className="home-right-empty">暂无课程</p>
+              )}
+            </div>
+          </section>
+
+          <section className="home-right-section">
+            <div className="home-right-section-head">
+              <LibraryBig size={15} />
+              <span>资料与知识中心</span>
+              <button
+                type="button"
+                className="home-right-enter-all"
+                onClick={() => {
+                  setRightSideOpen(false);
+                  navigate('/knowledge');
+                }}
+              >
+                全部 <ArrowUpRight size={12} />
+              </button>
+            </div>
+            <div className="home-right-list">
+              {spaces.length ? (
+                spaces.slice(0, 6).map((space) => (
+                  <button
+                    key={space.id}
+                    type="button"
+                    className="home-right-item"
+                    onClick={() => {
+                      setRightSideOpen(false);
+                      navigate(`/knowledge/${space.id}`);
+                    }}
+                  >
+                    <span className="home-right-item-copy">
+                      <span className="home-right-item-name" title={space.name}>
+                        {space.name}
+                      </span>
+                      <span className="home-right-item-meta">
+                        {space.read_scope_label} · {space.document_count} 份资料
+                      </span>
+                    </span>
+                    <span className="home-right-item-enter">进入</span>
+                  </button>
+                ))
+              ) : (
+                <p className="home-right-empty">暂无可访问的共享库</p>
+              )}
+            </div>
+          </section>
+        </div>
+      </aside>
 
       <Modal
         open={rangeOpen}

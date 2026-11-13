@@ -1843,34 +1843,29 @@ export function CourseAssistantPanel({
         minHeight: 0,
       }}
     >
-      <div
-        style={{
-          display: 'flex',
-          alignItems: 'flex-start',
-          justifyContent: 'space-between',
-          gap: 12,
-          flexWrap: 'wrap',
-          width: '100%',
-          maxWidth: 1180,
-          margin: '0 auto',
-        }}
-      >
-        {embedded ? (
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8 }}>
-            <SessionBar />
+      {/* 嵌入统一首页时标题与会话切换由首页左侧栏承担，面板不再重复一行 */}
+      {!embedded && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'flex-start',
+            justifyContent: 'space-between',
+            gap: 12,
+            flexWrap: 'wrap',
+            width: '100%',
+            maxWidth: 1180,
+            margin: '0 auto',
+          }}
+        >
+          <div>
+            <h1 className="page-title">AI 助手</h1>
+            <p className="page-subtitle">
+              资料正文问答直达依据片段，查询直达结果，写操作生成提案卡——确认后才执行
+            </p>
           </div>
-        ) : (
-          <>
-            <div>
-              <h1 className="page-title">AI 助手</h1>
-              <p className="page-subtitle">
-                资料正文问答直达依据片段，查询直达结果，写操作生成提案卡——确认后才执行
-              </p>
-            </div>
-            <SessionBar />
-          </>
-        )}
-      </div>
+          <SessionBar />
+        </div>
+      )}
 
       {/* 消息时间线：定宽居中列（宽屏下不让气泡铺满整屏，行宽保持可读） */}
       <div
@@ -1926,16 +1921,15 @@ export function CourseAssistantPanel({
               >
                 <div
                   style={{
-                    maxWidth: embedded ? '80%' : '72%',
-                    background: 'var(--accent)',
-                    color: 'var(--text-on-accent)',
-                    borderRadius: '14px 14px 4px 14px',
-                    padding: '8px 12px',
-                    fontSize: '0.85rem',
-                    lineHeight: 1.6,
+                    maxWidth: embedded ? '78%' : '72%',
+                    background: 'var(--brand-subtle)',
+                    color: 'var(--text)',
+                    borderRadius: 16,
+                    padding: '10px 14px',
+                    fontSize: '0.86rem',
+                    lineHeight: 1.65,
                     whiteSpace: 'pre-wrap',
                     wordBreak: 'break-word',
-                    boxShadow: 'var(--shadow-1)',
                   }}
                 >
                   {m.content}
@@ -2103,52 +2097,55 @@ export function CourseAssistantPanel({
         </div>
       </div>
 
-      {/* 输入区：composer 白卡承托 + 主色发送钮（Enter 发送 / Shift+Enter 换行） */}
-      <div
-        className="chat-composer"
-        style={{ flexShrink: 0, width: '100%', maxWidth: 1180, margin: '0 auto' }}
-      >
-        <textarea
-          ref={taRef}
-          className="input-field"
-          style={{ flex: 1, resize: 'none', maxHeight: 120, minHeight: 36 }}
-          rows={1}
-          value={input}
-          disabled={sending}
-          placeholder={
-            sending
-              ? '助手回复中…（点「停止」可中断，已生成内容会保留）'
-              : '输入问题，Enter 发送（Shift+Enter 换行）'
-          }
-          aria-label="给 AI 助手发消息"
-          onChange={(e) => { setInput(e.target.value); growTa(e.currentTarget); }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              void handleSend();
+      {/* 输入区：输入行 + 工具行（说明 + 停止 + 圆形发送钮），下方一行生成提示 */}
+      <div style={{ flexShrink: 0, width: '100%', maxWidth: 1180, margin: '0 auto' }}>
+        <div className="chat-composer">
+          <textarea
+            ref={taRef}
+            className="input-field"
+            style={{ resize: 'none', maxHeight: 120, minHeight: 24 }}
+            rows={1}
+            value={input}
+            disabled={sending}
+            placeholder={
+              sending ? '助手回复中…（点「停止」可中断，已生成内容会保留）' : '输入问题'
             }
-          }}
-        />
-        {sending && (
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => void handleStop()}
-            icon={<Square size={14} />}
-          >
-            停止
-          </Button>
-        )}
-        <button
-          type="button"
-          className="chat-send"
-          onClick={() => void handleSend()}
-          disabled={!input.trim() || sending}
-          title="发送"
-          aria-label="发送消息"
-        >
-          <Send size={16} />
-        </button>
+            aria-label="给 AI 助手发消息"
+            onChange={(e) => { setInput(e.target.value); growTa(e.currentTarget); }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                e.preventDefault();
+                void handleSend();
+              }
+            }}
+          />
+          <div className="chat-composer-bar">
+            <span className="chat-composer-note">Enter 发送 · Shift+Enter 换行</span>
+            <div className="chat-composer-actions">
+              {sending && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => void handleStop()}
+                  icon={<Square size={14} />}
+                >
+                  停止
+                </Button>
+              )}
+              <button
+                type="button"
+                className="chat-send"
+                onClick={() => void handleSend()}
+                disabled={!input.trim() || sending}
+                title="发送"
+                aria-label="发送消息"
+              >
+                <Send size={16} />
+              </button>
+            </div>
+          </div>
+        </div>
+        <p className="chat-disclaimer">内容由 AI 生成，请仔细甄别</p>
       </div>
     </div>
   );
