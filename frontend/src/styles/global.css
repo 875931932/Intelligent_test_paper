@@ -351,6 +351,8 @@ body {
   align-items: center;
   gap: var(--space-xs);
   min-width: 0;
+  /* 入口一律靠右，与首页页头内的同一组导航保持同一视觉位置 */
+  margin-left: auto;
 }
 
 .top-nav-link {
@@ -380,7 +382,6 @@ body {
 }
 
 .top-nav-right {
-  margin-left: auto;
   display: flex;
   align-items: center;
   gap: var(--space-sm);
